@@ -63,3 +63,18 @@ Knowledge integration is additive and remains independently owned by `pcvantol/a
 | K7 | KB productization and optional Forge Platform distribution when qualified |
 
 KB is currently a Git-backed repository-local CLI capability, not a Workspace/EP server role and not a current Forge Platform installer component. See the [learning-loop architecture](../architecture/KNOWLEDGE_LEARNING_LOOP.md).
+
+## Installer UX, read-only qualification and release refinement
+
+The [owner-requested installer backlog](INSTALLER_UX_AND_RELEASE_QUALIFICATION_V1.md)
+and [IUR documentary DAG](installer-ux-release-v1.json) add explicit OS appearance/
+language/Retina behavior, five-role and Server install/Client install selection,
+page validation and progress, real read-only UI tests, all-step screenshots,
+strict per-file >80.2% coverage, and protected build/signing on the owner's Mac
+with a release-pinned latest public stable SDK and GitHub Release readback.
+
+Reuse existing EP system-service, Forge HTTP/Postman/drift and product-release
+lanes; Workspace owns its PyPI transition. This refines FP-EP-CI-6/7/Q and the
+broader MVP installer lane without expanding the parked EP-only-clean scope or
+adding a first-Forge-canary prerequisite. All new implementation remains PLANNED;
+no runner registration, signing, release or installation is performed here.

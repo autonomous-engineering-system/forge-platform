@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "increment": "INSTALLER_UX_AND_RELEASE_QUALIFICATION_V1",
+  "owner": "forge-platform",
+  "authority": "DOCUMENTARY",
+  "status": "PLANNED",
+  "version_change": "NO_BUMP",
+  "executable": false,
+  "authorizes_execution": false,
+  "first_canary_prerequisite": false,
+  "source_pins": {
+    "forge": "1cea418a5fa8f59d303f2a0d6ff27573c4a11752",
+    "engineering-platform": "395e61781965fa8e232d1db6bed8f82af7d00509",
+    "workspace": "36d294836cb653361fda3972de38acce3d2970f8",
+    "forge-platform": "cb6a10a4ffca90e2b689af62349da2075fe47a77"
+  },
+  "roadmap": "docs/roadmap/INSTALLER_UX_AND_RELEASE_QUALIFICATION_V1.md",
+  "parent_lanes": [
+    "FP-EP-CI-6",
+    "FP-EP-CI-7",
+    "FP-EP-CI-Q",
+    "MVP-INST-001"
+  ],
+  "parent_relationship": "SCOPED_REFINEMENT_NOT_REVERSE_DEPENDENCY",
+  "narrow_clean_install_scope_unchanged": true,
+  "profiles": {
+    "Server install": [
+      "EP Server",
+      "Forge Server",
+      "Workspace Server"
+    ],
+    "Client install": [
+      "Workspace Client",
+      "EP Project Agent"
+    ]
+  },
+  "ep_client_is_project_agent_ux_label": true,
+  "coverage": {
+    "metric": "executable_line",
+    "scope": "per_production_source_file",
+    "operator": ">",
+    "percent": "80.2",
+    "missing_evidence": "FAIL",
+    "rounding_for_pass": false
+  },
+  "locales": [
+    "en",
+    "nl",
+    "de",
+    "fr",
+    "es"
+  ],
+  "appearance": "OS_FOLLOWING_LIGHT_DARK",
+  "backing_scales": [
+    1,
+    2
+  ],
+  "runner_target": "OWNER_MAC_SELF_HOSTED_PROTECTED_RELEASE",
+  "sdk_policy": "LATEST_PUBLIC_STABLE_AT_PREPARATION_PINNED_PER_OPERATION",
+  "installer_distribution": "GITHUB_RELEASES",
+  "nodes": [
+    {
+      "id": "IUR-CONTRACT",
+      "depends_on": [],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-WIZARD",
+      "depends_on": [
+        "IUR-CONTRACT"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-READONLY",
+      "depends_on": [
+        "IUR-CONTRACT"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-UX-Q",
+      "depends_on": [
+        "IUR-WIZARD",
+        "IUR-READONLY"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-COVERAGE",
+      "depends_on": [
+        "IUR-READONLY"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-RUNNER",
+      "depends_on": [],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-RELEASE",
+      "depends_on": [
+        "IUR-UX-Q",
+        "IUR-COVERAGE",
+        "IUR-RUNNER"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-INSTALL-Q",
+      "depends_on": [
+        "IUR-RELEASE"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    }
+  ],
+  "invariants": {
+    "separate_mock_wizard": false,
+    "readonly_product_mutation": false,
+    "readonly_self_update": false,
+    "readonly_is_real_install_proof": false,
+    "untrusted_pr_on_signer": false,
+    "gui_signing_implies_runner_ready": false,
+    "selection_is_uninstall_authority": false,
+    "screenshots_are_real_app_captures": true,
+    "server_install_requires_user_login": false
+  },
+  "external_evidence_gates": {
+    "IUR-RELEASE": [
+      "APPLICABLE_EXISTING_RELEASE_TRUST_AND_AUTHORITY"
+    ],
+    "IUR-INSTALL-Q": [
+      "SELECTED_ROLE_PRODUCT_PROVISIONER_AND_HEALTH",
+      "AUTHORIZED_CLEAN_TEST_HOST"
+    ]
+  },
+  "owner_routes": {
+    "ep_system_service": "pcvantol/engineering-platform:docs/development/ENGINEERING_PLATFORM_ROADMAP.md",
+    "forge_health_http": "pcvantol/forge:docs/roadmap/forge-http-api-v1.json",
+    "workspace_pypi": "pcvantol/workspace:docs/WORKSPACE_PYPI_DISTRIBUTION_V1_DAG.json"
+  },
+  "required_scenarios": [
+    {
+      "id": "IUR-T01",
+      "requirement": "Aggregate and custom profile/dependency parity including Workspace-client-only",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T02",
+      "requirement": "OS language fallback, five locales, themes and Retina display transition",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T03",
+      "requirement": "Every-page validation, navigation, blocked state and honest progress",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T04",
+      "requirement": "Real readonly UI denies all mutation including backend bypass and relaunch",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T05",
+      "requirement": "Every wizard page/state screenshot inventory with redacted provenance",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T06",
+      "requirement": "Strict per-file >80.2 line coverage with missing/rounding/exclusion negatives",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T07",
+      "requirement": "Protected Mac runner rejects untrusted code and unavailable real-account signing",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T08",
+      "requirement": "Latest stable public SDK observation, exact toolchain binding and retry",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T09",
+      "requirement": "Signed/notarized immutable GitHub release download and durable failure recovery",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T10",
+      "requirement": "Real clean system-service install survives reboot/logout with same identity",
+      "status": "PLANNED"
+    }
+  ]
+}
