@@ -8,6 +8,14 @@ This contract is shared by Forge Server, Engineering Platform (EP) Server and Wo
 
 Every installed server owns a random, stable, opaque `instance_id`. The ID is created with its installation identity, survives ordinary restart/update and is included in product-owned backup/restore semantics. It is never derived from a hostname, IP address, checkout, project or mDNS name. A replacement or a deliberately reissued identity is a different instance.
 
+A host may expose multiple instances of the same server product. Discovery,
+service naming and configured endpoints must therefore enumerate and
+disambiguate by stable instance identity rather than collapsing by hostname or
+product type. Same-host Forge and EP instances are valid peers when their exact
+instance IDs, fingerprints, endpoints and product-owned bindings are verified.
+A human-readable instance or managed-deployment label is display metadata only
+and never substitutes for `instance_id`.
+
 `forge-platform.instance-descriptor/v1` is the public candidate document:
 
 ```json
@@ -44,7 +52,17 @@ Co-location and loopback do not remove authentication, pairing or authorization.
 
 ## Server-operational invariants
 
-Each server is a headless, independently restartable installed service with a product-owned runtime storage root outside source/Git checkouts. Its versioned HTTP API is a transport adapter over interface-neutral application services; direct cross-product SQL and shared databases are prohibited. On macOS the product publishes a launchd service contract; Forge Platform coordinates only product-owned lifecycle requests and correlated readbacks, never service registration or runtime authority. Product storage contains its own SQL database and product-owned files, artifacts, logs, backups and cache, with permissions, retention, migration and recovery defined by the product owner.
+Each server **instance** is a headless, independently restartable installed
+service with a product-owned runtime storage root outside source/Git checkouts.
+Its versioned HTTP API is a transport adapter over interface-neutral application
+services; direct cross-product SQL and shared databases are prohibited. On
+macOS the product publishes an instance-safe launchd service contract; multiple
+same-product instances must have non-colliding service identities, endpoints
+and storage roots. Forge Platform coordinates only product-owned lifecycle
+requests and correlated readbacks, never service registration or runtime
+authority. Product storage contains its own SQL database and product-owned
+files, provider contexts, artifacts, logs, backups and cache, with permissions,
+retention, migration and recovery defined by the product owner.
 
 ## Delivery sequencing
 
