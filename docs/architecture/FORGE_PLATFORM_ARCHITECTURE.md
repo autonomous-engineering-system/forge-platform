@@ -34,6 +34,30 @@ The accepted target deployment is defined by [ADR-0006](adr/ADR-0006-server-depl
 
 Forge Platform composes verified artifacts, coordinates product-owned service-lifecycle requests/readbacks and topology bootstrap for EP-only, Forge+EP, Workspace+EP, all-server and remote-peer configurations. It calls product APIs to create product-owned bindings; it never writes product databases. The installer is not a required runtime dependency after installation. Its separately versioned self-updating native macOS artifact and signed composition-catalog boundary are defined in the [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
 
+Server cardinality is many, not one-per-host. One Mac may run multiple Forge
+Server instances and multiple Engineering Platform Server instances. Each
+instance retains an opaque product identity plus isolated service, runtime,
+data/database, endpoint, provider and credential state. Forge Platform groups
+the exact selected server instances into a **managed deployment** for installer
+lifecycle operations. A managed deployment is installer-owned management
+metadata; it does not replace product instance identity or product-owned
+installation state.
+
+For the current Forge/EP topology a managed deployment may contain one selected
+Forge instance, one selected EP instance, or both. When both are present the
+deployment records the intended exact peer pairing. Installer operations target
+that deployment and produce an explicit desired-state diff: add component,
+update, no-change, supported repair, remove component, or remove the selected
+deployment. Other same-host deployments remain outside the operation.
+
+Provider interaction follows the same instance boundary. A single human login
+ceremony may provision several selected component-instance contexts, but Forge
+and EP retain separate provider CLI installations, homes, durable auth state and
+lifecycles. Server provider state must survive cold reboot and be usable before
+any GUI user logs in. EP Project Agents remain user-owned per Host/OS-user
+context and may coexist for multiple users on the same machine. See
+[ADR-0007](adr/ADR-0007-multi-instance-deployments-and-provider-fanout.md).
+
 Discovery yields an unauthenticated candidate only. Pairing verifies stable identity and creates a pinned authenticated binding; a later discovery result cannot silently replace it. Workspace Client↔Workspace Server, EP Agent↔EP Server and server-peer credentials remain separate even on localhost.
 
 ## First-class component model
@@ -190,8 +214,10 @@ correlation. A product endpoint therefore cannot silently replace composition
 provenance while still proving the bytes it selected.
 It does not use HTTP reachability, local package discovery, service
 registrations, or EP databases, and does not leave a parallel EP operational environment behind.
-An incomplete inventory or a per-user service observation cannot prove a
-Mac-wide single EP installation.
+An incomplete inventory or ambiguous instance ownership cannot prove that a
+selected EP target is safe to manage. Machine-wide inventory must enumerate
+coexisting instances and detect collisions; multiple unambiguous EP instances
+are a supported topology, not an error.
 
 The adapter is a source-level consumer contract until Engineering Platform
 publishes and qualifies a concrete provisioner endpoint. Its durable operation
