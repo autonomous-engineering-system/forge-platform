@@ -79,6 +79,76 @@ Forge/EP and future installable Workspace use their PyPI lanes; installer bytes
 and release descriptor use GitHub Releases. No release is triggered by this
 backlog document or by a version bump alone.
 
+## IUR-INSTANCE: managed deployments, multi-instance targets and provider fan-out
+
+The installer is not a one-installation-per-Mac wizard. The same host may
+contain multiple Forge Server instances and multiple EP Server instances.
+Before a mutable operation, the wizard inventories product-owned instances and
+Forge Platform managed-deployment records, then requires one explicit target:
+
+- create a new managed deployment; or
+- select one existing managed deployment to manage.
+
+For the current Forge/EP server topology the selected deployment may contain
+one Forge Server instance, one EP Server instance, or both. Every product
+instance retains its own opaque identity; the deployment's optional display
+name is not authority.
+
+The profile/component page computes desired state for that exact deployment.
+The reviewed diff must distinguish at least:
+
+- `ADD_COMPONENT`;
+- `UPDATE`;
+- `NO_CHANGE`;
+- qualified `REPAIR`;
+- `REMOVE_COMPONENT`; and
+- `REMOVE_DEPLOYMENT`.
+
+No action is implicitly machine-wide. Updating or removing one deployment must
+prove that every other same-host Forge/EP instance remains outside the target
+set. Removing the Forge component from one deployment is not "uninstall Forge
+from this Mac".
+
+Provider UX is grouped by the **human authentication ceremony**, while status
+and completion are tracked per owning component instance. Example for a
+Forge+EP server deployment:
+
+```text
+Codex
+  required by Forge <forge-instance>
+  required by EP    <ep-instance>
+  [Authenticate once]
+
+  Forge <forge-instance>  VERIFIED
+  EP    <ep-instance>     VERIFIED
+
+GitHub
+  required by EP <ep-instance>
+  [Authenticate once]
+
+  EP <ep-instance>        VERIFIED
+```
+
+One authentication may fan out only through a provider-supported mechanism.
+It creates no shared runtime context: each selected server instance receives
+its own provider CLI installation, provider home/configuration, durable auth
+state and lifecycle. The wizard advances only when every enabled target context
+is independently `VERIFIED`.
+
+Forge/EP server provider contexts are system/component-owned and must pass
+cold-reboot readiness with no interactive user login. EP Project Agent
+provider/credential contexts remain user-owned per Host/OS-user context;
+multiple users on one machine may each have an independent Agent.
+
+The native SwiftUI app is the interactive first-install/lifecycle UX. A future
+CLI surface must consume the same managed-deployment inventory, composition
+session, provider fan-out coordinator, reviewed diff, product adapters and
+receipts. CLI and GUI may differ in presentation but not in mutation semantics.
+
+This section refines the broader Universal Installer target only. The parked
+EP-only clean-install v1 remains a narrower qualification slice and does not
+establish singleton cardinality or provider scope.
+
 ## IUR-WIZARD: OS appearance, language, clarity and gates
 
 Follow macOS appearance by default, including live light/dark changes. Use native
@@ -97,7 +167,8 @@ be available in details. OS-language selection is not a mutation of OS settings.
 Every real wizard page has a clear title, step position, purpose, what the
 installer is doing versus what the user must do, primary/secondary actions,
 progress and back/cancel behavior. Derive page order from actual applicable
-steps: self-update, composition/profile, preflight/tools, required providers,
+steps: self-update, deployment selection/creation, composition/profile,
+preflight/tools, required provider authentication plus per-target verification,
 reviewed diff, execution/readiness and summary. Do not fake completed skipped
 steps. Use measured progress when a denominator exists and indeterminate progress
 otherwise; no invented percentage or finish time.

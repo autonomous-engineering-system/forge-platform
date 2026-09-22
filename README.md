@@ -45,6 +45,16 @@ Agent, Forge, Workspace, provider login, upgrade, migration, rollback, removal
 or cleanup. It remains planned and parked; see the
 [EP Server clean-install v1 parking roadmap](docs/roadmap/EP_SERVER_CLEAN_INSTALL_V1.md).
 
+The accepted broader topology is multi-instance: one host may contain multiple
+isolated Forge Server and EP Server instances. Forge Platform manages exact
+selected instance combinations as named/opaque managed deployments. A provider
+login may be performed once for the human and then fanned out through supported
+provider mechanisms into separately installed and independently verified
+instance-owned provider contexts. Forge/EP server provider state must survive
+cold reboot without user login; EP Project Agents remain user-owned per
+Host/OS-user context. See
+[ADR-0007](docs/architecture/adr/ADR-0007-multi-instance-deployments-and-provider-fanout.md).
+
 ## Boundary
 
 Forge Platform consumes qualified, versioned artifacts published by product repositories and composes compatible provisioning requests and receipts. It does not rebuild their source or own product-local provisioning: for EP, its resolver/provisioner alone owns runtime and service selection, data compatibility, migration, rollback and cleanup. Forge Platform also does not own Forge, Workspace, Engineering Platform, Project Agent, TDE, generic AI-development governance, or Knowledge Base behavior.

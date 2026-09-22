@@ -64,6 +64,17 @@ Knowledge integration is additive and remains independently owned by `pcvantol/a
 
 KB is currently a Git-backed repository-local CLI capability, not a Workspace/EP server role and not a current Forge Platform installer component. See the [learning-loop architecture](../architecture/KNOWLEDGE_LEARNING_LOOP.md).
 
+## Multi-instance managed deployment refinement
+
+[ADR-0007](../architecture/adr/ADR-0007-multi-instance-deployments-and-provider-fanout.md)
+defines the broader accepted installer topology: multiple isolated Forge and EP
+Server instances may coexist on one host; Forge Platform manages exact selected
+instance combinations as managed deployments; provider login is deduplicated
+only for the human and fans out into independently installed/verified
+instance-owned provider contexts; and EP Project Agents remain user-owned per
+Host/OS-user context. This is an architecture/documentation refinement and does
+not unpark the current EP-only clean-install implementation DAG.
+
 ## Installer UX, read-only qualification and release refinement
 
 The [owner-requested installer backlog](INSTALLER_UX_AND_RELEASE_QUALIFICATION_V1.md)

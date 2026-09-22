@@ -30,6 +30,20 @@ Installer/component support may be implemented in parallel with producer work, b
 
 The canonical target is defined in [Evidence-gated cross-repository component composition](EVIDENCE_GATED_COMPONENT_COMPOSITION.md) and the [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md). Manifest entries keep source revision distinct from the digest of the installable artifact bytes.
 
+## Managed multi-instance deployment topology
+
+The Universal Installer manages exact **deployment instances**, not one
+machine-wide Forge or EP singleton. A host may contain multiple independently
+identified Forge Server instances and multiple independently identified EP
+Server instances. A Forge Platform managed deployment binds a selected
+Forge/EP instance combination for create, update, add/remove-component and
+remove-deployment operations while preserving product-owned lifecycle
+authority. Provider authentication may be presented once to the operator and
+fanned out only through supported provider mechanisms into separately owned
+and independently verified per-instance provider contexts. EP Project Agents
+remain user-owned and may coexist once per Host/OS-user context. See
+[ADR-0007](adr/ADR-0007-multi-instance-deployments-and-provider-fanout.md).
+
 ## Universal macOS installer lifecycle
 
 Forge Platform has a separately versioned native macOS Universal Installer and immutable qualified composition manifests; it does not build a combinatorial installer package for every Forge/Workspace/EP version combination. At every launch, an older installer must verify and hand off to a newer signed/notarized installer release before platform mutation. The signed composition catalog then selects only an installer-capable exact component set. See the [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
