@@ -452,6 +452,39 @@ The protected publisher has not yet bound or published a real index, so no
 current GitHub Release, installer, or Mac installation is claimed by this
 contract.
 
+## Managed deployments and same-host multi-instance topology
+
+The installer does not treat a Mac as one implicit Forge/EP installation. A
+host may contain multiple independently identified Forge Server instances and
+multiple independently identified Engineering Platform Server instances. The
+installer-owned management unit is a **managed deployment**: an opaque stable
+deployment identity plus an optional human label that references the exact
+selected product instance identities.
+
+For the current Forge/EP server topology a managed deployment contains at least
+one server component and at most one selected Forge Server instance plus at
+most one selected EP Server instance. When both are present, the deployment
+records the exact Forge-to-EP peer-binding intent; product-owned pairing and
+binding APIs remain authoritative for the actual product state.
+
+A later installer run first performs product-owned inventory/readback and
+presents existing managed deployments plus creation of a new one. Selecting one
+deployment produces one reviewed desired-state diff that may add a component,
+update a selected component, retain it unchanged, remove one component, repair
+an explicitly supported component, or remove the whole selected deployment.
+No operation is implicitly machine-wide. Removing or updating one deployment
+must not mutate another coexisting Forge or EP instance.
+
+Every server instance has distinct mutable state: product instance identity,
+service identity, service account/security context, runtime/data/database
+roots, endpoints/ports, configuration, logs/cache/backups/locks/recovery,
+provider installations, provider authentication state and peer bindings.
+Immutable artifact/download bytes may be deduplicated by the installer, but
+mutable runtime/provider state is never shared between instances.
+
+See
+[ADR-0007](adr/ADR-0007-multi-instance-deployments-and-provider-fanout.md).
+
 ## Native wizard and gates
 
 The macOS application is a native SwiftUI shell over a bounded trusted coordinator. The UI never constructs a shell command from input, stores a credential, selects a product runtime, writes a product database, creates a product venv, or registers a service itself.
@@ -511,23 +544,92 @@ there is no production-approved runtime identity and operational admission
 remains fail-closed. Test fixtures using `3.14.7` are contract examples, not a
 release approval. See <https://www.python.org/downloads/release/python-3147/>.
 
-The dynamic provider screen can show Codex CLI and GitHub CLI independently as selected, optional, or required. For every enabled provider the state is `ABSENT → INSTALLED → AUTHENTICATION_REQUIRED → VERIFIED`. The wizard advances only when every enabled provider is `VERIFIED`; a selected optional provider therefore cannot be silently bypassed. If a profile requires both Codex and GitHub CLI, both are selected and both must finish installation, interactive authentication, and non-secret validation. Either failure blocks the next screen. Optional providers may be deselected only when the selected composition permits it. Vendor actions are fixed audited commands or UI handoffs; the UI never accepts command text. Credentials stay in provider user-scoped secure storage and never enter a system service, composition, receipt, diagnostic, or installer log.
+The dynamic provider screen presents provider authentication at the **human
+interaction** layer while projecting the exact owning component-instance
+targets underneath it. Codex CLI and GitHub CLI may each be selected, optional
+or required by the accepted composition/session. Every enabled target context
+still follows `ABSENT → INSTALLED → AUTHENTICATION_REQUIRED → VERIFIED`.
 
-A server-only profile can omit user-scoped provider requirements only when its qualified composition explicitly says so. This is not a bypass for a profile that needs a local Project Agent or interactive provider execution.
+A single interactive authentication ceremony may satisfy multiple selected
+targets only through a provider-supported bootstrap/transfer mechanism. For
+example, a Forge+EP server deployment may ask the operator to authenticate to
+Codex once and then provision two independently installed contexts:
+
+```text
+Codex login 1x
+  -> Forge instance: own Codex CLI, provider home, auth state and lifecycle
+  -> EP instance:    own Codex CLI, provider home, auth state and lifecycle
+```
+
+The successful human login is not the verification result. Each target context
+must independently read back as `VERIFIED` before the wizard can advance.
+Provider executable, configuration, credential state, cache and update
+lifecycle never cross component-instance ownership boundaries. Identical
+immutable provider artifact bytes may be downloaded once, but each selected
+instance receives its own installation/runtime context.
+
+Server-instance provider credentials are component/instance-owned and must be
+usable by the owning system service after a cold reboot without any interactive
+macOS login. The installer must not depend on a user's login Keychain session
+for server readiness. EP Project Agent and other explicitly user-owned local
+components retain user-scoped provider/credential contexts.
+
+Vendor actions are fixed audited commands or UI handoffs; the UI never accepts
+command text. Secret material never enters a composition, receipt, diagnostic
+or installer log. The installer does not interpret or clone opaque provider
+credential formats unless that mechanism is explicitly supported by the
+provider contract.
+
+The current source-level provider requirement model is intentionally too narrow
+for this target: it keys requirements only by provider identity and admits only
+user scope. A governed implementation revision must add an immutable owning
+component-instance/target binding and system/component credential scope before
+multi-instance server provider provisioning is eligible.
+
+A provider-free server profile is valid only when its qualified composition
+explicitly requires no provider execution. This is not a bypass for any
+selected component instance whose product contract requires Codex, GitHub or
+another provider context.
 
 ## macOS services, data, and isolation
 
 On macOS, `launchd` is the native system service manager. “System service, not launchd” is therefore contradictory. This contract means:
 
-- Forge Runtime/Server, EP Server, and Workspace Server use a product-owned, root-authorized **system-domain `LaunchDaemon`**, not a per-user `LaunchAgent` or `gui/<uid>` registration.
-- An EP Project Agent and user-provider credentials remain user/host scoped because they may access local repositories and OS secure credential storage.
-- Every server component has its own product-owned runtime/data root, database, logs, cache, backups, account/permission model, and isolated venv. No component shares a venv, database, data root, or service label with another product.
+- Every Forge Runtime/Server, EP Server, and Workspace Server **instance** uses
+  a product-owned, root-authorized system-domain `LaunchDaemon`, not a per-user
+  `LaunchAgent` or `gui/<uid>` registration. Same-product instances use
+  collision-free instance-specific service identities.
+- Forge and EP server instances may be plural on one host. Each has its own
+  product-owned runtime/data root, database, logs, cache, backups,
+  account/permission model, endpoints and isolated venv/runtime selection.
+- A server instance's required provider CLI installations, provider homes and
+  durable authentication state belong to that exact system-service context and
+  must be available before any interactive user login after reboot.
+- An EP Project Agent remains scoped to one Host/OS-user context. Multiple
+  macOS users may each install/run their own independent Agent, with separate
+  user-owned state and credentials. User Agents do not inherit or borrow EP
+  Server provider credentials.
+- No component instance shares mutable provider state, a venv, database, data
+  root or service label with another component instance merely because both
+  are on the same host.
 
 An existing per-user EP `LaunchAgent` to system-domain transition is an EP-owned provisioner/migration increment. Forge Platform may show the product contract and coordinate a qualified operation; it may not migrate EP service state or data itself.
 
 ## Discovery, diff, execution, and recovery
 
-The installer reads product-owned inventory and update assessments through the component-operation delegation contract. It never infers an active component from a filename, wheel cache, arbitrary venv, `PATH`, service label, or HTTP reachability alone. A product readback identifies selected runtime, executable, server, instance, and identity-aware health evidence. For EP, a single operational installation also requires machine-wide inventory coverage and no conflict.
+The installer reads product-owned inventory and update assessments through the
+component-operation delegation contract. It never infers an active component
+from a filename, wheel cache, arbitrary venv, `PATH`, service label, or HTTP
+reachability alone. Product readback identifies the exact runtime, executable,
+server instance and identity-aware health evidence.
+
+Machine-wide inventory is used to discover all relevant Forge/EP instances and
+detect collisions or ambiguous ownership; it is **not** a singleton proof.
+Multiple healthy same-product server instances are valid when every instance
+has an unambiguous product identity, service/runtime/data ownership and endpoint
+binding. The reviewed installer target is the selected managed deployment and
+its exact component-instance identities, never "the Forge installation on this
+Mac" or "the EP installation on this Mac".
 
 For EP, Forge Platform's boundary ends at an exact artifact/role request and the
 EP-owned resolver/provisioner's correlated readback, update assessment and
@@ -563,11 +665,15 @@ it also validates the exact archived bytes and binds its scope to that same V2
 identity; its absence remains explicit and fail-closed. It still does not
 authorize signing or publication.
 
-The currently parked and prioritized resumption path is deliberately narrower:
-one EP Server clean installation with no provider login and no Forge, Workspace,
-EP Project Agent, update, repair, migration, rollback, removal or cleanup. Its
-exact status, ownership boundaries, non-goals, prerequisites and documentary
-DAG are in the [EP Server clean-install v1 parking roadmap](../roadmap/EP_SERVER_CLEAN_INSTALL_V1.md).
+The currently parked and prioritized resumption path remains deliberately
+narrower: one EP Server clean installation with no provider login and no Forge,
+Workspace, EP Project Agent, update, repair, migration, rollback, removal or
+cleanup. Its exact status, ownership boundaries, non-goals, prerequisites and
+documentary DAG are in the
+[EP Server clean-install v1 parking roadmap](../roadmap/EP_SERVER_CLEAN_INSTALL_V1.md).
+That qualification slice does **not** define a machine-wide EP singleton, make
+user-scoped credentials canonical for server instances, or supersede the
+broader multi-instance managed-deployment/provider-fan-out target in ADR-0007.
 That roadmap starts with an independently reviewed C-3a clock-evidence adapter
 (not a local clock or HTTP `Date`), an EP-owned terminal-operation receipt and
 locked mutating re-verification boundary, then exact session production, native
