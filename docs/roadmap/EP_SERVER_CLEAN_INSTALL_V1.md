@@ -50,6 +50,27 @@ outside this clean-install path and must block before product mutation. It does
 not silently become an upgrade, repair, migration, rollback, removal, or
 uninstall operation.
 
+## Cardinality and provider-scope clarification
+
+This parked v1 is a deliberately narrow qualification fixture, not the final
+same-host topology contract. Installing one EP Server for this slice does **not**
+establish a one-EP-Server-per-machine invariant. The broader accepted target
+permits multiple independently identified and isolated EP Server instances and
+multiple Forge Server instances on the same host, grouped into exact
+Forge Platform managed deployments.
+
+Likewise, this slice's explicit absence of provider login does not make
+user-scoped provider credentials canonical for EP Server. The broader target
+requires server-instance-owned provider contexts that remain usable by the
+system-domain service after cold reboot without an interactive macOS login.
+User-scoped credentials remain appropriate for EP Project Agents, which are
+independent per Host/OS-user context.
+
+See
+[ADR-0007](../architecture/adr/ADR-0007-multi-instance-deployments-and-provider-fanout.md)
+and the
+[Universal Installer contract](../architecture/UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
+
 ## Explicitly deferred from v1
 
 The following remain planned, but are not acceptance requirements for
