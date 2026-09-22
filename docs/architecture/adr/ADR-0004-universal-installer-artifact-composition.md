@@ -20,6 +20,17 @@ runtime chooser, service-registration path, migration engine, cleanup engine,
 or direct database writer. In particular, a Forge Platform PATH lookup or an
 HTTP-reachable response cannot select or verify an EP operational runtime.
 
+## Multi-instance refinement
+
+[ADR-0007](ADR-0007-multi-instance-deployments-and-provider-fanout.md)
+refines this decision without changing product ownership. A Mac is not a
+machine-wide Forge/EP singleton: Forge Platform may manage multiple isolated
+Forge and EP Server instances through exact managed-deployment bindings.
+Human provider authentication may be deduplicated by the installer, but
+provider CLI/runtime/auth state remains independently owned and verified per
+selected component instance. EP Project Agents remain user-owned per
+Host/OS-user context.
+
 ## Consequences
 
 Forge Platform will verify trusted artifact digest and supported signature/provenance evidence, use least privilege, and avoid repository secrets. It does not compile, repackage, or install product source as a hidden monolith. The source-level component-operation consumer contract binds an exact qualified artifact (including source locator) to product readback, update assessment, execute, and resume receipts; it retains non-secret preflight/postflight and pending-recovery evidence. A local target-dispatch lock prevents duplicate Forge Platform dispatch only. It does not replace the product installation lock or prove cross-account/machine uniqueness.
