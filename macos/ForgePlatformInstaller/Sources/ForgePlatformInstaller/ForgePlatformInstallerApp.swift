@@ -67,15 +67,24 @@ final class InstallerWizardViewModel: ObservableObject {
         _ = state.selectManagedDeployment(deploymentID)
     }
 
+    func setComponentSelected(_ component: InstallerComponentID, selected: Bool) {
+        _ = state.setComponentSelected(component, selected: selected)
+    }
+
+    func applyComponentPreset(_ preset: InstallerPresetID) {
+        _ = state.applyComponentPreset(preset)
+    }
+
     /// The coordinator must return one typed, immutable composition session
     /// after an exact managed deployment has been selected.
     func prepareVerifiedCompositionSession() {
-        guard state.beginSessionPreparation() else {
+        guard let request = state.compositionRequest,
+              state.beginSessionPreparation() else {
             return
         }
         let coordinator = coordinator
         Task { @MainActor [weak self] in
-            let result = await coordinator.prepareVerifiedCompositionSession()
+            let result = await coordinator.prepareVerifiedCompositionSession(request: request)
             _ = self?.state.recordSessionPreparation(result)
         }
     }
@@ -432,16 +441,61 @@ private struct CompositionSelectionScreen: View {
         )
 
         VStack(alignment: .leading, spacing: 18) {
+            GroupBox("Componenten en profielen") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        ForEach(InstallerComponentSelection.presets) { preset in
+                            Button(preset.id.displayName) {
+                                viewModel.applyComponentPreset(preset.id)
+                            }
+                            .disabled(!preset.availability.isAvailable || viewModel.state.sessionPreparation.isPreparing)
+                        }
+                    }
+
+                    ForEach(InstallerComponentSelection.options) { option in
+                        HStack(alignment: .top, spacing: 10) {
+                            Toggle(
+                                option.component.displayName,
+                                isOn: Binding(
+                                    get: { viewModel.state.componentSelection.selected.contains(option.component) },
+                                    set: { viewModel.setComponentSelected(option.component, selected: $0) }
+                                )
+                            )
+                            .disabled(!option.availability.isAvailable || viewModel.state.sessionPreparation.isPreparing)
+
+                            switch option.availability {
+                            case .available:
+                                Text("Beschikbaar in deze installer-capabilityset.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            case .unavailable(let reason):
+                                Text(reason)
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+                }
+            }
+
             switch viewModel.state.sessionPreparation {
             case .pending:
-                Label(
-                    "Nog geen geverifieerde compositiesessie geselecteerd.",
-                    systemImage: "square.stack.3d.up.slash"
-                )
-                Button("Laad geverifieerde compositie") {
-                    viewModel.prepareVerifiedCompositionSession()
+                if viewModel.state.componentSelection.isValid {
+                    Label(
+                        "De gekozen componentset wordt exact tegen de signed combinatie-index geselecteerd.",
+                        systemImage: "square.stack.3d.up"
+                    )
+                    Button("Laad geverifieerde compositie") {
+                        viewModel.prepareVerifiedCompositionSession()
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Label(
+                        "Kies minimaal één beschikbaar component of een beschikbaar profiel.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderedProminent)
 
             case .preparing:
                 HStack(spacing: 10) {
@@ -457,6 +511,12 @@ private struct CompositionSelectionScreen: View {
                         GridRow { Text("Manifest").foregroundStyle(.secondary); Text(plan.manifestSHA256).font(.caption.monospaced()).textSelection(.enabled) }
                         GridRow { Text("Catalogus").foregroundStyle(.secondary); Text("Sequentie \(plan.catalogSequence)") }
                         GridRow { Text("Catalogusdigest").foregroundStyle(.secondary); Text(plan.catalogSHA256).font(.caption.monospaced()).textSelection(.enabled) }
+                        GridRow {
+                            Text("Componenten").foregroundStyle(.secondary)
+                            Text(plan.componentIdentities.sorted().joined(separator: ", "))
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
                     }
                 }
                 Label(
