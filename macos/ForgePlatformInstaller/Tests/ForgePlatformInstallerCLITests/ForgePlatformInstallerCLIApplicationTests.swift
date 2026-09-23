@@ -105,6 +105,48 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         }
     }
 
+    func testStartupOutcomeMappingCoversReadySession() throws {
+        let release = try release("1.2.3")
+        let coordinator = CLIReadyCoordinator()
+        let session = ReleasedInstallerWizardSession(
+            runtime: CLITestTrustedRuntime(coordinator: coordinator),
+            currentRelease: release,
+            sealedReleaseProvenance: try CLITestTrustedRuntime.provenance()
+        )
+        guard case .ready(let mappedRelease, _) =
+            ReleasedInstallerCLIStartupAdapter.map(.ready(session)) else {
+            return XCTFail("ready mapping failed")
+        }
+        XCTAssertEqual(mappedRelease, release)
+    }
+
+    func testRequiredUpdateHandoffReturningReadyIsRejected() async throws {
+        let newer = try release("1.2.4")
+        let coordinator = CLIReadyCoordinator()
+        let readyRuntime = CLITestTrustedRuntime(coordinator: coordinator)
+        let readySession = ReleasedInstallerWizardSession(
+            runtime: readyRuntime,
+            currentRelease: newer,
+            sealedReleaseProvenance: try CLITestTrustedRuntime.provenance(
+                version: "1.2.4"
+            )
+        )
+        let startup = CLIStartupSpy(
+            outcome: .updateRequired(newer),
+            confirmationOutcome: .ready(
+                currentRelease: readySession.currentRelease,
+                coordinator: readySession.runtime
+            )
+        )
+        let result = await run(
+            ["self-update", "apply", "--yes"],
+            startup: startup,
+            version: "1.2.3"
+        )
+        XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(result.stderr.joined().contains("ongeldige terminale uitkomst"))
+    }
+
     func testStartupOutcomeMappingCoversBoundedNonReadyStates() throws {
         let release = try release("1.2.4")
         guard case .updateRequired(let mappedUpdate) =
@@ -382,6 +424,68 @@ private actor CLIStartupSpy: InstallerCLIStarting {
 
     func startCalls() -> Int { starts }
     func confirmCalls() -> Int { confirms }
+}
+
+private actor CLITestTrustedRuntime: TrustedInstallerRuntime {
+    private let coordinator: CLIReadyCoordinator
+
+    init(coordinator: CLIReadyCoordinator) {
+        self.coordinator = coordinator
+    }
+
+    func enforceCurrentInstaller(
+        currentVersion: InstallerVersion
+    ) async -> InstallerSelfUpdateEnforcementResult {
+        .failed("not used")
+    }
+
+    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+        await coordinator.checkForUpdate(currentVersion: currentVersion)
+    }
+
+    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
+        await coordinator.handOffSelfUpdate(release)
+    }
+
+    func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
+        await coordinator.prepareManagedDeploymentInventory()
+    }
+
+    func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult {
+        await coordinator.prepareVerifiedCompositionSession(for: deployment)
+    }
+
+    func performProviderAction(
+        _ action: ProviderAction,
+        for provider: ProviderID
+    ) async -> ProviderActionResult {
+        await coordinator.performProviderAction(action, for: provider)
+    }
+
+    static func provenance(
+        version: String = "1.2.3"
+    ) throws -> SealedInstallerReleaseProvenance {
+        try SealedInstallerReleaseProvenance(
+            installerVersion: InstallerVersion(version),
+            channel: .stable,
+            releaseSequence: 1,
+            sourceRevision: String(repeating: "a", count: 40),
+            policyRevision: "release/v1",
+            capabilities: ["composition/v2"],
+            provenanceSHA256: SealedInstallerReleaseProvenance.canonicalSHA256(
+                installerVersion: InstallerVersion(version),
+                channel: .stable,
+                releaseSequence: 1,
+                sourceRevision: String(repeating: "a", count: 40),
+                policyRevision: "release/v1",
+                capabilities: ["composition/v2"],
+                releaseTrustConfigurationSHA256: String(repeating: "b", count: 64)
+            ),
+            releaseTrustConfigurationSHA256: String(repeating: "b", count: 64)
+        )
+    }
 }
 
 private actor CLIReadyCoordinator: InstallerWizardCoordinator {
