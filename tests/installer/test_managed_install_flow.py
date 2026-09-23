@@ -142,9 +142,10 @@ class Adapter:
 
 
 class Pairer:
-    def __init__(self, *, forge="forge-prod", ep="ep-prod"):
+    def __init__(self, *, forge="forge-prod", ep="ep-prod", degrade_ep=False):
         self.forge = forge
         self.ep = ep
+        self.degrade_ep = degrade_ep
         self.calls = 0
 
     def pair(
@@ -152,6 +153,8 @@ class Pairer:
         forge_adapter, ep_adapter,
     ):
         self.calls += 1
+        if self.degrade_ep:
+            ep_adapter.ready = False
         return ManagedPairingEvidence(
             self.forge,
             self.ep,
@@ -308,8 +311,7 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             (coordinator, registry, guard, forge, ep, adapters,
              reads, mutations, plan) = self._fixture(directory)
-            pairer = Pairer()
-            ep.ready = False
+            pairer = Pairer(degrade_ep=True)
             first = coordinator.execute(
                 "install-5", plan,
                 mutation_requests=mutations,
