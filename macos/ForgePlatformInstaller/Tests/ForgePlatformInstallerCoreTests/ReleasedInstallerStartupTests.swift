@@ -50,10 +50,13 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         XCTAssertEqual(enforcementCallCount, 1)
     }
 
-    func testRelaunchingRuntimeNeverCreatesWizardSession() async throws {
+    func testNewerReleaseRequiresExplicitConfirmationBeforeDownloadAndRelaunch() async throws {
         let currentVersion = try InstallerVersion("1.0.0")
         let release = try makeRelease("1.1.0")
-        let runtime = TrustedRuntimeSpy(enforcement: .relaunching(release))
+        let runtime = TrustedRuntimeSpy(
+            currencyResults: [.updateRequired(release)],
+            handoffResults: [.relaunching]
+        )
         let configuration = try makeConfiguration()
         let boundary = ReleasedInstallerStartupBoundary(
             trustConfigurationLoader: SealedTrustLoaderSpy(configuration: configuration),
@@ -62,14 +65,22 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         )
 
         let outcome = await boundary.start(currentVersion: currentVersion)
-        let repeatedOutcome = await boundary.start(currentVersion: currentVersion)
-
-        guard case .relaunching(let actualRelease) = outcome else {
-            return XCTFail("Relaunch handoff must keep the old process outside the wizard")
+        guard case .updateRequired(let actualRelease) = outcome else {
+            return XCTFail("A newer release must stop at explicit operator confirmation")
         }
         XCTAssertEqual(actualRelease, release)
+        XCTAssertEqual(await runtime.handoffCallCount(), 0)
+
+        let confirmed = await boundary.confirmRequiredUpdate(release)
+        guard case .relaunching(let relaunchedRelease) = confirmed else {
+            return XCTFail("Only explicit confirmation may enter download/stage/handoff")
+        }
+        XCTAssertEqual(relaunchedRelease, release)
+        XCTAssertEqual(await runtime.handoffCallCount(), 1)
+
+        let repeatedOutcome = await boundary.start(currentVersion: currentVersion)
         guard case .blocked(let reason) = repeatedOutcome else {
-            return XCTFail("The handoff runtime and its lease must remain retained until old-process exit")
+            return XCTFail("The handoff runtime must remain retained until old-process exit")
         }
         XCTAssertEqual(reason, InstallerSelfUpdateFailureCode.selfUpdateOperationInProgress.userFacingMessage)
     }
@@ -326,30 +337,23 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         )
     }
 
-    func testStartupRetriesOnlyTheTypedConcurrentHandoffWindowBeforeOpeningWizard() async throws {
+    func testStartupFailsClosedWhenCurrencyCheckCannotAcquireItsTrustedBoundary() async throws {
         let currentVersion = try InstallerVersion("1.0.0")
-        let release = try makeRelease("1.0.0")
-        let runtime = TrustedRuntimeSpy(enforcements: [
-            .concurrentOperationInProgress,
-            .current(release),
-        ])
+        let runtime = TrustedRuntimeSpy(
+            currencyResults: [.failed(InstallerSelfUpdateFailureCode.selfUpdateOperationInProgress.userFacingMessage)]
+        )
         let configuration = try makeConfiguration()
         let boundary = ReleasedInstallerStartupBoundary(
             trustConfigurationLoader: SealedTrustLoaderSpy(configuration: configuration),
             provenanceLoader: SealedProvenanceLoaderSpy(provenance: try makeProvenance(configuration: configuration)),
-            runtimeBuilder: TrustedRuntimeBuilderSpy(runtime: runtime),
-            concurrentOperationRetryLimit: 1,
-            concurrentOperationRetryNanoseconds: 0
+            runtimeBuilder: TrustedRuntimeBuilderSpy(runtime: runtime)
         )
 
         let outcome = await boundary.start(currentVersion: currentVersion)
-        let calls = await runtime.enforcementCallCount()
-
-        guard case .ready(let session) = outcome else {
-            return XCTFail("A bounded retry should admit the successor only after CURRENT")
+        guard case .blocked(let reason) = outcome else {
+            return XCTFail("A failed currentness check must never create a wizard")
         }
-        XCTAssertEqual(session.currentRelease, release)
-        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(reason, InstallerSelfUpdateFailureCode.selfUpdateOperationInProgress.userFacingMessage)
     }
 
     private func makeConfiguration(
@@ -544,25 +548,71 @@ private actor TrustedRuntimeBuilderSpy: TrustedInstallerRuntimeBuilding {
 }
 
 private actor TrustedRuntimeSpy: TrustedInstallerRuntime {
-    private var enforcements: [InstallerSelfUpdateEnforcementResult]
-    private var calls = 0
+    private var currencyResults: [InstallerCurrencyCheckResult]
+    private var handoffResults: [SelfUpdateHandoffResult]
+    private var currencyCalls = 0
+    private var handoffCalls = 0
 
     init(enforcement: InstallerSelfUpdateEnforcementResult) {
-        enforcements = [enforcement]
+        switch enforcement {
+        case .current(let release):
+            currencyResults = [.current(release)]
+            handoffResults = []
+        case .relaunching(let release):
+            currencyResults = [.updateRequired(release)]
+            handoffResults = [.relaunching]
+        case .concurrentOperationInProgress:
+            currencyResults = [.failed(InstallerSelfUpdateFailureCode.selfUpdateOperationInProgress.userFacingMessage)]
+            handoffResults = []
+        case .failed(let reason):
+            currencyResults = [.failed(reason)]
+            handoffResults = []
+        }
     }
 
     init(enforcements: [InstallerSelfUpdateEnforcementResult]) {
-        self.enforcements = enforcements
+        self.currencyResults = enforcements.map {
+            switch $0 {
+            case .current(let release): return .current(release)
+            case .relaunching(let release): return .updateRequired(release)
+            case .concurrentOperationInProgress:
+                return .failed(InstallerSelfUpdateFailureCode.selfUpdateOperationInProgress.userFacingMessage)
+            case .failed(let reason): return .failed(reason)
+            }
+        }
+        self.handoffResults = enforcements.compactMap {
+            if case .relaunching = $0 { return .relaunching }
+            return nil
+        }
+    }
+
+    init(
+        currencyResults: [InstallerCurrencyCheckResult],
+        handoffResults: [SelfUpdateHandoffResult] = []
+    ) {
+        self.currencyResults = currencyResults
+        self.handoffResults = handoffResults
     }
 
     func enforceCurrentInstaller(
         currentVersion: InstallerVersion
     ) async -> InstallerSelfUpdateEnforcementResult {
-        calls += 1
-        guard !enforcements.isEmpty else {
+        switch await recheckInstallerBeforeMutation(currentVersion: currentVersion) {
+        case .current(let release): return .current(release)
+        case .updateRequired(let release): return .relaunching(release)
+        case .failed(let reason): return .failed(reason)
+        }
+    }
+
+    func recheckInstallerBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> InstallerCurrencyCheckResult {
+        _ = currentVersion
+        currencyCalls += 1
+        guard !currencyResults.isEmpty else {
             return .failed(InstallerSelfUpdateFailureCode.trustedUpdaterUnavailable.userFacingMessage)
         }
-        return enforcements.removeFirst()
+        return currencyResults.removeFirst()
     }
 
     func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
@@ -570,14 +620,18 @@ private actor TrustedRuntimeSpy: TrustedInstallerRuntime {
     }
 
     func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
-        .failed(InstallerSelfUpdateFailureCode.trustedUpdaterUnavailable.userFacingMessage)
+        _ = release
+        handoffCalls += 1
+        guard !handoffResults.isEmpty else {
+            return .failed(InstallerSelfUpdateFailureCode.trustedUpdaterUnavailable.userFacingMessage)
+        }
+        return handoffResults.removeFirst()
     }
 
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult {
         .failed(InstallerSelfUpdateFailureCode.trustedUpdaterUnavailable.userFacingMessage)
     }
 
-    func enforcementCallCount() -> Int {
-        calls
-    }
+    func enforcementCallCount() -> Int { currencyCalls }
+    func handoffCallCount() -> Int { handoffCalls }
 }
