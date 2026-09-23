@@ -113,7 +113,7 @@ class ProviderTargetTests(unittest.TestCase):
         legacy = ProviderRequirement("codex", True, None)
         self.assertEqual(legacy.key, "codex")
         self.assertEqual(legacy.credential_scope, "user")
-        with self.assertRaisesRegex(ValueError, "legacy"):
+        with self.assertRaisesRegex(ValueError, "user-scoped"):
             ProviderRequirement("codex", True, None, "component")
 
     def test_duplicate_target_binding_fails_but_duplicate_provider_identity_does_not(self) -> None:
