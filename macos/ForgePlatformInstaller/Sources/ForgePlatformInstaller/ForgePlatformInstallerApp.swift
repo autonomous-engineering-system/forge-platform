@@ -101,6 +101,23 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func advance() {
+        if state.step == .review {
+            guard state.beginPreMutationInstallerCurrencyCheck() else {
+                return
+            }
+            let currentVersion = state.currentInstallerVersion
+            let coordinator = coordinator
+            Task { @MainActor [weak self] in
+                let result = await coordinator.recheckInstallerCurrencyBeforeMutation(
+                    currentVersion: currentVersion
+                )
+                guard let self else { return }
+                if self.state.recordPreMutationInstallerCurrencyCheck(result) {
+                    _ = self.state.advance()
+                }
+            }
+            return
+        }
         _ = state.advance()
     }
 
@@ -649,6 +666,41 @@ private struct CompositionReviewScreen: View {
                 )
             )
             .disabled(!isCompatible(viewModel.state.composition.status))
+
+            switch viewModel.state.preMutationInstallerCurrency {
+            case .pending:
+                if viewModel.state.composition.isReadyForExecution {
+                    Label(
+                        "Bij Volgende wordt de installer-release opnieuw geverifieerd voordat uitvoering kan starten.",
+                        systemImage: "arrow.triangle.2.circlepath"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+            case .checking:
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Installer-versie wordt vlak voor uitvoering opnieuw geverifieerd.")
+                }
+                .foregroundStyle(.secondary)
+            case .current(let release):
+                Label(
+                    "Verse installercontrole: versie \(release.version.description) is exact actueel.",
+                    systemImage: "checkmark.shield.fill"
+                )
+                .foregroundStyle(.green)
+            case .updateRequired(let release):
+                Label(
+                    "Versie \(release.version.description) is verplicht; deze review is ongeldig gemaakt.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .foregroundStyle(.orange)
+            case .failed(let reason):
+                FailureCallout(reason: reason)
+                Text("Geen productwijziging is gestart. Gebruik Volgende om de currency-check opnieuw te proberen.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.top, 12)
     }
