@@ -9,12 +9,12 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
             [
                 "identity": "codex", "required": true, "minimum_version": "1.0.0",
                 "credential_scope": "component", "owner_component": "forge-runtime",
-                "target_identity": "forge-prod",
+                "target_identity": "forge-prod", "runtime": codexRuntime(),
             ],
             [
                 "identity": "codex", "required": true, "minimum_version": "1.0.0",
                 "credential_scope": "component", "owner_component": "engineering-platform-server",
-                "target_identity": "ep-prod",
+                "target_identity": "ep-prod", "runtime": codexRuntime(),
             ],
         ])
         let entry = try selectedEntry(manifest: manifest)
@@ -47,7 +47,7 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
         let manifest = manifestData(providers: [[
             "identity": "codex", "required": true, "minimum_version": "1.0.0",
             "credential_scope": "user", "owner_component": "forge-runtime",
-            "target_identity": "forge-prod",
+            "target_identity": "forge-prod", "runtime": codexRuntime(),
         ]])
         let result = ManagedCompositionSessionPlanBuilder().build(
             sessionID: "managed-session-2",
@@ -105,6 +105,18 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
             ),
             .failure(.rejected)
         )
+    }
+
+    private func codexRuntime() -> [String: Any] {
+        [
+            "version": "1.2.3",
+            "source_revision": "rust-v1.2.3",
+            "url": "https://github.com/openai/codex/releases/download/rust-v1.2.3/codex-aarch64-apple-darwin.tar.gz",
+            "digest": "sha256:" + String(repeating: "9", count: 64),
+            "qualification": "https://evidence.example.invalid/codex-1.2.3",
+            "archive_format": "tar-gzip",
+            "executable_relative_path": "codex-aarch64-apple-darwin",
+        ]
     }
 
     private func currentContext() throws -> CurrentVerifiedInstallerCompositionContext {
