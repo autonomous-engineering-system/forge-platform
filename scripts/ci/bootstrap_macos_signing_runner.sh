@@ -16,12 +16,11 @@ case "$ROLE" in
     RUNNER_LABELS="forge-platform-integration"
     ;;
   signer)
-    DEFAULT_ROOT="$HOME/actions-runner-forge-platform-signer"
-    DEFAULT_NAME="forge-platform-macmini-signer"
-    RUNNER_LABELS="forge-platform-signer"
+    echo "RUNNER_BOOTSTRAP=FAIL role=signer reason=credential-bearing-actions-signer-disabled-public-repository" >&2
+    exit 1
     ;;
   *)
-    echo "RUNNER_BOOTSTRAP=FAIL reason=FORGE_PLATFORM_RUNNER_ROLE-must-be-integration-or-signer" >&2
+    echo "RUNNER_BOOTSTRAP=FAIL reason=FORGE_PLATFORM_RUNNER_ROLE-must-be-integration" >&2
     exit 1
     ;;
 esac
