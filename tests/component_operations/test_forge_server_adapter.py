@@ -3,7 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
+import sys
 import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
 from forge_platform.component_operations import ComponentOperationRequest, QualifiedArtifact
 from forge_platform.forge_server_adapter import (
