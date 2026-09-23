@@ -409,6 +409,7 @@ public enum VerifiedCompositionSessionPlanError: Error, Equatable, Sendable {
     case invalidInstallerProvenanceSHA256
     case invalidInstallerReleaseTrustConfigurationSHA256
     case invalidComponentSelectionSequence
+    case invalidComponentIdentity
     case conflatedCatalogIdentities
     case duplicateProviderRequirement
 }
@@ -455,6 +456,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
     /// The exact selected-entry sequence from the component-combination index.
     /// It is not a product version or a wheel timestamp.
     public let componentSelectionSequence: UInt64
+    public let componentIdentities: Set<String>
     public let providerRequirements: [ProviderRequirement]
 
     /// Compatibility projections used only by the current display shell. They
@@ -474,6 +476,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         compositionCatalog: VerifiedCompositionCatalogIdentity,
         componentCombinationCatalog: VerifiedCompositionCatalogIdentity,
         componentSelectionSequence: UInt64,
+        componentIdentities: Set<String> = [],
         providerRequirements: [ProviderRequirement]
     ) throws {
         guard Self.isSafeSessionID(sessionID) else {
@@ -497,6 +500,9 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         guard componentSelectionSequence > 0 else {
             throw VerifiedCompositionSessionPlanError.invalidComponentSelectionSequence
         }
+        guard componentIdentities.allSatisfy(CompositionCatalogValidation.isCapability) else {
+            throw VerifiedCompositionSessionPlanError.invalidComponentIdentity
+        }
         guard compositionCatalog != componentCombinationCatalog else {
             throw VerifiedCompositionSessionPlanError.conflatedCatalogIdentities
         }
@@ -513,6 +519,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         self.compositionCatalog = compositionCatalog
         self.componentCombinationCatalog = componentCombinationCatalog
         self.componentSelectionSequence = componentSelectionSequence
+        self.componentIdentities = componentIdentities
         self.providerRequirements = providerRequirements
     }
 
@@ -595,6 +602,13 @@ public enum InstallerSessionPreparationGate: Equatable, Sendable {
 
     public var isPrepared: Bool {
         if case .prepared = self {
+            return true
+        }
+        return false
+    }
+
+    public var isPreparing: Bool {
+        if case .preparing = self {
             return true
         }
         return false
