@@ -118,36 +118,110 @@ public enum ProviderID: String, CaseIterable, Codable, Hashable, Sendable, Ident
     }
 }
 
+public struct ProviderTargetID: RawRepresentable, Equatable, Hashable, Sendable, Identifiable, CustomStringConvertible {
+    public let rawValue: String
+
+    public var id: String { rawValue }
+    public var description: String { rawValue }
+
+    public init?(rawValue: String) {
+        guard !rawValue.isEmpty,
+              rawValue.utf8.count <= 384,
+              rawValue.unicodeScalars.allSatisfy({ scalar in
+                  switch scalar.value {
+                  case 45, 46, 58, 95, 48...57, 65...90, 97...122:
+                      return true
+                  default:
+                      return false
+                  }
+              }) else {
+            return nil
+        }
+        self.rawValue = rawValue
+    }
+
+    public static let codex = ProviderTargetID(rawValue: ProviderID.codex.rawValue)!
+    public static let githubCLI = ProviderTargetID(rawValue: ProviderID.githubCLI.rawValue)!
+}
+
+public enum ProviderOwnerComponent: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
+    case forgeRuntime = "forge-runtime"
+    case engineeringPlatformServer = "engineering-platform-server"
+    case engineeringPlatformProjectAgent = "engineering-platform-project-agent"
+
+    var requiredCredentialScope: ProviderCredentialScope {
+        switch self {
+        case .engineeringPlatformProjectAgent:
+            return .user
+        case .forgeRuntime, .engineeringPlatformServer:
+            return .component
+        }
+    }
+}
+
 public struct ProviderRequirement: Equatable, Sendable, Identifiable {
     public let provider: ProviderID
     public let isRequired: Bool
     /// The minimum version is immutable composition evidence.  The wizard
     /// deliberately does not turn it into a PATH lookup or a command.
     public let minimumVersion: InstallerVersion?
-    /// Provider credentials are always user-scoped.  A system service account
-    /// credential is not a valid provider requirement for this installer.
     public let credentialScope: ProviderCredentialScope
+    /// Targetless requirements are legacy composition/v1 user requirements.
+    /// v2 server requirements bind the provider to exactly one owning product
+    /// instance (or immutable pre-create target binding).
+    public let ownerComponent: ProviderOwnerComponent?
+    public let targetIdentity: String?
 
-    public var id: ProviderID { provider }
+    public var id: ProviderTargetID {
+        if let ownerComponent, let targetIdentity {
+            return ProviderTargetID(
+                rawValue: "\(provider.rawValue):\(ownerComponent.rawValue):\(targetIdentity)"
+            )!
+        }
+        return ProviderTargetID(rawValue: provider.rawValue)!
+    }
 
     public init(
         provider: ProviderID,
         isRequired: Bool,
         minimumVersion: InstallerVersion? = nil,
-        credentialScope: ProviderCredentialScope = .user
+        credentialScope: ProviderCredentialScope = .user,
+        ownerComponent: ProviderOwnerComponent? = nil,
+        targetIdentity: String? = nil
     ) {
+        precondition((ownerComponent == nil) == (targetIdentity == nil), "provider target must be complete")
+        if let ownerComponent, let targetIdentity {
+            precondition(!targetIdentity.isEmpty && targetIdentity.utf8.count <= 128, "provider target identity is invalid")
+            precondition(
+                targetIdentity.unicodeScalars.allSatisfy { scalar in
+                    switch scalar.value {
+                    case 45, 46, 95, 48...57, 97...122:
+                        return true
+                    default:
+                        return false
+                    }
+                },
+                "provider target identity is invalid"
+            )
+            precondition(
+                credentialScope == ownerComponent.requiredCredentialScope,
+                "provider credential scope does not match owning component"
+            )
+        } else {
+            precondition(credentialScope == .user, "legacy provider requirements remain user-scoped")
+        }
         self.provider = provider
         self.isRequired = isRequired
         self.minimumVersion = minimumVersion
         self.credentialScope = credentialScope
+        self.ownerComponent = ownerComponent
+        self.targetIdentity = targetIdentity
     }
 }
 
-/// The manifest contract admits only user-scoped provider credentials.  This
-/// closed type prevents a session projection from repurposing a product service
-/// identity as a Codex or GitHub CLI credential request.
 public enum ProviderCredentialScope: String, Equatable, Sendable {
     case user
+    case component
 }
 
 /// Immutable identity for one catalog payload already admitted by a trusted
@@ -313,7 +387,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         guard compositionCatalog != componentCombinationCatalog else {
             throw VerifiedCompositionSessionPlanError.conflatedCatalogIdentities
         }
-        guard Set(providerRequirements.map(\.provider)).count == providerRequirements.count else {
+        guard Set(providerRequirements.map(\.id)).count == providerRequirements.count else {
             throw VerifiedCompositionSessionPlanError.duplicateProviderRequirement
         }
         self.sessionID = sessionID
@@ -541,7 +615,7 @@ public struct ProviderProgress: Equatable, Sendable, Identifiable {
     public internal(set) var isSelected: Bool
     public internal(set) var state: ProviderState
 
-    public var id: ProviderID { requirement.provider }
+    public var id: ProviderTargetID { requirement.id }
 
     public init(requirement: ProviderRequirement) {
         self.requirement = requirement
@@ -1060,12 +1134,12 @@ public struct InstallerWizardState: Equatable, Sendable {
     }
 
     @discardableResult
-    public mutating func setProviderSelected(_ providerID: ProviderID, isSelected: Bool) -> Bool {
+    public mutating func setProviderSelected(_ targetID: ProviderTargetID, isSelected: Bool) -> Bool {
         guard step == .providers,
               hasAcceptedSessionPlan,
               preflight.isPassed,
               providerRequirementsAreProjected,
-              let index = providers.firstIndex(where: { $0.id == providerID }) else {
+              let index = providers.firstIndex(where: { $0.id == targetID }) else {
             return false
         }
         guard !providers[index].requirement.isRequired || isSelected else {
@@ -1076,13 +1150,22 @@ public struct InstallerWizardState: Equatable, Sendable {
         return true
     }
 
+    /// Legacy targetless convenience. It fails closed when one human provider
+    /// has multiple owning targets, forcing callers to select the exact target.
     @discardableResult
-    public mutating func requestProviderAction(_ action: ProviderAction, for providerID: ProviderID) -> Bool {
+    public mutating func setProviderSelected(_ providerID: ProviderID, isSelected: Bool) -> Bool {
+        let matches = providers.filter { $0.requirement.provider == providerID }
+        guard matches.count == 1 else { return false }
+        return setProviderSelected(matches[0].id, isSelected: isSelected)
+    }
+
+    @discardableResult
+    public mutating func requestProviderAction(_ action: ProviderAction, for targetID: ProviderTargetID) -> Bool {
         guard step == .providers,
               hasAcceptedSessionPlan,
               preflight.isPassed,
               providerRequirementsAreProjected,
-              let index = providers.firstIndex(where: { $0.id == providerID }),
+              let index = providers.firstIndex(where: { $0.id == targetID }),
               providers[index].isEnabled else {
             return false
         }
@@ -1100,16 +1183,23 @@ public struct InstallerWizardState: Equatable, Sendable {
         return true
     }
 
+    @discardableResult
+    public mutating func requestProviderAction(_ action: ProviderAction, for providerID: ProviderID) -> Bool {
+        let matches = providers.filter { $0.requirement.provider == providerID }
+        guard matches.count == 1 else { return false }
+        return requestProviderAction(action, for: matches[0].id)
+    }
+
     public mutating func applyProviderActionResult(
         _ result: ProviderActionResult,
-        for providerID: ProviderID,
+        for targetID: ProviderTargetID,
         action: ProviderAction
     ) {
         guard step == .providers,
               hasAcceptedSessionPlan,
               preflight.isPassed,
               providerRequirementsAreProjected,
-              let index = providers.firstIndex(where: { $0.id == providerID }),
+              let index = providers.firstIndex(where: { $0.id == targetID }),
               providers[index].isEnabled else {
             return
         }
@@ -1128,6 +1218,16 @@ public struct InstallerWizardState: Equatable, Sendable {
         default:
             providers[index].state = .failed(.unexpectedActionResult)
         }
+    }
+
+    public mutating func applyProviderActionResult(
+        _ result: ProviderActionResult,
+        for providerID: ProviderID,
+        action: ProviderAction
+    ) {
+        let matches = providers.filter { $0.requirement.provider == providerID }
+        guard matches.count == 1 else { return }
+        applyProviderActionResult(result, for: matches[0].id, action: action)
     }
 
     /// A review acknowledgement is meaningful only after the accepted
@@ -1213,7 +1313,11 @@ public protocol InstallerWizardCoordinator: Sendable {
     /// self-update gate. Implementations must not return catalog bytes, URLs,
     /// commands, credentials, product readbacks or an operation authority.
     func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult
+    /// Legacy targetless route retained for composition/v1 coordinators.
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult
+    /// Target-aware route used by composition/v2. Existing coordinators inherit
+    /// a fail-closed compatibility implementation below.
+    func performProviderAction(_ action: ProviderAction, for requirement: ProviderRequirement) async -> ProviderActionResult
 }
 
 /// Existing updater-only runtimes intentionally have no composition selector.
@@ -1223,6 +1327,16 @@ public protocol InstallerWizardCoordinator: Sendable {
 public extension InstallerWizardCoordinator {
     func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
         .unavailable(.coordinatorUnavailable)
+    }
+
+    func performProviderAction(
+        _ action: ProviderAction,
+        for requirement: ProviderRequirement
+    ) async -> ProviderActionResult {
+        guard requirement.ownerComponent == nil, requirement.targetIdentity == nil else {
+            return .failed(.coordinatorUnavailable)
+        }
+        return await performProviderAction(action, for: requirement.provider)
     }
 }
 
