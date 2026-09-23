@@ -2,6 +2,128 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class SelfUpdateCoordinatorTests: XCTestCase {
+
+    func testPreMutationCurrencyRecheckCoversCurrentUpdateAndFeedFailure() async throws {
+        let currentRecord = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let currentIdentity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let currentCoordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(currentRecord)),
+            inspector: InspectorSpy(responses: [.success(currentIdentity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset()))
+        )
+        XCTAssertEqual(
+            await currentCoordinator.recheckInstallerBeforeMutation(
+                currentVersion: currentIdentity.version
+            ),
+            .current(currentRecord.release)
+        )
+
+        let newerRecord = try makeReleaseRecord(version: "1.2.4", sequence: 21)
+        let updateCoordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(newerRecord)),
+            inspector: InspectorSpy(responses: [.success(currentIdentity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset()))
+        )
+        XCTAssertEqual(
+            await updateCoordinator.recheckInstallerBeforeMutation(
+                currentVersion: currentIdentity.version
+            ),
+            .updateRequired(newerRecord.release)
+        )
+
+        let failedCoordinator = makeCoordinator(
+            feed: FeedSpy(result: .failure(
+                InstallerSelfUpdateFailure(.releaseFeedUnavailable)
+            )),
+            inspector: InspectorSpy(responses: []),
+            staging: StagingSpy(result: .success(try makeStagedAsset()))
+        )
+        guard case .failed(let reason) = await failedCoordinator.recheckInstallerBeforeMutation(
+            currentVersion: currentIdentity.version
+        ) else {
+            return XCTFail("release-feed failure must fail closed")
+        }
+        XCTAssertEqual(
+            reason,
+            InstallerSelfUpdateFailureCode.releaseFeedUnavailable.userFacingMessage
+        )
+    }
+
+    func testSelfUpdateCoordinatorDelegatesManagedRouteAndTargetAwareProviderOnly() async throws {
+        let currentRecord = try makeReleaseRecord(version: "1.2.3", sequence: 30)
+        let currentIdentity = try makeCurrentIdentity(version: "1.2.3", sequence: 30)
+        let route = ManagedRouteCoordinatorSpy()
+        let provider = ProviderCoordinatorSpy()
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(currentRecord)),
+            inspector: InspectorSpy(responses: [.success(currentIdentity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            providerCoordinator: provider,
+            managedDeploymentRouteCoordinator: route
+        )
+
+        XCTAssertEqual(
+            await coordinator.prepareManagedDeploymentInventory(),
+            .unavailable(.inventoryUnavailable)
+        )
+        let session = try makeSessionPlan(for: currentRecord)
+        let deployment = try ManagedDeploymentTarget(
+            id: "deployment-new",
+            exists: false
+        )
+        XCTAssertEqual(
+            await coordinator.prepareHostPreflight(
+                session: session,
+                deployment: deployment
+            ),
+            .unavailable(.preflightUnavailable)
+        )
+        XCTAssertEqual(
+            await coordinator.prepareCompositionReview(
+                session: session,
+                deployment: deployment
+            ),
+            .unavailable(.reviewUnavailable)
+        )
+        let operation = ReviewedManagedDeploymentOperation(
+            sessionID: session.sessionID,
+            compositionIdentity: session.compositionIdentity,
+            manifestSHA256: session.manifestSHA256,
+            deploymentID: deployment.id,
+            deploymentExists: false,
+            inventoryEvidenceReference: "inventory:self-update-test",
+            currentInstallerRelease: currentRecord.release,
+            components: []
+        )
+        XCTAssertEqual(
+            await coordinator.executeReviewedManagedDeployment(operation),
+            .failed(.executionFailed, stages: [])
+        )
+
+        let requirement = ProviderRequirement(
+            provider: .codex,
+            isRequired: true
+        )
+        XCTAssertEqual(
+            await coordinator.performProviderAction(.authenticate, for: requirement),
+            .verified
+        )
+        XCTAssertEqual(
+            await coordinator.performProviderAction(.authenticate, for: ProviderID.codex),
+            .failed(.coordinatorUnavailable)
+        )
+        XCTAssertEqual(await route.calls(), 4)
+        XCTAssertEqual(await provider.calls(), [.authenticate])
+
+        XCTAssertEqual(
+            await UnavailableProviderActionCoordinator().performProviderAction(
+                .install,
+                for: requirement
+            ),
+            .failed(.coordinatorUnavailable)
+        )
+    }
+
     func testVerifiedNewerGitHubReleaseStagesVerifiesAndAtomicallyRelaunches() async throws {
         let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
         let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
@@ -929,7 +1051,9 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         handoff: any InstallerAtomicHandoffPerforming = AtomicHandoffSpy(result: .success(())),
         recoveryStore: any InstallerSelfUpdateRecoveryStoring = RecoveryStoreSpy(),
         operationLock: any InstallerSelfUpdateOperationLocking = OperationLockSpy(),
-        compositionSessionPreparer: any VerifiedCompositionSessionPreparing = UnavailableVerifiedCompositionSessionPreparer()
+        compositionSessionPreparer: any VerifiedCompositionSessionPreparing = UnavailableVerifiedCompositionSessionPreparer(),
+        providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator(),
+        managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator()
     ) -> VerifiedInstallerSelfUpdateCoordinator {
         VerifiedInstallerSelfUpdateCoordinator(
             releaseFeed: feed,
@@ -939,7 +1063,9 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             atomicHandoff: handoff,
             recoveryStore: recoveryStore,
             operationLock: operationLock,
-            compositionSessionPreparer: compositionSessionPreparer
+            compositionSessionPreparer: compositionSessionPreparer,
+            providerCoordinator: providerCoordinator,
+            managedDeploymentRouteCoordinator: managedDeploymentRouteCoordinator
         )
     }
 
@@ -1062,6 +1188,61 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             byteCount: 4096
         )
     }
+}
+
+
+private actor ManagedRouteCoordinatorSpy: ManagedDeploymentRouteCoordinating {
+    private var recordedCalls = 0
+
+    func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
+        recordedCalls += 1
+        return .unavailable(.inventoryUnavailable)
+    }
+
+    func prepareHostPreflight(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> HostPreflightPreparationResult {
+        _ = session
+        _ = deployment
+        recordedCalls += 1
+        return .unavailable(.preflightUnavailable)
+    }
+
+    func prepareCompositionReview(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> CompositionReviewPreparationResult {
+        _ = session
+        _ = deployment
+        recordedCalls += 1
+        return .unavailable(.reviewUnavailable)
+    }
+
+    func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult {
+        _ = operation
+        recordedCalls += 1
+        return .failed(.executionFailed, stages: [])
+    }
+
+    func calls() -> Int { recordedCalls }
+}
+
+private actor ProviderCoordinatorSpy: ProviderActionCoordinating {
+    private var recorded: [ProviderAction] = []
+
+    func performProviderAction(
+        _ action: ProviderAction,
+        for requirement: ProviderRequirement
+    ) async -> ProviderActionResult {
+        _ = requirement
+        recorded.append(action)
+        return .verified
+    }
+
+    func calls() -> [ProviderAction] { recorded }
 }
 
 private actor FeedSpy: SignedInstallerReleaseFeedVerifying {
