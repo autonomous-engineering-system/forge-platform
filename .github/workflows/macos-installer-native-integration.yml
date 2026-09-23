@@ -1,0 +1,89 @@
+name: Native Mac installer integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact already-merged origin/main commit to qualify
+        required: true
+        type: string
+      signing_readiness:
+        description: Also verify protected Developer ID/notary readiness
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-platform-macmini-native-integration
+  cancel-in-progress: false
+
+jobs:
+  native-integration:
+    name: Native Mac mini integration
+    runs-on: [self-hosted, macOS, ARM64, forge-platform-mini]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+      - name: Admit exact protected main source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
+          test "$(uname -m)" = "arm64"
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+      - name: Repository unit and integration suite
+        run: sh scripts/validate.sh
+      - name: Native Swift unit and integration suite
+        working-directory: macos/ForgePlatformInstaller
+        env:
+          FORGE_PLATFORM_UI_ARTIFACT_DIR: ${{ runner.temp }}/forge-platform-ui-screenshots
+        run: swift test --enable-code-coverage
+      - name: Enforce native Swift per-file coverage
+        working-directory: macos/ForgePlatformInstaller
+        run: |
+          coverage_path="$(swift test --show-codecov-path)"
+          python3 ../../scripts/check_managed_installer_swift_coverage.py "$coverage_path" --minimum 80.2
+      - name: Build exact native release candidate
+        working-directory: macos/ForgePlatformInstaller
+        run: |
+          swift build -c release
+          binary="$(swift build -c release --show-bin-path)/ForgePlatformInstaller"
+          test -x "$binary"
+          file "$binary" | grep -Fq 'arm64'
+      - name: Upload read-only UI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: forge-platform-macmini-ui-${{ github.sha }}
+          path: ${{ runner.temp }}/forge-platform-ui-screenshots
+          if-no-files-found: error
+          retention-days: 14
+
+  signing-readiness:
+    name: Mac mini signing readiness
+    if: ${{ inputs.signing_readiness }}
+    needs: native-integration
+    runs-on: [self-hosted, macOS, ARM64, forge-platform-mini, forge-platform-signer]
+    timeout-minutes: 15
+    environment:
+      name: forge-platform-installer-signing
+    env:
+      FORGE_PLATFORM_APPLE_TEAM_ID: ${{ vars.FORGE_PLATFORM_APPLE_TEAM_ID }}
+      FORGE_PLATFORM_CODESIGN_IDENTITY: ${{ vars.FORGE_PLATFORM_CODESIGN_IDENTITY }}
+      FORGE_PLATFORM_NOTARYTOOL_PROFILE: ${{ vars.FORGE_PLATFORM_NOTARYTOOL_PROFILE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+      - name: Verify Xcode, Developer ID and notarytool without exporting secrets
+        run: bash scripts/ci/verify_macos_signing_runner.sh
