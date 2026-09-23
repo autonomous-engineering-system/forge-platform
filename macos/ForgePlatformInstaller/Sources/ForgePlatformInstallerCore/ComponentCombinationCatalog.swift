@@ -102,6 +102,48 @@ struct ComponentCombinationCatalogAcceptance: Equatable, Sendable {
     }
 }
 
+
+enum ComponentCombinationCatalogAcceptanceStorageFailure: Error, Equatable, Sendable {
+    case unavailable
+}
+
+protocol ComponentCombinationCatalogAcceptanceReading: Sendable {
+    func loadAcceptedComponentCombinationCatalog(
+        for scope: CompositionCatalogAcceptanceScope
+    ) async -> Result<ComponentCombinationCatalogAcceptance?, ComponentCombinationCatalogAcceptanceStorageFailure>
+}
+
+/// Adapter over a separately rooted durable catalog store. Production must
+/// supply a store root distinct from the outer-catalog anchor so the two
+/// sequence domains can never overwrite or masquerade as one another.
+struct CompositionCatalogBackedComponentCombinationAcceptanceReader: ComponentCombinationCatalogAcceptanceReading {
+    private let reader: any CompositionCatalogAcceptanceReading
+
+    init(reader: any CompositionCatalogAcceptanceReading) {
+        self.reader = reader
+    }
+
+    func loadAcceptedComponentCombinationCatalog(
+        for scope: CompositionCatalogAcceptanceScope
+    ) async -> Result<ComponentCombinationCatalogAcceptance?, ComponentCombinationCatalogAcceptanceStorageFailure> {
+        switch await reader.loadAcceptedCatalog(for: scope) {
+        case .failure:
+            return .failure(.unavailable)
+        case .success(nil):
+            return .success(nil)
+        case .success(let accepted?):
+            guard accepted.scope == scope else {
+                return .failure(.unavailable)
+            }
+            return .success(ComponentCombinationCatalogAcceptance(
+                scope: accepted.scope,
+                identity: accepted.identity
+            ))
+        }
+    }
+}
+
+
 /// Exact component-combination bytes admitted through one already verified
 /// outer catalog. This is ephemeral selection evidence, not a session or
 /// product-operation authorization.

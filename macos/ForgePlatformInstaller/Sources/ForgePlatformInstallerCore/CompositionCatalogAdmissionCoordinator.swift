@@ -242,6 +242,13 @@ struct VerifiedCompositionCatalogAdmission: Equatable, Sendable {
     }
 }
 
+
+protocol CompositionCatalogAdmitting: Sendable {
+    func admitVerifiedCatalogWithEvidence(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext
+    ) async -> Result<VerifiedCompositionCatalogAdmission, CompositionCatalogAdmissionFailure>
+}
+
 /// Combines sealed catalog trust, the exact catalog transport, independently
 /// attested time and a read-only durable anti-replay anchor. It deliberately
 /// does not persist a candidate anchor, select an entry, fetch an index or
@@ -251,7 +258,7 @@ struct VerifiedCompositionCatalogAdmission: Equatable, Sendable {
 /// The output is ephemeral. Any future mutating operation must reload and
 /// reverify the catalog under its own operation lock; it may not treat this
 /// result as durable session or terminal-operation authority.
-struct CompositionCatalogAdmissionCoordinator: Sendable {
+struct CompositionCatalogAdmissionCoordinator: CompositionCatalogAdmitting, Sendable {
     private let trustLoader: any SealedCompositionCatalogTrustConfigurationLoading
     private let transport: any CompositionCatalogFetching
     private let trustedClockAttester: any TrustedCompositionCatalogClockAttesting
