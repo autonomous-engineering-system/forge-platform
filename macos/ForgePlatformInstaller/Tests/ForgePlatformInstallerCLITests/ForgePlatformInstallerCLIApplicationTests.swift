@@ -72,6 +72,21 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertTrue(accepted.stderr.joined().contains("relaunching"))
         let acceptedConfirmCalls1 = await acceptedStartup.confirmCalls()
         XCTAssertEqual(acceptedConfirmCalls1, 1)
+
+        let explicitlyAcceptedStartup = CLIStartupSpy(
+            outcome: .updateRequired(newer),
+            confirmationOutcome: .relaunching(newer)
+        )
+        let explicitlyAccepted = await run(
+            ["self-update", "apply", "--accept-installer-update"],
+            startup: explicitlyAcceptedStartup,
+            version: "1.2.3",
+            confirmation: false
+        )
+        XCTAssertEqual(explicitlyAccepted.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        XCTAssertTrue(explicitlyAccepted.stderr.joined().contains("relaunching"))
+        let explicitlyAcceptedConfirmCalls = await explicitlyAcceptedStartup.confirmCalls()
+        XCTAssertEqual(explicitlyAcceptedConfirmCalls, 1)
     }
 
     func testBlockedStartupAndAlreadyRelaunchingNeverCreateWorkflow() async throws {
