@@ -8,12 +8,14 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         let help = await run([], startup: startup, version: "1.2.3")
         XCTAssertEqual(help.code, InstallerCLIExitCode.success.rawValue)
         XCTAssertTrue(help.stdout.joined().contains("Usage:"))
-        XCTAssertEqual(await startup.startCalls(), 0)
+        let startCalls1 = await startup.startCalls()
+        XCTAssertEqual(startCalls1, 0)
 
         let version = await run(["version", "--json"], startup: startup, version: "1.2.3")
         XCTAssertEqual(version.code, 0)
         XCTAssertTrue(version.stdout.joined().contains("\"installer_version\":\"1.2.3\""))
-        XCTAssertEqual(await startup.startCalls(), 0)
+        let startCalls2 = await startup.startCalls()
+        XCTAssertEqual(startCalls2, 0)
     }
 
     func testInvalidArgumentsAndMissingSignedVersionFailClosed() async throws {
@@ -25,7 +27,8 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         let missing = await run(["status"], startup: startup, version: nil)
         XCTAssertEqual(missing.code, InstallerCLIExitCode.blocked.rawValue)
         XCTAssertTrue(missing.stderr.joined().contains("installerversie"))
-        XCTAssertEqual(await startup.startCalls(), 0)
+        let startCalls3 = await startup.startCalls()
+        XCTAssertEqual(startCalls3, 0)
     }
 
     func testSelfUpdateCheckReportsMandatoryUpdateWithoutDownloading() async throws {
@@ -38,7 +41,8 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         )
         XCTAssertEqual(result.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
         XCTAssertTrue(result.stdout.joined().contains("installer-update-required"))
-        XCTAssertEqual(await startup.confirmCalls(), 0)
+        let confirmCalls1 = await startup.confirmCalls()
+        XCTAssertEqual(confirmCalls1, 0)
     }
 
     func testSelfUpdateApplyRequiresExplicitConfirmationAndThenRelaunches() async throws {
@@ -51,7 +55,8 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             confirmation: false
         )
         XCTAssertEqual(rejected.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
-        XCTAssertEqual(await rejectedStartup.confirmCalls(), 0)
+        let rejectedConfirmCalls1 = await rejectedStartup.confirmCalls()
+        XCTAssertEqual(rejectedConfirmCalls1, 0)
 
         let acceptedStartup = CLIStartupSpy(
             outcome: .updateRequired(newer),
@@ -65,7 +70,8 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         )
         XCTAssertEqual(accepted.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
         XCTAssertTrue(accepted.stderr.joined().contains("relaunching"))
-        XCTAssertEqual(await acceptedStartup.confirmCalls(), 1)
+        let acceptedConfirmCalls1 = await acceptedStartup.confirmCalls()
+        XCTAssertEqual(acceptedConfirmCalls1, 1)
     }
 
     func testBlockedStartupAndAlreadyRelaunchingNeverCreateWorkflow() async throws {
@@ -96,7 +102,8 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         let result = await run(["status"], startup: startup, version: "1.2.3")
         XCTAssertEqual(result.code, 0)
         XCTAssertTrue(result.stdout.joined().contains("deployment_count=0"))
-        XCTAssertEqual(await coordinator.inventoryCalls(), 1)
+        let inventoryCalls1 = await coordinator.inventoryCalls()
+        XCTAssertEqual(inventoryCalls1, 1)
     }
 
     func testReadySelfUpdateApplyIsNoOpCurrentAndRemoveSurfacesProducerBlocker() async throws {

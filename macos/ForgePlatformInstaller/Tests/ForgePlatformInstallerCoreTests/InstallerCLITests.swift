@@ -52,8 +52,10 @@ final class InstallerCLITests: XCTestCase {
         let list = await workflow.listDeployments()
         XCTAssertEqual(list.exitCode, .success)
         XCTAssertEqual(list.records.count, 1)
-        XCTAssertEqual(await coordinator.executionCallCount(), 0)
-        XCTAssertEqual(await coordinator.inventoryCallCount(), 2)
+        let executionCalls1 = await coordinator.executionCallCount()
+        XCTAssertEqual(executionCalls1, 0)
+        let inventoryCalls1 = await coordinator.inventoryCallCount()
+        XCTAssertEqual(inventoryCalls1, 2)
     }
 
     func testProviderFreeApplyRunsSameGatesAndProducesTerminalSummary() async throws {
@@ -75,8 +77,9 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(result.status, "complete")
         XCTAssertEqual(result.details["deployment_id"], "deployment-new")
         XCTAssertEqual(result.records.count, 2)
+        let calls = await coordinator.calls()
         XCTAssertEqual(
-            await coordinator.calls(),
+            calls,
             ["inventory", "session", "preflight", "review", "currency", "execute"]
         )
     }
@@ -93,7 +96,8 @@ final class InstallerCLITests: XCTestCase {
         )
         XCTAssertEqual(result.exitCode, .confirmationRequired)
         XCTAssertEqual(result.status, "confirmation-required")
-        XCTAssertEqual(await coordinator.executionCallCount(), 0)
+        let executionCalls2 = await coordinator.executionCallCount()
+        XCTAssertEqual(executionCalls2, 0)
     }
 
     func testProviderAuthenticationIsHumanOnlyInNonInteractiveMode() async throws {
@@ -112,8 +116,10 @@ final class InstallerCLITests: XCTestCase {
         )
         XCTAssertEqual(result.exitCode, .interactionRequired)
         XCTAssertEqual(result.status, "provider-authentication-required")
-        XCTAssertEqual(await coordinator.providerActions(), [.install])
-        XCTAssertEqual(await coordinator.executionCallCount(), 0)
+        let providerActions1 = await coordinator.providerActions()
+        XCTAssertEqual(providerActions1, [.install])
+        let executionCalls3 = await coordinator.executionCallCount()
+        XCTAssertEqual(executionCalls3, 0)
     }
 
     func testInteractiveProviderCeremonyMustEndVerifiedBeforeReview() async throws {
@@ -131,7 +137,8 @@ final class InstallerCLITests: XCTestCase {
             confirm: { _ in true }
         )
         XCTAssertEqual(result.exitCode, .success)
-        XCTAssertEqual(await coordinator.providerActions(), [.install, .authenticate])
+        let providerActions2 = await coordinator.providerActions()
+        XCTAssertEqual(providerActions2, [.install, .authenticate])
     }
 
     func testNewInstallerAfterReviewNeverExecutesOldSessionAndCanHandoffWhenAuthorized() async throws {
@@ -154,8 +161,10 @@ final class InstallerCLITests: XCTestCase {
         )
         XCTAssertEqual(result.exitCode, .installerUpdateRequired)
         XCTAssertEqual(result.status, "relaunching")
-        XCTAssertEqual(await coordinator.executionCallCount(), 0)
-        XCTAssertEqual(await coordinator.handoffCallCount(), 1)
+        let executionCalls4 = await coordinator.executionCallCount()
+        XCTAssertEqual(executionCalls4, 0)
+        let handoffCalls1 = await coordinator.handoffCallCount()
+        XCTAssertEqual(handoffCalls1, 1)
     }
 
     func testRequiredUpdateWithoutAuthorityFailsClosedAndDoesNotHandoff() async throws {
@@ -175,7 +184,8 @@ final class InstallerCLITests: XCTestCase {
         // --yes acknowledges the reviewed plan and is also explicit confirmation
         // for a mandatory update in the current CLI contract.
         XCTAssertEqual(result.status, "relaunching")
-        XCTAssertEqual(await coordinator.handoffCallCount(), 1)
+        let handoffCalls2 = await coordinator.handoffCallCount()
+        XCTAssertEqual(handoffCalls2, 1)
     }
 
     func testExecutionFailureAndReadinessFailureNeverClaimComplete() async throws {
