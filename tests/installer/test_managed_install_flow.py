@@ -280,6 +280,8 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                     readback_requests=reads,
                     adapters=adapters,
                     pairing_executor=pairer,
+                    composition_id="forge-ep-qualified-v3",
+                    composition_manifest_digest="sha256:" + "c" * 64,
                 )
             stored = registry.load("production")
             self.assertEqual(stored.revision, 1)

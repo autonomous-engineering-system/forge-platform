@@ -421,7 +421,7 @@ private actor CLIReadyCoordinator: InstallerWizardCoordinator {
         for deployment: ManagedDeploymentTarget
     ) async -> InstallerSessionPreparationResult {
         _ = deployment
-        .unavailable(.coordinatorUnavailable)
+        return .unavailable(.coordinatorUnavailable)
     }
 
     func performProviderAction(
