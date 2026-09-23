@@ -15,6 +15,7 @@ RELEASE = ROOT / ".github" / "workflows" / "forge-platform-installer-release.yml
 BOOTSTRAP = ROOT / "scripts" / "ci" / "bootstrap_macos_signing_runner.sh"
 READINESS = ROOT / "scripts" / "ci" / "verify_macos_offline_signing_host.sh"
 ACTIONS_SIGNER_GUARD = ROOT / "scripts" / "ci" / "verify_macos_signing_runner.sh"
+OFFLINE_RELEASE = ROOT / "scripts" / "ci" / "offline_macos_installer_sign_and_notarize.sh"
 
 
 class NativeMacRunnerPolicyTests(unittest.TestCase):
@@ -66,6 +67,27 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertNotIn("security find-identity", text)
         self.assertNotIn("notarytool", text)
         self.assertNotIn("codesign --sign", text)
+
+    def test_offline_release_signs_notarizes_staples_and_revalidates_final_carrier(self) -> None:
+        text = OFFLINE_RELEASE.read_text(encoding="utf-8")
+        self.assertIn('[[ "${GITHUB_ACTIONS:-}" != "true" ]]', text)
+        self.assertIn('[[ -z "${RUNNER_NAME:-}" ]]', text)
+        self.assertIn("verify_macos_offline_signing_host.sh", text)
+        self.assertIn('git rev-parse origin/main', text)
+        self.assertIn("--require-version-advance", text)
+        self.assertIn("--sealed-release-trust-resource", text)
+        self.assertIn("--sealed-release-provenance-resource", text)
+        self.assertIn("--sealed-composition-catalog-trust-resource", text)
+        self.assertIn("codesign --force --options runtime --timestamp", text)
+        self.assertIn("notarytool submit", text)
+        self.assertIn("--wait --output-format json", text)
+        self.assertGreaterEqual(text.count("stapler validate -v"), 2)
+        self.assertGreaterEqual(text.count("spctl --assess --type execute"), 2)
+        self.assertIn("package_macos_installer_archive.py", text)
+        self.assertIn("final-archive-lost-stapled-ticket", text)
+        self.assertIn('"publication":"NOT_PERFORMED"', text)
+        self.assertNotIn("gh release create", text)
+        self.assertNotIn("security export", text)
 
     def test_runner_bootstrap_pins_official_arm64_version_and_digest(self) -> None:
         text = BOOTSTRAP.read_text(encoding="utf-8")
