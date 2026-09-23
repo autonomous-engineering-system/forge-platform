@@ -148,7 +148,7 @@ do {
         let envelope: [String: String] = [
             "algorithm": "ed25519",
             "key_id": keyID,
-            "signature_base64url": signatureBase64URL(signature),
+            "signature": signatureBase64URL(signature),
         ]
         var encoded = try JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys])
         encoded.append(Data("\n".utf8))

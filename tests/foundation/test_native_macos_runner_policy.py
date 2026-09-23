@@ -78,7 +78,7 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertIn("Curve25519.Signing.PrivateKey", text)
         self.assertIn("SecItemAdd", text)
         self.assertIn("SecItemCopyMatching", text)
-        self.assertIn("signature_base64url", text)
+        self.assertIn('"signature": signatureBase64URL(signature)', text)
         self.assertNotIn("security export", text)
         self.assertNotIn("find-generic-password", text)
 
