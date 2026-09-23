@@ -76,6 +76,32 @@ public enum SelfUpdateHandoffResult: Equatable, Sendable {
     case failed(String)
 }
 
+/// Read-only installer currency evidence. A newer verified release never
+/// authorizes platform mutation: callers must explicitly enter the self-update
+/// handoff path before they may continue.
+public enum InstallerCurrencyCheckResult: Equatable, Sendable {
+    case current(VerifiedInstallerRelease)
+    case updateRequired(VerifiedInstallerRelease)
+    case failed(String)
+}
+
+public enum PreMutationCurrencyGate: Equatable, Sendable {
+    case pending
+    case checking
+    case current(VerifiedInstallerRelease)
+    case failed(String)
+
+    public var isCurrent: Bool {
+        if case .current = self { return true }
+        return false
+    }
+
+    public var isChecking: Bool {
+        if case .checking = self { return true }
+        return false
+    }
+}
+
 public enum SelfUpdateGate: Equatable, Sendable {
     case checking
     case current(VerifiedInstallerRelease)
@@ -951,6 +977,10 @@ public struct InstallerWizardState: Equatable, Sendable {
     /// provider gate.
     public private(set) var providers: [ProviderProgress]
     public var composition: CompositionReview
+    /// A fresh currency decision is required after the reviewed diff and
+    /// immediately before entering execution. It is invalidated with every
+    /// session/composition change.
+    public private(set) var preMutationCurrency: PreMutationCurrencyGate
     public var executionStages: [ExecutionStage]
     public var summaryItems: [InstallationSummaryItem]
 
@@ -965,6 +995,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         self.providerRequirementsProjection = .pending
         self.providers = []
         self.composition = CompositionReview()
+        self.preMutationCurrency = .pending
         self.executionStages = []
         self.summaryItems = []
     }
@@ -1022,6 +1053,7 @@ public struct InstallerWizardState: Equatable, Sendable {
                 && preflight.isPassed
                 && enabledProvidersVerified
                 && composition.isReadyForExecution
+                && preMutationCurrency.isCurrent
         case .execution:
             return hasAcceptedSessionPlan
                 && preflight.isPassed
@@ -1311,7 +1343,55 @@ public struct InstallerWizardState: Equatable, Sendable {
             return false
         }
         composition.isAcknowledged = acknowledged
+        preMutationCurrency = .pending
         return true
+    }
+
+    /// The operator may request the final currency check only after the exact
+    /// reviewed diff is acknowledged. Nothing mutable happens at this point.
+    public var canBeginPreMutationCurrencyCheck: Bool {
+        step == .review
+            && hasAcceptedSessionPlan
+            && preflight.isPassed
+            && enabledProvidersVerified
+            && composition.isReadyForExecution
+            && !preMutationCurrency.isChecking
+    }
+
+    @discardableResult
+    public mutating func beginPreMutationCurrencyCheck() -> Bool {
+        guard canBeginPreMutationCurrencyCheck else { return false }
+        preMutationCurrency = .checking
+        return true
+    }
+
+    /// A newer verified installer invalidates every downstream plan and routes
+    /// back to the mandatory self-update gate. There is deliberately no
+    /// "continue anyway" state.
+    @discardableResult
+    public mutating func recordPreMutationCurrencyCheck(
+        _ result: InstallerCurrencyCheckResult
+    ) -> Bool {
+        guard step == .review, case .checking = preMutationCurrency else {
+            return false
+        }
+        switch result {
+        case .current(let release):
+            guard release.version == currentInstallerVersion else {
+                preMutationCurrency = .failed("De installer-versie veranderde tijdens de laatste controle.")
+                return false
+            }
+            preMutationCurrency = .current(release)
+            return true
+        case .updateRequired(let release):
+            invalidateAcceptedSessionPlan()
+            selfUpdate = .updateRequired(release)
+            step = .selfUpdate
+            return false
+        case .failed(let reason):
+            preMutationCurrency = .failed(reason)
+            return false
+        }
     }
 
     @discardableResult
@@ -1348,6 +1428,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         providers = []
         preflight = HostPreflight()
         composition = CompositionReview()
+        preMutationCurrency = .pending
         executionStages = []
         summaryItems = []
     }
@@ -1389,6 +1470,11 @@ public protocol InstallerWizardCoordinator: Sendable {
     /// self-update and managed-deployment gates. Implementations must not return
     /// catalog bytes, URLs, commands, credentials, product readbacks or an operation authority.
     func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult
+    /// Re-checks the signed installer release immediately before the reviewed
+    /// plan is allowed to cross into product mutation.
+    func recheckInstallerBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> InstallerCurrencyCheckResult
     /// Legacy targetless route retained for composition/v1 coordinators.
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult
     /// Target-aware route used by composition/v2. Existing coordinators inherit
@@ -1407,6 +1493,13 @@ public extension InstallerWizardCoordinator {
 
     func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
         .unavailable(.coordinatorUnavailable)
+    }
+
+    func recheckInstallerBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> InstallerCurrencyCheckResult {
+        _ = currentVersion
+        return .failed("De installer kon vlak vóór uitvoering niet opnieuw worden geverifieerd.")
     }
 
     func performProviderAction(
