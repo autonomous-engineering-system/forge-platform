@@ -317,14 +317,24 @@ public struct InstallerCLIWorkflow: Sendable {
                 return InstallerCLIResult(
                     exitCode: .confirmationRequired,
                     status: "confirmation-required",
-                    message: "Niet-interactieve uitvoering vereist --yes voor het beoordeelde wijzigingsplan."
+                    message: "Niet-interactieve uitvoering vereist --yes voor het beoordeelde wijzigingsplan.",
+                    details: [
+                        "composition": session.compositionIdentity,
+                        "manifest_sha256": session.manifestSHA256,
+                    ],
+                    records: Self.reviewRecords(state.composition)
                 )
             }
             guard await confirm(Self.reviewPrompt(state.composition)) else {
                 return InstallerCLIResult(
                     exitCode: .confirmationRequired,
                     status: "cancelled",
-                    message: "Het wijzigingsplan is niet bevestigd."
+                    message: "Het wijzigingsplan is niet bevestigd.",
+                    details: [
+                        "composition": session.compositionIdentity,
+                        "manifest_sha256": session.manifestSHA256,
+                    ],
+                    records: Self.reviewRecords(state.composition)
                 )
             }
         }
@@ -541,8 +551,41 @@ public struct InstallerCLIWorkflow: Sendable {
     }
 
     private static func reviewPrompt(_ review: CompositionReview) -> String {
-        let mutations = review.components.filter { $0.change != .retain }.count
-        return "Voer \(mutations) beoordeelde componentwijziging(en) uit voor \(review.manifestIdentity)?"
+        let records = reviewRecords(review)
+        var lines = [
+            "Gekwalificeerd wijzigingsplan: \(review.manifestIdentity)",
+        ]
+        for record in records {
+            var line = "- \(record["component"] ?? "unknown"): \(record["change"] ?? "unknown")"
+            if let installed = record["installed_version"], !installed.isEmpty {
+                line += " installed=\(installed)"
+            }
+            if let candidate = record["candidate_version"], !candidate.isEmpty {
+                line += " candidate=\(candidate)"
+            }
+            if let digest = record["artifact_digest"], !digest.isEmpty {
+                line += " digest=\(digest)"
+            }
+            lines.append(line)
+        }
+        lines.append("Voer deze \(records.count) beoordeelde componentwijziging(en) uit?")
+        return lines.joined(separator: "\n")
+    }
+
+    private static func reviewRecords(
+        _ review: CompositionReview
+    ) -> [[String: String]] {
+        review.components.map { component in
+            [
+                "component": component.componentID,
+                "title": component.title,
+                "change": component.change.rawValue,
+                "installed_version": component.installedVersion ?? "",
+                "candidate_version": component.candidateVersion ?? "",
+                "artifact_digest": component.artifactDigest ?? "",
+                "detail": component.detail,
+            ]
+        }
     }
 
     private static func blocked(_ message: String) -> InstallerCLIResult {

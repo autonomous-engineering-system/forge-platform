@@ -69,6 +69,9 @@ final class InstallerCLITests: XCTestCase {
             options: InstallerCLIOptions(),
             confirm: { prompt in
                 XCTAssertTrue(prompt.contains("componentwijziging"))
+                XCTAssertTrue(prompt.contains("forge-runtime"))
+                XCTAssertTrue(prompt.contains("engineering-platform-server"))
+                XCTAssertTrue(prompt.contains("sha256:"))
                 return true
             }
         )
@@ -96,6 +99,12 @@ final class InstallerCLITests: XCTestCase {
         )
         XCTAssertEqual(result.exitCode, .confirmationRequired)
         XCTAssertEqual(result.status, "confirmation-required")
+        XCTAssertEqual(result.details["composition"], "forge-ep-managed-v3")
+        XCTAssertEqual(result.records.count, 2)
+        XCTAssertEqual(Set(result.records.compactMap { $0["component"] }), Set([
+            "forge-runtime", "engineering-platform-server",
+        ]))
+        XCTAssertTrue(result.records.allSatisfy { $0["artifact_digest"]?.hasPrefix("sha256:") == true })
         let executionCalls2 = await coordinator.executionCallCount()
         XCTAssertEqual(executionCalls2, 0)
     }
