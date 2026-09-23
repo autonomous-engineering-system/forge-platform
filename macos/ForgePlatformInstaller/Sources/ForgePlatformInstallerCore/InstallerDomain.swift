@@ -890,6 +890,9 @@ public struct InstallationSummaryItem: Equatable, Sendable, Identifiable {
 
 public enum WizardStep: Int, CaseIterable, Equatable, Sendable, Identifiable {
     case selfUpdate
+    /// Select or prepare one exact Forge Platform managed deployment before
+    /// composition/profile selection. This step is read-only.
+    case deployment
     /// The signed catalog/manifest selector establishes exactly one
     /// composition session before any composition-derived host, tool or
     /// provider fact can influence the wizard.
@@ -906,6 +909,8 @@ public enum WizardStep: Int, CaseIterable, Equatable, Sendable, Identifiable {
         switch self {
         case .selfUpdate:
             return "Installer bijwerken"
+        case .deployment:
+            return "Deployment kiezen"
         case .composition:
             return "Compositie kiezen"
         case .preflight:
@@ -929,6 +934,7 @@ public struct InstallerWizardState: Equatable, Sendable {
     public let currentInstallerVersion: InstallerVersion
     public var step: WizardStep
     public private(set) var selfUpdate: SelfUpdateGate
+    public private(set) var deploymentSelection: ManagedDeploymentSelectionGate
     /// Exactly one composition plan may be accepted for this wizard session.
     /// The plan is the exclusive source of provider requirements and provides
     /// the correlation identity for later preflight, review and operation
@@ -949,6 +955,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         self.currentInstallerVersion = currentInstallerVersion
         self.step = .selfUpdate
         self.selfUpdate = .checking
+        self.deploymentSelection = .pending
         self.sessionPreparation = .pending
         self.acceptedSessionPlan = nil
         self.preflight = HostPreflight()
@@ -957,6 +964,10 @@ public struct InstallerWizardState: Equatable, Sendable {
         self.composition = CompositionReview()
         self.executionStages = []
         self.summaryItems = []
+    }
+
+    public var hasSelectedManagedDeployment: Bool {
+        deploymentSelection.isSelected
     }
 
     /// Returns whether a trusted coordinator has explicitly supplied a valid
@@ -995,8 +1006,10 @@ public struct InstallerWizardState: Equatable, Sendable {
         switch step {
         case .selfUpdate:
             return selfUpdate.isCurrent
+        case .deployment:
+            return selfUpdate.isCurrent && hasSelectedManagedDeployment
         case .composition:
-            return selfUpdate.isCurrent && hasAcceptedSessionPlan
+            return selfUpdate.isCurrent && hasSelectedManagedDeployment && hasAcceptedSessionPlan
         case .preflight:
             return hasAcceptedSessionPlan && preflight.isPassed
         case .providers:
@@ -1030,6 +1043,9 @@ public struct InstallerWizardState: Equatable, Sendable {
     /// result.
     public var canGoBack: Bool {
         guard step != .selfUpdate else {
+            return false
+        }
+        if step == .deployment, case .loading = deploymentSelection {
             return false
         }
         if step == .composition, case .preparing = sessionPreparation {
@@ -1074,14 +1090,62 @@ public struct InstallerWizardState: Equatable, Sendable {
         }
     }
 
+    /// Starts one read-only managed-deployment inventory request.
+    @discardableResult
+    public mutating func beginManagedDeploymentInventory() -> Bool {
+        guard step == .deployment, selfUpdate.isCurrent else {
+            return false
+        }
+        switch deploymentSelection {
+        case .pending, .unavailable:
+            deploymentSelection = .loading
+            return true
+        case .loading, .available, .selected:
+            return false
+        }
+    }
+
+    @discardableResult
+    public mutating func recordManagedDeploymentInventory(
+        _ result: ManagedDeploymentInventoryResult
+    ) -> Bool {
+        guard step == .deployment,
+              selfUpdate.isCurrent,
+              case .loading = deploymentSelection else {
+            return false
+        }
+        switch result {
+        case .available(let inventory):
+            deploymentSelection = .available(inventory)
+            return true
+        case .unavailable(let failure):
+            deploymentSelection = .unavailable(failure)
+            return false
+        }
+    }
+
+    /// Selection is bounded to an identity returned by the exact inventory.
+    /// Selecting the create candidate still mutates neither registry nor product.
+    @discardableResult
+    public mutating func selectManagedDeployment(_ deploymentID: String) -> Bool {
+        guard step == .deployment,
+              selfUpdate.isCurrent,
+              case .available(let inventory) = deploymentSelection,
+              let selected = inventory.targets.first(where: { $0.id == deploymentID }) else {
+            return false
+        }
+        deploymentSelection = .selected(selected, evidenceReference: inventory.evidenceReference)
+        invalidateCompositionEvidencePreservingDeployment()
+        return true
+    }
+
     /// Begins the one bounded composition/session preparation request. A
-    /// current installer alone does not imply a selected composition; only the
-    /// future trusted selector may return an immutable plan. Retrying after a
-    /// typed unavailable result is safe because no plan was accepted.
+    /// current installer and exact deployment selection are prerequisites.
     @discardableResult
     public mutating func beginSessionPreparation() -> Bool {
         guard step == .composition,
               selfUpdate.isCurrent,
+              hasSelectedManagedDeployment,
               acceptedSessionPlan == nil else {
             return false
         }
@@ -1103,6 +1167,7 @@ public struct InstallerWizardState: Equatable, Sendable {
     public mutating func recordSessionPreparation(_ result: InstallerSessionPreparationResult) -> Bool {
         guard step == .composition,
               selfUpdate.isCurrent,
+              hasSelectedManagedDeployment,
               acceptedSessionPlan == nil,
               case .preparing = sessionPreparation else {
             return false
@@ -1269,6 +1334,11 @@ public struct InstallerWizardState: Equatable, Sendable {
     /// It intentionally does not mutate a product: it only prevents a stale
     /// selection or provider projection from crossing a new self-update gate.
     private mutating func invalidateAcceptedSessionPlan() {
+        deploymentSelection = .pending
+        invalidateCompositionEvidencePreservingDeployment()
+    }
+
+    private mutating func invalidateCompositionEvidencePreservingDeployment() {
         sessionPreparation = .pending
         acceptedSessionPlan = nil
         providerRequirementsProjection = .pending
@@ -1309,9 +1379,12 @@ public struct InstallerWizardState: Equatable, Sendable {
 public protocol InstallerWizardCoordinator: Sendable {
     func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult
     func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult
+    /// Inventory existing managed deployments plus one coordinator-generated
+    /// create target. This operation is read-only.
+    func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult
     /// Prepare exactly one verified composition session after the mandatory
-    /// self-update gate. Implementations must not return catalog bytes, URLs,
-    /// commands, credentials, product readbacks or an operation authority.
+    /// self-update and managed-deployment gates. Implementations must not return
+    /// catalog bytes, URLs, commands, credentials, product readbacks or an operation authority.
     func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult
     /// Legacy targetless route retained for composition/v1 coordinators.
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult
@@ -1325,6 +1398,10 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
+        .unavailable(.coordinatorUnavailable)
+    }
+
     func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
         .unavailable(.coordinatorUnavailable)
     }
