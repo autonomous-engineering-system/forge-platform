@@ -255,11 +255,19 @@ class SigningReadinessContractTests(unittest.TestCase):
                 (bindir / name).symlink_to(stub.name)
             (bindir / "python3").symlink_to(sys.executable)
             history, sign, anchor = (root / name for name in ("history", "sign", "anchor"))
+            runner_root = root / "signer-runner"
+            runner_root.mkdir()
+            service = runner_root / "svc.sh"
+            service.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            service.chmod(0o700)
             env = {
                 "PATH": str(bindir) + ":/usr/bin:/bin", "HOME": str(root), "TMPDIR": str(tempdir),
                 "RUNNER_NAME": "fixture-not-a-real-mini", "FORGE_PLATFORM_APPLE_TEAM_ID": "AAAAAAAAAA",
                 "FORGE_PLATFORM_CODESIGN_IDENTITY": "Developer ID Application: Expected Test (AAAAAAAAAA)",
-                "FORGE_PLATFORM_NOTARYTOOL_PROFILE": "fixture-only", "FAKE_MODE": mode,
+                "FORGE_PLATFORM_NOTARYTOOL_PROFILE": "fixture-only",
+                "FORGE_PLATFORM_SIGNER_ACCOUNT": os.environ.get("USER", ""),
+                "FORGE_PLATFORM_SIGNER_RUNNER_ROOT": str(runner_root),
+                "FAKE_MODE": mode,
                 "FAKE_DEVELOPER_DIR": str(developer), "FAKE_HISTORY_CALLED": str(history),
                 "FAKE_SIGN_CALLED": str(sign), "FAKE_ANCHOR_CALLED": str(anchor),
             }
@@ -378,8 +386,9 @@ class WorkflowWiringTests(unittest.TestCase):
         signing = text.split("  signing-readiness:\n", 1)[1]
         self.assertIn("needs: admission", native)
         self.assertIn("needs: native-integration", signing)
+        self.assertIn("environment:\n      name: forge-platform-installer-integration", native)
+        self.assertIn("environment:\n      name: forge-platform-installer-signing", signing)
         for job in (native, signing):
-            self.assertIn("environment:\n      name: forge-platform-installer-signing", job)
             self.assertIn("persist-credentials: false", job)
             self.assertIn('test "$SOURCE_SHA" = "$(git rev-parse origin/main)"', job)
         self.assertIn("group: forge-platform-macmini-privileged", text)

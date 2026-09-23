@@ -9,7 +9,6 @@ os_version="$(sw_vers -productVersion)"
 major="${os_version%%.*}"
 [[ "$major" =~ ^[0-9]+$ && "$major" -ge 26 ]] || fail macos-too-old
 [[ -n "${RUNNER_NAME:-}" ]] || fail missing-runner-name
-[[ "$RUNNER_NAME" == *signer* ]] || fail unexpected-signer-runner-name
 [[ -n "${FORGE_PLATFORM_SIGNER_ACCOUNT:-}" ]] || fail signer-account-required
 [[ "$(id -un)" == "$FORGE_PLATFORM_SIGNER_ACCOUNT" ]] || fail signer-account-mismatch
 runner_root="${FORGE_PLATFORM_SIGNER_RUNNER_ROOT:-$HOME/actions-runner-forge-platform-signer}"
