@@ -1381,6 +1381,12 @@ public struct InstallerWizardState: Equatable, Sendable {
 /// trusted coordinator and must verify immutable artifacts before execution.
 public protocol InstallerWizardCoordinator: Sendable {
     func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult
+    /// A fresh currency proof taken immediately before any product mutation.
+    /// Production runtimes preserve an exact-current reviewed session but must
+    /// invalidate it when a newer verified installer exists.
+    func recheckInstallerCurrencyBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> SelfUpdateCheckResult
     func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult
     /// Inventory existing managed deployments plus one coordinator-generated
     /// create target. This operation is read-only.
@@ -1401,6 +1407,15 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func recheckInstallerCurrencyBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> SelfUpdateCheckResult {
+        // Compatibility default is intentionally conservative: older
+        // coordinators perform a normal check, which invalidates session
+        // evidence rather than silently reusing it.
+        await checkForUpdate(currentVersion: currentVersion)
+    }
+
     func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
         .unavailable(.coordinatorUnavailable)
     }
