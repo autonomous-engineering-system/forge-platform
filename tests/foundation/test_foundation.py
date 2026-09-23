@@ -162,8 +162,18 @@ def main() -> None:
     installer_version = json.loads((ROOT / "installer-version.json").read_text())
     if installer_version.get("product") != "forge-platform-installer":
         raise SystemExit("installer version authority is invalid")
-    if "managed-python-runtime/v1" not in installer_version.get("capabilities", []):
-        raise SystemExit("installer version authority omits exact managed-Python capability")
+    required_installer_capabilities = {
+        "composition/v1",
+        "composition/v2",
+        "managed-deployment/v1",
+        "managed-python-runtime/v1",
+        "provider-fanout/v1",
+        "provider-gate/v1",
+        "provider-targets/v1",
+        "system-launchdaemon/v1",
+    }
+    if not required_installer_capabilities.issubset(set(installer_version.get("capabilities", []))):
+        raise SystemExit("installer version authority omits managed-installer capabilities")
     canonical_versioning = (ROOT / ".github/workflows/canonical-versioning.yml").read_text()
     for required_command in (
         "scripts/validate_installer_version.py",

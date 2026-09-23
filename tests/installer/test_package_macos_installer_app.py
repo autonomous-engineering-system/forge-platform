@@ -865,6 +865,17 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         release_sequence: int = 42,
         release_trust_configuration_sha256: str = "b" * 64,
     ) -> tuple[Path, bytes]:
+        if capabilities is None:
+            capabilities = [
+                "composition/v1",
+                "composition/v2",
+                "managed-deployment/v1",
+                "managed-python-runtime/v1",
+                "provider-fanout/v1",
+                "provider-gate/v1",
+                "provider-targets/v1",
+                "system-launchdaemon/v1",
+            ]
         contents = (
             json.dumps(
                 cls._release_provenance_payload(
