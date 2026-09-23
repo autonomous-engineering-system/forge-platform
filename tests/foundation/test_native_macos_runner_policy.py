@@ -16,6 +16,7 @@ BOOTSTRAP = ROOT / "scripts" / "ci" / "bootstrap_macos_signing_runner.sh"
 READINESS = ROOT / "scripts" / "ci" / "verify_macos_offline_signing_host.sh"
 ACTIONS_SIGNER_GUARD = ROOT / "scripts" / "ci" / "verify_macos_signing_runner.sh"
 OFFLINE_RELEASE = ROOT / "scripts" / "ci" / "offline_macos_installer_sign_and_notarize.sh"
+DESCRIPTOR_KEY_TOOL = ROOT / "scripts" / "ci" / "OfflineInstallerDescriptorKeyTool.swift"
 
 
 class NativeMacRunnerPolicyTests(unittest.TestCase):
@@ -67,6 +68,19 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertNotIn("security find-identity", text)
         self.assertNotIn("notarytool", text)
         self.assertNotIn("codesign --sign", text)
+
+    def test_descriptor_private_key_stays_in_local_data_protection_keychain(self) -> None:
+        text = DESCRIPTOR_KEY_TOOL.read_text(encoding="utf-8")
+        self.assertIn('environment["GITHUB_ACTIONS"] != "true"', text)
+        self.assertIn('environment["RUNNER_NAME"] ?? "").isEmpty', text)
+        self.assertIn("kSecUseDataProtectionKeychain", text)
+        self.assertIn("kSecAttrAccessibleWhenUnlockedThisDeviceOnly", text)
+        self.assertIn("Curve25519.Signing.PrivateKey", text)
+        self.assertIn("SecItemAdd", text)
+        self.assertIn("SecItemCopyMatching", text)
+        self.assertIn("signature_base64url", text)
+        self.assertNotIn("security export", text)
+        self.assertNotIn("find-generic-password", text)
 
     def test_offline_release_signs_notarizes_staples_and_revalidates_final_carrier(self) -> None:
         text = OFFLINE_RELEASE.read_text(encoding="utf-8")

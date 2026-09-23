@@ -51,6 +51,13 @@ jobs:
         run: |
           python3 tests/foundation/test_ci_gate_regressions.py
           python3 tests/foundation/test_required_ci_aggregation.py
+      - name: Compile offline descriptor-key helper without invoking Keychain
+        run: |
+          set -euo pipefail
+          xcrun swiftc scripts/ci/OfflineInstallerDescriptorKeyTool.swift \
+            -framework Security -framework CryptoKit \
+            -o "$RUNNER_TEMP/offline-installer-descriptor-key-tool"
+          test -x "$RUNNER_TEMP/offline-installer-descriptor-key-tool"
       - name: Run native installer tests with coverage
         working-directory: macos/ForgePlatformInstaller
         env:
