@@ -132,11 +132,20 @@ class ProviderTargetTests(unittest.TestCase):
             set(provider["required"]),
             {
                 "identity", "required", "minimum_version", "credential_scope",
-                "owner_component", "target_identity",
+                "owner_component", "target_identity", "runtime",
             },
         )
         self.assertIn("component", provider["properties"]["credential_scope"]["enum"])
         self.assertIn("user", provider["properties"]["credential_scope"]["enum"])
+        runtime = schema["$defs"]["provider_runtime"]
+        self.assertEqual(
+            set(runtime["required"]),
+            {
+                "version", "source_revision", "url", "digest", "qualification",
+                "archive_format", "executable_relative_path",
+            },
+        )
+        self.assertEqual(set(runtime["properties"]["archive_format"]["enum"]), {"tar-gzip", "zip"})
 
     def test_managed_deployment_ep_selection_does_not_require_singleton_claim(self) -> None:
         artifact = QualifiedArtifact(
