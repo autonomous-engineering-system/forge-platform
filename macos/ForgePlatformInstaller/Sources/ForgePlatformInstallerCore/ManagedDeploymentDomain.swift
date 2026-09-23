@@ -9,13 +9,20 @@ public struct ManagedDeploymentTarget: Equatable, Hashable, Sendable, Identifiab
     public let exists: Bool
     public let forgeInstanceID: String?
     public let engineeringPlatformInstanceID: String?
+    /// Present only when a terminal managed-deployment record has bound an
+    /// immutable composition after product readiness and Forge↔EP pairing.
+    /// Legacy topology-only records deliberately expose nil here.
+    public let installedCompositionID: String?
+    public let installedCompositionManifestSHA256: String?
 
     public init(
         id: String,
         label: String? = nil,
         exists: Bool,
         forgeInstanceID: String? = nil,
-        engineeringPlatformInstanceID: String? = nil
+        engineeringPlatformInstanceID: String? = nil,
+        installedCompositionID: String? = nil,
+        installedCompositionManifestSHA256: String? = nil
     ) throws {
         guard Self.isSafeIdentifier(id) else {
             throw ManagedDeploymentTargetError.invalidIdentity
@@ -37,14 +44,34 @@ public struct ManagedDeploymentTarget: Equatable, Hashable, Sendable, Identifiab
         if exists && forgeInstanceID == nil && engineeringPlatformInstanceID == nil {
             throw ManagedDeploymentTargetError.emptyExistingDeployment
         }
-        if !exists && (forgeInstanceID != nil || engineeringPlatformInstanceID != nil) {
+        if !exists && (
+            forgeInstanceID != nil
+                || engineeringPlatformInstanceID != nil
+                || installedCompositionID != nil
+                || installedCompositionManifestSHA256 != nil
+        ) {
             throw ManagedDeploymentTargetError.precreateTargetContainsProductIdentity
+        }
+        guard (installedCompositionID == nil) == (installedCompositionManifestSHA256 == nil) else {
+            throw ManagedDeploymentTargetError.incompleteCompositionProvenance
+        }
+        if let installedCompositionID {
+            guard CompositionCatalogValidation.isCompositionIdentity(installedCompositionID) else {
+                throw ManagedDeploymentTargetError.invalidCompositionIdentity
+            }
+        }
+        if let digest = installedCompositionManifestSHA256 {
+            guard CompositionCatalogValidation.isTaggedSHA256(digest) else {
+                throw ManagedDeploymentTargetError.invalidCompositionManifestSHA256
+            }
         }
         self.id = id
         self.label = label
         self.exists = exists
         self.forgeInstanceID = forgeInstanceID
         self.engineeringPlatformInstanceID = engineeringPlatformInstanceID
+        self.installedCompositionID = installedCompositionID
+        self.installedCompositionManifestSHA256 = installedCompositionManifestSHA256
     }
 
     public var displayName: String {
@@ -83,6 +110,9 @@ public enum ManagedDeploymentTargetError: Error, Equatable, Sendable {
     case invalidIdentity
     case invalidLabel
     case invalidProductInstance
+    case invalidCompositionIdentity
+    case invalidCompositionManifestSHA256
+    case incompleteCompositionProvenance
     case emptyExistingDeployment
     case precreateTargetContainsProductIdentity
 }
