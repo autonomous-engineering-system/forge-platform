@@ -20,9 +20,9 @@ fail() {
 [[ -n "${FORGE_PLATFORM_CODESIGN_IDENTITY:-}" ]] || fail codesign-identity-required
 [[ -n "${FORGE_PLATFORM_NOTARYTOOL_PROFILE:-}" ]] || fail notary-profile-required
 [[ -n "${FORGE_PLATFORM_RELEASE_TRUST_RESOURCE:-}" ]] || fail release-trust-resource-required
-[[ -n "${FORGE_PLATFORM_RELEASE_PROVENANCE_RESOURCE:-}" ]] || fail release-provenance-resource-required
 [[ -n "${FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE:-}" ]] || fail catalog-trust-resource-required
 [[ -n "${FORGE_PLATFORM_OFFLINE_RELEASE_ROOT:-}" ]] || fail offline-release-root-required
+[[ -n "${RELEASE_SEQUENCE:-}" && "$RELEASE_SEQUENCE" =~ ^[1-9][0-9]*$ ]] || fail release-sequence-required
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail git-root-unavailable
 cd "$root"
@@ -85,12 +85,21 @@ cli="$bin_dir/forge-platform-installer"
 file "$gui" | grep -Fq 'arm64' || fail gui-not-arm64
 file "$cli" | grep -Fq 'arm64' || fail cli-not-arm64
 
+provenance="$private/ForgePlatformInstallerReleaseProvenance.json"
+python3 scripts/prepare_offline_installer_resources.py \
+  --release-trust-resource "$FORGE_PLATFORM_RELEASE_TRUST_RESOURCE" \
+  --catalog-trust-resource "$FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE" \
+  --source-sha "$SOURCE_SHA" \
+  --release-sequence "$RELEASE_SEQUENCE" \
+  --output "$provenance" >"$private/provenance.log" 2>&1 \
+  || fail provenance-preparation-failed
+
 app="$work/ForgePlatformInstaller.app"
 python3 scripts/package_macos_installer_app.py \
   --executable "$gui" \
   --cli-executable "$cli" \
   --sealed-release-trust-resource "$FORGE_PLATFORM_RELEASE_TRUST_RESOURCE" \
-  --sealed-release-provenance-resource "$FORGE_PLATFORM_RELEASE_PROVENANCE_RESOURCE" \
+  --sealed-release-provenance-resource "$provenance" \
   --sealed-composition-catalog-trust-resource "$FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE" \
   --output "$app" \
   --bundle-identifier "$(python3 scripts/validate_installer_release_identity.py --field bundle_identifier)" \

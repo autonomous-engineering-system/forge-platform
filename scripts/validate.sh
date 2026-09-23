@@ -33,6 +33,7 @@ python3 tests/installer/test_prepare_installer_release_candidate.py
 python3 tests/installer/test_installer_release_identity.py
 python3 tests/installer/test_installer_release_trust.py
 python3 tests/installer/test_installer_release_provenance.py
+python3 tests/installer/test_prepare_offline_installer_resources.py
 python3 tests/installer/test_composition_catalog_trust.py
 python3 tests/installer/test_package_macos_installer_app.py
 python3 tests/installer/test_package_macos_installer_archive.py
