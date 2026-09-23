@@ -363,6 +363,21 @@ final class InstallerDomainTests: XCTestCase {
         var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
         state.recordSelfUpdateCheck(.verifiedGitHubRelease(try makeRelease("1.2.3")))
         XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .deployment)
+        XCTAssertTrue(state.beginManagedDeploymentInventory())
+        let createTarget = try ManagedDeploymentTarget(
+            id: "deployment-new",
+            label: "Nieuwe deployment",
+            exists: false
+        )
+        let inventory = try ManagedDeploymentInventory(
+            existing: [],
+            createCandidate: createTarget,
+            evidenceReference: "inventory:test"
+        )
+        XCTAssertTrue(state.recordManagedDeploymentInventory(.available(inventory)))
+        XCTAssertTrue(state.selectManagedDeployment("deployment-new"))
+        XCTAssertTrue(state.advance())
         XCTAssertEqual(state.step, .composition)
         return state
     }
