@@ -21,7 +21,7 @@ COMPONENT_IDENTITIES = frozenset({
     "forge-runtime", "workspace-server", "workspace-client",
     "engineering-platform-server", "engineering-platform-project-agent",
 })
-OPERATION_KINDS = frozenset({"install", "update", "repair", "rollback"})
+OPERATION_KINDS = frozenset({"install", "update", "repair", "rollback", "remove"})
 PRODUCT_OPERATION_STATES = frozenset({
     "COMPLETED", "CLEANUP_PENDING", "RECOVERY_PENDING", "FAILED",
 })
@@ -438,6 +438,10 @@ class ComponentOperationCoordinator:
 
     @staticmethod
     def _verify_completed(request: ComponentOperationRequest, observation: ProductInstallationReadback) -> None:
+        if request.kind == "remove":
+            if observation.state != "ABSENT":
+                raise RuntimeError("completed product removal did not report the exact installation absent")
+            return
         if observation.state != "ACTIVE" or observation.health_state != "HEALTHY":
             raise RuntimeError("completed product operation did not report a healthy selected runtime")
         if observation.artifact != request.artifact.correlation:

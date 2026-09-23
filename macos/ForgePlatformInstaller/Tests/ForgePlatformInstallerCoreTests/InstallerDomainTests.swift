@@ -18,7 +18,7 @@ final class InstallerDomainTests: XCTestCase {
         XCTAssertFalse(state.canAdvance)
     }
 
-    func testVerifiedCurrentReleaseLeadsToCompositionSelectionBeforePreflight() throws {
+    func testVerifiedCurrentReleaseLeadsToDeploymentSelectionBeforeCompositionAndPreflight() throws {
         var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
         let release = try makeRelease("1.2.3")
 
@@ -27,8 +27,9 @@ final class InstallerDomainTests: XCTestCase {
         XCTAssertEqual(state.selfUpdate, .current(release))
         XCTAssertTrue(state.canAdvance)
         XCTAssertTrue(state.advance())
-        XCTAssertEqual(state.step, .composition)
+        XCTAssertEqual(state.step, .deployment)
         XCTAssertFalse(state.canAdvance)
+        XCTAssertFalse(state.hasSelectedManagedDeployment)
         XCTAssertFalse(state.providerRequirementsAreProjected)
         XCTAssertTrue(state.providers.isEmpty)
     }
@@ -363,6 +364,21 @@ final class InstallerDomainTests: XCTestCase {
         var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
         state.recordSelfUpdateCheck(.verifiedGitHubRelease(try makeRelease("1.2.3")))
         XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .deployment)
+        XCTAssertTrue(state.beginManagedDeploymentInventory())
+        let createTarget = try ManagedDeploymentTarget(
+            id: "deployment-new",
+            label: "Nieuwe deployment",
+            exists: false
+        )
+        let inventory = try ManagedDeploymentInventory(
+            existing: [],
+            createCandidate: createTarget,
+            evidenceReference: "inventory:test"
+        )
+        XCTAssertTrue(state.recordManagedDeploymentInventory(.available(inventory)))
+        XCTAssertTrue(state.selectManagedDeployment("deployment-new"))
+        XCTAssertTrue(state.advance())
         XCTAssertEqual(state.step, .composition)
         return state
     }
@@ -391,7 +407,7 @@ final class InstallerDomainTests: XCTestCase {
         state.applyProviderActionResult(.installationReady, for: provider, action: .install)
         XCTAssertTrue(state.requestProviderAction(.authenticate, for: provider))
         state.applyProviderActionResult(.verified, for: provider, action: .authenticate)
-        XCTAssertEqual(state.providers.first(where: { $0.id == provider })?.state, .verified)
+        XCTAssertEqual(state.providers.first(where: { $0.requirement.provider == provider })?.state, .verified)
     }
 
     private func makeSessionPlan(

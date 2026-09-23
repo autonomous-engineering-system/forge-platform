@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - "macos/ForgePlatformInstaller/**"
+      - "scripts/check_managed_installer_swift_coverage.py"
       - ".github/workflows/macos-installer-validation.yml"
   push:
     branches: [main]
     paths:
       - "macos/ForgePlatformInstaller/**"
+      - "scripts/check_managed_installer_swift_coverage.py"
       - ".github/workflows/macos-installer-validation.yml"
 
 permissions:
@@ -26,6 +28,22 @@ jobs:
         run: |
           test "$(uname -m)" = "arm64"
           test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
-      - name: Run native installer tests
+      - name: Run native installer tests with coverage
         working-directory: macos/ForgePlatformInstaller
-        run: swift test
+        env:
+          FORGE_PLATFORM_UI_ARTIFACT_DIR: ${{ runner.temp }}/forge-platform-ui-screenshots
+        run: swift test --enable-code-coverage
+      - name: Upload read-only native UI screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: forge-platform-read-only-ui-${{ github.sha }}
+          path: ${{ runner.temp }}/forge-platform-ui-screenshots
+          if-no-files-found: error
+          retention-days: 14
+      - name: Report changed production-file coverage
+        working-directory: macos/ForgePlatformInstaller
+        run: |
+          coverage_path="$(swift test --show-codecov-path)"
+          test -n "$coverage_path"
+          python3 ../../scripts/check_managed_installer_swift_coverage.py "$coverage_path" --minimum 80.2

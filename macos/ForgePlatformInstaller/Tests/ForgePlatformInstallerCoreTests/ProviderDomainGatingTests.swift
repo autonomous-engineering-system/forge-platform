@@ -222,6 +222,67 @@ final class ProviderDomainGatingTests: XCTestCase {
         XCTAssertFalse(state.canAdvance)
     }
 
+    func testSameProviderIdentityCanHaveIndependentForgeAndEPTargets() throws {
+        let forge = ProviderRequirement(
+            provider: .codex,
+            isRequired: true,
+            minimumVersion: try InstallerVersion("1.0.0"),
+            credentialScope: .component,
+            ownerComponent: .forgeRuntime,
+            targetIdentity: "forge-prod"
+        )
+        let ep = ProviderRequirement(
+            provider: .codex,
+            isRequired: true,
+            minimumVersion: try InstallerVersion("1.0.0"),
+            credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer,
+            targetIdentity: "ep-prod"
+        )
+        var state = try providerState([forge, ep])
+
+        XCTAssertEqual(Set(state.providers.map(\.id)), Set([forge.id, ep.id]))
+        XCTAssertFalse(state.requestProviderAction(.install, for: .codex))
+        XCTAssertTrue(state.requestProviderTargetAction(.install, for: forge.id))
+        state.applyProviderTargetActionResult(
+            .authenticationRequired,
+            for: forge.id,
+            action: .install
+        )
+        XCTAssertTrue(state.requestProviderTargetAction(.authenticate, for: forge.id))
+        state.applyProviderTargetActionResult(.verified, for: forge.id, action: .authenticate)
+
+        XCTAssertFalse(state.enabledProvidersVerified)
+        XCTAssertEqual(
+            state.providers.first(where: { $0.id == forge.id })?.state,
+            .verified
+        )
+        XCTAssertNotEqual(
+            state.providers.first(where: { $0.id == ep.id })?.state,
+            .verified
+        )
+    }
+
+    func testProjectAgentRemainsUserOwnedWhileServerProviderIsComponentOwned() throws {
+        let agent = ProviderRequirement(
+            provider: .codex,
+            isRequired: true,
+            credentialScope: .user,
+            ownerComponent: .engineeringPlatformProjectAgent,
+            targetIdentity: "user-501-agent"
+        )
+        let server = ProviderRequirement(
+            provider: .codex,
+            isRequired: true,
+            credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer,
+            targetIdentity: "ep-prod"
+        )
+        XCTAssertEqual(agent.credentialScope, .user)
+        XCTAssertEqual(server.credentialScope, .component)
+        XCTAssertNotEqual(agent.id, server.id)
+    }
+
     func testUnavailableCoordinatorReturnsTypedCompositionSessionResult() async {
         let result = await UnavailableInstallerWizardCoordinator().prepareVerifiedCompositionSession()
 
@@ -232,6 +293,21 @@ final class ProviderDomainGatingTests: XCTestCase {
     private func compositionSelectionState() throws -> InstallerWizardState {
         var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
         state.recordSelfUpdateCheck(.verifiedGitHubRelease(try makeRelease("1.2.3")))
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .deployment)
+        XCTAssertTrue(state.beginManagedDeploymentInventory())
+        let createTarget = try ManagedDeploymentTarget(
+            id: "deployment-new",
+            label: "Nieuwe deployment",
+            exists: false
+        )
+        let inventory = try ManagedDeploymentInventory(
+            existing: [],
+            createCandidate: createTarget,
+            evidenceReference: "inventory:test"
+        )
+        XCTAssertTrue(state.recordManagedDeploymentInventory(.available(inventory)))
+        XCTAssertTrue(state.selectManagedDeployment("deployment-new"))
         XCTAssertTrue(state.advance())
         XCTAssertEqual(state.step, .composition)
         return state
@@ -264,7 +340,10 @@ final class ProviderDomainGatingTests: XCTestCase {
         state.applyProviderActionResult(.installationReady, for: provider, action: .install)
         XCTAssertTrue(state.requestProviderAction(.authenticate, for: provider))
         state.applyProviderActionResult(.verified, for: provider, action: .authenticate)
-        XCTAssertEqual(state.providers.first(where: { $0.id == provider })?.state, .verified)
+        XCTAssertEqual(
+            state.providers.first(where: { $0.requirement.provider == provider })?.state,
+            .verified
+        )
     }
 
     private func makeSessionPlan(
