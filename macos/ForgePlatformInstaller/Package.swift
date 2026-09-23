@@ -7,11 +7,19 @@ let package = Package(
     products: [
         .library(name: "ForgePlatformInstallerCore", targets: ["ForgePlatformInstallerCore"]),
         .executable(name: "ForgePlatformInstaller", targets: ["ForgePlatformInstaller"]),
+        .executable(
+            name: "ForgePlatformInstallerReleaseCrypto",
+            targets: ["ForgePlatformInstallerReleaseCrypto"]
+        ),
     ],
     targets: [
         .target(name: "ForgePlatformInstallerCore"),
         .executableTarget(
             name: "ForgePlatformInstaller",
+            dependencies: ["ForgePlatformInstallerCore"]
+        ),
+        .executableTarget(
+            name: "ForgePlatformInstallerReleaseCrypto",
             dependencies: ["ForgePlatformInstallerCore"]
         ),
         .testTarget(
