@@ -188,58 +188,72 @@ private final class Fixture: @unchecked Sendable {
         verifiedAt: Date,
         minimumInstallerVersion: String = "1.0.0"
     ) throws {
-        self.verifiedAt = verifiedAt
-        currentInstaller = try Self.currentContext()
-        freshDeployment = try ManagedDeploymentTarget(
+        let context = try Self.currentContext()
+        let deployment = try ManagedDeploymentTarget(
             id: "deployment-new",
             label: "New deployment",
             exists: false
         )
-        manifestBytes = Self.manifestData()
-        manifestLocator = VerifiedCompositionCatalogDocumentLocator(
+        let manifest = Self.manifestData()
+        let manifestLocation = VerifiedCompositionCatalogDocumentLocator(
             url: "https://catalog.example.invalid/manifests/forge-ep-managed-v1.json",
-            sha256: "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: manifestBytes)
+            sha256: "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: manifest)
         )
-        indexBytes = try Self.indexData(
-            manifest: manifestLocator,
+        let index = try Self.indexData(
+            manifest: manifestLocation,
             minimumInstallerVersion: minimumInstallerVersion
         )
-        indexLocator = VerifiedCompositionCatalogDocumentLocator(
+        let indexLocation = VerifiedCompositionCatalogDocumentLocator(
             url: "https://catalog.example.invalid/index.json",
-            sha256: "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: indexBytes)
+            sha256: "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: index)
         )
         let scope = try CompositionCatalogAcceptanceScope(
             installerReleaseTrustConfigurationSHA256:
-                currentInstaller.installerReleaseTrustConfigurationSHA256,
+                context.installerReleaseTrustConfigurationSHA256,
             channel: .stable,
-            feed: currentInstaller.compositionCatalogFeed
+            feed: context.compositionCatalogFeed
         )
         let identity = try VerifiedCompositionCatalogIdentity(
             sequence: 10,
             sha256: "sha256:" + String(repeating: "a", count: 64)
         )
-        let acceptance = CompositionCatalogAcceptance(scope: scope, identity: identity)
-        outerCatalog = VerifiedCompositionCatalog(
+        let catalogAcceptance = CompositionCatalogAcceptance(
+            scope: scope,
+            identity: identity
+        )
+        let outer = VerifiedCompositionCatalog(
             identity: identity,
             channel: .stable,
             publishedAt: verifiedAt.addingTimeInterval(-60),
             expiresAt: verifiedAt.addingTimeInterval(3600),
             approvedPythonRuntimeIdentity: "sha256:" + String(repeating: "9", count: 64),
             entries: [],
-            componentCombinationCatalog: indexLocator,
-            candidateAcceptance: acceptance
+            componentCombinationCatalog: indexLocation,
+            candidateAcceptance: catalogAcceptance
         )
-        documents = DocumentFetcherStub(responses: [
-            indexLocator.url: .success(indexBytes),
-            manifestLocator.url: .success(manifestBytes),
+        let documentFetcher = DocumentFetcherStub(responses: [
+            indexLocation.url: .success(index),
+            manifestLocation.url: .success(manifest),
         ])
-        self.acceptance = ComponentAcceptanceStub(result: .success(nil))
-        admission = try AdmissionStub(result: .success(
-            VerifiedCompositionCatalogAdmission(
-                catalog: outerCatalog,
+        let acceptanceReader = ComponentAcceptanceStub(result: .success(nil))
+        let admissionStub = AdmissionStub(result: .success(
+            try VerifiedCompositionCatalogAdmission(
+                catalog: outer,
                 verifiedAt: verifiedAt
             )
         ))
+
+        self.verifiedAt = verifiedAt
+        currentInstaller = context
+        freshDeployment = deployment
+        manifestBytes = manifest
+        manifestLocator = manifestLocation
+        indexBytes = index
+        indexLocator = indexLocation
+        outerCatalog = outer
+        documents = documentFetcher
+        acceptance = acceptanceReader
+        admission = admissionStub
     }
 
     func preparer(
