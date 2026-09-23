@@ -2122,7 +2122,6 @@ class ProviderSelection:
     enabled: bool
     owner_component: str | None = None
     target_identity: str | None = None
-    executable_digest: str | None = None
 
     def __post_init__(self) -> None:
         if self.identity not in PROVIDER_IDENTITIES:
@@ -2153,6 +2152,7 @@ class ProviderReadback:
     evidence_reference: str
     owner_component: str | None = None
     target_identity: str | None = None
+    executable_digest: str | None = None
 
     def __post_init__(self) -> None:
         if self.identity not in PROVIDER_IDENTITIES:
