@@ -345,8 +345,11 @@ class SigningReadinessContractTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIsNone(signed)
 
-    def test_invalid_team_and_runner_name_fail(self) -> None:
-        for override in ({"FORGE_PLATFORM_APPLE_TEAM_ID": "invalid"}, {"RUNNER_NAME": ""}):
+    def test_invalid_team_and_signer_account_fail(self) -> None:
+        for override in (
+            {"FORGE_PLATFORM_APPLE_TEAM_ID": "invalid"},
+            {"FORGE_PLATFORM_SIGNER_ACCOUNT": "definitely-not-current-user"},
+        ):
             result, _, signed, _ = self.run_gate(overrides=override)
             self.assertNotEqual(result.returncode, 0)
             self.assertIsNone(signed)
