@@ -66,18 +66,19 @@ final class InstallerWizardViewModel: ObservableObject {
         }
     }
 
-    func setProviderSelected(_ provider: ProviderID, isSelected: Bool) {
-        _ = state.setProviderSelected(provider, isSelected: isSelected)
+    func setProviderSelected(_ target: ProviderTargetID, isSelected: Bool) {
+        _ = state.setProviderSelected(target, isSelected: isSelected)
     }
 
-    func performProviderAction(_ action: ProviderAction, provider: ProviderID) {
-        guard state.requestProviderAction(action, for: provider) else {
+    func performProviderAction(_ action: ProviderAction, target: ProviderTargetID) {
+        guard let requirement = state.providers.first(where: { $0.id == target })?.requirement,
+              state.requestProviderAction(action, for: target) else {
             return
         }
         let coordinator = coordinator
         Task { @MainActor [weak self] in
-            let result = await coordinator.performProviderAction(action, for: provider)
-            self?.state.applyProviderActionResult(result, for: provider, action: action)
+            let result = await coordinator.performProviderAction(action, for: requirement)
+            self?.state.applyProviderActionResult(result, for: target, action: action)
         }
     }
 
@@ -402,7 +403,7 @@ private struct ProviderScreen: View {
                 ContentUnavailableView(
                     "Geen gebruikersproviders vereist",
                     systemImage: "person.badge.key",
-                    description: Text("De geverifieerde compositiesessie heeft geen user-scoped providervereisten. Deze stap kan alleen door wanneer die sessie nog steeds geldig is."))
+                    description: Text("De geverifieerde compositiesessie heeft geen providervereisten. Deze stap kan alleen door wanneer die sessie nog steeds geldig is."))
             } else {
                 ForEach(viewModel.state.providers) { provider in
                     ProviderRow(provider: provider, viewModel: viewModel)
@@ -437,6 +438,12 @@ private struct ProviderRow: View {
                     ) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(provider.requirement.provider.displayName).fontWeight(.semibold)
+                            if let owner = provider.requirement.ownerComponent,
+                               let target = provider.requirement.targetIdentity {
+                                Text("\(owner.rawValue) · \(target)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                             Text(provider.requirement.provider.installationScope)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -462,7 +469,7 @@ private struct ProviderRow: View {
 
                 if let action = nextAction(for: provider) {
                     Button(label(for: action)) {
-                        viewModel.performProviderAction(action, provider: provider.id)
+                        viewModel.performProviderAction(action, target: provider.id)
                     }
                 }
             }
