@@ -30,7 +30,8 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
             fixture.indexLocator.url,
             fixture.manifestLocator.url,
         ])
-        XCTAssertEqual(await fixture.acceptance.readCount(), 1)
+        let acceptanceReadCount = await fixture.acceptance.readCount()
+        XCTAssertEqual(acceptanceReadCount, 1)
     }
 
     func testAdmissionOrMissingIndexFailsBeforeDocumentFetch() async throws {
@@ -66,7 +67,8 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
             ),
             .unavailable(.selectionUnavailable)
         )
-        XCTAssertTrue(await fixture.documents.requestedURLs().isEmpty)
+        let requestedURLs = await fixture.documents.requestedURLs()
+        XCTAssertTrue(requestedURLs.isEmpty)
     }
 
     func testIndexTransportVerificationAndAcceptanceFailuresStayClosed() async throws {
