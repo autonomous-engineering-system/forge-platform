@@ -466,6 +466,11 @@ final class InstallerDomainTests: XCTestCase {
 
     private func acceptedSessionState(_ requirements: [ProviderRequirement]) throws -> InstallerWizardState {
         var state = try compositionSelectionState()
+        XCTAssertTrue(state.applyComponentPreset(.forgeAndEPServers))
+        XCTAssertEqual(
+            state.componentSelection.selected,
+            Set([InstallerComponentID.forgeRuntime, .engineeringPlatformServer])
+        )
         XCTAssertTrue(state.beginSessionPreparation())
         XCTAssertTrue(state.recordSessionPreparation(.prepared(try makeSessionPlan(requirements: requirements))))
         return state
@@ -519,6 +524,10 @@ final class InstallerDomainTests: XCTestCase {
                 sha256: "sha256:" + String(repeating: "d", count: 64)
             ),
             componentSelectionSequence: componentSelectionSequence,
+            componentIdentities: Set([
+                InstallerComponentID.forgeRuntime.rawValue,
+                InstallerComponentID.engineeringPlatformServer.rawValue,
+            ]),
             providerRequirements: requirements
         )
     }
