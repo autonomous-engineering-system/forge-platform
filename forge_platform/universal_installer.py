@@ -69,6 +69,8 @@ PROVIDER_OWNER_COMPONENTS = frozenset({
     "forge-runtime", "engineering-platform-server", "engineering-platform-project-agent",
 })
 PROVIDER_STATES = frozenset({"ABSENT", "INSTALLED", "AUTHENTICATION_REQUIRED", "VERIFIED", "FAILED"})
+PROVIDER_ARCHIVE_FORMATS = frozenset({"tar-gzip", "zip"})
+_PROVIDER_EXECUTABLE_BASENAMES = {"codex": "codex", "github-cli": "gh"}
 TOOL_STATES = frozenset({"ABSENT", "ACTIVE", "UNKNOWN"})
 SERVICE_COMPONENTS = frozenset({"forge-runtime", "workspace-server", "engineering-platform-server"})
 LOCAL_COMPONENTS = frozenset({"workspace-client", "engineering-platform-project-agent"})
@@ -2045,6 +2047,58 @@ def _validate_provider_target(
 
 
 @dataclass(frozen=True)
+class ProviderRuntimeArtifact:
+    """Exact immutable provider CLI bytes selected by composition/v2."""
+
+    version: SemanticVersion
+    source_revision: str
+    url: str
+    digest: str
+    qualification: str
+    archive_format: str
+    executable_relative_path: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.version, SemanticVersion):
+            raise ValueError("provider runtime version must be semantic")
+        revision = _required(self.source_revision, "provider runtime source_revision")
+        if (
+            len(revision) > 128
+            or re.fullmatch(r"[A-Za-z0-9._/-]+", revision) is None
+            or ".." in revision.split("/")
+        ):
+            raise ValueError("provider runtime source_revision is invalid")
+        _https_url(self.url, "provider runtime URL")
+        _digest(self.digest, "provider runtime digest")
+        qualification = _required(self.qualification, "provider runtime qualification")
+        if len(qualification) > 2048:
+            raise ValueError("provider runtime qualification is too long")
+        if self.archive_format not in PROVIDER_ARCHIVE_FORMATS:
+            raise ValueError("provider runtime archive_format is unsupported")
+        path = self.executable_relative_path
+        if (
+            not isinstance(path, str)
+            or not path
+            or len(path) > 256
+            or path.startswith("/")
+            or "\\" in path
+            or any(segment in {"", ".", ".."} for segment in path.split("/"))
+            or re.fullmatch(r"[A-Za-z0-9._/-]+", path) is None
+        ):
+            raise ValueError("provider runtime executable_relative_path is unsafe")
+
+    def verify_provider_identity(self, provider: str) -> None:
+        expected = _PROVIDER_EXECUTABLE_BASENAMES.get(provider)
+        if expected is None:
+            raise ValueError("provider runtime identity is unsupported")
+        basename = self.executable_relative_path.rsplit("/", 1)[-1]
+        if basename != expected and not (
+            provider == "codex" and basename.startswith("codex-")
+        ):
+            raise ValueError("provider runtime executable does not match provider identity")
+
+
+@dataclass(frozen=True)
 class ProviderRequirement:
     """One provider requirement bound to its owning component-instance target.
 
@@ -2060,6 +2114,7 @@ class ProviderRequirement:
     credential_scope: str = "user"
     owner_component: str | None = None
     target_identity: str | None = None
+    runtime: ProviderRuntimeArtifact | None = None
 
     def __post_init__(self) -> None:
         _validate_provider_target(
@@ -2069,6 +2124,12 @@ class ProviderRequirement:
             raise ValueError("provider required must be boolean")
         if self.minimum_version is not None and not isinstance(self.minimum_version, SemanticVersion):
             raise ValueError("provider minimum version must be semantic")
+        if self.runtime is not None:
+            if not isinstance(self.runtime, ProviderRuntimeArtifact):
+                raise ValueError("provider runtime artifact is invalid")
+            self.runtime.verify_provider_identity(self.identity)
+            if self.minimum_version is not None and self.runtime.version < self.minimum_version:
+                raise ValueError("provider runtime is older than the required minimum")
 
     @property
     def key(self) -> str:
@@ -2564,7 +2625,7 @@ def _parse_providers(value: object, *, schema: str = COMPOSITION_SCHEMA) -> tupl
                 entry,
                 frozenset({
                     "identity", "required", "minimum_version", "credential_scope",
-                    "owner_component", "target_identity",
+                    "owner_component", "target_identity", "runtime",
                 }),
                 "provider",
             )
@@ -2573,6 +2634,25 @@ def _parse_providers(value: object, *, schema: str = COMPOSITION_SCHEMA) -> tupl
         else:
             raise ValueError("provider schema is unsupported")
         version = item["minimum_version"]
+        runtime = None
+        if schema == COMPOSITION_SCHEMA_V2:
+            runtime_payload = _mapping(
+                item["runtime"],
+                frozenset({
+                    "version", "source_revision", "url", "digest", "qualification",
+                    "archive_format", "executable_relative_path",
+                }),
+                "provider runtime",
+            )
+            runtime = ProviderRuntimeArtifact(
+                SemanticVersion.parse(runtime_payload["version"], "provider runtime version"),
+                _required(runtime_payload["source_revision"], "provider runtime source_revision"),
+                _https_url(runtime_payload["url"], "provider runtime URL"),
+                _digest(runtime_payload["digest"], "provider runtime digest"),
+                _required(runtime_payload["qualification"], "provider runtime qualification"),
+                _required(runtime_payload["archive_format"], "provider runtime archive_format"),
+                _required(runtime_payload["executable_relative_path"], "provider runtime executable_relative_path"),
+            )
         result.append(ProviderRequirement(
             _required(item["identity"], "provider identity"),
             _boolean(item["required"], "provider required"),
@@ -2580,6 +2660,7 @@ def _parse_providers(value: object, *, schema: str = COMPOSITION_SCHEMA) -> tupl
             _required(item["credential_scope"], "provider credential_scope"),
             owner_component,
             target_identity,
+            runtime,
         ))
     return tuple(result)
 
