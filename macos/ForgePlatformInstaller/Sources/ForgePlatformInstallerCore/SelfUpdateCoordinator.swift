@@ -553,6 +553,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     private var checkedCurrentReleaseRecord: VerifiedInstallerReleaseRecord?
     private var currentVerifiedReleaseRecord: VerifiedInstallerReleaseRecord?
     private var preparedCompositionSession: VerifiedCompositionSessionPlan?
+    private var preparedCompositionSessionTarget: ManagedDeploymentTarget?
     /// A selector may perform independent verification asynchronously.  Admit
     /// only one request for a current release generation; a second request
     /// cannot create a competing catalog/index/manifest decision while the
@@ -724,11 +725,16 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     /// the default remains unavailable, and a future implementation is still
     /// responsible for catalog/index/manifest verification under its own
     /// reviewed policy.
-    public func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
+    public func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult {
         guard let currentVerifiedReleaseRecord else {
             return .unavailable(.selectionUnavailable)
         }
         if let preparedCompositionSession {
+            guard preparedCompositionSessionTarget == deployment else {
+                return .unavailable(.selectionUnavailable)
+            }
             return .prepared(preparedCompositionSession)
         }
 
@@ -738,7 +744,10 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             return .unavailable(.selectionUnavailable)
         }
         inFlightCompositionSessionGeneration = generation
-        let result = await compositionSessionPreparer.prepareVerifiedCompositionSession(for: context)
+        let result = await compositionSessionPreparer.prepareVerifiedCompositionSession(
+            for: context,
+            deployment: deployment
+        )
 
         // Actor reentrancy permits a concurrent update check or a second
         // preparation request while the collaborator is suspended.  A result
@@ -766,6 +775,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                 return .prepared(preparedCompositionSession)
             }
             self.preparedCompositionSession = plan
+            self.preparedCompositionSessionTarget = deployment
             return .prepared(plan)
         }
     }
@@ -1143,6 +1153,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         checkedCurrentReleaseRecord = nil
         currentVerifiedReleaseRecord = nil
         preparedCompositionSession = nil
+        preparedCompositionSessionTarget = nil
         inFlightCompositionSessionGeneration = nil
         compositionSessionGeneration &+= 1
     }

@@ -28,7 +28,8 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
             componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
                 sequence: 11, sha256: "sha256:" + String(repeating: "c", count: 64)
             ),
-            currentInstaller: context
+            currentInstaller: context,
+            selectedDeployment: existingDeployment()
         )
         guard case .success(let plan) = result else {
             return XCTFail("expected a v2 session plan")
@@ -72,7 +73,8 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
             componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
                 sequence: 13, sha256: "sha256:" + String(repeating: "d", count: 64)
             ),
-            currentInstaller: try currentContext()
+            currentInstaller: try currentContext(),
+            selectedDeployment: existingDeployment()
         )
         guard case .success(let plan) = result,
               let provider = plan.providerRequirements.first,
@@ -115,7 +117,8 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
             componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
                 sequence: 13, sha256: "sha256:" + String(repeating: "d", count: 64)
             ),
-            currentInstaller: try currentContext()
+            currentInstaller: try currentContext(),
+            selectedDeployment: existingDeployment()
         )
         XCTAssertEqual(result, .failure(.rejected))
     }
@@ -136,7 +139,8 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
             componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
                 sequence: 11, sha256: "sha256:" + String(repeating: "c", count: 64)
             ),
-            currentInstaller: try currentContext()
+            currentInstaller: try currentContext(),
+            selectedDeployment: existingDeployment()
         )
         XCTAssertEqual(result, .failure(.rejected))
     }
@@ -157,7 +161,8 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
                 componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
                     sequence: 11, sha256: "sha256:" + String(repeating: "c", count: 64)
                 ),
-                currentInstaller: try currentContext()
+                currentInstaller: try currentContext(),
+                selectedDeployment: existingDeployment()
             ),
             .failure(.rejected)
         )
@@ -178,9 +183,42 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
                 componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
                     sequence: 11, sha256: "sha256:" + String(repeating: "c", count: 64)
                 ),
-                currentInstaller: try currentContext()
+                currentInstaller: try currentContext(),
+                selectedDeployment: existingDeployment()
             ),
             .failure(.rejected)
+        )
+    }
+
+    func testV2ManifestRejectsProviderTargetFromDifferentExistingDeployment() throws {
+        let manifest = manifestData(providers: [[
+            "identity": "codex", "required": true, "minimum_version": "1.0.0",
+            "credential_scope": "component", "owner_component": "forge-runtime",
+            "target_identity": "forge-other",
+        ]])
+        let result = ManagedCompositionSessionPlanBuilder().build(
+            sessionID: "managed-session-wrong-target",
+            manifestBytes: manifest,
+            selectedEntry: try selectedEntry(manifest: manifest),
+            compositionCatalogIdentity: try VerifiedCompositionCatalogIdentity(
+                sequence: 10, sha256: "sha256:" + String(repeating: "b", count: 64)
+            ),
+            componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
+                sequence: 11, sha256: "sha256:" + String(repeating: "c", count: 64)
+            ),
+            currentInstaller: try currentContext(),
+            selectedDeployment: existingDeployment()
+        )
+        XCTAssertEqual(result, .failure(.rejected))
+    }
+
+    private func existingDeployment() -> ManagedDeploymentTarget {
+        try! ManagedDeploymentTarget(
+            id: "production",
+            label: "Production",
+            exists: true,
+            forgeInstanceID: "forge-prod",
+            engineeringPlatformInstanceID: "ep-prod"
         )
     }
 

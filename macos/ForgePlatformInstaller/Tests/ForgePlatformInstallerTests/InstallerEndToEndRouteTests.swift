@@ -289,7 +289,10 @@ private actor FullRouteCoordinatorSpy: InstallerWizardCoordinator {
         }
     }
 
-    func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
+    func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult {
+        _ = deployment
         recordedCalls.append("session")
         return .prepared(session)
     }

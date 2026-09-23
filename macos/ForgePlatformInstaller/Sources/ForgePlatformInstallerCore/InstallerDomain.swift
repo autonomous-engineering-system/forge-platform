@@ -1544,10 +1544,13 @@ public protocol InstallerWizardCoordinator: Sendable {
     /// Inventory existing managed deployments plus one coordinator-generated
     /// create target. This operation is read-only.
     func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult
-    /// Prepare exactly one verified composition session after the mandatory
-    /// self-update and managed-deployment gates. Implementations must not return
-    /// catalog bytes, URLs, commands, credentials, product readbacks or an operation authority.
-    func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult
+    /// Prepare exactly one verified composition session for the selected
+    /// managed deployment after the mandatory self-update gate. Implementations
+    /// must not return catalog bytes, URLs, commands, credentials, product
+    /// readbacks or an operation authority.
+    func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult
     /// Read-only host/tool preflight for the exact accepted session/deployment.
     func prepareHostPreflight(
         session: VerifiedCompositionSessionPlan,
@@ -1584,8 +1587,11 @@ public extension InstallerWizardCoordinator {
         .unavailable(.coordinatorUnavailable)
     }
 
-    func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
-        .unavailable(.coordinatorUnavailable)
+    func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult {
+        _ = deployment
+        return .unavailable(.coordinatorUnavailable)
     }
 
     func prepareHostPreflight(
@@ -1645,8 +1651,11 @@ public struct UnavailableInstallerWizardCoordinator: InstallerWizardCoordinator 
         .failed("Geen vertrouwde bootstrapper gekoppeld voor download, verificatie en herstart.")
     }
 
-    public func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
-        .unavailable(.coordinatorUnavailable)
+    public func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult {
+        _ = deployment
+        return .unavailable(.coordinatorUnavailable)
     }
 
     public func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult {

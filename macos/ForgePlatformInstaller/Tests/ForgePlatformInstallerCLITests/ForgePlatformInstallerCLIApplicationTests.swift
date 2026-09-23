@@ -251,7 +251,10 @@ private actor CLIReadyCoordinator: InstallerWizardCoordinator {
         }
     }
 
-    func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
+    func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult {
+        _ = deployment
         .unavailable(.coordinatorUnavailable)
     }
 

@@ -219,7 +219,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             compositionSessionPreparer: preparer
         )
 
-        let result = await coordinator.prepareVerifiedCompositionSession()
+        let result = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
         let feedCalls = await feed.callCount()
         let preparerCalls = await preparer.callCount()
 
@@ -244,7 +244,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
 
         let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
-        let result = await coordinator.prepareVerifiedCompositionSession()
+        let result = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
 
         XCTAssertEqual(enforcement, .current(release.release))
         XCTAssertEqual(result, .unavailable(.coordinatorUnavailable))
@@ -269,8 +269,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
 
         let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
-        let first = await coordinator.prepareVerifiedCompositionSession()
-        let second = await coordinator.prepareVerifiedCompositionSession()
+        let first = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
+        let second = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
         let contexts = await preparer.contexts()
 
         XCTAssertEqual(enforcement, .current(release.release))
@@ -278,6 +278,35 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(second, .prepared(plan))
         XCTAssertEqual(contexts, [CurrentVerifiedInstallerCompositionContext(release: release)])
         XCTAssertEqual(contexts.first?.compositionCatalogFeed, release.compositionCatalogFeed)
+    }
+
+    func testCachedSessionCannotBeReusedForAnotherManagedDeployment() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256
+        )
+        let plan = try makeSessionPlan(for: release)
+        let preparer = SessionPreparerSpy(result: .prepared(plan))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
+        )
+
+        _ = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let first = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
+        let other = try ManagedDeploymentTarget(id: "deployment-other", exists: false)
+        let second = await coordinator.prepareVerifiedCompositionSession(for: other)
+
+        XCTAssertEqual(first, .prepared(plan))
+        XCTAssertEqual(second, .unavailable(.selectionUnavailable))
+        let preparerCalls = await preparer.callCount()
+        XCTAssertEqual(preparerCalls, 1)
     }
 
     func testSessionPlanWithMismatchedCurrentInstallerEvidenceFailsClosed() async throws {
@@ -302,7 +331,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
 
         let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
-        let result = await coordinator.prepareVerifiedCompositionSession()
+        let result = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
         let preparerCalls = await preparer.callCount()
 
         XCTAssertEqual(enforcement, .current(release.release))
@@ -332,7 +361,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
 
         let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
-        let result = await coordinator.prepareVerifiedCompositionSession()
+        let result = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
 
         XCTAssertEqual(enforcement, .current(release.release))
         XCTAssertEqual(result, .unavailable(.selectionUnavailable))
@@ -362,7 +391,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
 
         let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
-        let result = await coordinator.prepareVerifiedCompositionSession()
+        let result = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
         let preparerCalls = await preparer.callCount()
 
         XCTAssertEqual(enforcement, .current(release.release))
@@ -390,17 +419,17 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
 
         let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
         XCTAssertEqual(enforcement, .current(release.release))
-        let firstTask = Task { await coordinator.prepareVerifiedCompositionSession() }
+        let firstTask = Task { await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment()) }
         guard await waitForSessionPreparerCall(preparer) else {
             await preparer.resumeNext(with: .unavailable(.selectionUnavailable))
             _ = await firstTask.value
             return XCTFail("The first session preparer was not invoked")
         }
-        let concurrent = await coordinator.prepareVerifiedCompositionSession()
+        let concurrent = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
         let preparerCalls = await preparer.callCount()
         await preparer.resumeNext(with: .prepared(plan))
         let first = await firstTask.value
-        let cached = await coordinator.prepareVerifiedCompositionSession()
+        let cached = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
 
         XCTAssertEqual(concurrent, .unavailable(.selectionUnavailable))
         XCTAssertEqual(preparerCalls, 1)
@@ -428,7 +457,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
 
         let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
         XCTAssertEqual(enforcement, .current(release.release))
-        let task = Task { await coordinator.prepareVerifiedCompositionSession() }
+        let task = Task { await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment()) }
         guard await waitForSessionPreparerCall(preparer) else {
             await preparer.resumeNext(with: .unavailable(.selectionUnavailable))
             _ = await task.value
@@ -438,7 +467,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         let recheck = await coordinator.checkForUpdate(currentVersion: current.version)
         await preparer.resumeNext(with: .prepared(plan))
         let inFlightResult = await task.value
-        let nextPreparation = await coordinator.prepareVerifiedCompositionSession()
+        let nextPreparation = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
 
         XCTAssertEqual(recheck, .verifiedGitHubRelease(release.release))
         XCTAssertEqual(inFlightResult, .unavailable(.selectionUnavailable))
@@ -1043,6 +1072,14 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
     }
 
+    private func sessionDeployment() -> ManagedDeploymentTarget {
+        try! ManagedDeploymentTarget(
+            id: "deployment-new",
+            label: "Nieuwe deployment",
+            exists: false
+        )
+    }
+
     private func makeCoordinator(
         feed: any SignedInstallerReleaseFeedVerifying,
         inspector: any CurrentInstallerBundleInspecting,
@@ -1272,8 +1309,10 @@ private actor SessionPreparerSpy: VerifiedCompositionSessionPreparing {
     }
 
     func prepareVerifiedCompositionSession(
-        for currentInstaller: CurrentVerifiedInstallerCompositionContext
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget
     ) async -> InstallerSessionPreparationResult {
+        _ = deployment
         receivedContexts.append(currentInstaller)
         return result
     }
@@ -1291,9 +1330,11 @@ private actor BlockingSessionPreparer: VerifiedCompositionSessionPreparing {
     private var continuations: [CheckedContinuation<InstallerSessionPreparationResult, Never>] = []
 
     func prepareVerifiedCompositionSession(
-        for currentInstaller: CurrentVerifiedInstallerCompositionContext
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget
     ) async -> InstallerSessionPreparationResult {
         _ = currentInstaller
+        _ = deployment
         return await withCheckedContinuation { continuation in
             continuations.append(continuation)
         }

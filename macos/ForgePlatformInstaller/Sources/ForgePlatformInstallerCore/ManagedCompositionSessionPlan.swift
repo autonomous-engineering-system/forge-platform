@@ -23,7 +23,8 @@ struct ManagedCompositionSessionPlanBuilder {
         selectedEntry: VerifiedComponentCombinationCatalogEntry,
         compositionCatalogIdentity: VerifiedCompositionCatalogIdentity,
         componentCombinationCatalogIdentity: VerifiedCompositionCatalogIdentity,
-        currentInstaller: CurrentVerifiedInstallerCompositionContext
+        currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        selectedDeployment: ManagedDeploymentTarget
     ) -> Result<VerifiedCompositionSessionPlan, ManagedCompositionSessionPlanFailure> {
         do {
             guard !manifestBytes.isEmpty,
@@ -58,7 +59,8 @@ struct ManagedCompositionSessionPlanBuilder {
             let requirements = try providerValues.map {
                 try Self.providerRequirement($0, schema: schema)
             }
-            guard Set(requirements.map(\.id)).count == requirements.count else {
+            guard Set(requirements.map(\.id)).count == requirements.count,
+                  Self.providerRequirements(requirements, bindTo: selectedDeployment) else {
                 throw ManagedCompositionSessionPlanFailure.rejected
             }
 
@@ -218,6 +220,31 @@ struct ManagedCompositionSessionPlanBuilder {
             targetIdentity: target,
             runtime: runtime
         )
+    }
+
+    private static func providerRequirements(
+        _ requirements: [ProviderRequirement],
+        bindTo deployment: ManagedDeploymentTarget
+    ) -> Bool {
+        for requirement in requirements {
+            guard let owner = requirement.ownerComponent,
+                  let target = requirement.targetIdentity else {
+                continue
+            }
+            let expected: String?
+            switch owner {
+            case .forgeRuntime:
+                expected = deployment.exists ? deployment.forgeInstanceID : deployment.id
+            case .engineeringPlatformServer:
+                expected = deployment.exists ? deployment.engineeringPlatformInstanceID : deployment.id
+            case .engineeringPlatformProjectAgent:
+                continue
+            }
+            guard let expected, target == expected else {
+                return false
+            }
+        }
+        return true
     }
 
     private static func isSafeTargetIdentity(_ value: String) -> Bool {

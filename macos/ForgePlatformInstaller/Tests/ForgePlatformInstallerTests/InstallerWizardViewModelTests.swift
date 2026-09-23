@@ -130,7 +130,10 @@ private actor WizardCoordinatorSpy: InstallerWizardCoordinator {
         .failed("not used by this focused model test")
     }
 
-    func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
+    func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult {
+        _ = deployment
         preparationCalls += 1
         return sessionResult
     }

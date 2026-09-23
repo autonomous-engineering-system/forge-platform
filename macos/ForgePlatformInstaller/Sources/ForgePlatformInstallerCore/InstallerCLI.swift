@@ -275,15 +275,15 @@ public struct InstallerCLIWorkflow: Sendable {
             : deploymentSelector
         guard state.selectManagedDeployment(deploymentID),
               state.advance(),
+              case .selected(let deployment, _) = state.deploymentSelection,
               state.beginSessionPreparation() else {
             return Self.blocked("De gevraagde deployment bestaat niet in de actuele inventaris.")
         }
 
-        let sessionResult = await coordinator.prepareVerifiedCompositionSession()
+        let sessionResult = await coordinator.prepareVerifiedCompositionSession(for: deployment)
         guard state.recordSessionPreparation(sessionResult),
               let session = state.acceptedSessionPlan,
-              state.advance(),
-              case .selected(let deployment, _) = state.deploymentSelection else {
+              state.advance() else {
             return Self.blocked("De geverifieerde compositiesessie is niet beschikbaar.")
         }
 
@@ -353,15 +353,15 @@ public struct InstallerCLIWorkflow: Sendable {
             : deploymentSelector
         guard state.selectManagedDeployment(deploymentID),
               state.advance(),
+              case .selected(let deployment, _) = state.deploymentSelection,
               state.beginSessionPreparation() else {
             return Self.blocked("De gevraagde deployment bestaat niet in de actuele inventaris.")
         }
 
-        let sessionResult = await coordinator.prepareVerifiedCompositionSession()
+        let sessionResult = await coordinator.prepareVerifiedCompositionSession(for: deployment)
         guard state.recordSessionPreparation(sessionResult),
               let session = state.acceptedSessionPlan,
-              state.advance(),
-              case .selected(let deployment, _) = state.deploymentSelection else {
+              state.advance() else {
             return Self.blocked("De geverifieerde compositiesessie is niet beschikbaar.")
         }
 

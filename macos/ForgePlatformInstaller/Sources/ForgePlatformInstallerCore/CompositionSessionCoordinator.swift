@@ -68,7 +68,8 @@ public struct CurrentVerifiedInstallerCompositionContext: Equatable, Sendable {
 /// subprocess.
 public protocol VerifiedCompositionSessionPreparing: Sendable {
     func prepareVerifiedCompositionSession(
-        for currentInstaller: CurrentVerifiedInstallerCompositionContext
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget
     ) async -> InstallerSessionPreparationResult
 }
 
@@ -79,9 +80,11 @@ public struct UnavailableVerifiedCompositionSessionPreparer: VerifiedComposition
     public init() {}
 
     public func prepareVerifiedCompositionSession(
-        for currentInstaller: CurrentVerifiedInstallerCompositionContext
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget
     ) async -> InstallerSessionPreparationResult {
         _ = currentInstaller
+        _ = deployment
         return .unavailable(.coordinatorUnavailable)
     }
 }

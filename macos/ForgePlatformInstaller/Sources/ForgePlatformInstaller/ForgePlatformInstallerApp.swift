@@ -73,12 +73,13 @@ final class InstallerWizardViewModel: ObservableObject {
     /// The coordinator must return one typed, immutable composition session
     /// after an exact managed deployment has been selected.
     func prepareVerifiedCompositionSession() {
-        guard state.beginSessionPreparation() else {
+        guard case .selected(let deployment, _) = state.deploymentSelection,
+              state.beginSessionPreparation() else {
             return
         }
         let coordinator = coordinator
         Task { @MainActor [weak self] in
-            let result = await coordinator.prepareVerifiedCompositionSession()
+            let result = await coordinator.prepareVerifiedCompositionSession(for: deployment)
             _ = self?.state.recordSessionPreparation(result)
         }
     }
