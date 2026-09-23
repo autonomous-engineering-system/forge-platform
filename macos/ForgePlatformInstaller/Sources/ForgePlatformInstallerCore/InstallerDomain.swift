@@ -1134,7 +1134,7 @@ public struct InstallerWizardState: Equatable, Sendable {
     }
 
     @discardableResult
-    public mutating func setProviderSelected(_ targetID: ProviderTargetID, isSelected: Bool) -> Bool {
+    public mutating func setProviderTargetSelected(_ targetID: ProviderTargetID, isSelected: Bool) -> Bool {
         guard step == .providers,
               hasAcceptedSessionPlan,
               preflight.isPassed,
@@ -1156,11 +1156,11 @@ public struct InstallerWizardState: Equatable, Sendable {
     public mutating func setProviderSelected(_ providerID: ProviderID, isSelected: Bool) -> Bool {
         let matches = providers.filter { $0.requirement.provider == providerID }
         guard matches.count == 1 else { return false }
-        return setProviderSelected(matches[0].id, isSelected: isSelected)
+        return setProviderTargetSelected(matches[0].id, isSelected: isSelected)
     }
 
     @discardableResult
-    public mutating func requestProviderAction(_ action: ProviderAction, for targetID: ProviderTargetID) -> Bool {
+    public mutating func requestProviderTargetAction(_ action: ProviderAction, for targetID: ProviderTargetID) -> Bool {
         guard step == .providers,
               hasAcceptedSessionPlan,
               preflight.isPassed,
@@ -1187,10 +1187,10 @@ public struct InstallerWizardState: Equatable, Sendable {
     public mutating func requestProviderAction(_ action: ProviderAction, for providerID: ProviderID) -> Bool {
         let matches = providers.filter { $0.requirement.provider == providerID }
         guard matches.count == 1 else { return false }
-        return requestProviderAction(action, for: matches[0].id)
+        return requestProviderTargetAction(action, for: matches[0].id)
     }
 
-    public mutating func applyProviderActionResult(
+    public mutating func applyProviderTargetActionResult(
         _ result: ProviderActionResult,
         for targetID: ProviderTargetID,
         action: ProviderAction
@@ -1227,7 +1227,7 @@ public struct InstallerWizardState: Equatable, Sendable {
     ) {
         let matches = providers.filter { $0.requirement.provider == providerID }
         guard matches.count == 1 else { return }
-        applyProviderActionResult(result, for: matches[0].id, action: action)
+        applyProviderTargetActionResult(result, for: matches[0].id, action: action)
     }
 
     /// A review acknowledgement is meaningful only after the accepted
