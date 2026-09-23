@@ -2,6 +2,15 @@ import Combine
 import SwiftUI
 import ForgePlatformInstallerCore
 
+enum InstallerLaunchMode: Equatable {
+    case live
+    case dryRun
+
+    init(arguments: [String]) {
+        self = arguments.contains("--dry-run") ? .dryRun : .live
+    }
+}
+
 struct InstallerDryRunNavigation {
     let index: Int
     let count: Int
