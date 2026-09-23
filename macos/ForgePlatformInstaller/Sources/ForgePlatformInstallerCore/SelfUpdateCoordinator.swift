@@ -499,6 +499,9 @@ public protocol InstallerAtomicHandoffPerforming: Sendable {
 /// arranged termination of this process; callers must not begin platform work.
 public enum InstallerSelfUpdateEnforcementResult: Equatable, Sendable {
     case current(VerifiedInstallerRelease)
+    /// A newer verified release is mandatory, but no bytes are staged until
+    /// the operator explicitly confirms the update in the native startup UI.
+    case updateRequired(VerifiedInstallerRelease)
     case relaunching(VerifiedInstallerRelease)
     /// The replacement process may start while its predecessor still owns the
     /// handoff lease.  Startup may perform a short bounded retry, but no wizard
@@ -573,29 +576,74 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         }
     }
 
-    private func checkForUpdateWhileLocked(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+    private func checkForUpdateWhileLocked(
+        currentVersion: InstallerVersion,
+        invalidateCompositionSession: Bool = true
+    ) async -> SelfUpdateCheckResult {
         pendingUpdate = nil
-        invalidateVerifiedCompositionSession()
+        if invalidateCompositionSession {
+            invalidateVerifiedCompositionSession()
+        }
 
         switch await recoverInterruptedUpdate() {
         case .success:
             break
         case .failure(let failure):
+            if !invalidateCompositionSession {
+                invalidateVerifiedCompositionSession()
+            }
             return rejected(failure.code)
         }
 
+        let result: SelfUpdateCheckResult
         switch await releaseFeed.latestVerifiedInstallerRelease() {
         case .success(let latestRelease):
-            return await evaluate(latestRelease: latestRelease, currentVersion: currentVersion)
+            result = await evaluate(latestRelease: latestRelease, currentVersion: currentVersion)
         case .failure(let failure):
             return rejected(failure.code)
         }
+
+        if !invalidateCompositionSession {
+            switch result {
+            case .verifiedGitHubRelease(let release) where release.version == currentVersion:
+                guard let checkedCurrentReleaseRecord,
+                      checkedCurrentReleaseRecord == currentVerifiedReleaseRecord else {
+                    invalidateVerifiedCompositionSession()
+                    return rejected(.releaseIdentityConflict)
+                }
+                self.checkedCurrentReleaseRecord = nil
+            case .verifiedGitHubRelease:
+                // A newer installer invalidates every plan/readback/provider
+                // fact derived under the predecessor before any mutation.
+                invalidateVerifiedCompositionSession()
+            case .rejected:
+                break
+            }
+        }
+        return result
     }
 
-    /// Startup callers use this one-shot operation instead of presenting an
-    /// update choice.  An older installer downloads, verifies, atomically hands
-    /// off to, and relaunches the newest verified installer before any platform
-    /// composition can start.
+    /// Fresh currency proof immediately before the first product mutation.
+    /// Unlike a user-initiated update check, an exact-current result preserves
+    /// the already reviewed composition session; a newer verified installer
+    /// invalidates it and requires explicit self-update confirmation.
+    public func recheckInstallerCurrencyBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> SelfUpdateCheckResult {
+        await whileExclusivelyLocked(
+            unavailable: { self.rejected($0.code) }
+        ) {
+            await self.checkForUpdateWhileLocked(
+                currentVersion: currentVersion,
+                invalidateCompositionSession: false
+            )
+        }
+    }
+
+    /// Startup callers use this operation before any wizard session exists.
+    /// A newer verified installer is mandatory but returned as updateRequired;
+    /// staging/download begins only after the operator explicitly confirms the
+    /// update. There is no path that lets an older installer continue.
     public func enforceCurrentInstaller(
         currentVersion: InstallerVersion
     ) async -> InstallerSelfUpdateEnforcementResult {
@@ -688,12 +736,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                 self.checkedCurrentReleaseRecord = nil
                 return .current(release)
             }
-            switch await handOffSelfUpdateWhileLocked(release) {
-            case .relaunching:
-                return .relaunching(release)
-            case .failed(let reason):
-                return .failed(reason)
-            }
+            return .updateRequired(release)
         }
     }
 
