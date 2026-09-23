@@ -147,12 +147,15 @@ def packaged_info_plist_projection(
     with tempfile.TemporaryDirectory(prefix="forge-platform-installer-version-projection-") as temporary:
         workspace = Path(temporary)
         executable = workspace / PROJECTION_EXECUTABLE_NAME
+        cli_executable = workspace / "forge-platform-installer"
         output = workspace / f"{PROJECTION_EXECUTABLE_NAME}.app"
         # The real packager admits only the platform's thin arm64 Mach-O
         # executable shape.  This is a non-runnable header fixture: validation
         # still performs no executable or installer operation.
         executable.write_bytes(PROJECTION_EXECUTABLE_BYTES)
         executable.chmod(0o700)
+        cli_executable.write_bytes(PROJECTION_EXECUTABLE_BYTES)
+        cli_executable.chmod(0o700)
         environment = dict(os.environ)
         # The probe must be observational with respect to the candidate
         # checkout. In particular, importing the packager must not leave a
@@ -166,6 +169,8 @@ def packaged_info_plist_projection(
                     str(packager),
                     "--executable",
                     str(executable),
+                    "--cli-executable",
+                    str(cli_executable),
                     "--output",
                     str(output),
                     "--bundle-identifier",
