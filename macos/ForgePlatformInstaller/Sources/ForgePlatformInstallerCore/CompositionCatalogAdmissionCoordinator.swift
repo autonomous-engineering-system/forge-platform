@@ -9,7 +9,7 @@ import Foundation
 /// wall clock, an HTTP `Date` header, a provider credential, or a product data
 /// root as trusted time. No production implementation exists in this source
 /// increment, so the default remains unavailable.
-struct TrustedCompositionCatalogClockAttestation: Sendable {
+struct TrustedCompositionCatalogClockAttestation: Equatable, Sendable {
     let readback: CompositionCatalogFeedReadback
     /// The exact independently verified instant at which the readback is
     /// evaluated. It becomes the verifier's `now`; ambient `Date()` is never
