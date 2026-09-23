@@ -100,7 +100,7 @@ jobs:
           set -euo pipefail
           output="$RUNNER_TEMP/ForgePlatformInstaller.integration.app"
           rm -rf "$output"
-          python3 scripts/package_macos_installer_app.py             --executable "$INSTALLER_BINARY"             --output "$output"             --bundle-identifier "com.pcvanthol.forge-platform-installer.integration"
+          python3 scripts/package_macos_installer_app.py             --executable "$INSTALLER_BINARY"             --output "$output"             --bundle-identifier "com.pcvantol.forge-platform-installer.integration"
           test -f "$output/Contents/Info.plist"
           /usr/bin/plutil -lint "$output/Contents/Info.plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$output/Contents/Info.plist")"             = "$(python3 -c 'import json; print(json.load(open("installer-version.json"))["version"])')"
