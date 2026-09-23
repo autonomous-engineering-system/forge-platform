@@ -7,6 +7,10 @@ on:
         description: Exact already-merged origin/main commit to qualify
         required: true
         type: string
+      coverage_base_sha:
+        description: Exact reviewed ancestor for native coverage
+        required: true
+        type: string
       release_sequence:
         description: Positive immutable sequence reserved for this installer descriptor
         required: true
@@ -32,6 +36,10 @@ concurrency:
 
 jobs:
   release-context:
+    if: >-
+      ${{ github.repository == 'autonomous-engineering-system/forge-platform' &&
+          github.ref == 'refs/heads/main' && github.ref_protected &&
+          github.sha == inputs.source_sha && github.workflow_sha == inputs.source_sha }}
     runs-on: ubuntu-24.04
     outputs:
       installer_version: ${{ steps.context.outputs.installer_version }}
@@ -53,9 +61,11 @@ jobs:
         with:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
+          persist-credentials: false
       - id: context
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
           RELEASE_SEQUENCE: ${{ inputs.release_sequence }}
           PROVENANCE_SHA256: ${{ inputs.provenance_sha256 }}
         run: |
@@ -66,6 +76,13 @@ jobs:
 
           if re.fullmatch(r"[0-9a-f]{40,64}", sys.argv[1]) is None:
               raise SystemExit("source_sha must be a full lowercase Git revision")
+          PY
+          python3 - "$COVERAGE_BASE_SHA" <<'PY'
+          import re
+          import sys
+
+          if re.fullmatch(r"[0-9a-f]{40}", sys.argv[1]) is None:
+              raise SystemExit("coverage_base_sha must be a full lowercase Git revision")
           PY
           python3 - "$RELEASE_SEQUENCE" "$PROVENANCE_SHA256" <<'PY'
           import re
@@ -83,6 +100,7 @@ jobs:
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           test "$SOURCE_SHA" = "$(git rev-parse HEAD)"
           test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
+          git merge-base --is-ancestor "$COVERAGE_BASE_SHA" "$SOURCE_SHA"
           python3 scripts/validate_installer_version.py
           python3 scripts/validate_installer_release_identity.py --require-ready
           python3 scripts/advance_installer_version.py \
@@ -116,8 +134,12 @@ jobs:
           printf 'provenance_sha256=%s\n' "$PROVENANCE_SHA256" >> "$GITHUB_OUTPUT"
 
   build-unsigned-app-candidate:
+    name: Build unsigned macOS installer candidate
     needs: release-context
-    runs-on: macos-26
+    timeout-minutes: 60
+    runs-on:
+      group: forge-platform-build
+      labels: forge-platform-build
     outputs:
       architecture: ${{ steps.candidate.outputs.architecture }}
       archive: ${{ steps.candidate.outputs.archive }}
@@ -127,8 +149,10 @@ jobs:
         with:
           ref: ${{ needs.release-context.outputs.source_sha }}
           fetch-depth: 0
+          persist-credentials: false
       - id: candidate
         env:
+          COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
           CHANNEL: ${{ needs.release-context.outputs.channel }}
           RELEASE_SEQUENCE: ${{ needs.release-context.outputs.release_sequence }}
           POLICY_REVISION: ${{ needs.release-context.outputs.policy_revision }}
@@ -144,12 +168,20 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
+          git merge-base --is-ancestor "$COVERAGE_BASE_SHA" HEAD
+          if security find-identity -v -p codesigning 2>/dev/null | grep -Fq 'Developer ID Application:'; then
+            echo 'BUILD_RUNNER_ISOLATION=FAIL reason=developer-id-visible' >&2
+            exit 1
+          fi
+          test -z "${FORGE_PLATFORM_NOTARYTOOL_PROFILE:-}"
           sh scripts/validate.sh
           test "$(uname -m)" = "arm64"
           test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
           ARCHITECTURE="arm64"
           cd macos/ForgePlatformInstaller
-          swift test
+          swift test --enable-code-coverage
+          COVERAGE_PATH="$(swift test --show-codecov-path)"
+          python3 ../../scripts/check_managed_installer_swift_coverage.py "$COVERAGE_PATH" --minimum 80.2 --base-ref "$COVERAGE_BASE_SHA"
           swift build -c release --product ForgePlatformInstaller
           swift build -c release --product forge-platform-installer
           BINARY_DIRECTORY="$(swift build -c release --show-bin-path)"
@@ -157,11 +189,22 @@ jobs:
           test -x "$BINARY_DIRECTORY/ForgePlatformInstaller"
           test -x "$BINARY_DIRECTORY/forge-platform-installer"
           mkdir release-input
+          python3 scripts/prepare_offline_installer_resources.py \
+            --release-trust-resource release-trust/ForgePlatformInstallerReleaseTrust.json \
+            --catalog-trust-resource release-trust/ForgePlatformInstallerCompositionCatalogTrust.json \
+            --source-sha "$SOURCE_SHA" \
+            --release-sequence "$RELEASE_SEQUENCE" \
+            --output release-input/ForgePlatformInstallerReleaseProvenance.json
+          ACTUAL_PROVENANCE_SHA256="$(python3 -c 'import json; print(json.load(open("release-input/ForgePlatformInstallerReleaseProvenance.json"))["provenance_sha256"])')"
+          test "$ACTUAL_PROVENANCE_SHA256" = "$PROVENANCE_SHA256"
           python3 scripts/package_macos_installer_app.py \
             --executable "$BINARY_DIRECTORY/ForgePlatformInstaller" \
             --cli-executable "$BINARY_DIRECTORY/forge-platform-installer" \
             --output release-input/ForgePlatformInstaller.app \
-            --bundle-identifier "$BUNDLE_IDENTIFIER"
+            --bundle-identifier "$BUNDLE_IDENTIFIER" \
+            --sealed-release-trust-resource release-trust/ForgePlatformInstallerReleaseTrust.json \
+            --sealed-release-provenance-resource release-input/ForgePlatformInstallerReleaseProvenance.json \
+            --sealed-composition-catalog-trust-resource release-trust/ForgePlatformInstallerCompositionCatalogTrust.json
           test -f release-input/ForgePlatformInstaller.app/Contents/Info.plist
           test -x release-input/ForgePlatformInstaller.app/Contents/MacOS/ForgePlatformInstaller
           test -x release-input/ForgePlatformInstaller.app/Contents/MacOS/forge-platform-installer
@@ -225,18 +268,62 @@ jobs:
           path: release-input/
           if-no-files-found: error
 
-  offline-signing-handoff:
-    name: Require offline Mac mini signer
+  authorize-local-signing:
+    name: Authorize exact local signing handoff
     if: ${{ inputs.request_publication }}
     needs: [release-context, build-unsigned-app-candidate]
-    runs-on: macos-26
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: forge-platform-installer-signing
     permissions:
       contents: read
     steps:
-      - name: Refuse credential-bearing signing inside GitHub Actions
+      - name: Emit exact non-secret authorization
+        env:
+          SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
+          INSTALLER_VERSION: ${{ needs.release-context.outputs.installer_version }}
+          RELEASE_SEQUENCE: ${{ needs.release-context.outputs.release_sequence }}
+          OPERATION_ID: ${{ needs.release-context.outputs.operation_id }}
+          ARCHIVE_NAME: ${{ needs.build-unsigned-app-candidate.outputs.archive }}
+          ARCHIVE_DIGEST: ${{ needs.build-unsigned-app-candidate.outputs.archive_digest }}
+          CANDIDATE_ARTIFACT: forge-platform-installer-candidate-${{ needs.release-context.outputs.installer_version }}-${{ needs.release-context.outputs.source_sha }}
         run: |
           set -euo pipefail
-          echo 'INSTALLER_RELEASE=BLOCKED reason=offline-macmini-signing-required' >&2
-          echo 'This public personal-account repository does not authorize a credential-bearing self-hosted Actions signer.' >&2
-          echo 'Use the reviewed offline signer flow from exact protected main on the dedicated Mac mini signer account.' >&2
-          exit 1
+          mkdir signing-authorization
+          export SOURCE_SHA INSTALLER_VERSION RELEASE_SEQUENCE OPERATION_ID ARCHIVE_NAME ARCHIVE_DIGEST CANDIDATE_ARTIFACT
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          authorization = {
+              "schema": "forge-platform.local-signing-authorization/v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "ref": os.environ["GITHUB_REF"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "environment": "forge-platform-installer-signing",
+              "candidate_artifact": os.environ["CANDIDATE_ARTIFACT"],
+              "archive_name": os.environ["ARCHIVE_NAME"],
+              "archive_digest": os.environ["ARCHIVE_DIGEST"],
+              "installer_version": os.environ["INSTALLER_VERSION"],
+              "release_sequence": int(os.environ["RELEASE_SEQUENCE"]),
+              "operation_id": os.environ["OPERATION_ID"],
+              "requested_by": os.environ["GITHUB_ACTOR"],
+              "result": "AUTHORIZED_FOR_LOCAL_SIGNER",
+          }
+          Path("signing-authorization/authorization.json").write_text(
+              json.dumps(authorization, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forge-platform-installer-signing-authorization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: signing-authorization/authorization.json
+          if-no-files-found: error
+          retention-days: 14

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/pcvantol/forge-platform/schemas/universal-installer-release-provenance.schema.json",
+  "$id": "https://github.com/autonomous-engineering-system/forge-platform/schemas/universal-installer-release-provenance.schema.json",
   "title": "Forge Platform installer release provenance",
   "description": "Public, code-signed provenance packaged inside one released macOS installer. It intentionally excludes URLs, credentials, keys, final archive bytes, and a final descriptor digest so release signing does not create a circular dependency.",
   "type": "object",

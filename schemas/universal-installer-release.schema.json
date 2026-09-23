@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/pcvantol/forge-platform/schemas/universal-installer-release.schema.json",
+  "$id": "https://github.com/autonomous-engineering-system/forge-platform/schemas/universal-installer-release.schema.json",
   "title": "Forge Platform universal installer release descriptor",
   "description": "Strict signed metadata transported as one named asset of one canonical GitHub Release. A GitHub latest marker is only a locator; the code-signed release-trust configuration verifies this descriptor before a bundle may run. Each macOS archive location is derived from github_release, never accepted as an arbitrary URL. The catalog URL remains a separately signed feed locator. Runtime admission rejects empty or over-131072-byte UTF-8 descriptor payloads before JSON or signature processing.",
   "$comment": "maxSerializedUtf8Bytes=131072; JSON Schema validates values, while the transport/parser enforces this raw-byte bound.",

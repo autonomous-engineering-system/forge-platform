@@ -2,7 +2,7 @@
 
 ## New canonical repository
 
-`pcvantol/forge-platform` is the canonical first-class authority for universal multi-product installer UX, component selection, cross-product compatibility declarations, release composition, installation topology, update/repair/uninstall orchestration, diagnostics, and deployment receipts. Its architecture also records cross-product deployment, topology, and trust boundaries without taking ownership of product behavior or protocols.
+`autonomous-engineering-system/forge-platform` is the canonical first-class authority for universal multi-product installer UX, component selection, cross-product compatibility declarations, release composition, installation topology, update/repair/uninstall orchestration, diagnostics, and deployment receipts. Its architecture also records cross-product deployment, topology, and trust boundaries without taking ownership of product behavior or protocols.
 
 ## Boundary retained by product repositories
 

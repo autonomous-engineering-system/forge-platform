@@ -11,7 +11,7 @@ enum ToolFailure: Error {
     case unsafeOutput
 }
 
-let service = "com.pcvantol.forge-platform.installer-descriptor-signing-v1"
+let service = "org.autonomous-engineering-system.forge-platform.installer-descriptor-signing-v1"
 let maximumInputBytes = 512 * 1024
 
 func fail(_ reason: String) -> Never {

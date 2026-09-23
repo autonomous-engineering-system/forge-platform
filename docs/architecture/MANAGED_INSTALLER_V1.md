@@ -1,7 +1,7 @@
 # Managed Installer V1 — Forge + Engineering Platform
 
 **Assignment:** `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923`  
-**Owning repository:** `pcvantol/forge-platform`  
+**Owning repository:** `autonomous-engineering-system/forge-platform`
 **Producer baselines:** Forge 2.7.34 and Engineering Platform 2.3.102  
 **Status:** source implementation under protected qualification; no live installation claim.
 

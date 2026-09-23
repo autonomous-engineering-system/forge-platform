@@ -39,6 +39,7 @@ python3 tests/installer/test_package_macos_installer_app.py
 python3 tests/installer/test_package_macos_installer_archive.py
 python3 tests/installer/test_verify_installer_release_evidence.py
 python3 tests/installer/test_installer_release_workflow.py
+python3 tests/installer/test_local_signing_authorization.py
 python3 scripts/validate_installer_version.py
 python3 scripts/validate_installer_release_identity.py
 python3 scripts/advance_installer_version.py --check

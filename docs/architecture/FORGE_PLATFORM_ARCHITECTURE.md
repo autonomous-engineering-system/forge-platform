@@ -4,7 +4,7 @@
 
 This is the canonical high-level architecture entrypoint for the Forge Platform ecosystem composition. It records product and trust boundaries needed for later work. The repository now contains a source-level Universal Installer policy kernel and native macOS wizard shell, but does not yet implement a privileged product provisioner, service mutation, provider credential flow, installer publication, or Schema 41. Its bounded composition-release evidence flow may retain a verified manifest and receipts, but it never publishes producer bytes or becomes a product runtime.
 
-Forge Platform is a first-class product repository, not a canonical project authority repository for a customer's product. A **Canonical Project Authority Repository** is a logical product's durable topology authority; `pcvantol/forge-platform` is the Forge-family distribution and deployment product.
+Forge Platform is a first-class product repository, not a canonical project authority repository for a customer's product. A **Canonical Project Authority Repository** is a logical product's durable topology authority; `autonomous-engineering-system/forge-platform` is the Forge-family distribution and deployment product.
 
 Detailed decisions are recorded in the [ADRs](adr/README.md). The [ownership matrix](OWNERSHIP_MATRIX.md) is the concise authority reference.
 
@@ -68,7 +68,7 @@ Discovery yields an unauthenticated candidate only. Pairing verifies stable iden
 | `pcvantol/workspace` | Workspace Server and Workspace Client(s) |
 | `pcvantol/engineering-platform` | Engineering Platform Server and Engineering Platform Project Agent |
 | `pcvantol/technical-debt-engine` | Technical Debt Engine product authority |
-| `pcvantol/forge-platform` | Universal distribution, deployment, and release composition |
+| `autonomous-engineering-system/forge-platform` | Universal distribution, deployment, and release composition |
 | `pcvantol/ai-development-contracts` | Generic AI-development contract authority |
 | `pcvantol/ai-platform-engineering-knowledge-base` | Generalized and certified engineering knowledge authority |
 

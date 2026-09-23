@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/pcvantol/forge-platform/schemas/universal-installer-composition-v2.schema.json",
+  "$id": "https://github.com/autonomous-engineering-system/forge-platform/schemas/universal-installer-composition-v2.schema.json",
   "title": "Forge Platform universal installer composition v2",
   "description": "Target-aware immutable composition for managed deployments; provider requirements are bound to exact owning component-instance contexts.",
   "type": "object",
