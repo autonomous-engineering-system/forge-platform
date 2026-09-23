@@ -53,7 +53,13 @@ def _executable_lines(path: Path) -> set[int]:
     lines: set[int] = set()
 
     def walk(current: types.CodeType) -> None:
-        lines.update(line for _offset, line in dis.findlinestarts(current) if line > 0)
+        # Some recent CPython bytecode line tables use ``None`` for synthetic
+        # instructions. They do not represent executable source lines.
+        lines.update(
+            line
+            for _offset, line in dis.findlinestarts(current)
+            if line is not None and line > 0
+        )
         for constant in current.co_consts:
             if isinstance(constant, types.CodeType):
                 walk(constant)

@@ -20,11 +20,16 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 COVERAGE = ROOT / "scripts/check_managed_installer_swift_coverage.py"
+PYTHON_COVERAGE = ROOT / "scripts/check_managed_installer_python_coverage.py"
 READINESS = ROOT / "scripts/ci/verify_macos_signing_runner.sh"
 spec = importlib.util.spec_from_file_location("swift_coverage_gate", COVERAGE)
 assert spec is not None and spec.loader is not None
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
+python_spec = importlib.util.spec_from_file_location("python_coverage_gate", PYTHON_COVERAGE)
+assert python_spec is not None and python_spec.loader is not None
+python_gate = importlib.util.module_from_spec(python_spec)
+python_spec.loader.exec_module(python_gate)
 FILES = (
     "ForgePlatformInstallerCore/InstallerDomain.swift",
     "ForgePlatformInstallerCore/ManagedDeploymentDomain.swift",
@@ -195,6 +200,16 @@ class CoverageContractTests(unittest.TestCase):
                 completed, subprocess.CompletedProcess(["git"], 0, path.encode())
             ]):
                 self.reject(payload(), "--base-ref", "a" * 40)
+
+
+class PythonCoverageLineTableTests(unittest.TestCase):
+    def test_synthetic_none_line_entries_are_ignored(self) -> None:
+        with mock.patch.object(
+            python_gate.dis,
+            "findlinestarts",
+            return_value=[(0, None), (1, 4)],
+        ):
+            self.assertEqual(python_gate._executable_lines(Path(__file__)), {4})
 
 
 STUB = r'''#!SHEBANG

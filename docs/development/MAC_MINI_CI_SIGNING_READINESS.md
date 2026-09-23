@@ -100,9 +100,18 @@ The Swift rendering fixture was reconstructed from exact head
 `81fac324592972c1ed3097a20ebd6f28fea1b37c` before applying the bounded change.
 Hosted validation of the resulting commit is a separate evidence checkpoint.
 
-No Mac-mini terminal connection was available in this execution. Consequently
-runner registration, external dispatch restrictions, Environment configuration,
-actual Keychain/notary access, reboot, provider login, artifact signing,
-notarization and release publication were not performed. Forge/EP/Workspace
-source and all production deployments remain untouched. No Mission-3, reset or
-T0 is authorized by this increment.
+Live Mac-mini inspection during the 2026-09-23 continuation found macmini-m6,
+arm64, macOS 27.0, Xcode 27 / Swift 6.4. GitHub reports no registered
+repository runners and no configured repository Environments. No dedicated
+`forge-platform` runner account was present in the local account listing, and
+the current noninteractive shell cannot use `sudo`. Running
+`verify_macos_signing_runner.sh` from this ordinary shell correctly fails at
+`missing-runner-name`; that is not signer readiness evidence. No credentials
+were queried or changed. Runner registration, external dispatch restrictions,
+Environment protection, runner-account Keychain/notary access, reboot, provider
+login, artifact signing, notarization and release publication remain NOT
+VERIFIED. The local Swift 6.4 test run passed 299 tests, but its coverage export
+omitted the GUI startup files expected by the pinned GitHub macOS 26 gate, so it
+is not used as that gate's coverage evidence. Forge/EP/Workspace source and all
+production deployments remain untouched. No Mission-3, reset or T0 is
+authorized by this increment.

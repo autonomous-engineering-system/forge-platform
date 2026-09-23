@@ -41,13 +41,11 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
             documentFetcher: fixture.documents,
             componentAcceptanceReader: fixture.acceptance
         )
-        XCTAssertEqual(
-            await unavailable.prepareVerifiedCompositionSession(
-                for: fixture.currentInstaller,
-                deployment: fixture.freshDeployment
-            ),
-            .unavailable(.selectionUnavailable)
+        let unavailableResult = await unavailable.prepareVerifiedCompositionSession(
+            for: fixture.currentInstaller,
+            deployment: fixture.freshDeployment
         )
+        XCTAssertEqual(unavailableResult, .unavailable(.selectionUnavailable))
 
         let outerWithoutIndex = fixture.outerCatalogReplacingIndex(nil)
         let missing = ManagedVerifiedCompositionSessionPreparer(
@@ -60,13 +58,11 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
             documentFetcher: fixture.documents,
             componentAcceptanceReader: fixture.acceptance
         )
-        XCTAssertEqual(
-            await missing.prepareVerifiedCompositionSession(
-                for: fixture.currentInstaller,
-                deployment: fixture.freshDeployment
-            ),
-            .unavailable(.selectionUnavailable)
+        let missingResult = await missing.prepareVerifiedCompositionSession(
+            for: fixture.currentInstaller,
+            deployment: fixture.freshDeployment
         )
+        XCTAssertEqual(missingResult, .unavailable(.selectionUnavailable))
         let requestedURLs = await fixture.documents.requestedURLs()
         XCTAssertTrue(requestedURLs.isEmpty)
     }
@@ -77,34 +73,30 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
         let failedFetch = DocumentFetcherStub(
             responses: [fixture.indexLocator.url: .failure(.unavailable)]
         )
-        XCTAssertEqual(
-            await fixture.preparer(documents: failedFetch).prepareVerifiedCompositionSession(
+        let failedFetchResult = await fixture.preparer(documents: failedFetch)
+            .prepareVerifiedCompositionSession(
                 for: fixture.currentInstaller,
                 deployment: fixture.freshDeployment
-            ),
-            .unavailable(.selectionUnavailable)
-        )
+            )
+        XCTAssertEqual(failedFetchResult, .unavailable(.selectionUnavailable))
 
         let malformed = DocumentFetcherStub(
             responses: [fixture.indexLocator.url: .success(Data("{}".utf8))]
         )
-        XCTAssertEqual(
-            await fixture.preparer(documents: malformed).prepareVerifiedCompositionSession(
+        let malformedResult = await fixture.preparer(documents: malformed)
+            .prepareVerifiedCompositionSession(
                 for: fixture.currentInstaller,
                 deployment: fixture.freshDeployment
-            ),
-            .unavailable(.selectionUnavailable)
-        )
+            )
+        XCTAssertEqual(malformedResult, .unavailable(.selectionUnavailable))
 
         let acceptanceFailure = ComponentAcceptanceStub(result: .failure(.unavailable))
-        XCTAssertEqual(
-            await fixture.preparer(acceptance: acceptanceFailure)
-                .prepareVerifiedCompositionSession(
-                    for: fixture.currentInstaller,
-                    deployment: fixture.freshDeployment
-                ),
-            .unavailable(.selectionUnavailable)
-        )
+        let acceptanceFailureResult = await fixture.preparer(acceptance: acceptanceFailure)
+            .prepareVerifiedCompositionSession(
+                for: fixture.currentInstaller,
+                deployment: fixture.freshDeployment
+            )
+        XCTAssertEqual(acceptanceFailureResult, .unavailable(.selectionUnavailable))
     }
 
     func testExistingDeploymentWithoutTerminalCompositionProvenanceIsRejected() async throws {
@@ -116,13 +108,11 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
             engineeringPlatformInstanceID: "ep-legacy"
         )
 
-        XCTAssertEqual(
-            await fixture.preparer().prepareVerifiedCompositionSession(
-                for: fixture.currentInstaller,
-                deployment: legacy
-            ),
-            .unavailable(.selectionUnavailable)
+        let legacyResult = await fixture.preparer().prepareVerifiedCompositionSession(
+            for: fixture.currentInstaller,
+            deployment: legacy
         )
+        XCTAssertEqual(legacyResult, .unavailable(.selectionUnavailable))
     }
 
     func testUnsupportedSelectionAndManifestFetchFailureStayClosed() async throws {
@@ -130,27 +120,23 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
             verifiedAt: verifiedAt,
             minimumInstallerVersion: "9.0.0"
         )
-        XCTAssertEqual(
-            await unsupported.preparer().prepareVerifiedCompositionSession(
-                for: unsupported.currentInstaller,
-                deployment: unsupported.freshDeployment
-            ),
-            .unavailable(.selectionUnavailable)
+        let unsupportedResult = await unsupported.preparer().prepareVerifiedCompositionSession(
+            for: unsupported.currentInstaller,
+            deployment: unsupported.freshDeployment
         )
+        XCTAssertEqual(unsupportedResult, .unavailable(.selectionUnavailable))
 
         let fixture = try Fixture(verifiedAt: verifiedAt)
         let documents = DocumentFetcherStub(responses: [
             fixture.indexLocator.url: .success(fixture.indexBytes),
             fixture.manifestLocator.url: .failure(.unavailable),
         ])
-        XCTAssertEqual(
-            await fixture.preparer(documents: documents)
-                .prepareVerifiedCompositionSession(
-                    for: fixture.currentInstaller,
-                    deployment: fixture.freshDeployment
-                ),
-            .unavailable(.selectionUnavailable)
-        )
+        let manifestFetchResult = await fixture.preparer(documents: documents)
+            .prepareVerifiedCompositionSession(
+                for: fixture.currentInstaller,
+                deployment: fixture.freshDeployment
+            )
+        XCTAssertEqual(manifestFetchResult, .unavailable(.selectionUnavailable))
     }
 
     func testRejectedManifestBytesCannotProduceSession() async throws {
@@ -160,14 +146,12 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
             fixture.manifestLocator.url: .success(Data("{}".utf8)),
         ])
 
-        XCTAssertEqual(
-            await fixture.preparer(documents: documents)
-                .prepareVerifiedCompositionSession(
-                    for: fixture.currentInstaller,
-                    deployment: fixture.freshDeployment
-                ),
-            .unavailable(.selectionUnavailable)
-        )
+        let rejectedManifestResult = await fixture.preparer(documents: documents)
+            .prepareVerifiedCompositionSession(
+                for: fixture.currentInstaller,
+                deployment: fixture.freshDeployment
+            )
+        XCTAssertEqual(rejectedManifestResult, .unavailable(.selectionUnavailable))
     }
 }
 
