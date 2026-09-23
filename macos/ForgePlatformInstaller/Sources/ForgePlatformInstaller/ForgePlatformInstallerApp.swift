@@ -52,9 +52,23 @@ final class InstallerWizardViewModel: ObservableObject {
         }
     }
 
+    func prepareManagedDeploymentInventory() {
+        guard state.beginManagedDeploymentInventory() else {
+            return
+        }
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.prepareManagedDeploymentInventory()
+            _ = self?.state.recordManagedDeploymentInventory(result)
+        }
+    }
+
+    func selectManagedDeployment(_ deploymentID: String) {
+        _ = state.selectManagedDeployment(deploymentID)
+    }
+
     /// The coordinator must return one typed, immutable composition session
-    /// before this UI can show composition-derived preflight or providers.
-    /// Source builds have no such coordinator and therefore remain blocked.
+    /// after an exact managed deployment has been selected.
     func prepareVerifiedCompositionSession() {
         guard state.beginSessionPreparation() else {
             return
@@ -142,6 +156,8 @@ struct InstallerWizardView: View {
         switch viewModel.state.step {
         case .selfUpdate:
             SelfUpdateScreen(viewModel: viewModel)
+        case .deployment:
+            ManagedDeploymentSelectionScreen(viewModel: viewModel)
         case .composition:
             CompositionSelectionScreen(viewModel: viewModel)
         case .preflight:
@@ -220,6 +236,7 @@ private struct WizardSidebar: View {
     private func icon(for step: WizardStep) -> String {
         switch step {
         case .selfUpdate: return "arrow.triangle.2.circlepath"
+        case .deployment: return "square.3.layers.3d"
         case .composition: return "square.stack.3d.up"
         case .preflight: return "checklist"
         case .providers: return "person.badge.key"
@@ -291,6 +308,100 @@ private struct ReleaseEvidenceView: View {
                 GridRow { Text("GitHub Release").foregroundStyle(.secondary); Text(release.releasePage).textSelection(.enabled) }
             }
         }
+    }
+}
+
+private struct ManagedDeploymentSelectionScreen: View {
+    @ObservedObject var viewModel: InstallerWizardViewModel
+
+    var body: some View {
+        ScreenHeader(
+            title: "Managed deployment kiezen",
+            subtitle: "Kies één bestaande deployment of de door de trusted coordinator voorbereide nieuwe deployment. Deze stap leest alleen inventaris; product- en registrymutatie volgen pas na het beoordeelde wijzigingsplan."
+        )
+
+        VStack(alignment: .leading, spacing: 14) {
+            switch viewModel.state.deploymentSelection {
+            case .pending:
+                Label("Nog geen deploymentinventaris gelezen.", systemImage: "square.3.layers.3d.down.right")
+                    .foregroundStyle(.secondary)
+                Button("Inventariseer deployments") {
+                    viewModel.prepareManagedDeploymentInventory()
+                }
+                .buttonStyle(.borderedProminent)
+
+            case .loading:
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Deploymentinventaris wordt veilig gelezen.")
+                }
+                .foregroundStyle(.secondary)
+
+            case .available(let inventory):
+                if inventory.existing.isEmpty {
+                    Text("Geen bestaande managed deployments gevonden.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(inventory.existing) { deployment in
+                        deploymentButton(deployment, titlePrefix: "Beheer")
+                    }
+                }
+                Divider()
+                deploymentButton(inventory.createCandidate, titlePrefix: "Maak nieuw")
+
+            case .selected(let deployment, let evidenceReference):
+                GroupBox("Geselecteerde deployment") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(deployment.displayName).fontWeight(.semibold)
+                        Text(deployment.id).font(.caption.monospaced()).textSelection(.enabled)
+                        if let forge = deployment.forgeInstanceID {
+                            Text("Forge: \(forge)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let ep = deployment.engineeringPlatformInstanceID {
+                            Text("EP: \(ep)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text(deployment.exists ? "Bestaande deployment" : "Nieuwe deployment")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("Inventarisbewijs: \(evidenceReference)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                Label(
+                    "De compositie- en providertargets worden vanaf nu voor deze exacte deployment bepaald.",
+                    systemImage: "checkmark.seal.fill"
+                )
+                .foregroundStyle(.green)
+
+            case .unavailable(let failure):
+                FailureCallout(reason: failure.userFacingMessage)
+                Button("Opnieuw inventariseren") {
+                    viewModel.prepareManagedDeploymentInventory()
+                }
+            }
+        }
+        .padding(.top, 12)
+    }
+
+    @ViewBuilder
+    private func deploymentButton(_ deployment: ManagedDeploymentTarget, titlePrefix: String) -> some View {
+        Button {
+            viewModel.selectManagedDeployment(deployment.id)
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(titlePrefix): \(deployment.displayName)")
+                    Text(deployment.id)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: deployment.exists ? "server.rack" : "plus.circle")
+            }
+        }
+        .buttonStyle(.bordered)
     }
 }
 
