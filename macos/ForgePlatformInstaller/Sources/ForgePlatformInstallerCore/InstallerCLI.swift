@@ -7,6 +7,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case selfUpdateCheck
     case selfUpdateApply
     case deploymentList
+    case deploymentPlan(String)
     case deploymentApply(String)
     case deploymentRemove(String)
 }
@@ -88,6 +89,7 @@ public enum InstallerCLIParser {
       forge-platform-installer self-update check [--json]
       forge-platform-installer self-update apply [--yes] [--json]
       forge-platform-installer deployment list [--json]
+      forge-platform-installer deployment plan --deployment <id|new> [--non-interactive] [--json]
       forge-platform-installer deployment apply --deployment <id|new> [--yes] [--non-interactive] [--accept-installer-update] [--json]
       forge-platform-installer deployment remove --deployment <id> [--yes] [--json]
 
@@ -154,6 +156,11 @@ public enum InstallerCLIParser {
             command = .selfUpdateApply
         case ["deployment", "list"]:
             command = .deploymentList
+        case ["deployment", "plan"]:
+            guard let deployment else {
+                throw InstallerCLIParseError.missingDeployment
+            }
+            command = .deploymentPlan(deployment)
         case ["deployment", "apply"]:
             guard let deployment else {
                 throw InstallerCLIParseError.missingDeployment
@@ -170,7 +177,7 @@ public enum InstallerCLIParser {
 
         if deployment != nil {
             switch command {
-            case .deploymentApply, .deploymentRemove:
+            case .deploymentPlan, .deploymentApply, .deploymentRemove:
                 break
             default:
                 throw InstallerCLIParseError.invalidArguments
@@ -243,6 +250,84 @@ public struct InstallerCLIWorkflow: Sendable {
             exitCode: .executionFailed,
             status: "producer-blocked",
             message: "Forge 2.7.34 publiceert geen product-owned uninstall dispatcher; deployment remove blijft fail-closed."
+        )
+    }
+
+
+    public func planDeployment(
+        _ deploymentSelector: String,
+        options: InstallerCLIOptions
+    ) async -> InstallerCLIResult {
+        var state = InstallerWizardState(currentInstallerVersion: currentRelease.version)
+        state.recordSelfUpdateCheck(.verifiedGitHubRelease(currentRelease))
+        guard state.advance(), state.beginManagedDeploymentInventory() else {
+            return Self.blocked("De managed-deploymentflow kon niet veilig starten.")
+        }
+
+        let inventoryResult = await coordinator.prepareManagedDeploymentInventory()
+        guard state.recordManagedDeploymentInventory(inventoryResult),
+              case .available(let inventory) = state.deploymentSelection else {
+            return Self.blocked("De managed-deploymentinventaris is niet beschikbaar.")
+        }
+
+        let deploymentID = deploymentSelector == "new"
+            ? inventory.createCandidate.id
+            : deploymentSelector
+        guard state.selectManagedDeployment(deploymentID),
+              state.advance(),
+              state.beginSessionPreparation() else {
+            return Self.blocked("De gevraagde deployment bestaat niet in de actuele inventaris.")
+        }
+
+        let sessionResult = await coordinator.prepareVerifiedCompositionSession()
+        guard state.recordSessionPreparation(sessionResult),
+              let session = state.acceptedSessionPlan,
+              state.advance(),
+              case .selected(let deployment, _) = state.deploymentSelection else {
+            return Self.blocked("De geverifieerde compositiesessie is niet beschikbaar.")
+        }
+
+        let preflight = await coordinator.prepareHostPreflight(
+            session: session,
+            deployment: deployment
+        )
+        guard state.recordHostPreflightPreparation(preflight),
+              state.preflight.isPassed,
+              state.advance() else {
+            return Self.blocked("De sessiespecifieke host- en toolcontrole is niet geslaagd.")
+        }
+
+        let providerResult = await verifyProviders(
+            state: &state,
+            options: options
+        )
+        if let providerResult {
+            return providerResult
+        }
+        guard state.advance() else {
+            return Self.blocked("Niet alle vereiste providertargets zijn geverifieerd.")
+        }
+
+        let reviewResult = await coordinator.prepareCompositionReview(
+            session: session,
+            deployment: deployment
+        )
+        guard state.recordCompositionReviewPreparation(reviewResult),
+              case .compatible = state.composition.status else {
+            return Self.blocked("Het gekwalificeerde wijzigingsplan is niet beschikbaar of niet compatibel.")
+        }
+
+        return InstallerCLIResult(
+            exitCode: .success,
+            status: "planned",
+            message: "Gekwalificeerd wijzigingsplan is read-only opgebouwd; er is geen productmutatie uitgevoerd.",
+            details: [
+                "deployment_id": deploymentID,
+                "composition": session.compositionIdentity,
+                "manifest_sha256": session.manifestSHA256,
+                "component_count": String(state.composition.components.count),
+            ],
+            records: Self.reviewRecords(state.composition)
         )
     }
 

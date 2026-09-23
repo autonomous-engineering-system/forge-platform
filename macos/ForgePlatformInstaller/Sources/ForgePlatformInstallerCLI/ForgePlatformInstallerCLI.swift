@@ -183,6 +183,11 @@ enum ForgePlatformInstallerCLIApplication {
                 result = await workflow.status()
             case .deploymentList:
                 result = await workflow.listDeployments()
+            case .deploymentPlan(let deployment):
+                result = await workflow.planDeployment(
+                    deployment,
+                    options: invocation.options
+                )
             case .deploymentApply(let deployment):
                 result = await workflow.applyDeployment(
                     deployment,

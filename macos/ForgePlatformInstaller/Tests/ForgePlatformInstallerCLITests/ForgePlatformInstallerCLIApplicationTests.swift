@@ -106,6 +106,22 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertEqual(inventoryCalls1, 1)
     }
 
+
+    func testDeploymentPlanCommandUsesSharedWorkflowAndStaysFailClosedWhenSessionUnavailable() async throws {
+        let coordinator = CLIReadyCoordinator()
+        let current = try release("1.2.3")
+        let startup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: coordinator)
+        )
+        let result = await run(
+            ["deployment", "plan", "--deployment", "new", "--json"],
+            startup: startup,
+            version: "1.2.3"
+        )
+        XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(result.stderr.joined().contains("compositiesessie"))
+    }
+
     func testReadySelfUpdateApplyIsNoOpCurrentAndRemoveSurfacesProducerBlocker() async throws {
         let coordinator = CLIReadyCoordinator()
         let current = try release("1.2.3")

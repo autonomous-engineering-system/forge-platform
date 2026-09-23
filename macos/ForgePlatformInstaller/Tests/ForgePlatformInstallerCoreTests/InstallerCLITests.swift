@@ -23,6 +23,10 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(try InstallerCLIParser.parse(["self-update", "apply"]).command, .selfUpdateApply)
         XCTAssertEqual(try InstallerCLIParser.parse(["deployment", "list"]).command, .deploymentList)
         XCTAssertEqual(
+            try InstallerCLIParser.parse(["deployment", "plan", "--deployment", "new"]).command,
+            .deploymentPlan("new")
+        )
+        XCTAssertEqual(
             try InstallerCLIParser.parse(["deployment", "remove", "--deployment", "production"]).command,
             .deploymentRemove("production")
         )
@@ -56,6 +60,32 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(executionCalls1, 0)
         let inventoryCalls1 = await coordinator.inventoryCallCount()
         XCTAssertEqual(inventoryCalls1, 2)
+    }
+
+
+    func testDeploymentPlanShowsExactReviewAndNeverRequestsCurrencyOrExecution() async throws {
+        let coordinator = CLIWizardCoordinator(session: try session())
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"),
+            coordinator: coordinator
+        ).planDeployment(
+            "new",
+            options: InstallerCLIOptions()
+        )
+
+        XCTAssertEqual(result.exitCode, .success)
+        XCTAssertEqual(result.status, "planned")
+        XCTAssertEqual(result.records.count, 2)
+        XCTAssertEqual(
+            result.records[0]["artifact_digest"],
+            "sha256:" + String(repeating: "1", count: 64)
+        )
+        let calls = await coordinator.calls()
+        XCTAssertEqual(calls, ["inventory", "session", "preflight", "review"])
+        let executionCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(executionCalls, 0)
+        let handoffCalls = await coordinator.handoffCallCount()
+        XCTAssertEqual(handoffCalls, 0)
     }
 
     func testProviderFreeApplyRunsSameGatesAndProducesTerminalSummary() async throws {
