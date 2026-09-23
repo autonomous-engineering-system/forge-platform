@@ -671,7 +671,45 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     /// responsible for catalog/index/manifest verification under its own
     /// reviewed policy.
     public func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
-        .unavailable(.selectionUnavailable)
+        guard let currentVerifiedReleaseRecord else {
+            return .unavailable(.selectionUnavailable)
+        }
+        if let preparedCompositionSession {
+            return .prepared(preparedCompositionSession)
+        }
+
+        let context = CurrentVerifiedInstallerCompositionContext(release: currentVerifiedReleaseRecord)
+        let generation = compositionSessionGeneration
+        guard inFlightCompositionSessionGeneration == nil else {
+            return .unavailable(.selectionUnavailable)
+        }
+        inFlightCompositionSessionGeneration = generation
+        let result = await compositionSessionPreparer.prepareVerifiedCompositionSession(for: context)
+
+        guard inFlightCompositionSessionGeneration == generation else {
+            return .unavailable(.selectionUnavailable)
+        }
+        inFlightCompositionSessionGeneration = nil
+        guard generation == compositionSessionGeneration,
+              self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+            return .unavailable(.selectionUnavailable)
+        }
+        switch result {
+        case .unavailable:
+            return result
+        case .prepared(let plan):
+            guard context.accepts(plan) else {
+                return .unavailable(.selectionUnavailable)
+            }
+            if let preparedCompositionSession {
+                guard preparedCompositionSession == plan else {
+                    return .unavailable(.selectionUnavailable)
+                }
+                return .prepared(preparedCompositionSession)
+            }
+            self.preparedCompositionSession = plan
+            return .prepared(plan)
+        }
     }
 
     public func prepareVerifiedCompositionSession(
