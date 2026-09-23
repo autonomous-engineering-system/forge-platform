@@ -72,41 +72,33 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("installer-release-preparation.json", self.workflow)
         self.assertIn('--preparation-receipt-reference "receipt:installer-preparation-$OPERATION_ID"', self.workflow)
 
-    def test_requires_explicit_protected_signing_and_publication_gates_without_secret_or_publish_fallback(self) -> None:
-        self.assertIn("name: forge-platform-installer-signing", self.workflow)
-        self.assertIn("name: forge-platform-installer-publication", self.workflow)
+    def test_public_actions_release_has_only_an_offline_signing_handoff(self) -> None:
+        self.assertIn("offline-signing-handoff:", self.workflow)
+        self.assertIn("name: Require offline Mac mini signer", self.workflow)
         self.assertIn("if: ${{ inputs.request_publication }}", self.workflow)
-        self.assertIn("No protected Apple signing/notarization and descriptor-trust implementation is configured.", self.workflow)
-        self.assertIn("No protected cross-run installer release-operation/sequence store is configured.", self.workflow)
-        self.assertIn("durable PREPARED candidate", self.workflow)
-        self.assertIn("Refuse public GitHub Release publication until a protected publisher is implemented", self.workflow)
-        self.assertIn("permissions:\n      contents: write", self.workflow)
+        self.assertIn("offline-macmini-signing-required", self.workflow)
+        self.assertIn("credential-bearing signing inside GitHub Actions", self.workflow)
+        self.assertNotIn("forge-platform-installer-signing", self.workflow)
+        self.assertNotIn("forge-platform-installer-publication", self.workflow)
+        self.assertNotIn("forge-platform-signer", self.workflow)
+        self.assertNotIn("FORGE_PLATFORM_CODESIGN_IDENTITY", self.workflow)
+        self.assertNotIn("FORGE_PLATFORM_NOTARYTOOL_PROFILE", self.workflow)
+        self.assertNotIn("permissions:\n      contents: write", self.workflow)
         self.assertNotIn("secrets.", self.workflow)
         self.assertNotIn("gh release", self.workflow)
 
-    def test_future_publication_handoff_verifies_exact_durable_installer_evidence_before_it_can_publish(self) -> None:
-        verify_index = self.workflow.index("scripts/verify_installer_release_evidence.py")
-        refuse_index = self.workflow.index("Refuse public GitHub Release publication until a protected publisher is implemented")
-        self.assertLess(verify_index, refuse_index)
-        self.assertIn("signed-release-input/installer-release-operation.json", self.workflow)
-        self.assertIn('--descriptor "signed-release-input/$DESCRIPTOR_ASSET_NAME"', self.workflow)
-        self.assertIn('name: forge-platform-installer-signed-${{ needs.release-context.outputs.installer_version }}-${{ needs.release-context.outputs.source_sha }}', self.workflow)
-        for flag in (
-            '--operation-id "$OPERATION_ID"',
-            '--installer-version "$INSTALLER_VERSION"',
-            '--channel "$CHANNEL"',
-            '--release-sequence "$RELEASE_SEQUENCE"',
-            '--policy-revision "$POLICY_REVISION"',
-            '--provenance-sha256 "$PROVENANCE_SHA256"',
-            '--release-trust-configuration-sha256 "$RELEASE_TRUST_CONFIGURATION_SHA256"',
-            '--github-repository "$IDENTITY_GITHUB_REPOSITORY"',
-            '--release-tag "$RELEASE_TAG"',
-            '--descriptor-asset-name "$DESCRIPTOR_ASSET_NAME"',
-            '--bundle-identifier "$BUNDLE_IDENTIFIER"',
-            '--team-identifier "$TEAM_IDENTIFIER"',
-            '--asset-prefix "$ASSET_PREFIX"',
-        ):
-            self.assertIn(flag, self.workflow)
+    def test_unsigned_candidate_remains_reproducible_but_not_publication_authority(self) -> None:
+        candidate_index = self.workflow.index("build-unsigned-app-candidate:")
+        handoff_index = self.workflow.index("offline-signing-handoff:")
+        self.assertLess(candidate_index, handoff_index)
+        self.assertIn("scripts/prepare_installer_release_candidate.py", self.workflow)
+        self.assertIn("installer-release-preparation.json", self.workflow)
+        self.assertIn('"packaging": "UNSIGNED_APP_CANDIDATE"', self.workflow)
+        self.assertIn("actions/upload-artifact@", self.workflow)
+        self.assertNotIn("scripts/verify_installer_release_evidence.py", self.workflow)
+        self.assertNotIn("signed-release-input", self.workflow)
+        self.assertNotIn("github-release", self.workflow.lower().split("offline-signing-handoff:", 1)[1])
+        self.assertIn("exit 1", self.workflow.split("offline-signing-handoff:", 1)[1])
 
 
 if __name__ == "__main__":
