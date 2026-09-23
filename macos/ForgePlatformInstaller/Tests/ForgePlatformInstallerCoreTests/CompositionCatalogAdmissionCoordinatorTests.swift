@@ -44,6 +44,28 @@ final class CompositionCatalogAdmissionCoordinatorTests: XCTestCase {
         XCTAssertEqual(attestedReadbacks, [rawReadback])
     }
 
+
+    func testEvidenceAdmissionRetainsTheExactIndependentVerifiedInstant() async throws {
+        let fixture = try CatalogFixture()
+        let bytes = try fixture.signedCatalogBytes()
+        let coordinator = CompositionCatalogAdmissionCoordinator(
+            trustLoader: FixedCatalogTrustLoader(result: .success(fixture.trustConfiguration)),
+            transport: CatalogFetcherSpy(result: .success(try fixture.transportReadback(bytes))),
+            trustedClockAttester: TrustedClockAttesterSpy(
+                result: .success(try fixture.clockAttestation(bytes))
+            ),
+            acceptanceReader: CatalogAcceptanceReaderSpy(result: .success(nil))
+        )
+
+        guard case .success(let admission) = await coordinator.admitVerifiedCatalogWithEvidence(
+            for: fixture.currentInstaller
+        ) else {
+            return XCTFail("Expected exact admission evidence")
+        }
+        XCTAssertEqual(admission.verifiedAt, fixture.now)
+        XCTAssertEqual(admission.catalog.identity.sequence, 2)
+    }
+
     func testFailsClosedWhenAnyRequiredReadOnlyDependencyIsUnavailable() async throws {
         let fixture = try CatalogFixture()
         let bytes = try fixture.signedCatalogBytes()
