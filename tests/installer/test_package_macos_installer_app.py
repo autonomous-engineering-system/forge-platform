@@ -692,6 +692,8 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                     str(SCRIPT),
                     "--executable",
                     str(executable),
+                    "--cli-executable",
+                    str(self._cli_executable(workspace)),
                     "--output",
                     str(app_bundle),
                     "--bundle-identifier",
