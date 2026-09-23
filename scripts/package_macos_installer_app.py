@@ -366,6 +366,7 @@ def _bundle_identifier(value: str) -> str:
 def package(
     *,
     executable: Path,
+    cli_executable: Path,
     output: Path,
     bundle_identifier: str,
     sealed_release_trust: SealedReleaseTrustResource | None = None,
@@ -380,6 +381,14 @@ def package(
     """
 
     executable = _source_executable(str(executable))
+    cli_executable = _source_executable(str(cli_executable))
+    main_details = executable.stat()
+    cli_details = cli_executable.stat()
+    if (
+        main_details.st_dev == cli_details.st_dev
+        and main_details.st_ino == cli_details.st_ino
+    ):
+        raise ValueError("installer GUI and CLI executables must be distinct files")
     output = _output_bundle(str(output))
     bundle_identifier = _bundle_identifier(bundle_identifier)
 
@@ -461,6 +470,7 @@ def package(
     macos = contents / "MacOS"
     resources = contents / "Resources"
     destination = macos / "ForgePlatformInstaller"
+    cli_destination = macos / "forge-platform-installer"
     info_plist = contents / "Info.plist"
     output_owned = False
     try:
@@ -476,6 +486,10 @@ def package(
         source_mode = stat.S_IMODE(executable.stat().st_mode)
         destination.chmod(source_mode | stat.S_IXUSR)
         _require_arm64_macho_file(destination, label="packaged installer executable")
+        shutil.copyfile(cli_executable, cli_destination, follow_symlinks=False)
+        cli_source_mode = stat.S_IMODE(cli_executable.stat().st_mode)
+        cli_destination.chmod(cli_source_mode | stat.S_IXUSR)
+        _require_arm64_macho_file(cli_destination, label="packaged installer CLI executable")
         metadata = {
             "CFBundleDevelopmentRegion": "en",
             "CFBundleExecutable": "ForgePlatformInstaller",
@@ -523,6 +537,7 @@ def package(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", required=True)
+    parser.add_argument("--cli-executable", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--bundle-identifier", required=True)
     parser.add_argument(
@@ -550,6 +565,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         executable = _source_executable(args.executable)
+        cli_executable = _source_executable(args.cli_executable)
         output = _output_bundle(args.output)
         bundle_identifier = _bundle_identifier(args.bundle_identifier)
         sealed_release_trust = (
@@ -571,6 +587,7 @@ def main() -> None:
         )
         package(
             executable=executable,
+            cli_executable=cli_executable,
             output=output,
             bundle_identifier=bundle_identifier,
             sealed_release_trust=sealed_release_trust,
@@ -581,6 +598,7 @@ def main() -> None:
             "INSTALLER_APP_BUNDLE=PASS"
             f" version={load_manifest()['version']}"
             f" bundle_identifier={bundle_identifier}"
+            " cli=PACKAGED"
             f" sealed_release_trust={'PACKAGED_V2' if sealed_release_trust is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_release_provenance={'PACKAGED_V1' if sealed_release_provenance is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_composition_catalog_trust={'PACKAGED_V1' if sealed_composition_catalog_trust is not None else 'ABSENT_FAIL_CLOSED'}"

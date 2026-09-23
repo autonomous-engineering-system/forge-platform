@@ -42,6 +42,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             executable = self._executable(workspace)
+            cli_executable = self._cli_executable(workspace)
             app_bundle = workspace / "ForgePlatformInstaller.app"
 
             result = self._run(executable, app_bundle)
@@ -57,6 +58,14 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             )
             self.assertTrue(
                 (app_bundle / "Contents" / "MacOS" / "ForgePlatformInstaller").stat().st_mode
+                & stat.S_IXUSR
+            )
+            self.assertEqual(
+                (app_bundle / "Contents" / "MacOS" / "forge-platform-installer").read_bytes(),
+                cli_executable.read_bytes(),
+            )
+            self.assertTrue(
+                (app_bundle / "Contents" / "MacOS" / "forge-platform-installer").stat().st_mode
                 & stat.S_IXUSR
             )
             with (app_bundle / "Contents" / "Info.plist").open("rb") as stream:
@@ -503,6 +512,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "strict UTF-8 JSON"):
                 package(
                     executable=executable,
+                    cli_executable=self._cli_executable(workspace),
                     output=output,
                     bundle_identifier="com.example.forge-platform-installer",
                     sealed_release_trust=forged_trust,
@@ -527,6 +537,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "strict UTF-8 JSON"):
                 package(
                     executable=executable,
+                    cli_executable=self._cli_executable(workspace),
                     output=output,
                     bundle_identifier="com.example.forge-platform-installer",
                     sealed_composition_catalog_trust=forged_catalog_trust,
@@ -544,6 +555,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must not be selected through a symlink"):
                 package(
                     executable=symlinked_executable,
+                    cli_executable=self._cli_executable(workspace),
                     output=symlink_output,
                     bundle_identifier="com.example.forge-platform-installer",
                 )
@@ -553,6 +565,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "bundle identifier is invalid"):
                 package(
                     executable=executable,
+                    cli_executable=self._cli_executable(workspace),
                     output=invalid_identifier_output,
                     bundle_identifier="not a bundle identifier",
                 )
@@ -698,6 +711,13 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
     def _executable(workspace: Path) -> Path:
         executable = workspace / "ForgePlatformInstaller"
         executable.write_bytes(thin_arm64_macho_test_bytes(b"native installer candidate bytes\n"))
+        executable.chmod(0o755)
+        return executable
+
+    @staticmethod
+    def _cli_executable(workspace: Path) -> Path:
+        executable = workspace / "forge-platform-installer"
+        executable.write_bytes(thin_arm64_macho_test_bytes(b"native installer cli candidate bytes\n"))
         executable.chmod(0o755)
         return executable
 
@@ -951,11 +971,14 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         provenance_resource: Path | None = None,
         catalog_trust_resource: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        cli_executable = PackageMacOSInstallerAppTests._cli_executable(executable.parent)
         command = [
             sys.executable,
             str(SCRIPT),
             "--executable",
             str(executable),
+            "--cli-executable",
+            str(cli_executable),
             "--output",
             str(app_bundle),
             "--bundle-identifier",

@@ -150,15 +150,21 @@ jobs:
           ARCHITECTURE="arm64"
           cd macos/ForgePlatformInstaller
           swift test
+          swift build -c release --product ForgePlatformInstaller
+          swift build -c release --product forge-platform-installer
           BINARY_DIRECTORY="$(swift build -c release --show-bin-path)"
           cd ../..
           test -x "$BINARY_DIRECTORY/ForgePlatformInstaller"
+          test -x "$BINARY_DIRECTORY/forge-platform-installer"
           mkdir release-input
           python3 scripts/package_macos_installer_app.py \
             --executable "$BINARY_DIRECTORY/ForgePlatformInstaller" \
+            --cli-executable "$BINARY_DIRECTORY/forge-platform-installer" \
             --output release-input/ForgePlatformInstaller.app \
             --bundle-identifier "$BUNDLE_IDENTIFIER"
           test -f release-input/ForgePlatformInstaller.app/Contents/Info.plist
+          test -x release-input/ForgePlatformInstaller.app/Contents/MacOS/ForgePlatformInstaller
+          test -x release-input/ForgePlatformInstaller.app/Contents/MacOS/forge-platform-installer
           ARCHIVE="$ASSET_PREFIX$ARCHITECTURE.zip"
           python3 scripts/package_macos_installer_archive.py \
             --app-bundle release-input/ForgePlatformInstaller.app \

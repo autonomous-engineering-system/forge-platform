@@ -312,6 +312,9 @@ def _validate_minimum_app_layout(entries: Iterable[BundleEntry]) -> None:
     executable = by_path.get(f"{root}/Contents/MacOS/ForgePlatformInstaller")
     if executable is None or executable.kind != "file" or not executable.permissions & stat.S_IXUSR:
         raise ValueError("installer app bundle has no regular executable ForgePlatformInstaller")
+    cli_executable = by_path.get(f"{root}/Contents/MacOS/forge-platform-installer")
+    if cli_executable is None or cli_executable.kind != "file" or not cli_executable.permissions & stat.S_IXUSR:
+        raise ValueError("installer app bundle has no regular executable forge-platform-installer")
 
 
 def _zip_info(entry: BundleEntry) -> zipfile.ZipInfo:
@@ -360,7 +363,7 @@ def _write_regular_file(archive: zipfile.ZipFile, entry: BundleEntry) -> None:
         with os.fdopen(descriptor, "rb", closefd=False) as source, archive.open(
             _zip_info(entry), "w", force_zip64=False
         ) as destination:
-            if entry.archive_path.endswith("/Contents/MacOS/ForgePlatformInstaller"):
+            if entry.archive_path.endswith("/Contents/MacOS/ForgePlatformInstaller") or entry.archive_path.endswith("/Contents/MacOS/forge-platform-installer"):
                 require_thin_arm64_macho_header(
                     source.read(32),
                     "installer archive executable",
