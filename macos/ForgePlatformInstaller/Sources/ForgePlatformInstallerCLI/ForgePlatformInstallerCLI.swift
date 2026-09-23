@@ -33,7 +33,7 @@ actor ReleasedInstallerCLIStartupAdapter: InstallerCLIStarting {
         Self.map(await boundary.confirmRequiredUpdate(release))
     }
 
-    private static func map(
+    static func map(
         _ outcome: ReleasedInstallerStartupOutcome
     ) -> InstallerCLIStartupOutcome {
         switch outcome {
@@ -257,11 +257,9 @@ enum ForgePlatformInstallerCLIApplication {
         command: InstallerCLICommand,
         confirm: Confirmation
     ) async -> Bool {
-        if command == .selfUpdateApply || options.acceptInstallerUpdate || options.assumeYes {
+        if command == .selfUpdateApply {
             if options.nonInteractive {
-                return command == .selfUpdateApply && options.assumeYes
-                    || options.acceptInstallerUpdate
-                    || options.assumeYes
+                return options.assumeYes || options.acceptInstallerUpdate
             }
             if options.assumeYes || options.acceptInstallerUpdate {
                 return true
@@ -269,6 +267,9 @@ enum ForgePlatformInstallerCLIApplication {
             return await confirm(
                 "Installer \(release.version.description) is verplicht. Update en herstart?"
             )
+        }
+        if options.acceptInstallerUpdate {
+            return true
         }
         if options.nonInteractive {
             return false

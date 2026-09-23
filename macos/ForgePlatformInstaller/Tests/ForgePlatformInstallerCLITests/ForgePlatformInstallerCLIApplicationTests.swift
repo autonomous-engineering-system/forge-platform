@@ -93,6 +93,163 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertTrue(relaunching.stderr.joined().contains("oude CLI-sessie"))
     }
 
+
+    func testBundledStartupAdapterFailsClosedWithoutReleasedBundleResources() async throws {
+        let adapter = ReleasedInstallerCLIStartupAdapter()
+        let version = try InstallerVersion("1.2.3")
+        guard case .blocked = await adapter.start(currentVersion: version) else {
+            return XCTFail("source/test bundle must not become a trusted released runtime")
+        }
+        guard case .blocked = await adapter.confirmRequiredUpdate(try release("1.2.4")) else {
+            return XCTFail("no pending verified update may be confirmed")
+        }
+    }
+
+    func testStartupOutcomeMappingCoversBoundedNonReadyStates() throws {
+        let release = try release("1.2.4")
+        guard case .updateRequired(let mappedUpdate) =
+            ReleasedInstallerCLIStartupAdapter.map(.updateRequired(release)) else {
+            return XCTFail("update-required mapping failed")
+        }
+        XCTAssertEqual(mappedUpdate, release)
+        guard case .relaunching(let mappedRelaunch) =
+            ReleasedInstallerCLIStartupAdapter.map(.relaunching(release)) else {
+            return XCTFail("relaunching mapping failed")
+        }
+        XCTAssertEqual(mappedRelaunch, release)
+        guard case .blocked(let reason) =
+            ReleasedInstallerCLIStartupAdapter.map(.blocked("blocked")) else {
+            return XCTFail("blocked mapping failed")
+        }
+        XCTAssertEqual(reason, "blocked")
+    }
+
+    func testRequiredStartupUpdateSeparatesReviewYesFromUpdateAuthority() async throws {
+        let newer = try release("1.2.4")
+        let yesOnlyStartup = CLIStartupSpy(
+            outcome: .updateRequired(newer),
+            confirmationOutcome: .relaunching(newer)
+        )
+        let yesOnly = await run(
+            ["status", "--non-interactive", "--yes"],
+            startup: yesOnlyStartup,
+            version: "1.2.3",
+            confirmation: false
+        )
+        XCTAssertEqual(yesOnly.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        let yesOnlyConfirms = await yesOnlyStartup.confirmCalls()
+        XCTAssertEqual(yesOnlyConfirms, 0)
+
+        let authorizedStartup = CLIStartupSpy(
+            outcome: .updateRequired(newer),
+            confirmationOutcome: .relaunching(newer)
+        )
+        let authorized = await run(
+            ["status", "--non-interactive", "--accept-installer-update"],
+            startup: authorizedStartup,
+            version: "1.2.3",
+            confirmation: false
+        )
+        XCTAssertEqual(authorized.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        XCTAssertTrue(authorized.stderr.joined().contains("relaunching"))
+        let authorizedConfirms = await authorizedStartup.confirmCalls()
+        XCTAssertEqual(authorizedConfirms, 1)
+    }
+
+    func testInteractiveRequiredUpdateCoversConfirmationAndHandoffFailures() async throws {
+        let newer = try release("1.2.4")
+        let rejectedStartup = CLIStartupSpy(
+            outcome: .updateRequired(newer),
+            confirmationOutcome: .relaunching(newer)
+        )
+        let rejected = await run(
+            ["status"],
+            startup: rejectedStartup,
+            version: "1.2.3",
+            confirmation: false
+        )
+        XCTAssertEqual(rejected.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        let rejectedConfirms = await rejectedStartup.confirmCalls()
+        XCTAssertEqual(rejectedConfirms, 0)
+
+        let blockedStartup = CLIStartupSpy(
+            outcome: .updateRequired(newer),
+            confirmationOutcome: .blocked("handoff blocked")
+        )
+        let blocked = await run(
+            ["status"],
+            startup: blockedStartup,
+            version: "1.2.3",
+            confirmation: true
+        )
+        XCTAssertEqual(blocked.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(blocked.stderr.joined().contains("handoff blocked"))
+
+        let invalidStartup = CLIStartupSpy(
+            outcome: .updateRequired(newer),
+            confirmationOutcome: .updateRequired(newer)
+        )
+        let invalid = await run(
+            ["status"],
+            startup: invalidStartup,
+            version: "1.2.3",
+            confirmation: true
+        )
+        XCTAssertEqual(invalid.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(invalid.stderr.joined().contains("ongeldige terminale uitkomst"))
+    }
+
+    func testReadyDeploymentListAndApplyBranchesUseSharedWorkflow() async throws {
+        let coordinator = CLIReadyCoordinator()
+        let current = try release("1.2.3")
+        let startup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: coordinator)
+        )
+        let listed = await run(
+            ["deployment", "list"],
+            startup: startup,
+            version: "1.2.3"
+        )
+        XCTAssertEqual(listed.code, 0)
+        XCTAssertTrue(listed.stdout.joined().contains("deployment_id=production"))
+
+        let applied = await run(
+            ["deployment", "apply", "--deployment", "new", "--yes"],
+            startup: startup,
+            version: "1.2.3"
+        )
+        XCTAssertEqual(applied.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(applied.stderr.joined().contains("compositiesessie"))
+    }
+
+    func testHumanRendererEmitsDetailsRecordsAndFailureToCorrectStream() {
+        let output = LockedStrings()
+        let errors = LockedStrings()
+        ForgePlatformInstallerCLIApplication.render(
+            InstallerCLIResult(
+                exitCode: .success,
+                status: "ok",
+                message: "ready",
+                details: ["z": "2", "a": "1"],
+                records: [["component": "forge-runtime", "status": "ready"]]
+            ),
+            json: false,
+            stdout: { output.append($0) },
+            stderr: { errors.append($0) }
+        )
+        XCTAssertTrue(output.values().joined().contains("a=1"))
+        XCTAssertTrue(output.values().joined().contains("component=forge-runtime"))
+        XCTAssertTrue(errors.values().isEmpty)
+
+        ForgePlatformInstallerCLIApplication.render(
+            InstallerCLIResult(exitCode: .blocked, status: "blocked", message: "no"),
+            json: false,
+            stdout: { output.append($0) },
+            stderr: { errors.append($0) }
+        )
+        XCTAssertTrue(errors.values().joined().contains("blocked: no"))
+    }
+
     func testReadyStatusUsesSameWizardCoordinatorAndRendersHumanOutput() async throws {
         let coordinator = CLIReadyCoordinator()
         let current = try release("1.2.3")
@@ -101,7 +258,8 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         )
         let result = await run(["status"], startup: startup, version: "1.2.3")
         XCTAssertEqual(result.code, 0)
-        XCTAssertTrue(result.stdout.joined().contains("deployment_count=0"))
+        XCTAssertTrue(result.stdout.joined().contains("deployment_count=1"))
+        XCTAssertTrue(result.stdout.joined().contains("deployment_id=production"))
         let inventoryCalls1 = await coordinator.inventoryCalls()
         XCTAssertEqual(inventoryCalls1, 1)
     }
@@ -240,7 +398,15 @@ private actor CLIReadyCoordinator: InstallerWizardCoordinator {
         inventories += 1
         do {
             return .available(try ManagedDeploymentInventory(
-                existing: [],
+                existing: [
+                    ManagedDeploymentTarget(
+                        id: "production",
+                        label: "Production",
+                        exists: true,
+                        forgeInstanceID: "forge-prod",
+                        engineeringPlatformInstanceID: "ep-prod"
+                    )
+                ],
                 createCandidate: ManagedDeploymentTarget(
                     id: "deployment-new", exists: false
                 ),
