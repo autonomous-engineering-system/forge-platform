@@ -128,7 +128,6 @@ class ManagedDeploymentTests(unittest.TestCase):
             ManagedComponentBinding("forge-runtime", "forge-prod", "ghp_secret")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            root.mkdir()
             (root / "production.json").write_text('{"not":"a deployment"}', encoding="utf-8")
             with self.assertRaisesRegex(ManagedDeploymentError, "record is invalid"):
                 ManagedDeploymentRegistry(root).load("production")
