@@ -24,6 +24,18 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Retain exact committed source for reproducible qualification
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/forge-platform-native-evidence"
+          mkdir -p "$evidence"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$COVERAGE_BASE_SHA" HEAD
+          git archive --format=tar --prefix=source/ HEAD > "$evidence/source.tar"
+          git rev-parse HEAD > "$evidence/source-revision.txt"
+          git rev-parse 'HEAD^{tree}' > "$evidence/source-tree.txt"
+          printf '%s\n' "$COVERAGE_BASE_SHA" > "$evidence/coverage-base.txt"
+          (cd "$evidence" && shasum -a 256 source.tar > source.sha256)
       - name: Verify native Apple Silicon macOS 26 runner and record toolchain
         run: |
           set -euo pipefail
@@ -50,8 +62,17 @@ jobs:
           set -euo pipefail
           coverage_path="$(swift test --show-codecov-path)"
           test -n "$coverage_path"
+          cp "$coverage_path" "$RUNNER_TEMP/forge-platform-native-evidence/swift-coverage.json"
           python3 ../../scripts/check_managed_installer_swift_coverage.py "$coverage_path" \
             --minimum 80.2 --base-ref "$COVERAGE_BASE_SHA"
+      - name: Upload exact source and measured coverage evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: forge-platform-native-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/forge-platform-native-evidence
+          if-no-files-found: error
+          retention-days: 2
       - name: Upload read-only native UI screenshots
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
