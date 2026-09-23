@@ -58,6 +58,8 @@ OBSERVABLE_MACOS_ARCHITECTURES = frozenset({"arm64", "x86_64"})
 MANAGED_TOOL_IDENTITIES = frozenset({"git"})
 MANAGED_PYTHON_RUNTIME_SCHEMA = "forge-platform.managed-python-runtime/v1"
 MANAGED_PYTHON_IMPLEMENTATION = "cpython"
+MANAGED_PYTHON_REQUIRED_MAJOR = 3
+MANAGED_PYTHON_REQUIRED_MINOR = 14
 MANAGED_PYTHON_OPERATING_SYSTEM = "macos"
 MANAGED_PYTHON_ARCHITECTURE = "arm64"
 MANAGED_PYTHON_BUILD_VARIANT = "standard-gil"
@@ -433,6 +435,11 @@ class ManagedPythonRuntimeIdentity:
             raise ValueError("managed Python runtime implementation is unsupported")
         if not isinstance(self.version, SemanticVersion):
             raise ValueError("managed Python runtime version must be exact semantic version")
+        if (
+            self.version.major != MANAGED_PYTHON_REQUIRED_MAJOR
+            or self.version.minor != MANAGED_PYTHON_REQUIRED_MINOR
+        ):
+            raise ValueError("managed Python runtime must be CPython 3.14.x")
         if self.operating_system != MANAGED_PYTHON_OPERATING_SYSTEM:
             raise ValueError("managed Python runtime operating system must be macOS")
         if self.architecture != MANAGED_PYTHON_ARCHITECTURE:
