@@ -32,6 +32,10 @@ from package_macos_installer_app import (  # noqa: E402
 _PUBLIC_V2_DIGEST = "5988f1dd473caef0a2963f3a6cec06099007e740eced84e3a03fc0e04f343b19"
 _PUBLIC_PROVENANCE_DIGEST = "d36b26ac88066121531841dab8bf0c2b8f0ab005d099e6c74b836540d555d935"
 
+_INSTALLER_MANIFEST = json.loads((ROOT / "installer-version.json").read_text(encoding="utf-8"))
+_INSTALLER_VERSION = _INSTALLER_MANIFEST["version"]
+_INSTALLER_CAPABILITIES = _INSTALLER_MANIFEST["capabilities"]
+
 
 class PackageMacOSInstallerAppTests(unittest.TestCase):
     def test_builds_a_minimal_unsigned_app_bundle_with_version_projection(self) -> None:
@@ -59,8 +63,8 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                 info = plistlib.load(stream)
             self.assertEqual(info["CFBundleExecutable"], "ForgePlatformInstaller")
             self.assertEqual(info["CFBundleIdentifier"], "com.example.forge-platform-installer")
-            self.assertEqual(info["CFBundleShortVersionString"], "0.1.0")
-            self.assertEqual(info["CFBundleVersion"], "0.1.0")
+            self.assertEqual(info["CFBundleShortVersionString"], _INSTALLER_VERSION)
+            self.assertEqual(info["CFBundleVersion"], _INSTALLER_VERSION)
             self.assertEqual(info["CFBundlePackageType"], "APPL")
             self.assertEqual(info["LSMinimumSystemVersion"], "26.0")
             self.assertFalse(
@@ -487,7 +491,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                 source=workspace / "not-a-real-provenance.json",
                 contents=b"not-json-provenance",
                 provenance_sha256="b" * 64,
-                installer_version="0.1.0",
+                installer_version=_INSTALLER_VERSION,
                 channel="stable",
                 release_sequence=1,
                 source_revision="a" * 40,
@@ -859,23 +863,14 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         cls,
         workspace: Path,
         *,
-        installer_version: str = "0.1.0",
+        installer_version: str = _INSTALLER_VERSION,
         channel: str = "stable",
         capabilities: list[str] | None = None,
         release_sequence: int = 42,
         release_trust_configuration_sha256: str = "b" * 64,
     ) -> tuple[Path, bytes]:
         if capabilities is None:
-            capabilities = [
-                "composition/v1",
-                "composition/v2",
-                "managed-deployment/v1",
-                "managed-python-runtime/v1",
-                "provider-fanout/v1",
-                "provider-gate/v1",
-                "provider-targets/v1",
-                "system-launchdaemon/v1",
-            ]
+            capabilities = list(_INSTALLER_CAPABILITIES)
         contents = (
             json.dumps(
                 cls._release_provenance_payload(
