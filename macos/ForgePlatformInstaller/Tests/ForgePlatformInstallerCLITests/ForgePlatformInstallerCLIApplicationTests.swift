@@ -467,23 +467,26 @@ private actor CLITestTrustedRuntime: TrustedInstallerRuntime {
     static func provenance(
         version: String = "1.2.3"
     ) throws -> SealedInstallerReleaseProvenance {
-        try SealedInstallerReleaseProvenance(
-            installerVersion: InstallerVersion(version),
+        let installerVersion = try InstallerVersion(version)
+        let trustDigest = String(repeating: "b", count: 64)
+        let provenanceDigest = SealedInstallerReleaseProvenance.canonicalSHA256(
+            installerVersion: installerVersion,
             channel: .stable,
             releaseSequence: 1,
             sourceRevision: String(repeating: "a", count: 40),
             policyRevision: "release/v1",
             capabilities: ["composition/v2"],
-            provenanceSHA256: SealedInstallerReleaseProvenance.canonicalSHA256(
-                installerVersion: InstallerVersion(version),
-                channel: .stable,
-                releaseSequence: 1,
-                sourceRevision: String(repeating: "a", count: 40),
-                policyRevision: "release/v1",
-                capabilities: ["composition/v2"],
-                releaseTrustConfigurationSHA256: String(repeating: "b", count: 64)
-            ),
-            releaseTrustConfigurationSHA256: String(repeating: "b", count: 64)
+            releaseTrustConfigurationSHA256: trustDigest
+        )
+        return try SealedInstallerReleaseProvenance(
+            provenanceSHA256: provenanceDigest,
+            installerVersion: installerVersion,
+            channel: .stable,
+            releaseSequence: 1,
+            sourceRevision: String(repeating: "a", count: 40),
+            policyRevision: "release/v1",
+            capabilities: ["composition/v2"],
+            releaseTrustConfigurationSHA256: trustDigest
         )
     }
 }
