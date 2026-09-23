@@ -172,19 +172,22 @@ public struct InstallerComponentSelection: Equatable, Sendable {
 
 public struct InstallerCompositionRequest: Equatable, Sendable {
     public let componentIdentities: Set<String>
-    public let installedCompositionID: String?
+    public let installedComposition: ManagedDeploymentCompositionIdentity?
+
+    public var installedCompositionID: String? {
+        installedComposition?.compositionID
+    }
 
     public init(
         componentIdentities: Set<String>,
-        installedCompositionID: String?
+        installedComposition: ManagedDeploymentCompositionIdentity?
     ) throws {
         guard !componentIdentities.isEmpty,
-              componentIdentities.allSatisfy(CompositionCatalogValidation.isCapability),
-              installedCompositionID.map(CompositionCatalogValidation.isCompositionIdentity) ?? true else {
+              componentIdentities.allSatisfy(CompositionCatalogValidation.isCapability) else {
             throw InstallerCompositionRequestError.invalid
         }
         self.componentIdentities = componentIdentities
-        self.installedCompositionID = installedCompositionID
+        self.installedComposition = installedComposition
     }
 }
 
