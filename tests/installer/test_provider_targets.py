@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
 from forge_platform.component_operations import ArtifactCorrelation, ProductInstallationReadback, QualifiedArtifact
 from forge_platform.universal_installer import (
