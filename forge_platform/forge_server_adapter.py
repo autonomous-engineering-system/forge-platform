@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 import plistlib
 import pwd
-import shutil
 import subprocess
 from typing import Mapping, Protocol, Sequence
 from urllib import request as urllib_request
@@ -431,14 +430,17 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self._validate_request(request)
         if request.kind != "update":
             raise ForgeServerAdapterError("Forge update assessment requires update kind")
-        if self.update_binding is None:
-            state = "UNKNOWN"
-        elif request.artifact.version == self.installed_artifact.version and request.artifact.digest == self.installed_artifact.digest:
+        if (
+            request.artifact.version == self.installed_artifact.version
+            and request.artifact.digest == self.installed_artifact.digest
+            and request.artifact.source_revision == self.installed_artifact.source_revision
+        ):
             state = "UP_TO_DATE"
         else:
-            # The external Forge updater performs the authoritative version /
-            # schema / artifact / peer checks again immediately before mutation.
-            state = "UPDATE_AVAILABLE"
+            # Forge 2.7.34 publishes the durable updater but not a separate
+            # read-only UPDATE_AVAILABLE decision. The installer must not turn
+            # "an updater exists" into product authorization.
+            state = "UNKNOWN"
         return ProductUpdateAssessment(
             FORGE_COMPONENT,
             self.target.instance_id,
@@ -458,13 +460,9 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             self.supervisor.start(self.target)
             state = "COMPLETED"
         elif request.kind == "remove":
-            self.supervisor.remove(self.target)
-            expected_root = self.target.instances_root.resolve(strict=False)
-            data_root = self.target.data_root.resolve(strict=False)
-            if data_root == expected_root or not data_root.is_relative_to(expected_root):
-                raise ForgeServerAdapterError("Forge removal target escaped installer-owned instances root")
-            shutil.rmtree(data_root, ignore_errors=False)
-            state = "COMPLETED"
+            raise ForgeServerAdapterError(
+                "Forge 2.7.34 publishes no product-owned uninstall dispatcher"
+            )
         elif request.kind == "update":
             self._run_update(request)
             self.installed_artifact = request.artifact
@@ -484,6 +482,11 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
                 "artifact": request.artifact.correlation.__dict__,
             }),
         )
+
+    def removal_support(self) -> str:
+        """Removal stays blocked until Forge publishes an owning uninstall route."""
+
+        return "UNSUPPORTED"
 
     def resume(
         self,
