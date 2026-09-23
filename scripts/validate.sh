@@ -20,6 +20,7 @@ python3 tests/component_operations/test_forge_server_adapter.py
 python3 tests/installer/test_universal_installer.py
 python3 tests/installer/test_managed_deployments.py
 python3 tests/installer/test_managed_installer.py
+python3 tests/installer/test_managed_install_flow.py
 python3 tests/installer/test_managed_pairing.py
 python3 tests/installer/test_provider_targets.py
 python3 tests/installer/test_provider_fanout.py
