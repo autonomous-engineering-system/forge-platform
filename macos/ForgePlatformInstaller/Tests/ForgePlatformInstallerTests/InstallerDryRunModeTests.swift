@@ -70,26 +70,19 @@ final class InstallerDryRunModeTests: XCTestCase {
         if case .failed = await coordinator.handOffSelfUpdate(release) {} else {
             XCTFail("dry-run must not hand off a self-update")
         }
-        XCTAssertEqual(
-            await coordinator.prepareManagedDeploymentInventory(),
-            .unavailable(.coordinatorUnavailable)
+        let inventory = await coordinator.prepareManagedDeploymentInventory()
+        let session = await coordinator.prepareVerifiedCompositionSession()
+        let requestedSession = await coordinator.prepareVerifiedCompositionSession(request: request)
+        let legacyProvider = await coordinator.performProviderAction(.install, for: .codex)
+        let targetedProvider = await coordinator.performProviderAction(
+            .authenticate,
+            for: requirements[0]
         )
-        XCTAssertEqual(
-            await coordinator.prepareVerifiedCompositionSession(),
-            .unavailable(.coordinatorUnavailable)
-        )
-        XCTAssertEqual(
-            await coordinator.prepareVerifiedCompositionSession(request: request),
-            .unavailable(.coordinatorUnavailable)
-        )
-        XCTAssertEqual(
-            await coordinator.performProviderAction(.install, for: .codex),
-            .failed(.coordinatorUnavailable)
-        )
-        XCTAssertEqual(
-            await coordinator.performProviderAction(.authenticate, for: requirements[0]),
-            .failed(.coordinatorUnavailable)
-        )
+        XCTAssertEqual(inventory, .unavailable(.coordinatorUnavailable))
+        XCTAssertEqual(session, .unavailable(.coordinatorUnavailable))
+        XCTAssertEqual(requestedSession, .unavailable(.coordinatorUnavailable))
+        XCTAssertEqual(legacyProvider, .failed(.coordinatorUnavailable))
+        XCTAssertEqual(targetedProvider, .failed(.coordinatorUnavailable))
     }
 
     func testDryRunNavigationIsFixtureOnly() throws {
