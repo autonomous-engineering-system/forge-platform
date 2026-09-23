@@ -148,9 +148,27 @@ bounded "$private/codesign-requirement.log" codesign --verify --strict -R "$requ
 
 submission="$private/notary-submission.zip"
 /usr/bin/ditto -c -k --keepParent "$app" "$submission" || fail notary-submission-packaging-failed
-bounded "$private/notary.json" xcrun notarytool submit "$submission" \
+python3 - "$private/notary.json" "$private/notary-error.log" \
+  xcrun notarytool submit "$submission" \
   --keychain-profile "$FORGE_PLATFORM_NOTARYTOOL_PROFILE" \
-  --wait --output-format json || fail notarization-submit-failed
+  --wait --output-format json <<'PY' || fail notarization-submit-failed
+import subprocess
+import sys
+stdout_path, stderr_path, *command = sys.argv[1:]
+with open(stdout_path, "wb") as stdout, open(stderr_path, "wb") as stderr:
+    try:
+        completed=subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            timeout=3600,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise SystemExit(1)
+raise SystemExit(0 if completed.returncode == 0 else 1)
+PY
 
 notary_id="$(python3 - "$private/notary.json" <<'PY'
 import json, re, sys
@@ -180,9 +198,13 @@ python3 scripts/package_macos_installer_archive.py \
 carrier="$private/carrier-readback"
 mkdir -m 700 "$carrier"
 /usr/bin/ditto -x -k "$archive" "$carrier" || fail final-archive-extraction-failed
-mapfile -t extracted_apps < <(find "$carrier" -mindepth 1 -maxdepth 1 -type d -name '*.app' -print)
-[[ "${#extracted_apps[@]}" == 1 ]] || fail final-archive-app-layout-invalid
-extracted_app="${extracted_apps[0]}"
+extracted_app=""
+extracted_count=0
+while IFS= read -r candidate; do
+  extracted_count=$((extracted_count + 1))
+  extracted_app="$candidate"
+done < <(find "$carrier" -mindepth 1 -maxdepth 1 -type d -name '*.app' -print)
+[[ "$extracted_count" == 1 && -n "$extracted_app" ]] || fail final-archive-app-layout-invalid
 bounded "$private/carrier-staple-validate.log" xcrun stapler validate -v "$extracted_app" || fail final-archive-lost-stapled-ticket
 bounded "$private/carrier-gatekeeper.log" spctl --assess --type execute --verbose=4 "$extracted_app" || fail final-archive-gatekeeper-rejected
 
