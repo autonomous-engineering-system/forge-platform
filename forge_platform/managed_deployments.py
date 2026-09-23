@@ -19,14 +19,21 @@ import re
 import tempfile
 from typing import Iterator, Mapping
 
+from .composition_identity import require_composition_identity
 
-MANAGED_DEPLOYMENT_SCHEMA = "forge-platform.managed-deployment/v1"
+
+MANAGED_DEPLOYMENT_SCHEMA_V1 = "forge-platform.managed-deployment/v1"
+MANAGED_DEPLOYMENT_SCHEMA_V2 = "forge-platform.managed-deployment/v2"
+# Compatibility alias for callers that intentionally construct legacy,
+# topology-only records. Terminal composition provenance always uses V2.
+MANAGED_DEPLOYMENT_SCHEMA = MANAGED_DEPLOYMENT_SCHEMA_V1
 SERVER_COMPONENTS = frozenset({"forge-runtime", "engineering-platform-server"})
 TOPOLOGY_ACTIONS = frozenset({
     "ADD_COMPONENT", "UPDATE", "NO_CHANGE", "REPAIR", "REMOVE_COMPONENT",
 })
 _SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _RECEIPT = re.compile(r"^receipt:[a-z0-9][a-z0-9._-]{0,127}$")
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class ManagedDeploymentError(RuntimeError):
@@ -45,6 +52,12 @@ def _receipt(value: object, label: str) -> str:
     return value
 
 
+def _digest(value: object, label: str) -> str:
+    if not isinstance(value, str) or _DIGEST.fullmatch(value) is None:
+        raise ValueError(f"{label} must be a tagged SHA-256 digest")
+    return value
+
+
 def _label(value: object) -> str | None:
     if value is None:
         return None
@@ -53,6 +66,22 @@ def _label(value: object) -> str | None:
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         raise ValueError("managed deployment label contains control characters")
     return value
+
+
+
+
+@dataclass(frozen=True)
+class ManagedCompositionBinding:
+    """Terminal immutable composition provenance for one managed deployment."""
+
+    composition_id: str
+    manifest_digest: str
+    receipt_reference: str
+
+    def __post_init__(self) -> None:
+        require_composition_identity(self.composition_id, "managed composition_id")
+        _digest(self.manifest_digest, "managed composition manifest_digest")
+        _receipt(self.receipt_reference, "managed composition receipt_reference")
 
 
 @dataclass(frozen=True)
@@ -88,10 +117,17 @@ class ManagedDeployment:
     components: tuple[ManagedComponentBinding, ...]
     peer_binding: ManagedPeerBinding | None = None
     schema: str = MANAGED_DEPLOYMENT_SCHEMA
+    composition_binding: ManagedCompositionBinding | None = None
 
     def __post_init__(self) -> None:
-        if self.schema != MANAGED_DEPLOYMENT_SCHEMA:
+        if self.schema not in {MANAGED_DEPLOYMENT_SCHEMA_V1, MANAGED_DEPLOYMENT_SCHEMA_V2}:
             raise ValueError("managed deployment schema is unsupported")
+        if self.schema == MANAGED_DEPLOYMENT_SCHEMA_V1 and self.composition_binding is not None:
+            raise ValueError("legacy managed deployment cannot carry composition provenance")
+        if self.schema == MANAGED_DEPLOYMENT_SCHEMA_V2 and not isinstance(
+            self.composition_binding, ManagedCompositionBinding
+        ):
+            raise ValueError("managed deployment v2 requires terminal composition provenance")
         _safe_id(self.deployment_id, "managed deployment_id")
         if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision <= 0:
             raise ValueError("managed deployment revision must be positive")
@@ -104,6 +140,10 @@ class ManagedDeployment:
             raise ValueError("managed deployment contains duplicate component roles")
         if len(instances) != len(set(instances)):
             raise ValueError("managed deployment cannot bind one product instance twice")
+        if self.composition_binding is not None and not isinstance(
+            self.composition_binding, ManagedCompositionBinding
+        ):
+            raise ValueError("managed deployment composition binding is invalid")
         if self.peer_binding is not None:
             if not isinstance(self.peer_binding, ManagedPeerBinding):
                 raise ValueError("managed deployment peer binding is invalid")
@@ -347,10 +387,15 @@ class ManagedDeploymentRegistry:
     def _write(self, deployment: ManagedDeployment) -> None:
         self._secure_root()
         target = self._path(deployment.deployment_id)
+        payload = asdict(deployment)
+        if deployment.schema == MANAGED_DEPLOYMENT_SCHEMA_V1:
+            # Preserve the exact V1 wire shape so older durable records remain
+            # byte-structure compatible and no implicit schema migration occurs.
+            payload.pop("composition_binding", None)
         descriptor, temporary_name = tempfile.mkstemp(prefix=".managed-deployment-", dir=self.root)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(asdict(deployment), handle, sort_keys=True, separators=(",", ":"), allow_nan=False)
+                json.dump(payload, handle, sort_keys=True, separators=(",", ":"), allow_nan=False)
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -369,9 +414,18 @@ class ManagedDeploymentRegistry:
     def _read(path: Path) -> ManagedDeployment:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict) or set(raw) != {
+            if not isinstance(raw, dict):
+                raise ValueError("fields")
+            schema = raw.get("schema")
+            legacy_fields = {
                 "schema", "deployment_id", "revision", "label", "components", "peer_binding"
-            }:
+            }
+            v2_fields = legacy_fields | {"composition_binding"}
+            if (
+                schema == MANAGED_DEPLOYMENT_SCHEMA_V1 and set(raw) != legacy_fields
+            ) or (
+                schema == MANAGED_DEPLOYMENT_SCHEMA_V2 and set(raw) != v2_fields
+            ) or schema not in {MANAGED_DEPLOYMENT_SCHEMA_V1, MANAGED_DEPLOYMENT_SCHEMA_V2}:
                 raise ValueError("fields")
             components_raw = raw["components"]
             if not isinstance(components_raw, list):
@@ -382,13 +436,20 @@ class ManagedDeploymentRegistry:
             )
             peer_raw = raw["peer_binding"]
             peer = None if peer_raw is None else ManagedPeerBinding(**peer_raw)
+            composition = None
+            if schema == MANAGED_DEPLOYMENT_SCHEMA_V2:
+                composition_raw = raw["composition_binding"]
+                if not isinstance(composition_raw, dict):
+                    raise ValueError("composition_binding")
+                composition = ManagedCompositionBinding(**composition_raw)
             deployment = ManagedDeployment(
                 deployment_id=raw["deployment_id"],
                 revision=raw["revision"],
                 label=raw["label"],
                 components=components,
                 peer_binding=peer,
-                schema=raw["schema"],
+                schema=schema,
+                composition_binding=composition,
             )
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
             raise ManagedDeploymentError("managed deployment record is invalid") from error

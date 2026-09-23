@@ -14,6 +14,8 @@ previous mutation already completed, it is read back instead of being repeated.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
+import json
 from pathlib import Path
 from typing import Mapping, Protocol
 import re
@@ -24,6 +26,8 @@ from .component_operations import (
     ProductOperationAdapter,
 )
 from .managed_deployments import (
+    MANAGED_DEPLOYMENT_SCHEMA_V2,
+    ManagedCompositionBinding,
     ManagedDeployment,
     ManagedDeploymentPlan,
     ManagedDeploymentRegistry,
@@ -269,12 +273,22 @@ class ManagedForgeEPInstallationCoordinator:
         readback_requests: Mapping[str, ComponentOperationRequest],
         adapters: Mapping[str, ProductOperationAdapter],
         pairing_executor: ForgeEPPairingExecutor,
+        composition_id: str,
+        composition_manifest_digest: str,
     ) -> ManagedForgeEPInstallationResult:
         desired = self._validate_route(
             plan,
             mutation_requests=mutation_requests,
             readback_requests=readback_requests,
             adapters=adapters,
+        )
+        # Construction validates the exact composition grammar/digest before
+        # any product mutation can occur. The receipt itself is created only
+        # after terminal pairing and readiness.
+        ManagedCompositionBinding(
+            composition_id,
+            composition_manifest_digest,
+            "receipt:composition-validation",
         )
         currency = _CurrencyEvidence(self.currency_guard)
         guarded_registry = _CurrencyGuardedRegistry(
@@ -374,6 +388,15 @@ class ManagedForgeEPInstallationCoordinator:
                 tuple(currency.references),
             )
 
+        current = self._commit_composition_provenance(
+            operation_id,
+            current=current,
+            composition_id=composition_id,
+            composition_manifest_digest=composition_manifest_digest,
+            pairing_reference=pairing_reference,
+            readiness=readiness,
+            currency=currency,
+        )
         return ManagedForgeEPInstallationResult(
             operation_id,
             plan.deployment_id,
@@ -383,6 +406,76 @@ class ManagedForgeEPInstallationCoordinator:
             readiness,
             tuple(currency.references),
         )
+
+
+    def _commit_composition_provenance(
+        self,
+        operation_id: str,
+        *,
+        current: ManagedDeployment,
+        composition_id: str,
+        composition_manifest_digest: str,
+        pairing_reference: str,
+        readiness: tuple[str, str],
+        currency: _CurrencyEvidence,
+    ) -> ManagedDeployment:
+        existing = current.composition_binding
+        if existing is not None:
+            if (
+                current.schema == MANAGED_DEPLOYMENT_SCHEMA_V2
+                and existing.composition_id == composition_id
+                and existing.manifest_digest == composition_manifest_digest
+            ):
+                return current
+            raise ManagedForgeEPInstallationError(
+                "managed deployment already carries different composition provenance"
+            )
+        if current.peer_binding is None or current.peer_binding.receipt_reference != pairing_reference:
+            raise ManagedForgeEPInstallationError(
+                "composition provenance requires the exact terminal pairing receipt"
+            )
+        payload = {
+            "operation_id": operation_id,
+            "deployment_id": current.deployment_id,
+            "forge_instance_id": current.peer_binding.forge_instance_id,
+            "ep_instance_id": current.peer_binding.ep_instance_id,
+            "composition_id": composition_id,
+            "manifest_digest": composition_manifest_digest,
+            "pairing_receipt_reference": pairing_reference,
+            "readiness_receipt_references": list(readiness),
+        }
+        receipt = "receipt:composition-" + sha256(
+            json.dumps(
+                payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode("utf-8")
+        ).hexdigest()
+        binding = ManagedCompositionBinding(
+            composition_id,
+            composition_manifest_digest,
+            receipt,
+        )
+        currency.require(
+            deployment_id=current.deployment_id,
+            mutation="composition-commit",
+            component=None,
+            instance_id=None,
+            operation_id=operation_id,
+        )
+        updated = ManagedDeployment(
+            current.deployment_id,
+            current.revision + 1,
+            current.label,
+            current.components,
+            current.peer_binding,
+            MANAGED_DEPLOYMENT_SCHEMA_V2,
+            binding,
+        )
+        try:
+            return self.registry.replace(updated, expected_revision=current.revision)
+        except Exception as error:
+            raise ManagedForgeEPInstallationError(
+                "managed deployment changed during composition provenance commit"
+            ) from error
 
     @staticmethod
     def _validate_route(

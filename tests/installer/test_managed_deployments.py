@@ -10,7 +10,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from forge_platform.managed_deployments import (
+    MANAGED_DEPLOYMENT_SCHEMA_V2,
     ManagedComponentBinding,
+    ManagedCompositionBinding,
     ManagedDeployment,
     ManagedDeploymentError,
     ManagedDeploymentPlanner,
@@ -122,6 +124,46 @@ class ManagedDeploymentTests(unittest.TestCase):
                 (binding("forge-runtime", "forge-one"), binding("engineering-platform-server", "ep-one")),
                 ManagedPeerBinding("forge-two", "ep-one", "receipt:peer-broken"),
             )
+
+
+    def test_v1_records_remain_exactly_readable_and_v2_requires_terminal_composition_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            registry = ManagedDeploymentRegistry(root)
+            legacy = registry.create(deployment())
+            raw = (root / "production.json").read_text(encoding="utf-8")
+            self.assertNotIn("composition_binding", raw)
+            self.assertEqual(registry.load("production"), legacy)
+
+            composition = ManagedCompositionBinding(
+                "forge-ep-qualified-v3",
+                "sha256:" + "a" * 64,
+                "receipt:composition-" + "b" * 64,
+            )
+            qualified = ManagedDeployment(
+                legacy.deployment_id,
+                2,
+                legacy.label,
+                legacy.components,
+                legacy.peer_binding,
+                MANAGED_DEPLOYMENT_SCHEMA_V2,
+                composition,
+            )
+            registry.replace(qualified, expected_revision=1)
+            stored = registry.load("production")
+            self.assertEqual(stored, qualified)
+            self.assertEqual(stored.composition_binding.composition_id, "forge-ep-qualified-v3")
+            self.assertIn('"schema":"forge-platform.managed-deployment/v2"', (root / "production.json").read_text())
+
+            with self.assertRaisesRegex(ValueError, "requires terminal composition"):
+                ManagedDeployment(
+                    "broken-v2",
+                    1,
+                    None,
+                    legacy.components,
+                    legacy.peer_binding,
+                    MANAGED_DEPLOYMENT_SCHEMA_V2,
+                )
 
     def test_registry_rejects_corrupt_or_secret_shaped_receipts(self) -> None:
         with self.assertRaisesRegex(ValueError, "opaque receipt"):

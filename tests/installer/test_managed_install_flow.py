@@ -209,18 +209,23 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                 readback_requests=reads,
                 adapters=adapters,
                 pairing_executor=pairer,
+                composition_id="forge-ep-qualified-v3",
+                composition_manifest_digest="sha256:" + "c" * 64,
             )
 
             self.assertEqual(result.state, "COMPLETE")
-            self.assertEqual(result.registry_revision, 2)
+            self.assertEqual(result.registry_revision, 3)
             self.assertEqual(len(result.readiness_receipt_references), 2)
             self.assertEqual(pairer.calls, 1)
             self.assertEqual(forge.execute_calls, 1)
             self.assertEqual(ep.execute_calls, 1)
             stored = registry.load("production")
-            self.assertEqual(stored.revision, 2)
+            self.assertEqual(stored.revision, 3)
             self.assertEqual(stored.peer_binding.forge_instance_id, "forge-prod")
             self.assertEqual(stored.peer_binding.ep_instance_id, "ep-prod")
+            self.assertEqual(stored.schema, "forge-platform.managed-deployment/v2")
+            self.assertEqual(stored.composition_binding.composition_id, "forge-ep-qualified-v3")
+            self.assertEqual(stored.composition_binding.manifest_digest, "sha256:" + "c" * 64)
             mutations_seen = [call[1] for call in guard.calls]
             self.assertEqual(
                 mutations_seen,
@@ -230,6 +235,7 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                     "deployment-create",
                     "forge-ep-pairing",
                     "deployment-replace",
+                    "composition-commit",
                 ],
             )
 
@@ -253,6 +259,8 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                     readback_requests=reads,
                     adapters=adapters,
                     pairing_executor=Pairer(),
+                    composition_id="forge-ep-qualified-v3",
+                    composition_manifest_digest="sha256:" + "c" * 64,
                 )
             # Alphabetical component order dispatches EP before Forge.
             self.assertEqual(ep.execute_calls, 1)
@@ -289,6 +297,8 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                 readback_requests=reads,
                 adapters=adapters,
                 pairing_executor=pairer,
+                composition_id="forge-ep-qualified-v3",
+                composition_manifest_digest="sha256:" + "c" * 64,
             )
             self.assertEqual(first.state, "RECOVERY_PENDING")
             self.assertIsNone(registry.load("production"))
@@ -300,6 +310,8 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                 readback_requests=reads,
                 adapters=adapters,
                 pairing_executor=pairer,
+                composition_id="forge-ep-qualified-v3",
+                composition_manifest_digest="sha256:" + "c" * 64,
             )
             self.assertEqual(second.state, "COMPLETE")
             self.assertEqual(ep.execute_calls, 1)
@@ -318,9 +330,12 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                 readback_requests=reads,
                 adapters=adapters,
                 pairing_executor=pairer,
+                composition_id="forge-ep-qualified-v3",
+                composition_manifest_digest="sha256:" + "c" * 64,
             )
             self.assertEqual(first.state, "READINESS_FAILED")
             self.assertEqual(registry.load("production").revision, 2)
+            self.assertIsNone(registry.load("production").composition_binding)
             self.assertEqual(pairer.calls, 1)
 
             ep.ready = True
@@ -330,6 +345,8 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                 readback_requests=reads,
                 adapters=adapters,
                 pairing_executor=pairer,
+                composition_id="forge-ep-qualified-v3",
+                composition_manifest_digest="sha256:" + "c" * 64,
             )
             self.assertEqual(second.state, "COMPLETE")
             # Durable product operation and terminal pairing are reused.
@@ -356,6 +373,8 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                 readback_requests=reads,
                 adapters=adapters,
                 pairing_executor=Pairer(),
+                composition_id="forge-ep-qualified-v3",
+                composition_manifest_digest="sha256:" + "c" * 64,
             )
             self.assertEqual(result.state, "COMPLETE")
             self.assertEqual(registry.load("other"), before)
@@ -373,6 +392,8 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                     readback_requests=reads,
                     adapters=adapters,
                     pairing_executor=Pairer(forge="forge-wrong"),
+                    composition_id="forge-ep-qualified-v3",
+                    composition_manifest_digest="sha256:" + "c" * 64,
                 )
             stored = registry.load("production")
             self.assertEqual(stored.revision, 1)
@@ -392,6 +413,8 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                     readback_requests=incomplete_reads,
                     adapters=adapters,
                     pairing_executor=Pairer(),
+                    composition_id="forge-ep-qualified-v3",
+                    composition_manifest_digest="sha256:" + "c" * 64,
                 )
 
             from forge_platform.managed_deployments import ManagedPeerBinding
@@ -409,6 +432,8 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                     readback_requests=reads,
                     adapters=adapters,
                     pairing_executor=Pairer(),
+                    composition_id="forge-ep-qualified-v3",
+                    composition_manifest_digest="sha256:" + "c" * 64,
                 )
 
 
