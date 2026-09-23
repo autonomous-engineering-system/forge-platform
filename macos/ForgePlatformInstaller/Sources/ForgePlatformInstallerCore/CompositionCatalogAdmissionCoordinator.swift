@@ -9,7 +9,7 @@ import Foundation
 /// wall clock, an HTTP `Date` header, a provider credential, or a product data
 /// root as trusted time. No production implementation exists in this source
 /// increment, so the default remains unavailable.
-struct TrustedCompositionCatalogClockAttestation: Sendable {
+struct TrustedCompositionCatalogClockAttestation: Equatable, Sendable {
     let readback: CompositionCatalogFeedReadback
     /// The exact independently verified instant at which the readback is
     /// evaluated. It becomes the verifier's `now`; ambient `Date()` is never
@@ -63,6 +63,21 @@ enum CompositionCatalogAdmissionFailure: Error, Equatable, Sendable {
     case unavailable
 }
 
+struct VerifiedCompositionCatalogAdmission: Equatable, Sendable {
+    let catalog: VerifiedCompositionCatalog
+    let verifiedAt: Date
+
+    init(catalog: VerifiedCompositionCatalog, verifiedAt: Date) throws {
+        guard verifiedAt.timeIntervalSinceReferenceDate.isFinite,
+              catalog.publishedAt <= verifiedAt,
+              verifiedAt < catalog.expiresAt else {
+            throw CompositionCatalogAdmissionFailure.unavailable
+        }
+        self.catalog = catalog
+        self.verifiedAt = verifiedAt
+    }
+}
+
 /// Combines sealed catalog trust, the exact catalog transport, independently
 /// attested time and a read-only durable anti-replay anchor. It deliberately
 /// does not persist a candidate anchor, select an entry, fetch an index or
@@ -93,6 +108,17 @@ struct CompositionCatalogAdmissionCoordinator: Sendable {
     func admitVerifiedCatalog(
         for currentInstaller: CurrentVerifiedInstallerCompositionContext
     ) async -> Result<VerifiedCompositionCatalog, CompositionCatalogAdmissionFailure> {
+        switch await admitVerifiedCatalogEvidence(for: currentInstaller) {
+        case .success(let evidence):
+            return .success(evidence.catalog)
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
+    func admitVerifiedCatalogEvidence(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext
+    ) async -> Result<VerifiedCompositionCatalogAdmission, CompositionCatalogAdmissionFailure> {
         guard case .success(let trustConfiguration) = await trustLoader.loadSealedCompositionCatalogTrustConfiguration(),
               trustConfiguration.signaturePolicy.installerReleaseTrustConfigurationSHA256
                 == currentInstaller.installerReleaseTrustConfigurationSHA256 else {
@@ -141,7 +167,14 @@ struct CompositionCatalogAdmissionCoordinator: Sendable {
             now: clockAttestation.verifiedAt
         ) {
         case .success(let catalog):
-            return .success(catalog)
+            do {
+                return .success(try VerifiedCompositionCatalogAdmission(
+                    catalog: catalog,
+                    verifiedAt: clockAttestation.verifiedAt
+                ))
+            } catch {
+                return .failure(.unavailable)
+            }
         case .failure:
             return .failure(.unavailable)
         }

@@ -310,11 +310,21 @@ final class ProviderDomainGatingTests: XCTestCase {
         XCTAssertTrue(state.selectManagedDeployment("deployment-new"))
         XCTAssertTrue(state.advance())
         XCTAssertEqual(state.step, .composition)
+        XCTAssertTrue(state.applyComponentPreset(.forgeAndEPServers))
+        XCTAssertEqual(
+            state.componentSelection.selected,
+            Set([InstallerComponentID.forgeRuntime, .engineeringPlatformServer])
+        )
         return state
     }
 
     private func acceptedSessionState(_ requirements: [ProviderRequirement]) throws -> InstallerWizardState {
         var state = try compositionSelectionState()
+        XCTAssertTrue(state.applyComponentPreset(.forgeAndEPServers))
+        XCTAssertEqual(
+            state.componentSelection.selected,
+            Set([InstallerComponentID.forgeRuntime, .engineeringPlatformServer])
+        )
         XCTAssertTrue(state.beginSessionPreparation())
         XCTAssertTrue(state.recordSessionPreparation(.prepared(try makeSessionPlan(requirements: requirements))))
         return state
@@ -369,6 +379,10 @@ final class ProviderDomainGatingTests: XCTestCase {
                 sha256: "sha256:" + String(repeating: "d", count: 64)
             ),
             componentSelectionSequence: 4,
+            componentIdentities: Set([
+                InstallerComponentID.forgeRuntime.rawValue,
+                InstallerComponentID.engineeringPlatformServer.rawValue,
+            ]),
             providerRequirements: requirements
         )
     }

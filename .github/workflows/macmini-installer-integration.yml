@@ -1,0 +1,119 @@
+name: Mac mini installer integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "forge_platform/**"
+      - "macos/ForgePlatformInstaller/**"
+      - "scripts/**"
+      - "schemas/**"
+      - "installer-version.json"
+      - "installer-release-identity.json"
+      - ".github/workflows/macmini-installer-integration.yml"
+  workflow_dispatch:
+    inputs:
+      include_release_build_smoke:
+        description: Build and structurally qualify an unsigned installer candidate
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# Deliberately no pull_request trigger: this repository is public and untrusted
+# fork code must never execute on the owner's self-hosted Mac mini.
+concurrency:
+  group: forge-platform-macmini-integration
+  cancel-in-progress: false
+
+jobs:
+  native-integration:
+    name: Native Mac mini installer integration
+    runs-on: [self-hosted, macOS, ARM64, forge-platform-macmini]
+    timeout-minutes: 90
+    env:
+      FORGE_PLATFORM_UI_ARTIFACT_DIR: ${{ runner.temp }}/forge-platform-ui-screenshots
+      FORGE_PLATFORM_MACMINI_EVIDENCE_DIR: ${{ runner.temp }}/forge-platform-macmini-evidence
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Refuse untrusted event classes
+        shell: /bin/bash
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            push|workflow_dispatch) ;;
+            *) echo "Self-hosted Mac mini refuses event ${{ github.event_name }}" >&2; exit 1 ;;
+          esac
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            test "${{ github.ref }}" = "refs/heads/main"
+          fi
+
+      - name: Prove native runner and signing-tool readiness
+        shell: /bin/bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$FORGE_PLATFORM_MACMINI_EVIDENCE_DIR"
+          bash scripts/macos/macmini_runner_readiness.sh             "$FORGE_PLATFORM_MACMINI_EVIDENCE_DIR/runner-readiness.json"
+          cat "$FORGE_PLATFORM_MACMINI_EVIDENCE_DIR/runner-readiness.json"
+
+      - name: Run canonical Python installer and orchestration suite
+        shell: /bin/bash
+        run: |
+          set -euo pipefail
+          bash scripts/validate.sh
+
+      - name: Run native Swift unit, integration and dry-run rendering suite
+        working-directory: macos/ForgePlatformInstaller
+        shell: /bin/bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64"
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          swift test --enable-code-coverage
+          coverage_path="$(swift test --show-codecov-path)"
+          test -n "$coverage_path"
+          python3 ../../scripts/check_managed_installer_swift_coverage.py             "$coverage_path" --minimum 80.2
+
+      - name: Build native release executable
+        id: build
+        working-directory: macos/ForgePlatformInstaller
+        shell: /bin/bash
+        run: |
+          set -euo pipefail
+          bin_dir="$(swift build -c release --show-bin-path)"
+          swift build -c release
+          test -x "$bin_dir/ForgePlatformInstaller"
+          file "$bin_dir/ForgePlatformInstaller" | grep -q 'arm64'
+          printf 'binary=%s\n' "$bin_dir/ForgePlatformInstaller" >> "$GITHUB_OUTPUT"
+
+      - name: Package unsigned release-build smoke candidate
+        if: ${{ github.event_name == 'push' || inputs.include_release_build_smoke }}
+        shell: /bin/bash
+        env:
+          INSTALLER_BINARY: ${{ steps.build.outputs.binary }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/ForgePlatformInstaller.integration.app"
+          rm -rf "$output"
+          python3 scripts/package_macos_installer_app.py             --executable "$INSTALLER_BINARY"             --output "$output"             --bundle-identifier "com.pcvantol.forge-platform-installer.integration"
+          test -f "$output/Contents/Info.plist"
+          /usr/bin/plutil -lint "$output/Contents/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$output/Contents/Info.plist")"             = "$(python3 -c 'import json; print(json.load(open("installer-version.json"))["version"])')"
+          rm -rf "$output"
+
+      - name: Upload dry-run screenshots and non-secret runner evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: forge-platform-macmini-integration-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/forge-platform-ui-screenshots
+            ${{ runner.temp }}/forge-platform-macmini-evidence
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6

@@ -73,6 +73,7 @@ struct ManagedCompositionSessionPlanBuilder {
                 compositionCatalog: compositionCatalogIdentity,
                 componentCombinationCatalog: componentCombinationCatalogIdentity,
                 componentSelectionSequence: selectedEntry.selectionSequence,
+                componentIdentities: selectedEntry.componentIdentities,
                 providerRequirements: requirements
             )
             guard currentInstaller.accepts(plan) else {
@@ -123,7 +124,10 @@ struct ManagedCompositionSessionPlanBuilder {
             throw ManagedCompositionSessionPlanFailure.rejected
         }
         let expectedFields: Set<String> = schema == schemaV2
-            ? ["identity", "required", "minimum_version", "credential_scope", "owner_component", "target_identity"]
+            ? [
+                "identity", "required", "minimum_version", "credential_scope",
+                "owner_component", "target_identity", "runtime",
+            ]
             : ["identity", "required", "minimum_version", "credential_scope"]
         guard Set(fields.keys) == expectedFields,
               let providerRaw = fields["identity"]?.stringValue,
@@ -163,7 +167,40 @@ struct ManagedCompositionSessionPlanBuilder {
               let owner = ProviderOwnerComponent(rawValue: ownerRaw),
               let target = fields["target_identity"]?.stringValue,
               Self.isSafeTargetIdentity(target),
-              scope == owner.requiredCredentialScope else {
+              scope == owner.requiredCredentialScope,
+              let runtimeFields = fields["runtime"]?.objectValue,
+              Set(runtimeFields.keys) == Set([
+                  "version", "source_revision", "url", "digest", "qualification",
+                  "archive_format", "executable_relative_path",
+              ]),
+              let runtimeVersionRaw = runtimeFields["version"]?.stringValue,
+              let runtimeVersion = try? InstallerVersion(runtimeVersionRaw),
+              let sourceRevision = runtimeFields["source_revision"]?.stringValue,
+              ProviderRuntimeArtifact.isSafeSourceRevision(sourceRevision),
+              let runtimeURL = runtimeFields["url"]?.stringValue,
+              GitHubInstallerReleaseDescriptorValidation.isHTTPSURL(runtimeURL),
+              let runtimeDigest = runtimeFields["digest"]?.stringValue,
+              CompositionCatalogValidation.isTaggedSHA256(runtimeDigest),
+              let qualification = runtimeFields["qualification"]?.stringValue,
+              !qualification.isEmpty,
+              qualification.utf8.count <= 2048,
+              let archiveRaw = runtimeFields["archive_format"]?.stringValue,
+              let archiveFormat = ProviderRuntimeArchiveFormat(rawValue: archiveRaw),
+              let executableRelativePath = runtimeFields["executable_relative_path"]?.stringValue,
+              ProviderRuntimeArtifact.isSafeRelativePath(executableRelativePath) else {
+            throw ManagedCompositionSessionPlanFailure.rejected
+        }
+        let runtime = ProviderRuntimeArtifact(
+            version: runtimeVersion,
+            sourceRevision: sourceRevision,
+            url: runtimeURL,
+            sha256: runtimeDigest,
+            qualification: qualification,
+            archiveFormat: archiveFormat,
+            executableRelativePath: executableRelativePath
+        )
+        guard runtime.matches(provider: provider),
+              minimumVersion.map({ runtime.version >= $0 }) ?? true else {
             throw ManagedCompositionSessionPlanFailure.rejected
         }
         return ProviderRequirement(
@@ -172,7 +209,8 @@ struct ManagedCompositionSessionPlanBuilder {
             minimumVersion: minimumVersion,
             credentialScope: scope,
             ownerComponent: owner,
-            targetIdentity: target
+            targetIdentity: target,
+            runtime: runtime
         )
     }
 

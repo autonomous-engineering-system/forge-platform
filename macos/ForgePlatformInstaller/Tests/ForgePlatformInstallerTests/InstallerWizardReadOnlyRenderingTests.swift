@@ -12,7 +12,7 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
 
     func testAllWizardPagesRenderInReadOnlyLocaleAndAppearanceMatrix() throws {
         let root = try artifactRoot()
-        let scenarios = try canonicalScenarios()
+        let scenarios = try InstallerDryRunFixtures.canonicalScenarios().map { (name: $0.id, state: $0.state) }
         var manifest: [[String: Any]] = []
 
         for scenario in scenarios {
@@ -41,7 +41,7 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
 
         // State variants exercise the same real pages under blocked, pending,
         // repair and failure paths without multiplying the full locale matrix.
-        for scenario in try variantScenarios() {
+        for scenario in try InstallerDryRunFixtures.variantScenarios().map({ (name: $0.id, state: $0.state) }) {
             let name = "\(scenario.name)-nl-light-1x.png"
             let data = try render(
                 state: scenario.state,
@@ -539,7 +539,15 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
             state: state,
             coordinator: UnavailableInstallerWizardCoordinator()
         )
-        let view = InstallerWizardView(viewModel: model)
+        let view = InstallerWizardView(
+            viewModel: model,
+            dryRunNavigation: InstallerDryRunNavigation(
+                index: state.step.rawValue,
+                count: WizardStep.allCases.count,
+                previous: {},
+                next: {}
+            )
+        )
             .frame(width: 960, height: 680)
             .environment(\.locale, Locale(identifier: locale))
             .environment(\.colorScheme, scheme)

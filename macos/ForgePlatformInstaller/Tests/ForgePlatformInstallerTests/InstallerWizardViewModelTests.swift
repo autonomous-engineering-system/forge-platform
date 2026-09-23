@@ -61,6 +61,11 @@ final class InstallerWizardViewModelTests: XCTestCase {
         XCTAssertTrue(state.selectManagedDeployment("deployment-new"))
         XCTAssertTrue(state.advance())
         XCTAssertEqual(state.step, .composition)
+        XCTAssertTrue(state.applyComponentPreset(.forgeAndEPServers))
+        XCTAssertEqual(
+            state.componentSelection.selected,
+            Set([InstallerComponentID.forgeRuntime, .engineeringPlatformServer])
+        )
         return state
     }
 
@@ -84,6 +89,10 @@ final class InstallerWizardViewModelTests: XCTestCase {
                 sha256: "sha256:" + String(repeating: "d", count: 64)
             ),
             componentSelectionSequence: 4,
+            componentIdentities: Set([
+                InstallerComponentID.forgeRuntime.rawValue,
+                InstallerComponentID.engineeringPlatformServer.rawValue,
+            ]),
             providerRequirements: [
                 ProviderRequirement(provider: .codex, isRequired: true),
                 ProviderRequirement(provider: .githubCLI, isRequired: false),

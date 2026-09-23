@@ -74,6 +74,43 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         XCTAssertEqual(reason, InstallerSelfUpdateFailureCode.selfUpdateOperationInProgress.userFacingMessage)
     }
 
+    func testNewerInstallerRequiresExplicitConfirmationBeforeHandoff() async throws {
+        let currentVersion = try InstallerVersion("1.0.0")
+        let release = try makeRelease("1.1.0")
+        let runtime = TrustedRuntimeSpy(
+            enforcement: .updateRequired(release),
+            handoff: .relaunching
+        )
+        let configuration = try makeConfiguration()
+        let boundary = ReleasedInstallerStartupBoundary(
+            trustConfigurationLoader: SealedTrustLoaderSpy(configuration: configuration),
+            provenanceLoader: SealedProvenanceLoaderSpy(provenance: try makeProvenance(configuration: configuration)),
+            runtimeBuilder: TrustedRuntimeBuilderSpy(runtime: runtime)
+        )
+
+        let outcome = await boundary.start(currentVersion: currentVersion)
+        guard case .updateRequired(let actualRelease) = outcome else {
+            return XCTFail("A newer installer must be presented for confirmation")
+        }
+        let handoffCallsBeforeConfirmation = await runtime.handoffCallCount()
+        XCTAssertEqual(actualRelease, release)
+        XCTAssertEqual(handoffCallsBeforeConfirmation, 0)
+
+        let repeatedStartup = await boundary.start(currentVersion: currentVersion)
+        guard case .blocked = repeatedStartup else {
+            return XCTFail("No wizard or second startup path may bypass pending confirmation")
+        }
+
+        let confirmed = await boundary.confirmRequiredUpdate(release)
+        guard case .relaunching(let relaunched) = confirmed else {
+            return XCTFail("Explicit confirmation should hand off to the verified successor")
+        }
+        let handoffCallsAfterConfirmation = await runtime.handoffCallCount()
+        XCTAssertEqual(relaunched, release)
+        XCTAssertEqual(handoffCallsAfterConfirmation, 1)
+    }
+
+
     func testBundledLoaderFailsClosedWhenNoSealedResourceExists() async {
         let loader = BundleSealedInstallerReleaseTrustConfigurationLoader(
             bundle: Bundle(for: InstallerStartupTestMarker.self),
@@ -545,14 +582,28 @@ private actor TrustedRuntimeBuilderSpy: TrustedInstallerRuntimeBuilding {
 
 private actor TrustedRuntimeSpy: TrustedInstallerRuntime {
     private var enforcements: [InstallerSelfUpdateEnforcementResult]
+    private let handoffResult: SelfUpdateHandoffResult
     private var calls = 0
+    private var handoffCalls = 0
 
-    init(enforcement: InstallerSelfUpdateEnforcementResult) {
+    init(
+        enforcement: InstallerSelfUpdateEnforcementResult,
+        handoff: SelfUpdateHandoffResult = .failed(
+            InstallerSelfUpdateFailureCode.trustedUpdaterUnavailable.userFacingMessage
+        )
+    ) {
         enforcements = [enforcement]
+        handoffResult = handoff
     }
 
-    init(enforcements: [InstallerSelfUpdateEnforcementResult]) {
+    init(
+        enforcements: [InstallerSelfUpdateEnforcementResult],
+        handoff: SelfUpdateHandoffResult = .failed(
+            InstallerSelfUpdateFailureCode.trustedUpdaterUnavailable.userFacingMessage
+        )
+    ) {
         self.enforcements = enforcements
+        handoffResult = handoff
     }
 
     func enforceCurrentInstaller(
@@ -570,7 +621,8 @@ private actor TrustedRuntimeSpy: TrustedInstallerRuntime {
     }
 
     func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
-        .failed(InstallerSelfUpdateFailureCode.trustedUpdaterUnavailable.userFacingMessage)
+        handoffCalls += 1
+        return handoffResult
     }
 
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult {
@@ -579,5 +631,9 @@ private actor TrustedRuntimeSpy: TrustedInstallerRuntime {
 
     func enforcementCallCount() -> Int {
         calls
+    }
+
+    func handoffCallCount() -> Int {
+        handoffCalls
     }
 }

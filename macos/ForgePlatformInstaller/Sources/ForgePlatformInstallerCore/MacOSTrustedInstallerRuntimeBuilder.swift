@@ -163,6 +163,19 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 notarizationAssessor: notarizationAssessor
             )
 
+            let catalogAcceptance = FileCompositionCatalogAcceptanceStore(
+                rootDirectory: stateRoot
+            )
+            let compositionSessionPreparer = VerifiedManagedCompositionSessionPreparer(
+                catalogAdmission: CompositionCatalogAdmissionCoordinator(
+                    trustLoader: BundleSealedCompositionCatalogTrustConfigurationLoader(),
+                    transport: HTTPSCompositionCatalogTransport(),
+                    trustedClockAttester: HTTPSConsensusTrustedCompositionCatalogClockAttester(),
+                    acceptanceReader: catalogAcceptance
+                ),
+                documentTransport: HTTPSVerifiedCompositionDocumentTransport()
+            )
+
             return .success(VerifiedInstallerSelfUpdateCoordinator(
                 releaseFeed: releaseFeed,
                 currentBundleInspector: MacOSCurrentInstallerBundleInspector(),
@@ -170,7 +183,8 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 artifactVerifier: artifactVerifier,
                 atomicHandoff: atomicHandoff,
                 recoveryStore: FileInstallerSelfUpdateRecoveryStore(rootDirectory: stateRoot),
-                operationLock: FileInstallerSelfUpdateOperationLock(rootDirectory: stateRoot)
+                operationLock: FileInstallerSelfUpdateOperationLock(rootDirectory: stateRoot),
+                compositionSessionPreparer: compositionSessionPreparer
             ))
         } catch {
             // Do not leak a filesystem location, architecture detail, network

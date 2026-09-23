@@ -5,11 +5,18 @@ import ForgePlatformInstallerCore
 @main
 struct ForgePlatformInstallerApp: App {
     @StateObject private var startupModel = InstallerApplicationStartupModel()
+    private let launchMode = InstallerLaunchMode(arguments: CommandLine.arguments)
 
     var body: some Scene {
         WindowGroup("Forge Platform Installer") {
-            InstallerApplicationRootView(startupModel: startupModel)
-                .frame(minWidth: 960, minHeight: 680)
+            Group {
+                if launchMode == .dryRun {
+                    InstallerDryRunRootView()
+                } else {
+                    InstallerApplicationRootView(startupModel: startupModel)
+                }
+            }
+            .frame(minWidth: 960, minHeight: 680)
         }
     }
 }
@@ -67,15 +74,24 @@ final class InstallerWizardViewModel: ObservableObject {
         _ = state.selectManagedDeployment(deploymentID)
     }
 
+    func setComponentSelected(_ component: InstallerComponentID, selected: Bool) {
+        _ = state.setComponentSelected(component, selected: selected)
+    }
+
+    func applyComponentPreset(_ preset: InstallerPresetID) {
+        _ = state.applyComponentPreset(preset)
+    }
+
     /// The coordinator must return one typed, immutable composition session
     /// after an exact managed deployment has been selected.
     func prepareVerifiedCompositionSession() {
-        guard state.beginSessionPreparation() else {
+        guard let request = state.compositionRequest,
+              state.beginSessionPreparation() else {
             return
         }
         let coordinator = coordinator
         Task { @MainActor [weak self] in
-            let result = await coordinator.prepareVerifiedCompositionSession()
+            let result = await coordinator.prepareVerifiedCompositionSession(request: request)
             _ = self?.state.recordSessionPreparation(result)
         }
     }
@@ -101,6 +117,23 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func advance() {
+        if state.step == .review {
+            guard state.beginPreMutationInstallerCurrencyCheck() else {
+                return
+            }
+            let currentVersion = state.currentInstallerVersion
+            let coordinator = coordinator
+            Task { @MainActor [weak self] in
+                let result = await coordinator.recheckInstallerCurrencyBeforeMutation(
+                    currentVersion: currentVersion
+                )
+                guard let self else { return }
+                if self.state.recordPreMutationInstallerCurrencyCheck(result) {
+                    _ = self.state.advance()
+                }
+            }
+            return
+        }
         _ = state.advance()
     }
 
@@ -126,9 +159,27 @@ enum InstallerBuild {
 
 struct InstallerWizardView: View {
     @ObservedObject var viewModel: InstallerWizardViewModel
+    var dryRunNavigation: InstallerDryRunNavigation? = nil
 
     var body: some View {
-        HStack(spacing: 0) {
+        VStack(spacing: 0) {
+            if let navigation = dryRunNavigation {
+                HStack(spacing: 10) {
+                    Image(systemName: "eye.trianglebadge.exclamationmark")
+                    Text("DRY RUN — geen hostmutaties")
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Text("Preview \(navigation.index + 1)/\(navigation.count)")
+                        .font(.caption.monospaced())
+                }
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 9)
+                .background(.orange.opacity(0.10))
+                Divider()
+            }
+
+            HStack(spacing: 0) {
             WizardSidebar(currentStep: viewModel.state.step)
                 .frame(width: 235)
                 .padding(.vertical, 24)
@@ -148,6 +199,7 @@ struct InstallerWizardView: View {
                     .padding(.horizontal, 32)
                     .padding(.vertical, 18)
             }
+        }
         }
     }
 
@@ -181,19 +233,40 @@ struct InstallerWizardView: View {
 
     private var navigation: some View {
         HStack {
-            Button("Terug") {
-                viewModel.goBack()
-            }
-            .disabled(!viewModel.state.canGoBack)
+            if let preview = dryRunNavigation {
+                Button("Vorige preview") {
+                    preview.previous()
+                }
+                .disabled(!preview.canGoBack)
 
-            Spacer()
+                Spacer()
 
-            if viewModel.state.step != .summary {
-                Button(viewModel.state.step == .execution ? "Naar samenvatting" : "Volgende") {
-                    viewModel.advance()
+                Text("Fixturesimulatie · mutation_authority=false")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button(preview.canAdvance ? "Volgende preview" : "Laatste preview") {
+                    preview.next()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.state.canAdvance)
+                .disabled(!preview.canAdvance)
+            } else {
+                Button("Terug") {
+                    viewModel.goBack()
+                }
+                .disabled(!viewModel.state.canGoBack)
+
+                Spacer()
+
+                if viewModel.state.step != .summary {
+                    Button(viewModel.state.step == .execution ? "Naar samenvatting" : "Volgende") {
+                        viewModel.advance()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!viewModel.state.canAdvance)
+                }
             }
         }
     }
@@ -415,16 +488,61 @@ private struct CompositionSelectionScreen: View {
         )
 
         VStack(alignment: .leading, spacing: 18) {
+            GroupBox("Componenten en profielen") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        ForEach(InstallerComponentSelection.presets) { preset in
+                            Button(preset.id.displayName) {
+                                viewModel.applyComponentPreset(preset.id)
+                            }
+                            .disabled(!preset.availability.isAvailable || viewModel.state.sessionPreparation.isPreparing)
+                        }
+                    }
+
+                    ForEach(InstallerComponentSelection.options) { option in
+                        HStack(alignment: .top, spacing: 10) {
+                            Toggle(
+                                option.component.displayName,
+                                isOn: Binding(
+                                    get: { viewModel.state.componentSelection.selected.contains(option.component) },
+                                    set: { viewModel.setComponentSelected(option.component, selected: $0) }
+                                )
+                            )
+                            .disabled(!option.availability.isAvailable || viewModel.state.sessionPreparation.isPreparing)
+
+                            switch option.availability {
+                            case .available:
+                                Text("Beschikbaar in deze installer-capabilityset.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            case .unavailable(let reason):
+                                Text(reason)
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+                }
+            }
+
             switch viewModel.state.sessionPreparation {
             case .pending:
-                Label(
-                    "Nog geen geverifieerde compositiesessie geselecteerd.",
-                    systemImage: "square.stack.3d.up.slash"
-                )
-                Button("Laad geverifieerde compositie") {
-                    viewModel.prepareVerifiedCompositionSession()
+                if viewModel.state.componentSelection.isValid {
+                    Label(
+                        "De gekozen componentset wordt exact tegen de signed combinatie-index geselecteerd.",
+                        systemImage: "square.stack.3d.up"
+                    )
+                    Button("Laad geverifieerde compositie") {
+                        viewModel.prepareVerifiedCompositionSession()
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Label(
+                        "Kies minimaal één beschikbaar component of een beschikbaar profiel.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderedProminent)
 
             case .preparing:
                 HStack(spacing: 10) {
@@ -440,6 +558,12 @@ private struct CompositionSelectionScreen: View {
                         GridRow { Text("Manifest").foregroundStyle(.secondary); Text(plan.manifestSHA256).font(.caption.monospaced()).textSelection(.enabled) }
                         GridRow { Text("Catalogus").foregroundStyle(.secondary); Text("Sequentie \(plan.catalogSequence)") }
                         GridRow { Text("Catalogusdigest").foregroundStyle(.secondary); Text(plan.catalogSHA256).font(.caption.monospaced()).textSelection(.enabled) }
+                        GridRow {
+                            Text("Componenten").foregroundStyle(.secondary)
+                            Text(plan.componentIdentities.sorted().joined(separator: ", "))
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
                     }
                 }
                 Label(
@@ -649,6 +773,41 @@ private struct CompositionReviewScreen: View {
                 )
             )
             .disabled(!isCompatible(viewModel.state.composition.status))
+
+            switch viewModel.state.preMutationInstallerCurrency {
+            case .pending:
+                if viewModel.state.composition.isReadyForExecution {
+                    Label(
+                        "Bij Volgende wordt de installer-release opnieuw geverifieerd voordat uitvoering kan starten.",
+                        systemImage: "arrow.triangle.2.circlepath"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+            case .checking:
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Installer-versie wordt vlak voor uitvoering opnieuw geverifieerd.")
+                }
+                .foregroundStyle(.secondary)
+            case .current(let release):
+                Label(
+                    "Verse installercontrole: versie \(release.version.description) is exact actueel.",
+                    systemImage: "checkmark.shield.fill"
+                )
+                .foregroundStyle(.green)
+            case .updateRequired(let release):
+                Label(
+                    "Versie \(release.version.description) is verplicht; deze review is ongeldig gemaakt.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .foregroundStyle(.orange)
+            case .failed(let reason):
+                FailureCallout(reason: reason)
+                Text("Geen productwijziging is gestart. Gebruik Volgende om de currency-check opnieuw te proberen.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.top, 12)
     }

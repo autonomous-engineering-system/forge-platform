@@ -237,7 +237,8 @@
           "const": "cpython"
         },
         "version": {
-          "$ref": "#/$defs/version"
+          "type": "string",
+          "pattern": "^3\\.14\\.(?:0|[1-9][0-9]*)$"
         },
         "operating_system": {
           "const": "macos"
@@ -253,12 +254,10 @@
           "const": "standard-gil"
         },
         "python_tag": {
-          "type": "string",
-          "pattern": "^cp[0-9]{2,3}$"
+          "const": "cp314"
         },
         "abi_tag": {
-          "type": "string",
-          "pattern": "^cp[0-9]{2,3}$"
+          "const": "cp314"
         },
         "platform_tag": {
           "const": "macosx_26_0_arm64"
@@ -346,7 +345,8 @@
         "minimum_version",
         "credential_scope",
         "owner_component",
-        "target_identity"
+        "target_identity",
+        "runtime"
       ],
       "properties": {
         "identity": {
@@ -384,6 +384,9 @@
         "target_identity": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "runtime": {
+          "$ref": "#/$defs/provider_runtime"
         }
       },
       "allOf": [
@@ -538,6 +541,53 @@
           }
         }
       ]
+    },
+    "provider_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "source_revision",
+        "url",
+        "digest",
+        "qualification",
+        "archive_format",
+        "executable_relative_path"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/version"
+        },
+        "source_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        },
+        "url": {
+          "$ref": "#/$defs/https_url"
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "qualification": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "archive_format": {
+          "enum": [
+            "tar-gzip",
+            "zip"
+          ]
+        },
+        "executable_relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?/)[A-Za-z0-9._/-]+$"
+        }
+      }
     }
   }
 }

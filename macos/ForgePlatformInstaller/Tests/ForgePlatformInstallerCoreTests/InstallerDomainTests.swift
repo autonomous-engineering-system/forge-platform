@@ -165,6 +165,56 @@ final class InstallerDomainTests: XCTestCase {
         XCTAssertFalse(state.preflight.isPassed)
     }
 
+    func testReviewRequiresFreshCurrentInstallerCheckBeforeExecutionTransition() throws {
+        var state = try reviewReadyState()
+        let release = try makeRelease("1.2.3")
+
+        XCTAssertEqual(state.preMutationInstallerCurrency, .pending)
+        XCTAssertTrue(state.beginPreMutationInstallerCurrencyCheck())
+        XCTAssertFalse(state.canGoBack)
+        XCTAssertTrue(
+            state.recordPreMutationInstallerCurrencyCheck(
+                .verifiedGitHubRelease(release)
+            )
+        )
+        XCTAssertEqual(state.preMutationInstallerCurrency, .current(release))
+        XCTAssertEqual(state.step, .review)
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .execution)
+    }
+
+    func testNewerPreMutationInstallerInvalidatesReviewedSessionAndReturnsToSelfUpdate() throws {
+        var state = try reviewReadyState()
+        let newer = try makeRelease("1.2.4")
+
+        XCTAssertTrue(state.beginPreMutationInstallerCurrencyCheck())
+        XCTAssertFalse(
+            state.recordPreMutationInstallerCurrencyCheck(
+                .verifiedGitHubRelease(newer)
+            )
+        )
+
+        XCTAssertEqual(state.step, .selfUpdate)
+        XCTAssertEqual(state.selfUpdate, .updateRequired(newer))
+        XCTAssertEqual(state.preMutationInstallerCurrency, .updateRequired(newer))
+        XCTAssertNil(state.acceptedSessionPlan)
+        XCTAssertTrue(state.providers.isEmpty)
+        XCTAssertFalse(state.preflight.isPassed)
+        XCTAssertFalse(state.canAdvance)
+    }
+
+    func testFailedPreMutationCurrencyCheckLeavesReviewRetryableAndStartsNoExecution() throws {
+        var state = try reviewReadyState()
+        XCTAssertTrue(state.beginPreMutationInstallerCurrencyCheck())
+        XCTAssertFalse(
+            state.recordPreMutationInstallerCurrencyCheck(.rejected("offline"))
+        )
+        XCTAssertEqual(state.step, .review)
+        XCTAssertEqual(state.preMutationInstallerCurrency, .failed("offline"))
+        XCTAssertTrue(state.executionStages.isEmpty)
+        XCTAssertTrue(state.beginPreMutationInstallerCurrencyCheck())
+    }
+
     func testDefaultPreflightRequiresManagedGitAndPythonEvidence() {
         let preflight = HostPreflight()
         let identifiers = Set(preflight.checks.map(\.id))
@@ -380,11 +430,52 @@ final class InstallerDomainTests: XCTestCase {
         XCTAssertTrue(state.selectManagedDeployment("deployment-new"))
         XCTAssertTrue(state.advance())
         XCTAssertEqual(state.step, .composition)
+        XCTAssertTrue(state.applyComponentPreset(.forgeAndEPServers))
+        XCTAssertEqual(
+            state.componentSelection.selected,
+            Set([InstallerComponentID.forgeRuntime, .engineeringPlatformServer])
+        )
+        return state
+    }
+
+    private func reviewReadyState() throws -> InstallerWizardState {
+        var state = try acceptedSessionState([])
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .preflight)
+        state.preflight = HostPreflight(checks: [
+            PreflightCheck(id: "session-host", title: "Sessiehost", detail: "Geverifieerd", state: .passed),
+        ])
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .providers)
+        XCTAssertTrue(state.enabledProvidersVerified)
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .review)
+        state.composition = CompositionReview(
+            manifestIdentity: "forge-ep-managed-v1",
+            status: .compatible,
+            components: [
+                ComponentDiff(
+                    componentID: "forge-runtime",
+                    title: "Forge Server",
+                    change: .retain,
+                    installedVersion: "2.7.34",
+                    candidateVersion: "2.7.34",
+                    artifactDigest: "sha256:" + String(repeating: "a", count: 64),
+                    detail: "Exact gekwalificeerd artifact blijft actief."
+                ),
+            ]
+        )
+        XCTAssertTrue(state.setCompositionAcknowledged(true))
         return state
     }
 
     private func acceptedSessionState(_ requirements: [ProviderRequirement]) throws -> InstallerWizardState {
         var state = try compositionSelectionState()
+        XCTAssertTrue(state.applyComponentPreset(.forgeAndEPServers))
+        XCTAssertEqual(
+            state.componentSelection.selected,
+            Set([InstallerComponentID.forgeRuntime, .engineeringPlatformServer])
+        )
         XCTAssertTrue(state.beginSessionPreparation())
         XCTAssertTrue(state.recordSessionPreparation(.prepared(try makeSessionPlan(requirements: requirements))))
         return state
@@ -438,6 +529,10 @@ final class InstallerDomainTests: XCTestCase {
                 sha256: "sha256:" + String(repeating: "d", count: 64)
             ),
             componentSelectionSequence: componentSelectionSequence,
+            componentIdentities: Set([
+                InstallerComponentID.forgeRuntime.rawValue,
+                InstallerComponentID.engineeringPlatformServer.rawValue,
+            ]),
             providerRequirements: requirements
         )
     }

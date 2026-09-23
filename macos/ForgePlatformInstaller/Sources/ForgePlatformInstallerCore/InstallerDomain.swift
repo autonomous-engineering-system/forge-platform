@@ -91,6 +91,20 @@ public enum SelfUpdateGate: Equatable, Sendable {
     }
 }
 
+public enum PreMutationInstallerCurrencyGate: Equatable, Sendable {
+    case pending
+    case checking
+    case current(VerifiedInstallerRelease)
+    case updateRequired(VerifiedInstallerRelease)
+    case failed(String)
+
+    public var isChecking: Bool {
+        if case .checking = self { return true }
+        return false
+    }
+}
+
+
 public enum ProviderID: String, CaseIterable, Codable, Hashable, Sendable, Identifiable {
     case codex
     case githubCLI = "github-cli"
@@ -159,6 +173,94 @@ public enum ProviderOwnerComponent: String, CaseIterable, Codable, Equatable, Ha
     }
 }
 
+public enum ProviderRuntimeArchiveFormat: String, Equatable, Sendable {
+    case tarGzip = "tar-gzip"
+    case zip
+}
+
+public struct ProviderRuntimeArtifact: Equatable, Sendable {
+    public let version: InstallerVersion
+    public let sourceRevision: String
+    public let url: String
+    public let sha256: String
+    public let qualification: String
+    public let archiveFormat: ProviderRuntimeArchiveFormat
+    public let executableRelativePath: String
+
+    public init(
+        version: InstallerVersion,
+        sourceRevision: String,
+        url: String,
+        sha256: String,
+        qualification: String,
+        archiveFormat: ProviderRuntimeArchiveFormat,
+        executableRelativePath: String
+    ) {
+        precondition(Self.isSafeSourceRevision(sourceRevision), "provider runtime source revision is invalid")
+        precondition(
+            GitHubInstallerReleaseDescriptorValidation.isHTTPSURL(url),
+            "provider runtime URL is invalid"
+        )
+        precondition(
+            CompositionCatalogValidation.isTaggedSHA256(sha256),
+            "provider runtime digest is invalid"
+        )
+        precondition(!qualification.isEmpty && qualification.utf8.count <= 2048)
+        precondition(Self.isSafeRelativePath(executableRelativePath))
+        self.version = version
+        self.sourceRevision = sourceRevision
+        self.url = url
+        self.sha256 = sha256
+        self.qualification = qualification
+        self.archiveFormat = archiveFormat
+        self.executableRelativePath = executableRelativePath
+    }
+
+    func matches(provider: ProviderID) -> Bool {
+        let basename = executableRelativePath.split(separator: "/").last.map(String.init) ?? ""
+        switch provider {
+        case .codex:
+            return basename == "codex" || basename.hasPrefix("codex-")
+        case .githubCLI:
+            return basename == "gh"
+        }
+    }
+
+    static func isSafeSourceRevision(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 128 else { return false }
+        let pieces = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard !pieces.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 45, 46, 47, 95, 48...57, 65...90, 97...122:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    static func isSafeRelativePath(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 256, !value.hasPrefix("/"), !value.contains("\\") else {
+            return false
+        }
+        let pieces = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard !pieces.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 45, 46, 47, 95, 48...57, 65...90, 97...122:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+}
+
 public struct ProviderRequirement: Equatable, Sendable, Identifiable {
     public let provider: ProviderID
     public let isRequired: Bool
@@ -171,6 +273,9 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
     /// instance (or immutable pre-create target binding).
     public let ownerComponent: ProviderOwnerComponent?
     public let targetIdentity: String?
+    /// composition/v2 pins exact immutable provider CLI bytes. Legacy v1
+    /// requirements may omit this and remain targetless/user-scoped only.
+    public let runtime: ProviderRuntimeArtifact?
 
     public var id: ProviderTargetID {
         if let ownerComponent, let targetIdentity {
@@ -187,7 +292,8 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
         minimumVersion: InstallerVersion? = nil,
         credentialScope: ProviderCredentialScope = .user,
         ownerComponent: ProviderOwnerComponent? = nil,
-        targetIdentity: String? = nil
+        targetIdentity: String? = nil,
+        runtime: ProviderRuntimeArtifact? = nil
     ) {
         precondition((ownerComponent == nil) == (targetIdentity == nil), "provider target must be complete")
         if let ownerComponent, let targetIdentity {
@@ -214,8 +320,15 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
         self.isRequired = isRequired
         self.minimumVersion = minimumVersion
         self.credentialScope = credentialScope
+        if let runtime {
+            precondition(runtime.matches(provider: provider), "provider runtime executable does not match provider")
+            if let minimumVersion {
+                precondition(runtime.version >= minimumVersion, "provider runtime is older than minimum")
+            }
+        }
         self.ownerComponent = ownerComponent
         self.targetIdentity = targetIdentity
+        self.runtime = runtime
     }
 }
 
@@ -274,6 +387,7 @@ public enum InstallerSessionPreparationFailure: String, CaseIterable, Codable, E
     /// A trusted collaborator was present but could not admit one immutable
     /// composition/session plan for this installer run.
     case selectionUnavailable = "selection-unavailable"
+    case installerUpdateRequired = "installer-update-required"
 
     public var userFacingMessage: String {
         switch self {
@@ -281,6 +395,8 @@ public enum InstallerSessionPreparationFailure: String, CaseIterable, Codable, E
             return "Geverifieerde compositiekeuze is nog niet beschikbaar in deze installer-runtime."
         case .selectionUnavailable:
             return "De geverifieerde compositiekeuze is niet beschikbaar; doorgaan blijft geblokkeerd."
+        case .installerUpdateRequired:
+            return "De nieuwste gekwalificeerde compositie vereist een nieuwere Forge Platform Installer. Herstart om de verplichte self-update uit te voeren."
         }
     }
 }
@@ -296,6 +412,7 @@ public enum VerifiedCompositionSessionPlanError: Error, Equatable, Sendable {
     case invalidInstallerProvenanceSHA256
     case invalidInstallerReleaseTrustConfigurationSHA256
     case invalidComponentSelectionSequence
+    case invalidComponentIdentity
     case conflatedCatalogIdentities
     case duplicateProviderRequirement
 }
@@ -342,6 +459,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
     /// The exact selected-entry sequence from the component-combination index.
     /// It is not a product version or a wheel timestamp.
     public let componentSelectionSequence: UInt64
+    public let componentIdentities: Set<String>
     public let providerRequirements: [ProviderRequirement]
 
     /// Compatibility projections used only by the current display shell. They
@@ -361,6 +479,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         compositionCatalog: VerifiedCompositionCatalogIdentity,
         componentCombinationCatalog: VerifiedCompositionCatalogIdentity,
         componentSelectionSequence: UInt64,
+        componentIdentities: Set<String> = [],
         providerRequirements: [ProviderRequirement]
     ) throws {
         guard Self.isSafeSessionID(sessionID) else {
@@ -384,6 +503,9 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         guard componentSelectionSequence > 0 else {
             throw VerifiedCompositionSessionPlanError.invalidComponentSelectionSequence
         }
+        guard componentIdentities.allSatisfy(CompositionCatalogValidation.isCapability) else {
+            throw VerifiedCompositionSessionPlanError.invalidComponentIdentity
+        }
         guard compositionCatalog != componentCombinationCatalog else {
             throw VerifiedCompositionSessionPlanError.conflatedCatalogIdentities
         }
@@ -400,6 +522,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         self.compositionCatalog = compositionCatalog
         self.componentCombinationCatalog = componentCombinationCatalog
         self.componentSelectionSequence = componentSelectionSequence
+        self.componentIdentities = componentIdentities
         self.providerRequirements = providerRequirements
     }
 
@@ -482,6 +605,13 @@ public enum InstallerSessionPreparationGate: Equatable, Sendable {
 
     public var isPrepared: Bool {
         if case .prepared = self {
+            return true
+        }
+        return false
+    }
+
+    public var isPreparing: Bool {
+        if case .preparing = self {
             return true
         }
         return false
@@ -937,7 +1067,11 @@ public struct InstallerWizardState: Equatable, Sendable {
     public let currentInstallerVersion: InstallerVersion
     public var step: WizardStep
     public private(set) var selfUpdate: SelfUpdateGate
+    /// Fresh release-currency evidence acquired only when the operator leaves
+    /// Review for real execution. It is never persisted as product authority.
+    public private(set) var preMutationInstallerCurrency: PreMutationInstallerCurrencyGate
     public private(set) var deploymentSelection: ManagedDeploymentSelectionGate
+    public private(set) var componentSelection: InstallerComponentSelection
     /// Exactly one composition plan may be accepted for this wizard session.
     /// The plan is the exclusive source of provider requirements and provides
     /// the correlation identity for later preflight, review and operation
@@ -958,7 +1092,9 @@ public struct InstallerWizardState: Equatable, Sendable {
         self.currentInstallerVersion = currentInstallerVersion
         self.step = .selfUpdate
         self.selfUpdate = .checking
+        self.preMutationInstallerCurrency = .pending
         self.deploymentSelection = .pending
+        self.componentSelection = InstallerComponentSelection()
         self.sessionPreparation = .pending
         self.acceptedSessionPlan = nil
         self.preflight = HostPreflight()
@@ -971,6 +1107,17 @@ public struct InstallerWizardState: Equatable, Sendable {
 
     public var hasSelectedManagedDeployment: Bool {
         deploymentSelection.isSelected
+    }
+
+    public var compositionRequest: InstallerCompositionRequest? {
+        guard componentSelection.isValid,
+              let target = deploymentSelection.selectedTarget else {
+            return nil
+        }
+        return try? InstallerCompositionRequest(
+            componentIdentities: Set(componentSelection.selected.map(\.rawValue)),
+            installedComposition: target.compositionIdentity
+        )
     }
 
     /// Returns whether a trusted coordinator has explicitly supplied a valid
@@ -1058,6 +1205,9 @@ public struct InstallerWizardState: Equatable, Sendable {
            providers.contains(where: { Self.isProviderActionInFlight($0.state) }) {
             return false
         }
+        if step == .review, preMutationInstallerCurrency.isChecking {
+            return false
+        }
         return true
     }
 
@@ -1090,6 +1240,59 @@ public struct InstallerWizardState: Equatable, Sendable {
             selfUpdate = .relaunching(release)
         case .failed(let reason):
             selfUpdate = .failed(reason)
+        }
+    }
+
+    /// Begins the mandatory fresh currency proof immediately before leaving
+    /// Review for a mutating execution. No product action is started here.
+    @discardableResult
+    public mutating func beginPreMutationInstallerCurrencyCheck() -> Bool {
+        guard step == .review,
+              hasAcceptedSessionPlan,
+              preflight.isPassed,
+              enabledProvidersVerified,
+              composition.isReadyForExecution,
+              !preMutationInstallerCurrency.isChecking else {
+            return false
+        }
+        preMutationInstallerCurrency = .checking
+        return true
+    }
+
+    /// Accept a fresh trusted release check. An exact-current result preserves
+    /// the reviewed session; a newer release invalidates all downstream
+    /// evidence and returns the wizard to the mandatory self-update gate.
+    @discardableResult
+    public mutating func recordPreMutationInstallerCurrencyCheck(
+        _ result: SelfUpdateCheckResult
+    ) -> Bool {
+        guard step == .review,
+              case .checking = preMutationInstallerCurrency else {
+            return false
+        }
+
+        switch result {
+        case .verifiedGitHubRelease(let release):
+            if release.version > currentInstallerVersion {
+                invalidateAcceptedSessionPlan()
+                selfUpdate = .updateRequired(release)
+                preMutationInstallerCurrency = .updateRequired(release)
+                step = .selfUpdate
+                return false
+            }
+            guard release.version == currentInstallerVersion,
+                  case .current(let startupRelease) = selfUpdate,
+                  startupRelease == release else {
+                preMutationInstallerCurrency = .failed(
+                    "De verse installercontrole kwam niet overeen met de actieve geverifieerde release."
+                )
+                return false
+            }
+            preMutationInstallerCurrency = .current(release)
+            return true
+        case .rejected(let reason):
+            preMutationInstallerCurrency = .failed(reason)
+            return false
         }
     }
 
@@ -1138,6 +1341,49 @@ public struct InstallerWizardState: Equatable, Sendable {
             return false
         }
         deploymentSelection = .selected(selected, evidenceReference: inventory.evidenceReference)
+        var initial = InstallerComponentSelection()
+        if selected.forgeInstanceID != nil {
+            _ = initial.setSelected(.forgeRuntime, selected: true)
+        }
+        if selected.engineeringPlatformInstanceID != nil {
+            _ = initial.setSelected(.engineeringPlatformServer, selected: true)
+        }
+        componentSelection = initial
+        invalidateCompositionEvidencePreservingDeployment()
+        return true
+    }
+
+    @discardableResult
+    public mutating func setComponentSelected(
+        _ component: InstallerComponentID,
+        selected: Bool
+    ) -> Bool {
+        guard step == .composition,
+              selfUpdate.isCurrent,
+              hasSelectedManagedDeployment,
+              acceptedSessionPlan == nil,
+              !sessionPreparation.isPreparing else {
+            return false
+        }
+        guard componentSelection.setSelected(component, selected: selected) else {
+            return false
+        }
+        invalidateCompositionEvidencePreservingDeployment()
+        return true
+    }
+
+    @discardableResult
+    public mutating func applyComponentPreset(_ preset: InstallerPresetID) -> Bool {
+        guard step == .composition,
+              selfUpdate.isCurrent,
+              hasSelectedManagedDeployment,
+              acceptedSessionPlan == nil,
+              !sessionPreparation.isPreparing else {
+            return false
+        }
+        guard componentSelection.applyPreset(preset) else {
+            return false
+        }
         invalidateCompositionEvidencePreservingDeployment()
         return true
     }
@@ -1149,6 +1395,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         guard step == .composition,
               selfUpdate.isCurrent,
               hasSelectedManagedDeployment,
+              compositionRequest != nil,
               acceptedSessionPlan == nil else {
             return false
         }
@@ -1311,6 +1558,7 @@ public struct InstallerWizardState: Equatable, Sendable {
             return false
         }
         composition.isAcknowledged = acknowledged
+        preMutationInstallerCurrency = .pending
         return true
     }
 
@@ -1344,6 +1592,7 @@ public struct InstallerWizardState: Equatable, Sendable {
     private mutating func invalidateCompositionEvidencePreservingDeployment() {
         sessionPreparation = .pending
         acceptedSessionPlan = nil
+        preMutationInstallerCurrency = .pending
         providerRequirementsProjection = .pending
         providers = []
         preflight = HostPreflight()
@@ -1381,6 +1630,12 @@ public struct InstallerWizardState: Equatable, Sendable {
 /// trusted coordinator and must verify immutable artifacts before execution.
 public protocol InstallerWizardCoordinator: Sendable {
     func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult
+    /// A fresh currency proof taken immediately before any product mutation.
+    /// Production runtimes preserve an exact-current reviewed session but must
+    /// invalidate it when a newer verified installer exists.
+    func recheckInstallerCurrencyBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> SelfUpdateCheckResult
     func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult
     /// Inventory existing managed deployments plus one coordinator-generated
     /// create target. This operation is read-only.
@@ -1389,6 +1644,9 @@ public protocol InstallerWizardCoordinator: Sendable {
     /// self-update and managed-deployment gates. Implementations must not return
     /// catalog bytes, URLs, commands, credentials, product readbacks or an operation authority.
     func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult
+    func prepareVerifiedCompositionSession(
+        request: InstallerCompositionRequest
+    ) async -> InstallerSessionPreparationResult
     /// Legacy targetless route retained for composition/v1 coordinators.
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult
     /// Target-aware route used by composition/v2. Existing coordinators inherit
@@ -1401,12 +1659,28 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func recheckInstallerCurrencyBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> SelfUpdateCheckResult {
+        // Compatibility default is intentionally conservative: older
+        // coordinators perform a normal check, which invalidates session
+        // evidence rather than silently reusing it.
+        await checkForUpdate(currentVersion: currentVersion)
+    }
+
     func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
         .unavailable(.coordinatorUnavailable)
     }
 
     func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
         .unavailable(.coordinatorUnavailable)
+    }
+
+    func prepareVerifiedCompositionSession(
+        request: InstallerCompositionRequest
+    ) async -> InstallerSessionPreparationResult {
+        _ = request
+        return await prepareVerifiedCompositionSession()
     }
 
     func performProviderAction(

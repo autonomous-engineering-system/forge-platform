@@ -37,7 +37,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(receiptCount, 1)
     }
 
-    func testStartupEnforcementAutomaticallyRelaunchesNewerVerifiedInstaller() async throws {
+    func testStartupEnforcementRequiresConfirmationBeforeStagingNewerVerifiedInstaller() async throws {
         let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
         let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
         let staging = StagingSpy(result: .success(try makeStagedAsset()))
@@ -50,12 +50,18 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
 
         let result = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
-        let stagedReleaseCount = await staging.stagedReleaseCount()
-        let handoffCallCount = await handoff.callCount()
+        let stagedBeforeConfirmation = await staging.stagedReleaseCount()
+        let handoffBeforeConfirmation = await handoff.callCount()
+        XCTAssertEqual(result, .updateRequired(release.release))
+        XCTAssertEqual(stagedBeforeConfirmation, 0)
+        XCTAssertEqual(handoffBeforeConfirmation, 0)
 
-        XCTAssertEqual(result, .relaunching(release.release))
-        XCTAssertEqual(stagedReleaseCount, 1)
-        XCTAssertEqual(handoffCallCount, 1)
+        let confirmed = await coordinator.handOffSelfUpdate(release.release)
+        let stagedAfterConfirmation = await staging.stagedReleaseCount()
+        let handoffAfterConfirmation = await handoff.callCount()
+        XCTAssertEqual(confirmed, .relaunching)
+        XCTAssertEqual(stagedAfterConfirmation, 1)
+        XCTAssertEqual(handoffAfterConfirmation, 1)
     }
 
     func testExactCurrentReleaseAllowsWizardButCannotBeHandedOffAgain() async throws {
@@ -323,6 +329,75 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(nextPreparation, .unavailable(.selectionUnavailable))
     }
 
+    func testPreMutationCurrencyRecheckPreservesExactCurrentPreparedSession() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256
+        )
+        let plan = try makeSessionPlan(for: release)
+        let preparer = SessionPreparerSpy(result: .prepared(plan))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current), .success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
+        )
+
+        let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let initialPrepared = await coordinator.prepareVerifiedCompositionSession()
+        let recheck = await coordinator.recheckInstallerCurrencyBeforeMutation(
+            currentVersion: current.version
+        )
+        let stillPrepared = await coordinator.prepareVerifiedCompositionSession()
+        let preparerCalls = await preparer.callCount()
+
+        XCTAssertEqual(enforcement, .current(release.release))
+        XCTAssertEqual(initialPrepared, .prepared(plan))
+        XCTAssertEqual(recheck, .verifiedGitHubRelease(release.release))
+        XCTAssertEqual(stillPrepared, .prepared(plan))
+        XCTAssertEqual(preparerCalls, 1)
+    }
+
+    func testPreMutationCurrencyRecheckInvalidatesSessionWhenNewerReleaseAppears() async throws {
+        let currentRelease = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let newerRelease = try makeReleaseRecord(version: "1.1.0", sequence: 11)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            sourceRevision: currentRelease.sourceRevision,
+            codeDirectorySHA256: currentRelease.expectedCodeDirectorySHA256,
+            provenanceSHA256: currentRelease.provenanceSHA256
+        )
+        let feed = SequencedFeedSpy(results: [
+            .success(currentRelease),
+            .success(newerRelease),
+        ])
+        let plan = try makeSessionPlan(for: currentRelease)
+        let preparer = SessionPreparerSpy(result: .prepared(plan))
+        let coordinator = makeCoordinator(
+            feed: feed,
+            inspector: InspectorSpy(responses: [.success(current), .success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
+        )
+
+        let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let initialPrepared = await coordinator.prepareVerifiedCompositionSession()
+        let recheck = await coordinator.recheckInstallerCurrencyBeforeMutation(
+            currentVersion: current.version
+        )
+        let after = await coordinator.prepareVerifiedCompositionSession()
+
+        XCTAssertEqual(enforcement, .current(currentRelease.release))
+        XCTAssertEqual(initialPrepared, .prepared(plan))
+        XCTAssertEqual(recheck, .verifiedGitHubRelease(newerRelease.release))
+        XCTAssertEqual(after, .unavailable(.selectionUnavailable))
+    }
+
     func testSameVersionWithChangedSignedIdentityFailsClosed() async throws {
         let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
         let current = try makeCurrentIdentity(
@@ -408,10 +483,13 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
 
         let result = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        XCTAssertEqual(result, .updateRequired(release.release))
+        XCTAssertEqual(operationLock.activeLeases(), 0)
 
-        XCTAssertEqual(result, .relaunching(release.release))
+        let handoffResult = await coordinator.handOffSelfUpdate(release.release)
+        XCTAssertEqual(handoffResult, .relaunching)
         XCTAssertEqual(operationLock.activeLeases(), 1)
-        XCTAssertEqual(operationLock.releases(), 0)
+        XCTAssertEqual(operationLock.releases(), 1)
 
         let repeatedStartup = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
         XCTAssertEqual(repeatedStartup, .concurrentOperationInProgress)
@@ -1080,6 +1158,25 @@ private actor FeedSpy: SignedInstallerReleaseFeedVerifying {
     func callCount() -> Int {
         calls
     }
+}
+
+private actor SequencedFeedSpy: SignedInstallerReleaseFeedVerifying {
+    private var results: [Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>]
+    private var calls = 0
+
+    init(results: [Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>]) {
+        self.results = results
+    }
+
+    func latestVerifiedInstallerRelease() async -> Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure> {
+        calls += 1
+        guard !results.isEmpty else {
+            return .failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable))
+        }
+        return results.removeFirst()
+    }
+
+    func callCount() -> Int { calls }
 }
 
 private actor SessionPreparerSpy: VerifiedCompositionSessionPreparing {
