@@ -174,6 +174,22 @@ struct ComponentCombinationRequest: Equatable, Sendable {
 
     init(
         componentIdentities: Set<String>,
+        deployment: ManagedDeploymentTarget
+    ) throws {
+        if deployment.exists && deployment.installedCompositionID == nil {
+            // A legacy topology-only deployment has no immutable current
+            // composition identity. Never guess an upgrade_from route from
+            // component versions or runtime readback.
+            throw ComponentCombinationCatalogFailure.rejected
+        }
+        try self.init(
+            componentIdentities: componentIdentities,
+            installedCompositionID: deployment.installedCompositionID
+        )
+    }
+
+    init(
+        componentIdentities: Set<String>,
         installedCompositionID: String? = nil
     ) throws {
         guard !componentIdentities.isEmpty,
