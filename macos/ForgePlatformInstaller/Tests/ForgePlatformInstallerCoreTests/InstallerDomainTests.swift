@@ -18,7 +18,7 @@ final class InstallerDomainTests: XCTestCase {
         XCTAssertFalse(state.canAdvance)
     }
 
-    func testVerifiedCurrentReleaseLeadsToCompositionSelectionBeforePreflight() throws {
+    func testVerifiedCurrentReleaseLeadsToDeploymentSelectionBeforeCompositionAndPreflight() throws {
         var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
         let release = try makeRelease("1.2.3")
 
@@ -27,8 +27,9 @@ final class InstallerDomainTests: XCTestCase {
         XCTAssertEqual(state.selfUpdate, .current(release))
         XCTAssertTrue(state.canAdvance)
         XCTAssertTrue(state.advance())
-        XCTAssertEqual(state.step, .composition)
+        XCTAssertEqual(state.step, .deployment)
         XCTAssertFalse(state.canAdvance)
+        XCTAssertFalse(state.hasSelectedManagedDeployment)
         XCTAssertFalse(state.providerRequirementsAreProjected)
         XCTAssertTrue(state.providers.isEmpty)
     }
