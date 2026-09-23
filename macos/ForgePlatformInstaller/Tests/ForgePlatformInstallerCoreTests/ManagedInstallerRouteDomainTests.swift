@@ -14,27 +14,21 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
         XCTAssertTrue(failures.allSatisfy { !$0.userFacingMessage.isEmpty })
 
         let coordinator = UnavailableManagedDeploymentRouteCoordinator()
-        XCTAssertEqual(
-            await coordinator.prepareManagedDeploymentInventory(),
-            .unavailable(.coordinatorUnavailable)
-        )
+        let inventoryResult = await coordinator.prepareManagedDeploymentInventory()
+        XCTAssertEqual(inventoryResult, .unavailable(.coordinatorUnavailable))
 
         let session = try makeSession()
         let deployment = try ManagedDeploymentTarget(id: "deployment-new", exists: false)
-        XCTAssertEqual(
-            await coordinator.prepareHostPreflight(
-                session: session,
-                deployment: deployment
-            ),
-            .unavailable(.coordinatorUnavailable)
+        let preflightResult = await coordinator.prepareHostPreflight(
+            session: session,
+            deployment: deployment
         )
-        XCTAssertEqual(
-            await coordinator.prepareCompositionReview(
-                session: session,
-                deployment: deployment
-            ),
-            .unavailable(.coordinatorUnavailable)
+        XCTAssertEqual(preflightResult, .unavailable(.coordinatorUnavailable))
+        let reviewResult = await coordinator.prepareCompositionReview(
+            session: session,
+            deployment: deployment
         )
+        XCTAssertEqual(reviewResult, .unavailable(.coordinatorUnavailable))
 
         let operation = ReviewedManagedDeploymentOperation(
             sessionID: session.sessionID,
@@ -46,10 +40,8 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
             currentInstallerRelease: try makeRelease("1.2.3"),
             components: []
         )
-        XCTAssertEqual(
-            await coordinator.executeReviewedManagedDeployment(operation),
-            .failed(.coordinatorUnavailable, stages: [])
-        )
+        let executionResult = await coordinator.executeReviewedManagedDeployment(operation)
+        XCTAssertEqual(executionResult, .failed(.coordinatorUnavailable, stages: []))
     }
 
     func testPreflightRejectsStaleAndUnavailableEvidence() throws {
