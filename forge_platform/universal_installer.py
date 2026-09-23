@@ -3484,6 +3484,7 @@ class CompositionPlanner:
         update_assessments: Mapping[tuple[str, str], ProductUpdateAssessment],
         installed_composition: InstalledCompositionIdentity | None = None,
         discovered_installations: Sequence[DiscoveredInstallation] = (),
+        managed_deployment_scope: bool = False,
     ) -> CompositionPlan:
         if not isinstance(selection, VerifiedCompositionSelection):
             raise ValueError("verified composition selection is required")
@@ -3497,7 +3498,13 @@ class CompositionPlanner:
         tool_actions = plan_managed_tools(manifest.managed_tools, managed_tool_readbacks)
         python_runtime_action = plan_managed_python_runtime(manifest.python_runtime, python_runtime_readback)
         provider_gate = evaluate_provider_gate(manifest.providers, provider_selections, provider_readbacks)
-        component_diffs = CompositionPlanner._component_diffs(manifest, selected_readbacks, update_assessments, discovered_installations)
+        component_diffs = CompositionPlanner._component_diffs(
+            manifest,
+            selected_readbacks,
+            update_assessments,
+            discovered_installations,
+            managed_deployment_scope=managed_deployment_scope,
+        )
         return CompositionPlan(
             manifest.composition_id,
             manifest.manifest_digest,
@@ -3560,6 +3567,8 @@ class CompositionPlanner:
         selected_readbacks: Mapping[str, ProductInstallationReadback],
         assessments: Mapping[tuple[str, str], ProductUpdateAssessment],
         discovered: Sequence[DiscoveredInstallation],
+        *,
+        managed_deployment_scope: bool = False,
     ) -> tuple[ComponentDiff, ...]:
         diffs: list[ComponentDiff] = []
         selected_targets: set[tuple[str, str]] = set()
@@ -3567,7 +3576,12 @@ class CompositionPlanner:
             readback = selected_readbacks[component.identity]
             selected_targets.add((readback.component, readback.installation_identity))
             target = component.artifact.correlation
-            diffs.append(CompositionPlanner._selected_diff(component, readback, assessments))
+            diffs.append(CompositionPlanner._selected_diff(
+                component,
+                readback,
+                assessments,
+                managed_deployment_scope=managed_deployment_scope,
+            ))
         seen_discovered: set[tuple[str, str]] = set()
         for installation in discovered:
             if not isinstance(installation, DiscoveredInstallation):
@@ -3577,6 +3591,11 @@ class CompositionPlanner:
                 raise UniversalInstallerError("product inventory contains a duplicate installation identity")
             seen_discovered.add(key)
             if key in selected_targets:
+                continue
+            if managed_deployment_scope:
+                # Same-host product instances outside the selected managed
+                # deployment are valid inventory context, not implicit removal
+                # targets or blockers.
                 continue
             action = "BLOCKED"
             reason = (
@@ -3600,14 +3619,17 @@ class CompositionPlanner:
         component: CompositionComponent,
         readback: ProductInstallationReadback,
         assessments: Mapping[tuple[str, str], ProductUpdateAssessment],
+        *,
+        managed_deployment_scope: bool = False,
     ) -> ComponentDiff:
         target = component.artifact.correlation
         if readback.conflict_state != "NONE":
             return ComponentDiff(component.identity, readback.installation_identity, "BLOCKED", "product inventory reports a conflicting or unknown installation", target, readback, None)
-        if component.identity == "engineering-platform-server" and readback.inventory_coverage != "MACHINE_WIDE":
-            return ComponentDiff(component.identity, readback.installation_identity, "BLOCKED", "EP did not prove machine-wide installation inventory", target, readback, None)
-        if component.identity == "engineering-platform-server" and readback.state != "ABSENT" and not readback.single_operational_installation_verified:
-            return ComponentDiff(component.identity, readback.installation_identity, "BLOCKED", "EP did not prove one healthy machine-wide operational installation", target, readback, None)
+        if not managed_deployment_scope:
+            if component.identity == "engineering-platform-server" and readback.inventory_coverage != "MACHINE_WIDE":
+                return ComponentDiff(component.identity, readback.installation_identity, "BLOCKED", "EP did not prove machine-wide installation inventory", target, readback, None)
+            if component.identity == "engineering-platform-server" and readback.state != "ABSENT" and not readback.single_operational_installation_verified:
+                return ComponentDiff(component.identity, readback.installation_identity, "BLOCKED", "EP did not prove one healthy machine-wide operational installation", target, readback, None)
         if readback.state == "ABSENT":
             return ComponentDiff(component.identity, readback.installation_identity, "INSTALL", "selected component is absent", target, readback, None)
         if readback.state == "UNKNOWN":
