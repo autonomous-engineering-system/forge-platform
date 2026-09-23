@@ -67,18 +67,18 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func setProviderSelected(_ target: ProviderTargetID, isSelected: Bool) {
-        _ = state.setProviderSelected(target, isSelected: isSelected)
+        _ = state.setProviderTargetSelected(target, isSelected: isSelected)
     }
 
     func performProviderAction(_ action: ProviderAction, target: ProviderTargetID) {
         guard let requirement = state.providers.first(where: { $0.id == target })?.requirement,
-              state.requestProviderAction(action, for: target) else {
+              state.requestProviderTargetAction(action, for: target) else {
             return
         }
         let coordinator = coordinator
         Task { @MainActor [weak self] in
             let result = await coordinator.performProviderAction(action, for: requirement)
-            self?.state.applyProviderActionResult(result, for: target, action: action)
+            self?.state.applyProviderTargetActionResult(result, for: target, action: action)
         }
     }
 
