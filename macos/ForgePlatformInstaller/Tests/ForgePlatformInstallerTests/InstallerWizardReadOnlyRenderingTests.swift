@@ -83,6 +83,46 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: manifestURL.path))
     }
 
+    func testReviewedProviderReadyFixtureStillRequiresFreshCurrency() throws {
+        var state = try reviewState(acknowledged: true)
+        XCTAssertTrue(state.enabledProvidersVerified)
+        XCTAssertFalse(state.canAdvance)
+        XCTAssertFalse(state.advance())
+        XCTAssertEqual(state.step, .review)
+        XCTAssertTrue(state.beginPreMutationCurrencyCheck())
+        XCTAssertFalse(state.beginPreMutationCurrencyCheck())
+        XCTAssertTrue(state.recordPreMutationCurrencyCheck(.current(try makeRelease("1.2.3"))))
+        XCTAssertTrue(state.canAdvance)
+        XCTAssertTrue(state.setCompositionAcknowledged(false))
+        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.setCompositionAcknowledged(true))
+        XCTAssertFalse(state.canAdvance)
+    }
+
+    func testNewInstallerAfterProviderVerificationInvalidatesTheReviewedFixture() throws {
+        var state = try reviewState(acknowledged: true)
+        XCTAssertTrue(state.beginPreMutationCurrencyCheck())
+        XCTAssertFalse(state.recordPreMutationCurrencyCheck(.updateRequired(try makeRelease("1.2.4"))))
+        XCTAssertEqual(state.step, .selfUpdate)
+        XCTAssertFalse(state.hasAcceptedSessionPlan)
+        XCTAssertTrue(state.providers.isEmpty)
+        XCTAssertFalse(state.composition.isAcknowledged)
+        XCTAssertFalse(state.canAdvance)
+        // A late callback for the old review cannot resurrect its authority.
+        XCTAssertFalse(state.recordPreMutationCurrencyCheck(.current(try makeRelease("1.2.3"))))
+        XCTAssertFalse(state.advance())
+    }
+
+    func testFailedCurrencyReadbackBlocksExecutionAfterSuccessfulProviderFixture() throws {
+        var state = try reviewState(acknowledged: true)
+        XCTAssertTrue(state.beginPreMutationCurrencyCheck())
+        XCTAssertFalse(state.recordPreMutationCurrencyCheck(.failed("fixture network failure")))
+        XCTAssertFalse(state.canAdvance)
+        XCTAssertFalse(state.advance())
+        XCTAssertEqual(state.step, .review)
+        XCTAssertTrue(state.executionStages.isEmpty)
+    }
+
     private func canonicalScenarios() throws -> [(name: String, state: InstallerWizardState)] {
         let selfUpdate = try selfUpdateCurrent()
         let deployment = try deploymentAvailable()
@@ -334,6 +374,10 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
 
     private func executionState(failed: Bool) throws -> InstallerWizardState {
         var state = try reviewState(acknowledged: true)
+        // Even read-only render fixtures must follow the real currency gate.
+        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.beginPreMutationCurrencyCheck())
+        XCTAssertTrue(state.recordPreMutationCurrencyCheck(.current(try makeRelease("1.2.3"))))
         XCTAssertTrue(state.advance())
         XCTAssertEqual(state.step, .execution)
         state.executionStages = [

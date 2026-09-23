@@ -1,10 +1,17 @@
 name: Native Mac installer integration
 
+# These guards protect this workflow, not the runner against other workflows.
+# Do not activate a credential-bearing runner until external dispatch isolation
+# and the protected Environment have been independently verified.
 on:
   workflow_dispatch:
     inputs:
       source_sha:
         description: Exact already-merged origin/main commit to qualify
+        required: true
+        type: string
+      coverage_base_sha:
+        description: Exact reviewed ancestor for the entire qualification slice
         required: true
         type: string
       signing_readiness:
@@ -17,29 +24,60 @@ permissions:
   contents: read
 
 concurrency:
-  group: forge-platform-macmini-native-integration
+  group: forge-platform-macmini-privileged
   cancel-in-progress: false
 
 jobs:
+  admission:
+    name: Admit reviewed protected workflow and exact source
+    if: >-
+      ${{ github.repository == 'pcvantol/forge-platform' &&
+          github.ref == 'refs/heads/main' && github.ref_protected &&
+          github.sha == inputs.source_sha && github.workflow_sha == inputs.source_sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check source before allocating any privileged runner
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$COVERAGE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$SOURCE_SHA" != "$COVERAGE_BASE_SHA"
+          current="$(git ls-remote https://github.com/pcvantol/forge-platform.git refs/heads/main | cut -f1)"
+          test "$SOURCE_SHA" = "$current"
+
   native-integration:
     name: Native Mac mini integration
+    needs: admission
     runs-on: [self-hosted, macOS, ARM64, forge-platform-mini]
     timeout-minutes: 45
+    environment:
+      name: forge-platform-installer-signing
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
-      - name: Admit exact protected main source
-        env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: Recheck exact protected main after Environment approval
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
+          git merge-base --is-ancestor "$COVERAGE_BASE_SHA" HEAD
           test "$(uname -m)" = "arm64"
           test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          sw_vers
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
       - name: Repository unit and integration suite
         run: sh scripts/validate.sh
       - name: Native Swift unit and integration suite
@@ -50,9 +88,11 @@ jobs:
       - name: Enforce native Swift per-file coverage
         working-directory: macos/ForgePlatformInstaller
         run: |
+          set -euo pipefail
           coverage_path="$(swift test --show-codecov-path)"
-          python3 ../../scripts/check_managed_installer_swift_coverage.py "$coverage_path" --minimum 80.2
-      - name: Build exact native release candidate
+          python3 ../../scripts/check_managed_installer_swift_coverage.py "$coverage_path" \
+            --minimum 80.2 --base-ref "$COVERAGE_BASE_SHA"
+      - name: Build unsigned native candidate without release authority
         working-directory: macos/ForgePlatformInstaller
         run: |
           swift build -c release
@@ -77,6 +117,7 @@ jobs:
     environment:
       name: forge-platform-installer-signing
     env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
       FORGE_PLATFORM_APPLE_TEAM_ID: ${{ vars.FORGE_PLATFORM_APPLE_TEAM_ID }}
       FORGE_PLATFORM_CODESIGN_IDENTITY: ${{ vars.FORGE_PLATFORM_CODESIGN_IDENTITY }}
       FORGE_PLATFORM_NOTARYTOOL_PROFILE: ${{ vars.FORGE_PLATFORM_NOTARYTOOL_PROFILE }}
@@ -85,5 +126,12 @@ jobs:
         with:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
+          persist-credentials: false
+      - name: Recheck exact source after the separate signing approval
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
       - name: Verify Xcode, Developer ID and notarytool without exporting secrets
         run: bash scripts/ci/verify_macos_signing_runner.sh

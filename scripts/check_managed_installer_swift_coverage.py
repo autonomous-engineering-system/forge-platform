@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Validate per-file Swift executable-line coverage from SwiftPM/LLVM JSON."""
-
+"""Fail-closed executable-line coverage for the managed slice and changed Swift files."""
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal
 import json
+import math
 from pathlib import Path
+import re
+import subprocess
 import sys
 
 
@@ -14,84 +17,113 @@ TARGET_SUFFIXES = (
     "/Sources/ForgePlatformInstallerCore/ManagedDeploymentDomain.swift",
     "/Sources/ForgePlatformInstallerCore/ManagedCompositionSessionPlan.swift",
     "/Sources/ForgePlatformInstaller/ForgePlatformInstallerApp.swift",
+    "/Sources/ForgePlatformInstaller/InstallerApplicationStartup.swift",
+    "/Sources/ForgePlatformInstallerCore/ReleasedInstallerStartup.swift",
+    "/Sources/ForgePlatformInstallerCore/SelfUpdateCoordinator.swift",
 )
+SOURCE_PREFIX = "macos/ForgePlatformInstaller/Sources/"
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("coverage_json", type=Path)
-    parser.add_argument("--minimum", type=float, default=80.2)
-    args = parser.parse_args(argv)
-    if not 0 <= args.minimum <= 100:
-        raise ValueError("minimum coverage must be between zero and 100")
+def required_targets(base_ref: str | None) -> tuple[str, ...]:
+    """A missing/invalid supplied Git baseline must never narrow the coverage scope."""
+    targets = set(TARGET_SUFFIXES)
+    if base_ref is not None:
+        if re.fullmatch(r"[0-9a-f]{40}", base_ref) is None:
+            raise ValueError("coverage base must be an exact 40-character commit SHA")
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", base_ref, "HEAD"],
+            cwd=ROOT, check=True, capture_output=True, timeout=30,
+        )
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "-z", "--no-renames",
+             "--diff-filter=ACMT", base_ref, "HEAD", "--", SOURCE_PREFIX],
+            cwd=ROOT, check=True, capture_output=True, timeout=30,
+        )
+        for path in result.stdout.decode("utf-8").split("\0"):
+            if path.startswith(SOURCE_PREFIX) and path.endswith(".swift"):
+                if any(part in {"", ".", ".."} for part in path.split("/")) or any(
+                    ord(character) < 32 for character in path
+                ):
+                    raise ValueError("unsafe production source path")
+                targets.add("/Sources/" + path.removeprefix(SOURCE_PREFIX))
+    return tuple(sorted(targets))
 
-    try:
-        payload = json.loads(args.coverage_json.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError("Swift coverage JSON is unavailable or invalid") from error
 
+def validate(payload: object, targets: tuple[str, ...], minimum: float) -> int:
+    if not math.isfinite(minimum) or not 80.2 <= minimum <= 100:
+        raise ValueError("minimum coverage must be finite and between 80.2 and 100")
+    if not isinstance(payload, dict):
+        raise ValueError("Swift coverage must be a JSON object")
     data = payload.get("data")
     if not isinstance(data, list) or not data:
-        raise RuntimeError("Swift coverage JSON has no data entries")
-
+        raise ValueError("Swift coverage JSON has no data entries")
     records: dict[str, dict[str, object]] = {}
     for block in data:
-        if not isinstance(block, dict):
-            continue
-        files = block.get("files")
-        if not isinstance(files, list):
-            continue
-        for item in files:
+        if not isinstance(block, dict) or not isinstance(block.get("files"), list):
+            raise ValueError("Swift coverage has an invalid data block")
+        for item in block["files"]:
             if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
-                continue
+                raise ValueError("Swift coverage has an invalid file record")
             filename = item["filename"].replace("\\", "/")
-            for suffix in TARGET_SUFFIXES:
+            if ".." in filename.split("/"):
+                raise ValueError("Swift coverage has an unsafe file path")
+            for suffix in targets:
                 if filename.endswith(suffix):
                     if suffix in records:
-                        raise RuntimeError(f"Swift coverage contains duplicate target file: {suffix}")
+                        raise ValueError(f"Swift coverage contains duplicate target file: {suffix}")
                     records[suffix] = item
-
-    missing = [suffix for suffix in TARGET_SUFFIXES if suffix not in records]
+    missing = sorted(set(targets) - records.keys())
     if missing:
-        raise RuntimeError("Swift coverage is missing production files: " + ", ".join(missing))
-
+        raise ValueError("Swift coverage is missing production files: " + ", ".join(missing))
     failures: list[str] = []
-    for suffix in TARGET_SUFFIXES:
+    for suffix in targets:
         summary = records[suffix].get("summary")
-        if not isinstance(summary, dict):
-            raise RuntimeError(f"Swift coverage summary is missing: {suffix}")
-        lines = summary.get("lines")
-        if not isinstance(lines, dict):
-            raise RuntimeError(f"Swift line coverage is missing: {suffix}")
-        count = lines.get("count")
-        covered = lines.get("covered")
-        percent = lines.get("percent")
+        if not isinstance(summary, dict) or not isinstance(summary.get("lines"), dict):
+            raise ValueError(f"Swift line coverage is missing: {suffix}")
+        lines = summary["lines"]
+        count, covered, percent = (lines.get(key) for key in ("count", "covered", "percent"))
         if (
-            isinstance(count, bool) or not isinstance(count, int) or count <= 0
-            or isinstance(covered, bool) or not isinstance(covered, int) or covered < 0
-            or not isinstance(percent, (int, float))
+            type(count) is not int or not 0 < count <= 2**63 - 1
+            or type(covered) is not int or not 0 <= covered <= count
+            or type(percent) not in (int, float) or not math.isfinite(percent)
+            or not 0 <= percent <= 100
         ):
-            raise RuntimeError(f"Swift line coverage values are invalid: {suffix}")
-        measured = float(percent)
+            raise ValueError(f"Swift line coverage values are invalid: {suffix}")
+        measured = 100 * covered / count
+        # LLVM may round display percentages; they never grant coverage authority.
+        if not math.isclose(float(percent), measured, rel_tol=0, abs_tol=0.011):
+            raise ValueError(f"Swift coverage percentage disagrees with line counts: {suffix}")
         print(
             "MANAGED_INSTALLER_SWIFT_FILE_COVERAGE "
             f"path={suffix.removeprefix('/')} covered={covered} executable={count} "
             f"percent={measured:.6f}"
         )
-        if measured <= args.minimum:
+        if Decimal(covered) * 100 <= Decimal(str(minimum)) * Decimal(count):
             failures.append(f"{suffix}={measured:.6f}%")
-
     if failures:
         print(
-            f"MANAGED_INSTALLER_SWIFT_COVERAGE=FAIL minimum_strictly_greater_than={args.minimum:.6f} "
-            + " ".join(failures),
-            file=sys.stderr,
+            f"MANAGED_INSTALLER_SWIFT_COVERAGE=FAIL minimum_strictly_greater_than={minimum:.6f} "
+            + " ".join(failures), file=sys.stderr,
         )
         return 1
-    print(
-        f"MANAGED_INSTALLER_SWIFT_COVERAGE=PASS minimum_strictly_greater_than={args.minimum:.6f}"
-    )
+    print(f"MANAGED_INSTALLER_SWIFT_COVERAGE=PASS minimum_strictly_greater_than={minimum:.6f}")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("coverage_json", type=Path)
+    parser.add_argument("--minimum", type=float, default=80.2)
+    parser.add_argument("--base-ref", help="Exact ancestor commit; adds every changed production Swift file")
+    args = parser.parse_args(argv)
+    try:
+        targets = required_targets(args.base_ref)
+        payload = json.loads(args.coverage_json.read_text(encoding="utf-8"))
+        return validate(payload, targets, args.minimum)
+    except (OSError, ValueError, ArithmeticError, subprocess.SubprocessError) as error:
+        print(f"MANAGED_INSTALLER_SWIFT_COVERAGE=FAIL reason={type(error).__name__}: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

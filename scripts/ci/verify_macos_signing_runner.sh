@@ -1,64 +1,53 @@
 #!/bin/bash
+# This checks signer/notary authentication readiness, not artifact notarization.
+set +x
 set -euo pipefail
-
-if [[ "$(uname -m)" != "arm64" ]]; then
-  echo "MAC_SIGNING_READINESS=FAIL reason=host-not-arm64" >&2
-  exit 1
-fi
-major="$(sw_vers -productVersion | cut -d. -f1)"
-if [[ "$major" -lt 26 ]]; then
-  echo "MAC_SIGNING_READINESS=FAIL reason=macos-too-old" >&2
-  exit 1
-fi
-
-test -n "${RUNNER_NAME:-}"
-case ",${RUNNER_LABELS:-}," in
-  *,forge-platform-mini,* ) ;;
-  * )
-    echo "MAC_SIGNING_READINESS=FAIL reason=wrong-runner-labels" >&2
-    exit 1
-    ;;
-esac
+umask 077
+fail() { echo "MAC_SIGNING_READINESS=FAIL reason=$1" >&2; exit 1; }
+[[ "$(uname -m)" == "arm64" ]] || fail host-not-arm64
+os_version="$(sw_vers -productVersion)"
+major="${os_version%%.*}"
+[[ "$major" =~ ^[0-9]+$ && "$major" -ge 26 ]] || fail macos-too-old
+[[ -n "${RUNNER_NAME:-}" ]] || fail missing-runner-name
+# RUNNER_LABELS is not a standard Actions environment variable or an ACL.
+[[ "${FORGE_PLATFORM_APPLE_TEAM_ID:-}" =~ ^[A-Z0-9]{10}$ ]] || fail invalid-team-id
+[[ -n "${FORGE_PLATFORM_CODESIGN_IDENTITY:-}" ]] || fail codesign-identity-required
+[[ -n "${FORGE_PLATFORM_NOTARYTOOL_PROFILE:-}" ]] || fail notarytool-profile-required
 
 developer_dir="$(xcode-select -p)"
-test -d "$developer_dir"
-xcode_version="$(xcodebuild -version | head -n1)"
+[[ -d "$developer_dir" ]] || fail developer-directory-unavailable
+xcode_version="$(xcodebuild -version)"
 sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
-test -n "$xcode_version"
-test -n "$sdk_version"
+[[ -n "$xcode_version" && -n "$sdk_version" ]] || fail toolchain-unavailable
 xcrun notarytool --help >/dev/null
 xcrun stapler --help >/dev/null
-codesign --version >/dev/null
-
-if [[ -z "${FORGE_PLATFORM_APPLE_TEAM_ID:-}" ]]; then
-  echo "MAC_SIGNING_READINESS=FAIL reason=FORGE_PLATFORM_APPLE_TEAM_ID-required" >&2
-  exit 1
-fi
-if [[ ! "$FORGE_PLATFORM_APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]; then
-  echo "MAC_SIGNING_READINESS=FAIL reason=invalid-team-id" >&2
-  exit 1
-fi
-if [[ -z "${FORGE_PLATFORM_CODESIGN_IDENTITY:-}" ]]; then
-  echo "MAC_SIGNING_READINESS=FAIL reason=FORGE_PLATFORM_CODESIGN_IDENTITY-required" >&2
-  exit 1
-fi
-
-identity_output="$(security find-identity -v -p codesigning 2>/dev/null)"
-if ! grep -Fq "Developer ID Application:" <<<"$identity_output"; then
-  echo "MAC_SIGNING_READINESS=FAIL reason=no-developer-id-application" >&2
-  exit 1
-fi
-if ! grep -Fq "($FORGE_PLATFORM_APPLE_TEAM_ID)" <<<"$identity_output"; then
-  echo "MAC_SIGNING_READINESS=FAIL reason=team-id-not-present-in-keychain" >&2
-  exit 1
-fi
-if ! grep -Fq "$FORGE_PLATFORM_CODESIGN_IDENTITY" <<<"$identity_output"; then
-  echo "MAC_SIGNING_READINESS=FAIL reason=configured-codesign-identity-not-present" >&2
-  exit 1
-fi
+codesign --version >/dev/null 2>&1
 
 probe="$(mktemp -d)"
 trap 'rm -rf "$probe"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# Only public certificate metadata is read. No Keychain exports or ACL changes.
+security find-identity -v -p codesigning >"$probe/identities.txt" 2>"$probe/identity-error.txt" || fail identity-read-failed
+identity_pattern='^[[:space:]]*[0-9]+\)[[:space:]]+([[:xdigit:]]{40})[[:space:]]+"([^"]+)"[[:space:]]*$'
+selected_hash=""
+selected_name=""
+matches=0
+while IFS= read -r line; do
+  if [[ "$line" =~ $identity_pattern ]]; then
+    fingerprint="${BASH_REMATCH[1]}"
+    label="${BASH_REMATCH[2]}"
+    normalized="$(printf '%s' "$FORGE_PLATFORM_CODESIGN_IDENTITY" | tr '[:lower:]' '[:upper:]')"
+    if [[ "$label" == "$FORGE_PLATFORM_CODESIGN_IDENTITY" || "$fingerprint" == "$normalized" ]]; then
+      matches=$((matches + 1))
+      selected_hash="$fingerprint"
+      selected_name="$label"
+    fi
+  fi
+done <"$probe/identities.txt"
+[[ "$matches" == 1 ]] || fail selected-identity-missing-or-ambiguous
+[[ "$selected_name" == "Developer ID Application: "*"($FORGE_PLATFORM_APPLE_TEAM_ID)" ]] || fail selected-identity-team-mismatch
+
 mkdir -p "$probe/SigningProbe.app/Contents/MacOS"
 cp /usr/bin/true "$probe/SigningProbe.app/Contents/MacOS/SigningProbe"
 cat >"$probe/SigningProbe.app/Contents/Info.plist" <<'PLIST'
@@ -72,14 +61,43 @@ cat >"$probe/SigningProbe.app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleShortVersionString</key><string>1.0</string>
 </dict></plist>
 PLIST
-codesign --force --options runtime --timestamp --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$probe/SigningProbe.app" >/dev/null
-codesign --verify --strict --deep "$probe/SigningProbe.app"
+# Bound commands that can wait on Keychain, timestamping or the notary service.
+# stdin is closed; errors remain in the private probe directory, never CI logs.
+bounded() {
+  python3 - "$probe/command.log" "$@" <<'PY'
+import subprocess
+import sys
+with open(sys.argv[1], "wb") as log:
+    try:
+        result = subprocess.run(sys.argv[2:], stdin=subprocess.DEVNULL,
+                                stdout=log, stderr=log, timeout=90, check=False)
+        sys.exit(0 if result.returncode == 0 else 1)
+    except (OSError, subprocess.TimeoutExpired):
+        sys.exit(1)
+PY
+}
+bounded codesign --force --options runtime --timestamp --sign "$selected_hash" "$probe/SigningProbe.app" || fail noninteractive-signing-failed
+bounded codesign --verify --strict --deep "$probe/SigningProbe.app" || fail signature-verification-failed
+requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"com.forgeplatform.ci.signing-probe\""
+bounded codesign --verify --strict -R "$requirement" "$probe/SigningProbe.app" || fail apple-trust-requirement-failed
+codesign --display --verbose=4 "$probe/SigningProbe.app" >"$probe/display.txt" 2>&1 || fail signature-readback-failed
+[[ "$(grep -c '^TeamIdentifier=' "$probe/display.txt")" == 1 ]] || fail ambiguous-signed-team
+[[ "$(grep -c '^Identifier=' "$probe/display.txt")" == 1 ]] || fail ambiguous-signed-identifier
+grep -Fxq "TeamIdentifier=$FORGE_PLATFORM_APPLE_TEAM_ID" "$probe/display.txt" || fail signed-team-mismatch
+grep -Fxq 'Identifier=com.forgeplatform.ci.signing-probe' "$probe/display.txt" || fail signed-bundle-mismatch
 
-if [[ -n "${FORGE_PLATFORM_NOTARYTOOL_PROFILE:-}" ]]; then
-  xcrun notarytool history --keychain-profile "$FORGE_PLATFORM_NOTARYTOOL_PROFILE"     >"$probe/notary-history.txt" 2>"$probe/notary-error.txt" || {
-      echo "MAC_SIGNING_READINESS=FAIL reason=notarytool-profile-unavailable" >&2
-      exit 1
-    }
-fi
-
-echo "MAC_SIGNING_READINESS=PASS runner=$RUNNER_NAME xcode=$xcode_version sdk=$sdk_version team_id=$FORGE_PLATFORM_APPLE_TEAM_ID"
+bounded xcrun notarytool history --keychain-profile "$FORGE_PLATFORM_NOTARYTOOL_PROFILE" --output-format json || fail notarytool-profile-unavailable
+python3 - "$probe/command.log" <<'PY' || fail invalid-notary-readback
+import json
+import sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as source:
+        payload = json.load(source)
+    valid = isinstance(payload, dict) and isinstance(payload.get("history"), list)
+except (OSError, ValueError):
+    valid = False
+sys.exit(0 if valid else 1)
+PY
+printf 'MAC_SIGNING_TOOLCHAIN os=%s developer_dir=%s sdk=%s\n%s\n' "$os_version" "$developer_dir" "$sdk_version" "$xcode_version"
+echo "MAC_SIGNING_READINESS=PASS runner=$RUNNER_NAME team_id=$FORGE_PLATFORM_APPLE_TEAM_ID"
+echo 'NOTARIZATION_ACCEPTANCE=NOT_RUN RUNNER_REBOOT_PERSISTENCE=NOT_VERIFIED'
