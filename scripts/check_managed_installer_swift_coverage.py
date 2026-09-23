@@ -10,10 +10,22 @@ import sys
 
 
 TARGET_SUFFIXES = (
+    "/Sources/ForgePlatformInstallerCore/CompositionCatalogAdmissionCoordinator.swift",
+    "/Sources/ForgePlatformInstallerCore/CompositionSessionCoordinator.swift",
+    "/Sources/ForgePlatformInstallerCore/HTTPSConsensusTrustedClock.swift",
+    "/Sources/ForgePlatformInstallerCore/InstallerComponentSelection.swift",
     "/Sources/ForgePlatformInstallerCore/InstallerDomain.swift",
-    "/Sources/ForgePlatformInstallerCore/ManagedDeploymentDomain.swift",
+    "/Sources/ForgePlatformInstallerCore/MacOSTrustedInstallerRuntimeBuilder.swift",
     "/Sources/ForgePlatformInstallerCore/ManagedCompositionSessionPlan.swift",
+    "/Sources/ForgePlatformInstallerCore/ManagedDeploymentDomain.swift",
+    "/Sources/ForgePlatformInstallerCore/ReleasedInstallerStartup.swift",
+    "/Sources/ForgePlatformInstallerCore/SelfUpdateCoordinator.swift",
+    "/Sources/ForgePlatformInstallerCore/VerifiedCompositionDocumentTransport.swift",
+    "/Sources/ForgePlatformInstallerCore/VerifiedManagedCompositionSessionPreparer.swift",
     "/Sources/ForgePlatformInstaller/ForgePlatformInstallerApp.swift",
+    "/Sources/ForgePlatformInstaller/InstallerApplicationStartup.swift",
+    "/Sources/ForgePlatformInstaller/InstallerDryRunFixtures.swift",
+    "/Sources/ForgePlatformInstaller/InstallerDryRunMode.swift",
 )
 
 
