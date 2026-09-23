@@ -79,7 +79,8 @@ final class InstallerEndToEndRouteTests: XCTestCase {
         }
         XCTAssertEqual(actual, newer)
         XCTAssertNil(model.state.acceptedSessionPlan)
-        let executionCalls = await coordinator.executionCalls()\n        XCTAssertEqual(executionCalls, 0)
+        let executionCalls = await coordinator.executionCalls()
+        XCTAssertEqual(executionCalls, 0)
     }
 
     func testExecutionCannotClaimSummaryWithoutPassedStagesAndReadinessItems() async throws {
