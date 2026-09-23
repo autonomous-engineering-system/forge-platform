@@ -430,6 +430,11 @@ final class InstallerDomainTests: XCTestCase {
         XCTAssertTrue(state.selectManagedDeployment("deployment-new"))
         XCTAssertTrue(state.advance())
         XCTAssertEqual(state.step, .composition)
+        XCTAssertTrue(state.applyComponentPreset(.forgeAndEPServers))
+        XCTAssertEqual(
+            state.componentSelection.selected,
+            Set([InstallerComponentID.forgeRuntime, .engineeringPlatformServer])
+        )
         return state
     }
 
