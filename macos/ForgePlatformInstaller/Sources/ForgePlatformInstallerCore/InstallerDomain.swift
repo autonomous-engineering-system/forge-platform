@@ -207,8 +207,8 @@ public struct ProviderRuntimeRequirement: Equatable, Sendable {
         executableSHA256: String
     ) throws {
         guard GitHubInstallerReleaseDescriptorValidation.isHTTPSURL(artifactURL),
-              GitHubInstallerReleaseDescriptorValidation.isSHA256(artifactSHA256),
-              GitHubInstallerReleaseDescriptorValidation.isSHA256(executableSHA256),
+              Self.isTaggedSHA256(artifactSHA256),
+              Self.isTaggedSHA256(executableSHA256),
               Self.isSafeRelativeExecutablePath(executableRelativePath) else {
             throw ProviderRuntimeRequirementError.invalid
         }
@@ -218,6 +218,10 @@ public struct ProviderRuntimeRequirement: Equatable, Sendable {
         self.artifactSHA256 = artifactSHA256
         self.executableRelativePath = executableRelativePath
         self.executableSHA256 = executableSHA256
+    }
+
+    private static func isTaggedSHA256(_ value: String) -> Bool {
+        GitHubInstallerReleaseDescriptorValidation.rawDigest(fromTaggedDigest: value) != nil
     }
 
     private static func isSafeRelativeExecutablePath(_ value: String) -> Bool {
