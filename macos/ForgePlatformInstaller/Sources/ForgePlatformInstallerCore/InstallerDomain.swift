@@ -91,6 +91,20 @@ public enum SelfUpdateGate: Equatable, Sendable {
     }
 }
 
+public enum PreMutationInstallerCurrencyGate: Equatable, Sendable {
+    case pending
+    case checking
+    case current(VerifiedInstallerRelease)
+    case updateRequired(VerifiedInstallerRelease)
+    case failed(String)
+
+    public var isChecking: Bool {
+        if case .checking = self { return true }
+        return false
+    }
+}
+
+
 public enum ProviderID: String, CaseIterable, Codable, Hashable, Sendable, Identifiable {
     case codex
     case githubCLI = "github-cli"
@@ -937,6 +951,9 @@ public struct InstallerWizardState: Equatable, Sendable {
     public let currentInstallerVersion: InstallerVersion
     public var step: WizardStep
     public private(set) var selfUpdate: SelfUpdateGate
+    /// Fresh release-currency evidence acquired only when the operator leaves
+    /// Review for real execution. It is never persisted as product authority.
+    public private(set) var preMutationInstallerCurrency: PreMutationInstallerCurrencyGate
     public private(set) var deploymentSelection: ManagedDeploymentSelectionGate
     /// Exactly one composition plan may be accepted for this wizard session.
     /// The plan is the exclusive source of provider requirements and provides
@@ -958,6 +975,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         self.currentInstallerVersion = currentInstallerVersion
         self.step = .selfUpdate
         self.selfUpdate = .checking
+        self.preMutationInstallerCurrency = .pending
         self.deploymentSelection = .pending
         self.sessionPreparation = .pending
         self.acceptedSessionPlan = nil
@@ -1058,6 +1076,9 @@ public struct InstallerWizardState: Equatable, Sendable {
            providers.contains(where: { Self.isProviderActionInFlight($0.state) }) {
             return false
         }
+        if step == .review, preMutationInstallerCurrency.isChecking {
+            return false
+        }
         return true
     }
 
@@ -1090,6 +1111,59 @@ public struct InstallerWizardState: Equatable, Sendable {
             selfUpdate = .relaunching(release)
         case .failed(let reason):
             selfUpdate = .failed(reason)
+        }
+    }
+
+    /// Begins the mandatory fresh currency proof immediately before leaving
+    /// Review for a mutating execution. No product action is started here.
+    @discardableResult
+    public mutating func beginPreMutationInstallerCurrencyCheck() -> Bool {
+        guard step == .review,
+              hasAcceptedSessionPlan,
+              preflight.isPassed,
+              enabledProvidersVerified,
+              composition.isReadyForExecution,
+              !preMutationInstallerCurrency.isChecking else {
+            return false
+        }
+        preMutationInstallerCurrency = .checking
+        return true
+    }
+
+    /// Accept a fresh trusted release check. An exact-current result preserves
+    /// the reviewed session; a newer release invalidates all downstream
+    /// evidence and returns the wizard to the mandatory self-update gate.
+    @discardableResult
+    public mutating func recordPreMutationInstallerCurrencyCheck(
+        _ result: SelfUpdateCheckResult
+    ) -> Bool {
+        guard step == .review,
+              case .checking = preMutationInstallerCurrency else {
+            return false
+        }
+
+        switch result {
+        case .verifiedGitHubRelease(let release):
+            if release.version > currentInstallerVersion {
+                invalidateAcceptedSessionPlan()
+                selfUpdate = .updateRequired(release)
+                preMutationInstallerCurrency = .updateRequired(release)
+                step = .selfUpdate
+                return false
+            }
+            guard release.version == currentInstallerVersion,
+                  case .current(let startupRelease) = selfUpdate,
+                  startupRelease == release else {
+                preMutationInstallerCurrency = .failed(
+                    "De verse installercontrole kwam niet overeen met de actieve geverifieerde release."
+                )
+                return false
+            }
+            preMutationInstallerCurrency = .current(release)
+            return true
+        case .rejected(let reason):
+            preMutationInstallerCurrency = .failed(reason)
+            return false
         }
     }
 
@@ -1311,6 +1385,7 @@ public struct InstallerWizardState: Equatable, Sendable {
             return false
         }
         composition.isAcknowledged = acknowledged
+        preMutationInstallerCurrency = .pending
         return true
     }
 
@@ -1344,6 +1419,7 @@ public struct InstallerWizardState: Equatable, Sendable {
     private mutating func invalidateCompositionEvidencePreservingDeployment() {
         sessionPreparation = .pending
         acceptedSessionPlan = nil
+        preMutationInstallerCurrency = .pending
         providerRequirementsProjection = .pending
         providers = []
         preflight = HostPreflight()
