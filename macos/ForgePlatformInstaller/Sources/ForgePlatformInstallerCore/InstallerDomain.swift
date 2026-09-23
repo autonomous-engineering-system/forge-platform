@@ -173,6 +173,94 @@ public enum ProviderOwnerComponent: String, CaseIterable, Codable, Equatable, Ha
     }
 }
 
+public enum ProviderRuntimeArchiveFormat: String, Equatable, Sendable {
+    case tarGzip = "tar-gzip"
+    case zip
+}
+
+public struct ProviderRuntimeArtifact: Equatable, Sendable {
+    public let version: InstallerVersion
+    public let sourceRevision: String
+    public let url: String
+    public let sha256: String
+    public let qualification: String
+    public let archiveFormat: ProviderRuntimeArchiveFormat
+    public let executableRelativePath: String
+
+    public init(
+        version: InstallerVersion,
+        sourceRevision: String,
+        url: String,
+        sha256: String,
+        qualification: String,
+        archiveFormat: ProviderRuntimeArchiveFormat,
+        executableRelativePath: String
+    ) {
+        precondition(Self.isSafeSourceRevision(sourceRevision), "provider runtime source revision is invalid")
+        precondition(
+            GitHubInstallerReleaseDescriptorValidation.isHTTPSURL(url),
+            "provider runtime URL is invalid"
+        )
+        precondition(
+            CompositionCatalogValidation.isTaggedSHA256(sha256),
+            "provider runtime digest is invalid"
+        )
+        precondition(!qualification.isEmpty && qualification.utf8.count <= 2048)
+        precondition(Self.isSafeRelativePath(executableRelativePath))
+        self.version = version
+        self.sourceRevision = sourceRevision
+        self.url = url
+        self.sha256 = sha256
+        self.qualification = qualification
+        self.archiveFormat = archiveFormat
+        self.executableRelativePath = executableRelativePath
+    }
+
+    func matches(provider: ProviderID) -> Bool {
+        let basename = executableRelativePath.split(separator: "/").last.map(String.init) ?? ""
+        switch provider {
+        case .codex:
+            return basename == "codex" || basename.hasPrefix("codex-")
+        case .githubCLI:
+            return basename == "gh"
+        }
+    }
+
+    static func isSafeSourceRevision(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 128 else { return false }
+        let pieces = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard !pieces.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 45, 46, 47, 95, 48...57, 65...90, 97...122:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    static func isSafeRelativePath(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 256, !value.hasPrefix("/"), !value.contains("\\") else {
+            return false
+        }
+        let pieces = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard !pieces.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 45, 46, 47, 95, 48...57, 65...90, 97...122:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+}
+
 public struct ProviderRequirement: Equatable, Sendable, Identifiable {
     public let provider: ProviderID
     public let isRequired: Bool
@@ -185,6 +273,9 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
     /// instance (or immutable pre-create target binding).
     public let ownerComponent: ProviderOwnerComponent?
     public let targetIdentity: String?
+    /// composition/v2 pins exact immutable provider CLI bytes. Legacy v1
+    /// requirements may omit this and remain targetless/user-scoped only.
+    public let runtime: ProviderRuntimeArtifact?
 
     public var id: ProviderTargetID {
         if let ownerComponent, let targetIdentity {
@@ -201,7 +292,8 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
         minimumVersion: InstallerVersion? = nil,
         credentialScope: ProviderCredentialScope = .user,
         ownerComponent: ProviderOwnerComponent? = nil,
-        targetIdentity: String? = nil
+        targetIdentity: String? = nil,
+        runtime: ProviderRuntimeArtifact? = nil
     ) {
         precondition((ownerComponent == nil) == (targetIdentity == nil), "provider target must be complete")
         if let ownerComponent, let targetIdentity {
@@ -228,8 +320,15 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
         self.isRequired = isRequired
         self.minimumVersion = minimumVersion
         self.credentialScope = credentialScope
+        if let runtime {
+            precondition(runtime.matches(provider: provider), "provider runtime executable does not match provider")
+            if let minimumVersion {
+                precondition(runtime.version >= minimumVersion, "provider runtime is older than minimum")
+            }
+        }
         self.ownerComponent = ownerComponent
         self.targetIdentity = targetIdentity
+        self.runtime = runtime
     }
 }
 
