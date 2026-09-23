@@ -5,11 +5,18 @@ import ForgePlatformInstallerCore
 @main
 struct ForgePlatformInstallerApp: App {
     @StateObject private var startupModel = InstallerApplicationStartupModel()
+    private let dryRun = CommandLine.arguments.contains("--dry-run")
 
     var body: some Scene {
         WindowGroup("Forge Platform Installer") {
-            InstallerApplicationRootView(startupModel: startupModel)
-                .frame(minWidth: 960, minHeight: 680)
+            Group {
+                if dryRun {
+                    InstallerDryRunRootView()
+                } else {
+                    InstallerApplicationRootView(startupModel: startupModel)
+                }
+            }
+            .frame(minWidth: 960, minHeight: 680)
         }
     }
 }
@@ -152,9 +159,27 @@ enum InstallerBuild {
 
 struct InstallerWizardView: View {
     @ObservedObject var viewModel: InstallerWizardViewModel
+    var dryRunNavigation: InstallerDryRunNavigation? = nil
 
     var body: some View {
-        HStack(spacing: 0) {
+        VStack(spacing: 0) {
+            if let navigation = dryRunNavigation {
+                HStack(spacing: 10) {
+                    Image(systemName: "eye.trianglebadge.exclamationmark")
+                    Text("DRY RUN — geen hostmutaties")
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Text("Preview \(navigation.index + 1)/\(navigation.count)")
+                        .font(.caption.monospaced())
+                }
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 9)
+                .background(.orange.opacity(0.10))
+                Divider()
+            }
+
+            HStack(spacing: 0) {
             WizardSidebar(currentStep: viewModel.state.step)
                 .frame(width: 235)
                 .padding(.vertical, 24)
@@ -174,6 +199,7 @@ struct InstallerWizardView: View {
                     .padding(.horizontal, 32)
                     .padding(.vertical, 18)
             }
+        }
         }
     }
 
@@ -207,19 +233,40 @@ struct InstallerWizardView: View {
 
     private var navigation: some View {
         HStack {
-            Button("Terug") {
-                viewModel.goBack()
-            }
-            .disabled(!viewModel.state.canGoBack)
+            if let preview = dryRunNavigation {
+                Button("Vorige preview") {
+                    preview.previous()
+                }
+                .disabled(!preview.canGoBack)
 
-            Spacer()
+                Spacer()
 
-            if viewModel.state.step != .summary {
-                Button(viewModel.state.step == .execution ? "Naar samenvatting" : "Volgende") {
-                    viewModel.advance()
+                Text("Fixturesimulatie · mutation_authority=false")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button(preview.canAdvance ? "Volgende preview" : "Laatste preview") {
+                    preview.next()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.state.canAdvance)
+                .disabled(!preview.canAdvance)
+            } else {
+                Button("Terug") {
+                    viewModel.goBack()
+                }
+                .disabled(!viewModel.state.canGoBack)
+
+                Spacer()
+
+                if viewModel.state.step != .summary {
+                    Button(viewModel.state.step == .execution ? "Naar samenvatting" : "Volgende") {
+                        viewModel.advance()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!viewModel.state.canAdvance)
+                }
             }
         }
     }
