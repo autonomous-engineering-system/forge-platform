@@ -48,10 +48,8 @@ final class HTTPSConsensusTrustedClockTests: XCTestCase {
                 first: DateObserver(host: pair.0, result: .success(now)),
                 second: DateObserver(host: pair.1, result: .success(now))
             )
-            XCTAssertEqual(
-                await attester.attestCatalogReadback(readback),
-                .failure(.unavailable)
-            )
+            let result = await attester.attestCatalogReadback(readback)
+            XCTAssertEqual(result, .failure(.unavailable))
         }
     }
 
@@ -69,20 +67,16 @@ final class HTTPSConsensusTrustedClockTests: XCTestCase {
             first: DateObserver(host: "a.example", result: .failure(.unavailable)),
             second: DateObserver(host: "b.example", result: .success(now))
         )
-        XCTAssertEqual(
-            await failed.attestCatalogReadback(readback),
-            .failure(.unavailable)
-        )
+        let failedResult = await failed.attestCatalogReadback(readback)
+        XCTAssertEqual(failedResult, .failure(.unavailable))
 
         let skewed = HTTPSConsensusTrustedCompositionCatalogClockAttester(
             first: DateObserver(host: "a.example", result: .success(now)),
             second: DateObserver(host: "b.example", result: .success(now.addingTimeInterval(31))),
             maximumSkew: 30
         )
-        XCTAssertEqual(
-            await skewed.attestCatalogReadback(readback),
-            .failure(.unavailable)
-        )
+        let skewedResult = await skewed.attestCatalogReadback(readback)
+        XCTAssertEqual(skewedResult, .failure(.unavailable))
     }
 }
 
