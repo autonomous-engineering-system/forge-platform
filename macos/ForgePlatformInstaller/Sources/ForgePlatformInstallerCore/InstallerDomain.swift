@@ -1113,7 +1113,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         }
         return try? InstallerCompositionRequest(
             componentIdentities: Set(componentSelection.selected.map(\.rawValue)),
-            installedCompositionID: target.compositionIdentity?.compositionID
+            installedComposition: target.compositionIdentity
         )
     }
 
