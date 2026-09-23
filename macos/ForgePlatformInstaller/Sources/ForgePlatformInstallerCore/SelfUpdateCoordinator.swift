@@ -507,6 +507,26 @@ public enum InstallerSelfUpdateEnforcementResult: Equatable, Sendable {
     case failed(String)
 }
 
+public protocol ProviderActionCoordinating: Sendable {
+    func performProviderAction(
+        _ action: ProviderAction,
+        for requirement: ProviderRequirement
+    ) async -> ProviderActionResult
+}
+
+public struct UnavailableProviderActionCoordinator: ProviderActionCoordinating {
+    public init() {}
+
+    public func performProviderAction(
+        _ action: ProviderAction,
+        for requirement: ProviderRequirement
+    ) async -> ProviderActionResult {
+        _ = action
+        _ = requirement
+        return .failed(.coordinatorUnavailable)
+    }
+}
+
 /// Native shell coordinator for the Universal Installer's own update lifecycle.
 /// It has no product-component, venv, migration, service, provider, or database
 /// authority.  Every collaborator is injected so the security-sensitive native
@@ -523,6 +543,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     /// self-update.  The default is fail-closed until a later increment adds a
     /// reviewed catalog trust policy and native verifier.
     private let compositionSessionPreparer: any VerifiedCompositionSessionPreparing
+    private let providerCoordinator: any ProviderActionCoordinating
 
     private var pendingUpdate: PendingUpdate?
     /// A release record observed during an update check is not yet authority
@@ -553,7 +574,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         atomicHandoff: any InstallerAtomicHandoffPerforming,
         recoveryStore: any InstallerSelfUpdateRecoveryStoring,
         operationLock: any InstallerSelfUpdateOperationLocking,
-        compositionSessionPreparer: any VerifiedCompositionSessionPreparing = UnavailableVerifiedCompositionSessionPreparer()
+        compositionSessionPreparer: any VerifiedCompositionSessionPreparing = UnavailableVerifiedCompositionSessionPreparer(),
+        providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator()
     ) {
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
@@ -563,6 +585,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.recoveryStore = recoveryStore
         self.operationLock = operationLock
         self.compositionSessionPreparer = compositionSessionPreparer
+        self.providerCoordinator = providerCoordinator
     }
 
     public func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
@@ -1034,10 +1057,23 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         }
     }
 
-    /// Provider workflows are intentionally not folded into installer self
-    /// update.  The shell's separate bounded provider coordinator owns them.
-    public func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult {
-        .failed("Geen provider-coördinator gekoppeld voor \(provider.displayName).")
+    /// Provider workflows remain a separately injected authority. Legacy
+    /// targetless composition/v1 requests stay unavailable in the production
+    /// managed-deployment path.
+    public func performProviderAction(
+        _ action: ProviderAction,
+        for provider: ProviderID
+    ) async -> ProviderActionResult {
+        _ = action
+        _ = provider
+        return .failed(.coordinatorUnavailable)
+    }
+
+    public func performProviderAction(
+        _ action: ProviderAction,
+        for requirement: ProviderRequirement
+    ) async -> ProviderActionResult {
+        await providerCoordinator.performProviderAction(action, for: requirement)
     }
 
     private func hasExpectedApplicationIdentity(
