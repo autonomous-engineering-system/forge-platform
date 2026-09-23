@@ -1,5 +1,38 @@
 import Foundation
 
+public struct ManagedDeploymentCompositionIdentity: Equatable, Hashable, Sendable {
+    public let compositionID: String
+    public let manifestSHA256: String
+    public let compositionCatalogSequence: UInt64
+    public let compositionCatalogSHA256: String
+    public let componentCatalogSequence: UInt64
+    public let componentCatalogSHA256: String
+
+    public init(
+        compositionID: String,
+        manifestSHA256: String,
+        compositionCatalogSequence: UInt64,
+        compositionCatalogSHA256: String,
+        componentCatalogSequence: UInt64,
+        componentCatalogSHA256: String
+    ) throws {
+        guard CompositionCatalogValidation.isCompositionIdentity(compositionID),
+              CompositionCatalogValidation.isTaggedSHA256(manifestSHA256),
+              compositionCatalogSequence > 0,
+              CompositionCatalogValidation.isTaggedSHA256(compositionCatalogSHA256),
+              componentCatalogSequence > 0,
+              CompositionCatalogValidation.isTaggedSHA256(componentCatalogSHA256) else {
+            throw ManagedDeploymentTargetError.invalidCompositionIdentity
+        }
+        self.compositionID = compositionID
+        self.manifestSHA256 = manifestSHA256
+        self.compositionCatalogSequence = compositionCatalogSequence
+        self.compositionCatalogSHA256 = compositionCatalogSHA256
+        self.componentCatalogSequence = componentCatalogSequence
+        self.componentCatalogSHA256 = componentCatalogSHA256
+    }
+}
+
 /// Read-only Forge Platform management identity shown before composition
 /// selection. Product instance identities remain product-owned; this target
 /// contains only bounded non-secret inventory evidence.
@@ -9,13 +42,15 @@ public struct ManagedDeploymentTarget: Equatable, Hashable, Sendable, Identifiab
     public let exists: Bool
     public let forgeInstanceID: String?
     public let engineeringPlatformInstanceID: String?
+    public let compositionIdentity: ManagedDeploymentCompositionIdentity?
 
     public init(
         id: String,
         label: String? = nil,
         exists: Bool,
         forgeInstanceID: String? = nil,
-        engineeringPlatformInstanceID: String? = nil
+        engineeringPlatformInstanceID: String? = nil,
+        compositionIdentity: ManagedDeploymentCompositionIdentity? = nil
     ) throws {
         guard Self.isSafeIdentifier(id) else {
             throw ManagedDeploymentTargetError.invalidIdentity
@@ -37,7 +72,11 @@ public struct ManagedDeploymentTarget: Equatable, Hashable, Sendable, Identifiab
         if exists && forgeInstanceID == nil && engineeringPlatformInstanceID == nil {
             throw ManagedDeploymentTargetError.emptyExistingDeployment
         }
-        if !exists && (forgeInstanceID != nil || engineeringPlatformInstanceID != nil) {
+        if !exists && (
+            forgeInstanceID != nil
+            || engineeringPlatformInstanceID != nil
+            || compositionIdentity != nil
+        ) {
             throw ManagedDeploymentTargetError.precreateTargetContainsProductIdentity
         }
         self.id = id
@@ -45,6 +84,7 @@ public struct ManagedDeploymentTarget: Equatable, Hashable, Sendable, Identifiab
         self.exists = exists
         self.forgeInstanceID = forgeInstanceID
         self.engineeringPlatformInstanceID = engineeringPlatformInstanceID
+        self.compositionIdentity = compositionIdentity
     }
 
     public var displayName: String {
@@ -85,6 +125,7 @@ public enum ManagedDeploymentTargetError: Error, Equatable, Sendable {
     case invalidProductInstance
     case emptyExistingDeployment
     case precreateTargetContainsProductIdentity
+    case invalidCompositionIdentity
 }
 
 /// Exact read-only inventory supplied by the trusted Forge Platform
