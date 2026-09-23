@@ -48,6 +48,8 @@ from .macos_platform_contract import (
 INSTALLER_RELEASE_SCHEMA = "forge-platform.installer-release/v1"
 COMPOSITION_CATALOG_SCHEMA = "forge-platform.composition-catalog/v1"
 COMPOSITION_SCHEMA = "forge-platform.composition/v1"
+COMPOSITION_SCHEMA_V2 = "forge-platform.composition/v2"
+COMPOSITION_SCHEMAS = frozenset({COMPOSITION_SCHEMA, COMPOSITION_SCHEMA_V2})
 INSTALLER_CHANNELS = frozenset({"stable", "candidate"})
 SUPPORTED_MACOS_ARCHITECTURES = INSTALLER_ARCHITECTURES
 # Host observations retain Intel as an explicit negative input so preflight can
@@ -62,6 +64,10 @@ MANAGED_PYTHON_BUILD_VARIANT = "standard-gil"
 MANAGED_PYTHON_ARTIFACT_KIND = "forge-platform-managed-python-runtime-archive-v1"
 MANAGED_PYTHON_ROOT_IDENTITY = "forge-platform-managed-python-v1"
 PROVIDER_IDENTITIES = frozenset({"codex", "github-cli"})
+PROVIDER_CREDENTIAL_SCOPES = frozenset({"user", "component"})
+PROVIDER_OWNER_COMPONENTS = frozenset({
+    "forge-runtime", "engineering-platform-server", "engineering-platform-project-agent",
+})
 PROVIDER_STATES = frozenset({"ABSENT", "INSTALLED", "AUTHENTICATION_REQUIRED", "VERIFIED", "FAILED"})
 TOOL_STATES = frozenset({"ABSENT", "ACTIVE", "UNKNOWN"})
 SERVICE_COMPONENTS = frozenset({"forge-runtime", "workspace-server", "engineering-platform-server"})
@@ -2001,53 +2007,123 @@ def plan_managed_python_runtime(
     )
 
 
+def _provider_binding_key(identity: str, owner_component: str | None, target_identity: str | None) -> str:
+    if owner_component is None and target_identity is None:
+        return identity
+    if owner_component is None or target_identity is None:
+        raise ValueError("provider target requires owner_component and target_identity together")
+    return f"{identity}:{owner_component}:{target_identity}"
+
+
+def _validate_provider_target(
+    identity: str,
+    credential_scope: str,
+    owner_component: str | None,
+    target_identity: str | None,
+) -> None:
+    if identity not in PROVIDER_IDENTITIES:
+        raise ValueError("provider identity is unsupported")
+    if credential_scope not in PROVIDER_CREDENTIAL_SCOPES:
+        raise ValueError("provider credential_scope is unsupported")
+    if owner_component is None and target_identity is None:
+        if credential_scope != "user":
+            raise ValueError("legacy provider credentials must remain user-scoped")
+        return
+    if owner_component not in PROVIDER_OWNER_COMPONENTS:
+        raise ValueError("provider owner_component is unsupported")
+    if not isinstance(target_identity, str) or _SAFE_TARGET_ID.fullmatch(target_identity) is None:
+        raise ValueError("provider target_identity must be a safe opaque identifier")
+    expected_scope = (
+        "user"
+        if owner_component == "engineering-platform-project-agent"
+        else "component"
+    )
+    if credential_scope != expected_scope:
+        raise ValueError(
+            f"provider target {owner_component} requires {expected_scope}-owned credentials"
+        )
+
+
 @dataclass(frozen=True)
 class ProviderRequirement:
-    """A user-scoped provider requirement, never a service-account credential request."""
+    """One provider requirement bound to its owning component-instance target.
+
+    Legacy composition/v1 requirements omit the target and remain user-scoped.
+    composition/v2 requirements identify an owning component plus an immutable
+    target binding so the same human provider can back multiple isolated
+    runtime/auth contexts without conflating them.
+    """
 
     identity: str
     required: bool
     minimum_version: SemanticVersion | None
     credential_scope: str = "user"
+    owner_component: str | None = None
+    target_identity: str | None = None
 
     def __post_init__(self) -> None:
-        if self.identity not in PROVIDER_IDENTITIES:
-            raise ValueError("provider identity is unsupported")
+        _validate_provider_target(
+            self.identity, self.credential_scope, self.owner_component, self.target_identity
+        )
         if not isinstance(self.required, bool):
             raise ValueError("provider required must be boolean")
         if self.minimum_version is not None and not isinstance(self.minimum_version, SemanticVersion):
             raise ValueError("provider minimum version must be semantic")
-        if self.credential_scope != "user":
-            raise ValueError("provider credentials must remain user-scoped")
+
+    @property
+    def key(self) -> str:
+        return _provider_binding_key(self.identity, self.owner_component, self.target_identity)
 
 
 @dataclass(frozen=True)
 class ProviderSelection:
     identity: str
     enabled: bool
+    owner_component: str | None = None
+    target_identity: str | None = None
 
     def __post_init__(self) -> None:
         if self.identity not in PROVIDER_IDENTITIES:
             raise ValueError("provider selection identity is unsupported")
         if not isinstance(self.enabled, bool):
             raise ValueError("provider selection enabled must be boolean")
+        if (self.owner_component is None) != (self.target_identity is None):
+            raise ValueError("provider selection target is incomplete")
+        if self.owner_component is not None:
+            if self.owner_component not in PROVIDER_OWNER_COMPONENTS:
+                raise ValueError("provider selection owner_component is unsupported")
+            if not isinstance(self.target_identity, str) or _SAFE_TARGET_ID.fullmatch(self.target_identity) is None:
+                raise ValueError("provider selection target_identity is invalid")
+
+    @property
+    def key(self) -> str:
+        return _provider_binding_key(self.identity, self.owner_component, self.target_identity)
 
 
 @dataclass(frozen=True)
 class ProviderReadback:
-    """Non-secret provider evidence; executable and credential paths stay private."""
+    """Non-secret provider evidence for one exact owning target."""
 
     identity: str
     state: str
     version: SemanticVersion | None
     executable_identity: str | None
     evidence_reference: str
+    owner_component: str | None = None
+    target_identity: str | None = None
 
     def __post_init__(self) -> None:
         if self.identity not in PROVIDER_IDENTITIES:
             raise ValueError("provider identity is unsupported")
         if self.state not in PROVIDER_STATES:
             raise ValueError("provider state is unsupported")
+        if (self.owner_component is None) != (self.target_identity is None):
+            raise ValueError("provider readback target is incomplete")
+        if self.owner_component is not None:
+            if self.owner_component not in PROVIDER_OWNER_COMPONENTS:
+                raise ValueError("provider readback owner_component is unsupported")
+            if not isinstance(self.target_identity, str) or _SAFE_TARGET_ID.fullmatch(self.target_identity) is None:
+                raise ValueError("provider readback target_identity is invalid")
         _required(self.evidence_reference, "provider evidence_reference")
         if self.state == "VERIFIED":
             if not isinstance(self.version, SemanticVersion):
@@ -2056,6 +2132,10 @@ class ProviderReadback:
         elif self.executable_identity is not None:
             _required(self.executable_identity, "provider executable_identity")
 
+    @property
+    def key(self) -> str:
+        return _provider_binding_key(self.identity, self.owner_component, self.target_identity)
+
 
 @dataclass(frozen=True)
 class ProviderAction:
@@ -2063,35 +2143,43 @@ class ProviderAction:
     action: str
     reason: str
     readback: ProviderReadback | None
+    owner_component: str | None = None
+    target_identity: str | None = None
 
     def __post_init__(self) -> None:
         if self.identity not in PROVIDER_IDENTITIES:
             raise ValueError("provider action identity is unsupported")
         if self.action not in {"INSTALL", "AUTHENTICATE", "VERIFY", "NO_CHANGE", "RESOLVE_FAILURE"}:
             raise ValueError("provider action is unsupported")
+        if (self.owner_component is None) != (self.target_identity is None):
+            raise ValueError("provider action target is incomplete")
         _required(self.reason, "provider action reason")
-        if self.readback is not None and self.readback.identity != self.identity:
-            raise ValueError("provider action readback identity mismatch")
+        if self.readback is not None and self.readback.key != self.key:
+            raise ValueError("provider action readback target mismatch")
+
+    @property
+    def key(self) -> str:
+        return _provider_binding_key(self.identity, self.owner_component, self.target_identity)
 
 
 @dataclass(frozen=True)
 class ProviderGate:
-    """The wizard may advance only when every enabled requirement is verified."""
+    """The wizard advances only when every enabled provider target is verified."""
 
     required: tuple[str, ...]
     actions: tuple[ProviderAction, ...]
     blocking_providers: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if len(set(self.required)) != len(self.required) or any(item not in PROVIDER_IDENTITIES for item in self.required):
-            raise ValueError("provider gate requirements are invalid")
-        action_ids = tuple(action.identity for action in self.actions)
+        if len(set(self.required)) != len(self.required):
+            raise ValueError("provider gate requirements are duplicated")
+        action_ids = tuple(action.key for action in self.actions)
         if len(set(action_ids)) != len(action_ids):
             raise ValueError("provider gate actions are duplicated")
         if tuple(sorted(self.blocking_providers)) != self.blocking_providers:
             raise ValueError("provider gate blockers must be sorted")
         if not set(self.blocking_providers) <= set(self.required):
-            raise ValueError("provider gate blockers must be required providers")
+            raise ValueError("provider gate blockers must be required provider targets")
 
     @property
     def permits_platform_mutation(self) -> bool:
@@ -2123,51 +2211,72 @@ def evaluate_provider_gate(
     selections: Mapping[str, ProviderSelection],
     readbacks: Mapping[str, ProviderReadback],
 ) -> ProviderGate:
-    """Model the dynamic Add Provider page without storing any credential."""
+    """Evaluate exact provider targets without storing or interpreting credentials."""
 
     requirements_by_id: dict[str, ProviderRequirement] = {}
     for requirement in requirements:
         if not isinstance(requirement, ProviderRequirement):
             raise ValueError("provider requirements are invalid")
-        if requirement.identity in requirements_by_id:
-            raise ValueError("provider requirements contain a duplicate identity")
-        requirements_by_id[requirement.identity] = requirement
+        if requirement.key in requirements_by_id:
+            raise ValueError("provider requirements contain a duplicate target binding")
+        requirements_by_id[requirement.key] = requirement
     if set(selections) - set(requirements_by_id) or set(readbacks) - set(requirements_by_id):
         raise ValueError("provider selections/readbacks must belong to the composition requirements")
     actions: list[ProviderAction] = []
     blocking: list[str] = []
     enabled_requirements: list[str] = []
-    for identity in sorted(requirements_by_id):
-        requirement = requirements_by_id[identity]
-        selection = selections.get(identity, ProviderSelection(identity, requirement.required))
-        if not isinstance(selection, ProviderSelection) or selection.identity != identity:
+    for key in sorted(requirements_by_id):
+        requirement = requirements_by_id[key]
+        selection = selections.get(
+            key,
+            ProviderSelection(
+                requirement.identity,
+                requirement.required,
+                requirement.owner_component,
+                requirement.target_identity,
+            ),
+        )
+        if not isinstance(selection, ProviderSelection) or selection.key != key:
             raise ValueError("provider selection is invalid")
         if requirement.required and not selection.enabled:
-            raise UniversalInstallerError(f"required provider {identity} cannot be deselected")
+            raise UniversalInstallerError(f"required provider target {key} cannot be deselected")
         if not selection.enabled:
             continue
-        enabled_requirements.append(identity)
-        readback = readbacks.get(identity)
+        enabled_requirements.append(key)
+        readback = readbacks.get(key)
+        action_args = (requirement.owner_component, requirement.target_identity)
         if readback is None:
-            actions.append(ProviderAction(identity, "INSTALL", "provider has not been inventoried", None))
-            blocking.append(identity)
+            actions.append(ProviderAction(
+                requirement.identity, "INSTALL", "provider target has not been inventoried", None, *action_args
+            ))
+            blocking.append(key)
             continue
-        if not isinstance(readback, ProviderReadback) or readback.identity != identity:
+        if not isinstance(readback, ProviderReadback) or readback.key != key:
             raise ValueError("provider readback is invalid")
         if readback.state == "ABSENT":
-            actions.append(ProviderAction(identity, "INSTALL", "provider is absent", readback))
-            blocking.append(identity)
+            actions.append(ProviderAction(
+                requirement.identity, "INSTALL", "provider target is absent", readback, *action_args
+            ))
+            blocking.append(key)
         elif readback.state in {"INSTALLED", "AUTHENTICATION_REQUIRED"}:
-            actions.append(ProviderAction(identity, "AUTHENTICATE", "provider authentication is required", readback))
-            blocking.append(identity)
+            actions.append(ProviderAction(
+                requirement.identity, "AUTHENTICATE", "provider target authentication is required", readback, *action_args
+            ))
+            blocking.append(key)
         elif readback.state == "FAILED":
-            actions.append(ProviderAction(identity, "RESOLVE_FAILURE", "provider validation failed", readback))
-            blocking.append(identity)
+            actions.append(ProviderAction(
+                requirement.identity, "RESOLVE_FAILURE", "provider target validation failed", readback, *action_args
+            ))
+            blocking.append(key)
         elif requirement.minimum_version is not None and readback.version < requirement.minimum_version:
-            actions.append(ProviderAction(identity, "INSTALL", "provider is older than the qualified minimum", readback))
-            blocking.append(identity)
+            actions.append(ProviderAction(
+                requirement.identity, "INSTALL", "provider target is older than the qualified minimum", readback, *action_args
+            ))
+            blocking.append(key)
         else:
-            actions.append(ProviderAction(identity, "NO_CHANGE", "provider is installed and authenticated", readback))
+            actions.append(ProviderAction(
+                requirement.identity, "NO_CHANGE", "provider target is installed and authenticated", readback, *action_args
+            ))
     return ProviderGate(tuple(enabled_requirements), tuple(actions), tuple(sorted(blocking)))
 
 
@@ -2279,9 +2388,9 @@ class CompositionManifest:
                 raise ValueError(f"composition {label} contain duplicate identities")
         if any(not isinstance(provider, ProviderRequirement) for provider in self.providers):
             raise ValueError("composition providers are invalid")
-        provider_identities = [provider.identity for provider in self.providers]
-        if len(provider_identities) != len(set(provider_identities)):
-            raise ValueError("composition providers contain duplicate identities")
+        provider_bindings = [provider.key for provider in self.providers]
+        if len(provider_bindings) != len(set(provider_bindings)):
+            raise ValueError("composition providers contain duplicate target bindings")
         service_references = [
             component.service.product_service_reference
             for component in self.components
@@ -2348,7 +2457,8 @@ class CompositionManifest:
             frozenset({"schema", "composition_id", "channel", "requires_installer", "host_requirements", "managed_tools", "python_runtime", "product_venvs", "providers", "components", "upgrade_from"}),
             "composition manifest",
         )
-        if payload["schema"] != COMPOSITION_SCHEMA:
+        manifest_schema = payload["schema"]
+        if manifest_schema not in COMPOSITION_SCHEMAS:
             raise UniversalInstallerError("composition manifest schema is unsupported")
         installer = _mapping(payload["requires_installer"], frozenset({"minimum_version", "capabilities"}), "installer requirement")
         capabilities = installer["capabilities"]
@@ -2383,7 +2493,7 @@ class CompositionManifest:
             managed_tools=_parse_managed_tools(payload["managed_tools"]),
             python_runtime=ManagedPythonRuntimeIdentity.from_mapping(payload["python_runtime"]),
             product_venvs=_parse_product_venvs(payload["product_venvs"]),
-            providers=_parse_providers(payload["providers"]),
+            providers=_parse_providers(payload["providers"], schema=manifest_schema),
             components=_parse_components(payload["components"]),
             upgrade_from=tuple(
                 _composition_catalog_id(identity, "composition upgrade_from")
@@ -2436,18 +2546,40 @@ def _parse_product_venvs(value: object) -> tuple[ProductVenvRequirement, ...]:
     return tuple(result)
 
 
-def _parse_providers(value: object) -> tuple[ProviderRequirement, ...]:
+def _parse_providers(value: object, *, schema: str = COMPOSITION_SCHEMA) -> tuple[ProviderRequirement, ...]:
     if not isinstance(value, list):
         raise ValueError("providers must be a list")
     result = []
     for entry in value:
-        item = _mapping(entry, frozenset({"identity", "required", "minimum_version", "credential_scope"}), "provider")
+        if schema == COMPOSITION_SCHEMA:
+            item = _mapping(
+                entry,
+                frozenset({"identity", "required", "minimum_version", "credential_scope"}),
+                "provider",
+            )
+            owner_component = None
+            target_identity = None
+        elif schema == COMPOSITION_SCHEMA_V2:
+            item = _mapping(
+                entry,
+                frozenset({
+                    "identity", "required", "minimum_version", "credential_scope",
+                    "owner_component", "target_identity",
+                }),
+                "provider",
+            )
+            owner_component = _required(item["owner_component"], "provider owner_component")
+            target_identity = _required(item["target_identity"], "provider target_identity")
+        else:
+            raise ValueError("provider schema is unsupported")
         version = item["minimum_version"]
         result.append(ProviderRequirement(
             _required(item["identity"], "provider identity"),
             _boolean(item["required"], "provider required"),
             None if version is None else SemanticVersion.parse(version, "provider minimum_version"),
             _required(item["credential_scope"], "provider credential_scope"),
+            owner_component,
+            target_identity,
         ))
     return tuple(result)
 
