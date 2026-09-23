@@ -697,6 +697,7 @@ public struct HostPreflight: Equatable, Sendable {
 public enum ComponentChange: String, Equatable, Sendable {
     case install
     case update
+    case repair
     case retain
     case remove
     case blocked
@@ -707,6 +708,8 @@ public enum ComponentChange: String, Equatable, Sendable {
             return "Installeren"
         case .update:
             return "Bijwerken"
+        case .repair:
+            return "Herstellen"
         case .retain:
             return "Behouden"
         case .remove:
