@@ -73,6 +73,7 @@ struct ManagedCompositionSessionPlanBuilder {
                 compositionCatalog: compositionCatalogIdentity,
                 componentCombinationCatalog: componentCombinationCatalogIdentity,
                 componentSelectionSequence: selectedEntry.selectionSequence,
+                componentIdentities: selectedEntry.componentIdentities,
                 providerRequirements: requirements
             )
             guard currentInstaller.accepts(plan) else {
