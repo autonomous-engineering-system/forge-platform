@@ -185,6 +185,63 @@ public enum ProviderOwnerComponent: String, CaseIterable, Codable, Equatable, Ha
     }
 }
 
+public enum ProviderRuntimeArchiveKind: String, Codable, Equatable, Hashable, Sendable {
+    case tarGzip = "tar.gz"
+    case zip
+}
+
+public struct ProviderRuntimeRequirement: Equatable, Sendable {
+    public let version: InstallerVersion
+    public let archiveKind: ProviderRuntimeArchiveKind
+    public let artifactURL: String
+    public let artifactSHA256: String
+    public let executableRelativePath: String
+    public let executableSHA256: String
+
+    public init(
+        version: InstallerVersion,
+        archiveKind: ProviderRuntimeArchiveKind,
+        artifactURL: String,
+        artifactSHA256: String,
+        executableRelativePath: String,
+        executableSHA256: String
+    ) throws {
+        guard GitHubInstallerReleaseDescriptorValidation.isHTTPSURL(artifactURL),
+              GitHubInstallerReleaseDescriptorValidation.isSHA256(artifactSHA256),
+              GitHubInstallerReleaseDescriptorValidation.isSHA256(executableSHA256),
+              Self.isSafeRelativeExecutablePath(executableRelativePath) else {
+            throw ProviderRuntimeRequirementError.invalid
+        }
+        self.version = version
+        self.archiveKind = archiveKind
+        self.artifactURL = artifactURL
+        self.artifactSHA256 = artifactSHA256
+        self.executableRelativePath = executableRelativePath
+        self.executableSHA256 = executableSHA256
+    }
+
+    private static func isSafeRelativeExecutablePath(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 256 else { return false }
+        let segments = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard !segments.isEmpty else { return false }
+        return segments.allSatisfy { segment in
+            guard segment != ".", segment != "..", !segment.isEmpty else { return false }
+            return segment.unicodeScalars.allSatisfy { scalar in
+                switch scalar.value {
+                case 45, 46, 95, 48...57, 65...90, 97...122:
+                    return true
+                default:
+                    return false
+                }
+            }
+        }
+    }
+}
+
+public enum ProviderRuntimeRequirementError: Error, Equatable, Sendable {
+    case invalid
+}
+
 public struct ProviderRequirement: Equatable, Sendable, Identifiable {
     public let provider: ProviderID
     public let isRequired: Bool
@@ -194,9 +251,11 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
     public let credentialScope: ProviderCredentialScope
     /// Targetless requirements are legacy composition/v1 user requirements.
     /// v2 server requirements bind the provider to exactly one owning product
-    /// instance (or immutable pre-create target binding).
+    /// instance (or immutable pre-create target binding). v3 additionally
+    /// binds the exact provider CLI archive and extracted executable digest.
     public let ownerComponent: ProviderOwnerComponent?
     public let targetIdentity: String?
+    public let runtime: ProviderRuntimeRequirement?
 
     public var id: ProviderTargetID {
         if let ownerComponent, let targetIdentity {
@@ -213,7 +272,8 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
         minimumVersion: InstallerVersion? = nil,
         credentialScope: ProviderCredentialScope = .user,
         ownerComponent: ProviderOwnerComponent? = nil,
-        targetIdentity: String? = nil
+        targetIdentity: String? = nil,
+        runtime: ProviderRuntimeRequirement? = nil
     ) {
         precondition((ownerComponent == nil) == (targetIdentity == nil), "provider target must be complete")
         if let ownerComponent, let targetIdentity {
@@ -239,9 +299,16 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
         self.provider = provider
         self.isRequired = isRequired
         self.minimumVersion = minimumVersion
+        if let runtime, let minimumVersion {
+            precondition(
+                runtime.version >= minimumVersion,
+                "provider runtime is older than the minimum version"
+            )
+        }
         self.credentialScope = credentialScope
         self.ownerComponent = ownerComponent
         self.targetIdentity = targetIdentity
+        self.runtime = runtime
     }
 }
 
