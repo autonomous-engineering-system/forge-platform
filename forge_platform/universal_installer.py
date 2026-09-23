@@ -2023,12 +2023,12 @@ def _validate_provider_target(
 ) -> None:
     if identity not in PROVIDER_IDENTITIES:
         raise ValueError("provider identity is unsupported")
-    if credential_scope not in PROVIDER_CREDENTIAL_SCOPES:
-        raise ValueError("provider credential_scope is unsupported")
     if owner_component is None and target_identity is None:
         if credential_scope != "user":
-            raise ValueError("legacy provider credentials must remain user-scoped")
+            raise ValueError("provider credentials must remain user-scoped")
         return
+    if credential_scope not in PROVIDER_CREDENTIAL_SCOPES:
+        raise ValueError("provider credential_scope is unsupported")
     if owner_component not in PROVIDER_OWNER_COMPONENTS:
         raise ValueError("provider owner_component is unsupported")
     if not isinstance(target_identity, str) or _SAFE_TARGET_ID.fullmatch(target_identity) is None:
