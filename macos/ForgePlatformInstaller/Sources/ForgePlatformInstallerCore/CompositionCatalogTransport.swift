@@ -210,6 +210,112 @@ struct CompositionCatalogByteAccumulator {
     }
 }
 
+
+
+protocol CompositionDocumentFetching: Sendable {
+    func fetchDocument(
+        at locator: VerifiedCompositionCatalogDocumentLocator
+    ) async -> Result<Data, CompositionDocumentTransportFailure>
+}
+
+enum CompositionDocumentTransportFailure: Error, Equatable, Sendable {
+    case unavailable
+}
+
+/// Bounded credential-free transport for an exact digest-pinned index/manifest
+/// locator that already crossed a signed catalog boundary. Redirects are
+/// rejected because the locator itself is immutable signed metadata.
+final class HTTPSCompositionDocumentTransport: NSObject, CompositionDocumentFetching, @unchecked Sendable {
+    private let timeout: TimeInterval
+    private let protocolClassesForTesting: [AnyClass]
+
+    init(timeout: TimeInterval = 20) {
+        self.timeout = Self.boundedTimeout(timeout)
+        protocolClassesForTesting = []
+        super.init()
+    }
+
+    init(timeout: TimeInterval = 20, protocolClassesForTesting: [AnyClass]) {
+        self.timeout = Self.boundedTimeout(timeout)
+        self.protocolClassesForTesting = protocolClassesForTesting
+        super.init()
+    }
+
+    func fetchDocument(
+        at locator: VerifiedCompositionCatalogDocumentLocator
+    ) async -> Result<Data, CompositionDocumentTransportFailure> {
+        guard let endpoint = Self.url(for: locator) else {
+            return .failure(.unavailable)
+        }
+        do {
+            let delegate = CompositionCatalogRedirectDelegate()
+            let session = URLSession(
+                configuration: makeEphemeralConfiguration(),
+                delegate: delegate,
+                delegateQueue: nil
+            )
+            defer { session.invalidateAndCancel() }
+            let (stream, response) = try await session.bytes(
+                for: CompositionCatalogTransportEndpoint.request(for: endpoint, timeout: timeout)
+            )
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200,
+                  httpResponse.url?.absoluteString == locator.url,
+                  CompositionCatalogTransportEndpoint.contentLength(
+                    from: httpResponse,
+                    isAtMost: CompositionCatalogFeedReadback.maximumCatalogBytes
+                  ) else {
+                throw CompositionCatalogTransportError.invalidResponse
+            }
+            var accumulator = try CompositionCatalogByteAccumulator(
+                maximumBytes: CompositionCatalogFeedReadback.maximumCatalogBytes
+            )
+            for try await byte in stream {
+                try accumulator.append(byte)
+            }
+            return .success(try accumulator.finish())
+        } catch {
+            return .failure(.unavailable)
+        }
+    }
+
+    private func makeEphemeralConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCache = nil
+        configuration.urlCredentialStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        if !protocolClassesForTesting.isEmpty {
+            configuration.protocolClasses = protocolClassesForTesting
+        }
+        return configuration
+    }
+
+    private static func url(
+        for locator: VerifiedCompositionCatalogDocumentLocator
+    ) -> URL? {
+        guard CompositionCatalogValidation.isCanonicalHTTPSURL(locator.url),
+              let url = URL(string: locator.url),
+              url.absoluteString == locator.url,
+              url.scheme?.lowercased() == "https",
+              url.host?.isEmpty == false,
+              url.user == nil,
+              url.password == nil,
+              url.port == nil || url.port == 443 else {
+            return nil
+        }
+        return url
+    }
+
+    private static func boundedTimeout(_ value: TimeInterval) -> TimeInterval {
+        min(max(value, 5), 60)
+    }
+}
+
+
 /// Any redirect is a different network authority/URL from the exact sealed
 /// locator. System TLS handling remains enabled, but every credential-bearing
 /// authentication challenge is cancelled.
