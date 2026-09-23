@@ -101,6 +101,21 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func advance() {
+        if state.step == .review {
+            guard state.beginPreMutationCurrencyCheck() else { return }
+            let currentVersion = state.currentInstallerVersion
+            let coordinator = coordinator
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let result = await coordinator.recheckInstallerBeforeMutation(
+                    currentVersion: currentVersion
+                )
+                if self.state.recordPreMutationCurrencyCheck(result) {
+                    _ = self.state.advance()
+                }
+            }
+            return
+        }
         _ = state.advance()
     }
 
@@ -189,13 +204,33 @@ struct InstallerWizardView: View {
             Spacer()
 
             if viewModel.state.step != .summary {
-                Button(viewModel.state.step == .execution ? "Naar samenvatting" : "Volgende") {
+                Button(primaryActionTitle) {
                     viewModel.advance()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.state.canAdvance)
+                .disabled(primaryActionDisabled)
             }
         }
+    }
+
+    private var primaryActionTitle: String {
+        switch viewModel.state.step {
+        case .review:
+            return viewModel.state.preMutationCurrency.isChecking
+                ? "Installer opnieuw controleren…"
+                : "Controleer en voer uit"
+        case .execution:
+            return "Naar samenvatting"
+        default:
+            return "Volgende"
+        }
+    }
+
+    private var primaryActionDisabled: Bool {
+        if viewModel.state.step == .review {
+            return !viewModel.state.canBeginPreMutationCurrencyCheck
+        }
+        return !viewModel.state.canAdvance
     }
 }
 
@@ -649,6 +684,28 @@ private struct CompositionReviewScreen: View {
                 )
             )
             .disabled(!isCompatible(viewModel.state.composition.status))
+
+            switch viewModel.state.preMutationCurrency {
+            case .pending:
+                Text("Vlak vóór uitvoering wordt de signed installer-release opnieuw gecontroleerd.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .checking:
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Installer-release opnieuw controleren…")
+                }
+                .font(.caption)
+            case .current(let release):
+                Label(
+                    "Installer \(release.version.description) is direct vóór uitvoering opnieuw geverifieerd.",
+                    systemImage: "checkmark.shield.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.green)
+            case .failed(let reason):
+                FailureCallout(reason: reason)
+            }
         }
         .padding(.top, 12)
     }
