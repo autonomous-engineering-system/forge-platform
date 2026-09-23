@@ -5,12 +5,12 @@ import ForgePlatformInstallerCore
 @main
 struct ForgePlatformInstallerApp: App {
     @StateObject private var startupModel = InstallerApplicationStartupModel()
-    private let dryRun = CommandLine.arguments.contains("--dry-run")
+    private let launchMode = InstallerLaunchMode(arguments: CommandLine.arguments)
 
     var body: some Scene {
         WindowGroup("Forge Platform Installer") {
             Group {
-                if dryRun {
+                if launchMode == .dryRun {
                     InstallerDryRunRootView()
                 } else {
                     InstallerApplicationRootView(startupModel: startupModel)
