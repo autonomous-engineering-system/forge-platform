@@ -401,7 +401,7 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", hosted)
         self.assertIn(' --base-ref "$COVERAGE_BASE_SHA"', hosted)
 
-    def test_every_privileged_job_has_environment_and_prior_admission(self) -> None:
+    def test_native_mac_workflow_is_non_signing_and_exact_main_only(self) -> None:
         text = (ROOT / ".github/workflows/macos-installer-native-integration.yml").read_text()
         self.assertIn("workflow_dispatch:", text)
         self.assertNotIn("pull_request:", text)
@@ -410,18 +410,18 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn("github.sha == inputs.source_sha", text)
         self.assertIn("github.ref == 'refs/heads/main'", text)
         self.assertIn("runs-on: ubuntu-latest", text)
-        native = text.split("  native-integration:\n", 1)[1].split("  signing-readiness:\n", 1)[0]
-        signing = text.split("  signing-readiness:\n", 1)[1]
+        native = text.split("  native-integration:\n", 1)[1]
         self.assertIn("needs: admission", native)
-        self.assertIn("needs: native-integration", signing)
         self.assertIn("environment:\n      name: forge-platform-installer-integration", native)
-        self.assertIn("environment:\n      name: forge-platform-installer-signing", signing)
-        for job in (native, signing):
-            self.assertIn("persist-credentials: false", job)
-            self.assertIn('test "$SOURCE_SHA" = "$(git rev-parse origin/main)"', job)
+        self.assertIn("persist-credentials: false", native)
+        self.assertIn('test "$SOURCE_SHA" = "$(git rev-parse origin/main)"', native)
         self.assertIn("group: forge-platform-macmini-privileged", text)
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn(' --base-ref "$COVERAGE_BASE_SHA"', native)
+        self.assertNotIn("forge-platform-signer", text)
+        self.assertNotIn("forge-platform-installer-signing", text)
+        self.assertNotIn("FORGE_PLATFORM_CODESIGN_IDENTITY", text)
+        self.assertNotIn("FORGE_PLATFORM_NOTARYTOOL_PROFILE", text)
         self.assertNotIn("continue-on-error", text)
 
 

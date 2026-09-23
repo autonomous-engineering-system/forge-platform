@@ -225,113 +225,18 @@ jobs:
           path: release-input/
           if-no-files-found: error
 
-  sign-notarize-and-qualify:
-    # A workflow approval is deliberately not a substitute for an Apple
-    # Developer ID, notarization credential, descriptor trust root, or exact
-    # signed-release evidence. This protected gate currently fails closed.
+  offline-signing-handoff:
+    name: Require offline Mac mini signer
     if: ${{ inputs.request_publication }}
     needs: [release-context, build-unsigned-app-candidate]
-    runs-on: [self-hosted, macOS, ARM64, forge-platform-signer]
-    environment:
-      name: forge-platform-installer-signing
+    runs-on: macos-26
     permissions:
       contents: read
-    env:
-      FORGE_PLATFORM_APPLE_TEAM_ID: ${{ vars.FORGE_PLATFORM_APPLE_TEAM_ID }}
-      FORGE_PLATFORM_CODESIGN_IDENTITY: ${{ vars.FORGE_PLATFORM_CODESIGN_IDENTITY }}
-      FORGE_PLATFORM_NOTARYTOOL_PROFILE: ${{ vars.FORGE_PLATFORM_NOTARYTOOL_PROFILE }}
-      FORGE_PLATFORM_SIGNER_ACCOUNT: ${{ vars.FORGE_PLATFORM_SIGNER_ACCOUNT }}
-      FORGE_PLATFORM_SIGNER_RUNNER_ROOT: ${{ vars.FORGE_PLATFORM_SIGNER_RUNNER_ROOT }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
-        with:
-          ref: ${{ needs.release-context.outputs.source_sha }}
-          fetch-depth: 0
-      - name: Recheck signer host, exact source and noninteractive Apple credentials
-        env:
-          SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
+      - name: Refuse credential-bearing signing inside GitHub Actions
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
-          bash scripts/ci/verify_macos_signing_runner.sh
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: forge-platform-installer-candidate-${{ needs.release-context.outputs.installer_version }}-${{ needs.release-context.outputs.source_sha }}
-          path: release-input
-      - name: Refuse unsigned candidates before protected signing and notarization
-        run: |
-          set -euo pipefail
-          test -d release-input/ForgePlatformInstaller.app
-          test -f release-input/installer-candidate.json
-          test -f release-input/installer-release-preparation.json
-          test -f "release-input/installer-release-journal/preparations/${{ needs.release-context.outputs.operation_id }}.json"
-          echo 'No protected Apple signing/notarization and descriptor-trust implementation is configured.' >&2
-          echo 'No protected cross-run installer release-operation/sequence store is configured.' >&2
-          echo 'A future protected executor must bind the durable PREPARED candidate to a signed .app archive, signed descriptor, and exact release operation.' >&2
-          exit 1
-
-  verify-signed-evidence-and-publish:
-    # This stage is intentionally unreachable until the preceding protected
-    # signer is implemented. It names the exact evidence handoff expected from
-    # that signer, then still refuses public GitHub publication in source.
-    if: ${{ inputs.request_publication && needs.sign-notarize-and-qualify.result == 'success' }}
-    needs: [release-context, build-unsigned-app-candidate, sign-notarize-and-qualify]
-    runs-on: macos-26
-    environment:
-      name: forge-platform-installer-publication
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
-        with:
-          ref: ${{ needs.release-context.outputs.source_sha }}
-          fetch-depth: 0
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: forge-platform-installer-signed-${{ needs.release-context.outputs.installer_version }}-${{ needs.release-context.outputs.source_sha }}
-          path: signed-release-input
-      - name: Verify exact signed descriptor, archive bytes, and durable operation
-        env:
-          ARCHITECTURE: ${{ needs.build-unsigned-app-candidate.outputs.architecture }}
-          ARCHIVE: ${{ needs.build-unsigned-app-candidate.outputs.archive }}
-          SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
-          OPERATION_ID: ${{ needs.release-context.outputs.operation_id }}
-          INSTALLER_VERSION: ${{ needs.release-context.outputs.installer_version }}
-          CHANNEL: ${{ needs.release-context.outputs.channel }}
-          RELEASE_SEQUENCE: ${{ needs.release-context.outputs.release_sequence }}
-          POLICY_REVISION: ${{ needs.release-context.outputs.policy_revision }}
-          PROVENANCE_SHA256: ${{ needs.release-context.outputs.provenance_sha256 }}
-          RELEASE_TRUST_CONFIGURATION_SHA256: ${{ needs.release-context.outputs.release_trust_configuration_sha256 }}
-          IDENTITY_GITHUB_REPOSITORY: ${{ needs.release-context.outputs.github_repository }}
-          RELEASE_TAG: ${{ needs.release-context.outputs.tag }}
-          BUNDLE_IDENTIFIER: ${{ needs.release-context.outputs.bundle_identifier }}
-          TEAM_IDENTIFIER: ${{ needs.release-context.outputs.team_identifier }}
-          ASSET_PREFIX: ${{ needs.release-context.outputs.asset_prefix }}
-          DESCRIPTOR_ASSET_NAME: ${{ needs.release-context.outputs.descriptor_asset_name }}
-        run: |
-          set -euo pipefail
-          python3 scripts/verify_installer_release_evidence.py \
-            --operation signed-release-input/installer-release-operation.json \
-            --descriptor "signed-release-input/$DESCRIPTOR_ASSET_NAME" \
-            --archive "$ARCHITECTURE=signed-release-input/$ARCHIVE" \
-            --source-sha "$SOURCE_SHA" \
-            --operation-id "$OPERATION_ID" \
-            --installer-version "$INSTALLER_VERSION" \
-            --channel "$CHANNEL" \
-            --release-sequence "$RELEASE_SEQUENCE" \
-            --policy-revision "$POLICY_REVISION" \
-            --provenance-sha256 "$PROVENANCE_SHA256" \
-            --release-trust-configuration-sha256 "$RELEASE_TRUST_CONFIGURATION_SHA256" \
-            --github-repository "$IDENTITY_GITHUB_REPOSITORY" \
-            --release-tag "$RELEASE_TAG" \
-            --descriptor-asset-name "$DESCRIPTOR_ASSET_NAME" \
-            --bundle-identifier "$BUNDLE_IDENTIFIER" \
-            --team-identifier "$TEAM_IDENTIFIER" \
-            --asset-prefix "$ASSET_PREFIX"
-      - name: Refuse public GitHub Release publication until a protected publisher is implemented
-        run: |
-          echo 'The public GitHub Release publisher is intentionally not configured in source.' >&2
-          echo 'No installer artifact, descriptor, or release record was published by this workflow.' >&2
+          echo 'INSTALLER_RELEASE=BLOCKED reason=offline-macmini-signing-required' >&2
+          echo 'This public personal-account repository does not authorize a credential-bearing self-hosted Actions signer.' >&2
+          echo 'Use the reviewed offline signer flow from exact protected main on the dedicated Mac mini signer account.' >&2
           exit 1

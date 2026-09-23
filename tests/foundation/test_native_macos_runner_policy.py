@@ -35,15 +35,12 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", text)
         self.assertNotIn("pull_request:", text)
         self.assertIn("runs-on: [self-hosted, macOS, ARM64, forge-platform-integration]", text)
-        self.assertIn(
-            "runs-on: [self-hosted, macOS, ARM64, forge-platform-signer]",
-            text,
-        )
+        self.assertNotIn("forge-platform-signer", text)
         self.assertIn("forge-platform-installer-integration", text)
         self.assertIn("INTEGRATION_KEYCHAIN_ISOLATION=PASS", text)
         self.assertIn('test "$SOURCE_SHA" = "$(git rev-parse origin/main)"', text)
         self.assertIn("environment:", text)
-        self.assertIn("forge-platform-installer-signing", text)
+        self.assertNotIn("forge-platform-installer-signing", text)
 
     def test_signer_readiness_never_exports_or_dumps_private_key_material(self) -> None:
         text = READINESS.read_text(encoding="utf-8")
@@ -86,20 +83,15 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertIn('integration-and-signer-user-must-differ', text)
         self.assertNotIn("/releases/latest/", text)
 
-    def test_release_workflow_remains_fail_closed_until_signer_wiring_is_replaced(self) -> None:
+    def test_release_workflow_never_allocates_a_credential_bearing_actions_signer(self) -> None:
         text = RELEASE.read_text(encoding="utf-8")
-        # This assertion intentionally prevents the existing explicit blocker
-        # from being removed without a separately reviewed signer implementation.
-        self.assertIn(
-            "runs-on: [self-hosted, macOS, ARM64, forge-platform-signer]",
-            text,
-        )
-        self.assertIn("bash scripts/ci/verify_macos_signing_runner.sh", text)
-        self.assertIn("FORGE_PLATFORM_SIGNER_ACCOUNT", text)
-        self.assertIn(
-            "No protected Apple signing/notarization and descriptor-trust implementation is configured.",
-            text,
-        )
+        self.assertNotIn("forge-platform-signer", text)
+        self.assertNotIn("verify_macos_signing_runner.sh", text)
+        self.assertNotIn("FORGE_PLATFORM_CODESIGN_IDENTITY", text)
+        self.assertNotIn("FORGE_PLATFORM_NOTARYTOOL_PROFILE", text)
+        self.assertIn("offline-signing-handoff:", text)
+        self.assertIn("offline-macmini-signing-required", text)
+        self.assertIn("runs-on: macos-26", text)
         self.assertIn("exit 1", text)
 
 

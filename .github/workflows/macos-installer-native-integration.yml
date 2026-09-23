@@ -1,8 +1,9 @@
 name: Native Mac installer integration
 
-# These guards protect this workflow, not the runner against other workflows.
-# Do not activate a credential-bearing runner until external dispatch isolation
-# and the protected Environment have been independently verified.
+# This workflow is intentionally NON-SIGNING. The repository is public under a
+# personal account, so a repository-scoped self-hosted runner cannot be used as
+# an authorization boundary for Developer ID or notarization credentials.
+# Credential-bearing release work is local/offline on the dedicated signer account.
 on:
   workflow_dispatch:
     inputs:
@@ -14,11 +15,6 @@ on:
         description: Exact reviewed ancestor for the entire qualification slice
         required: true
         type: string
-      signing_readiness:
-        description: Also verify protected Developer ID/notary readiness
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -115,33 +111,3 @@ jobs:
           path: ${{ runner.temp }}/forge-platform-ui-screenshots
           if-no-files-found: error
           retention-days: 14
-
-  signing-readiness:
-    name: Mac mini signing readiness
-    if: ${{ inputs.signing_readiness }}
-    needs: native-integration
-    runs-on: [self-hosted, macOS, ARM64, forge-platform-signer]
-    timeout-minutes: 15
-    environment:
-      name: forge-platform-installer-signing
-    env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      FORGE_PLATFORM_APPLE_TEAM_ID: ${{ vars.FORGE_PLATFORM_APPLE_TEAM_ID }}
-      FORGE_PLATFORM_CODESIGN_IDENTITY: ${{ vars.FORGE_PLATFORM_CODESIGN_IDENTITY }}
-      FORGE_PLATFORM_NOTARYTOOL_PROFILE: ${{ vars.FORGE_PLATFORM_NOTARYTOOL_PROFILE }}
-      FORGE_PLATFORM_SIGNER_ACCOUNT: ${{ vars.FORGE_PLATFORM_SIGNER_ACCOUNT }}
-      FORGE_PLATFORM_SIGNER_RUNNER_ROOT: ${{ vars.FORGE_PLATFORM_SIGNER_RUNNER_ROOT }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
-        with:
-          ref: ${{ inputs.source_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Recheck exact source after the separate signing approval
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
-      - name: Verify Xcode, Developer ID and notarytool without exporting secrets
-        run: bash scripts/ci/verify_macos_signing_runner.sh
