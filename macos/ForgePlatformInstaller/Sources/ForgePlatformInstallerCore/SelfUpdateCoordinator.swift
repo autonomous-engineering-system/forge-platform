@@ -671,10 +671,19 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     /// responsible for catalog/index/manifest verification under its own
     /// reviewed policy.
     public func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
+        .unavailable(.selectionUnavailable)
+    }
+
+    public func prepareVerifiedCompositionSession(
+        request: InstallerCompositionRequest
+    ) async -> InstallerSessionPreparationResult {
         guard let currentVerifiedReleaseRecord else {
             return .unavailable(.selectionUnavailable)
         }
         if let preparedCompositionSession {
+            guard preparedCompositionSession.componentIdentities == request.componentIdentities else {
+                return .unavailable(.selectionUnavailable)
+            }
             return .prepared(preparedCompositionSession)
         }
 
@@ -684,12 +693,11 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             return .unavailable(.selectionUnavailable)
         }
         inFlightCompositionSessionGeneration = generation
-        let result = await compositionSessionPreparer.prepareVerifiedCompositionSession(for: context)
+        let result = await compositionSessionPreparer.prepareVerifiedCompositionSession(
+            for: context,
+            request: request
+        )
 
-        // Actor reentrancy permits a concurrent update check or a second
-        // preparation request while the collaborator is suspended.  A result
-        // belonging to a superseded release context, or a request racing the
-        // one already in flight, cannot be admitted.
         guard inFlightCompositionSessionGeneration == generation else {
             return .unavailable(.selectionUnavailable)
         }
@@ -702,7 +710,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         case .unavailable:
             return result
         case .prepared(let plan):
-            guard context.accepts(plan) else {
+            guard context.accepts(plan),
+                  plan.componentIdentities == request.componentIdentities else {
                 return .unavailable(.selectionUnavailable)
             }
             if let preparedCompositionSession {
