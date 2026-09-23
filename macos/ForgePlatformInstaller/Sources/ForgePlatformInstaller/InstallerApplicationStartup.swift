@@ -11,6 +11,8 @@ import ForgePlatformInstallerCore
 final class InstallerApplicationStartupModel: ObservableObject {
     enum State {
         case checking
+        case updateRequired(VerifiedInstallerRelease)
+        case updating(VerifiedInstallerRelease)
         case ready(InstallerWizardViewModel)
         case relaunching(VerifiedInstallerRelease)
         case blocked(String)
@@ -25,6 +27,51 @@ final class InstallerApplicationStartupModel: ObservableObject {
     /// ever returning to a wizard after it has delegated to a newer installer.
     private let terminateCurrentProcess: @MainActor @Sendable () -> Void
     private var hasStarted = false
+
+    func confirmRequiredUpdate() {
+        guard case .updateRequired(let release) = state else { return }
+        state = .updating(release)
+        let startupBoundary = startupBoundary
+        Task { [weak self] in
+            let outcome = await startupBoundary.confirmRequiredUpdate(release)
+            guard let self else { return }
+            self.apply(outcome)
+        }
+    }
+
+    func closeInstaller() {
+        terminateCurrentProcess()
+    }
+
+    private func apply(_ outcome: ReleasedInstallerStartupOutcome) {
+        switch outcome {
+        case .ready(let session):
+            guard let currentVersion = InstallerBuild.currentVersion else {
+                state = .blocked("De code-ondertekende installerversie ontbreekt of is niet geldig.")
+                return
+            }
+            var wizardState = InstallerWizardState(currentInstallerVersion: currentVersion)
+            wizardState.recordSelfUpdateCheck(.verifiedGitHubRelease(session.currentRelease))
+            state = .ready(InstallerWizardViewModel(
+                state: wizardState,
+                coordinator: session.runtime
+            ))
+        case .updateRequired(let release):
+            state = .updateRequired(release)
+        case .relaunching(let release):
+            state = .relaunching(release)
+            Task { @MainActor [weak self] in
+                await Task.yield()
+                guard let self,
+                      case .relaunching = self.state else {
+                    return
+                }
+                self.terminateCurrentProcess()
+            }
+        case .blocked(let reason):
+            state = .blocked(reason)
+        }
+    }
 
     init(
         startupBoundary: ReleasedInstallerStartupBoundary = .bundledFailClosed(),
@@ -49,34 +96,8 @@ final class InstallerApplicationStartupModel: ObservableObject {
 
         Task { [weak self] in
             let outcome = await startupBoundary.start(currentVersion: currentVersion)
-            guard let self else {
-                return
-            }
-            switch outcome {
-            case .ready(let session):
-                var wizardState = InstallerWizardState(currentInstallerVersion: currentVersion)
-                wizardState.recordSelfUpdateCheck(.verifiedGitHubRelease(session.currentRelease))
-                state = .ready(InstallerWizardViewModel(
-                    state: wizardState,
-                    coordinator: session.runtime
-                ))
-            case .relaunching(let release):
-                state = .relaunching(release)
-                // Yield once so the short status screen can be rendered, then
-                // exit the predecessor. The replacement process owns any
-                // bounded lock-retry; this process must not stay alive and
-                // silently regain wizard authority.
-                Task { @MainActor [weak self] in
-                    await Task.yield()
-                    guard let self,
-                          case .relaunching = self.state else {
-                        return
-                    }
-                    self.terminateCurrentProcess()
-                }
-            case .blocked(let reason):
-                state = .blocked(reason)
-            }
+            guard let self else { return }
+            self.apply(outcome)
         }
     }
 }
@@ -92,6 +113,34 @@ struct InstallerApplicationRootView: View {
                     title: "Installer-integriteit controleren",
                     message: "De geverifieerde Universal Installer wordt gecontroleerd voordat platformonderdelen beschikbaar zijn.",
                     symbol: "checkmark.shield"
+                )
+            case .updateRequired(let release):
+                VStack(spacing: 18) {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 42, weight: .medium))
+                        .foregroundStyle(.orange)
+                    Text("Installer-update vereist")
+                        .font(.title2.weight(.semibold))
+                    Text("Versie \(release.version.description) is geverifieerd en moet worden geïnstalleerd voordat Forge Platform wijzigingen mag uitvoeren.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: 560)
+                    HStack(spacing: 12) {
+                        Button("Sluit installer") {
+                            startupModel.closeInstaller()
+                        }
+                        Button("Update en herstart") {
+                            startupModel.confirmRequiredUpdate()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                .padding(32)
+            case .updating(let release):
+                InstallerStartupStatusView(
+                    title: "Installer bijwerken",
+                    message: "Versie \(release.version.description) wordt gedownload, geverifieerd en daarna atomair gestart.",
+                    symbol: "arrow.down.circle.fill"
                 )
             case .ready(let viewModel):
                 InstallerWizardView(viewModel: viewModel)
