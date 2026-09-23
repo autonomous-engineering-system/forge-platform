@@ -20,6 +20,7 @@ python3 tests/installer/test_managed_installer.py
 python3 tests/installer/test_managed_pairing.py
 python3 tests/installer/test_provider_targets.py
 python3 tests/installer/test_provider_fanout.py
+python3 scripts/check_managed_installer_python_coverage.py --minimum 0
 python3 tests/installer/test_managed_python_runtime_executor.py
 python3 tests/installer/test_component_combination_catalog.py
 python3 tests/installer/test_installer_version_preparation.py
