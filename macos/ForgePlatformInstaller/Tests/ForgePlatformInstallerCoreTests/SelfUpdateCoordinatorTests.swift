@@ -50,14 +50,18 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
 
         let result = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let stagedBeforeConfirmation = await staging.stagedReleaseCount()
+        let handoffBeforeConfirmation = await handoff.callCount()
         XCTAssertEqual(result, .updateRequired(release.release))
-        XCTAssertEqual(await staging.stagedReleaseCount(), 0)
-        XCTAssertEqual(await handoff.callCount(), 0)
+        XCTAssertEqual(stagedBeforeConfirmation, 0)
+        XCTAssertEqual(handoffBeforeConfirmation, 0)
 
         let confirmed = await coordinator.handOffSelfUpdate(release.release)
+        let stagedAfterConfirmation = await staging.stagedReleaseCount()
+        let handoffAfterConfirmation = await handoff.callCount()
         XCTAssertEqual(confirmed, .relaunching)
-        XCTAssertEqual(await staging.stagedReleaseCount(), 1)
-        XCTAssertEqual(await handoff.callCount(), 1)
+        XCTAssertEqual(stagedAfterConfirmation, 1)
+        XCTAssertEqual(handoffAfterConfirmation, 1)
     }
 
     func testExactCurrentReleaseAllowsWizardButCannotBeHandedOffAgain() async throws {
@@ -343,20 +347,19 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             compositionSessionPreparer: preparer
         )
 
-        XCTAssertEqual(
-            await coordinator.enforceCurrentInstaller(currentVersion: current.version),
-            .current(release.release)
-        )
-        XCTAssertEqual(await coordinator.prepareVerifiedCompositionSession(), .prepared(plan))
-
+        let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let initialPrepared = await coordinator.prepareVerifiedCompositionSession()
         let recheck = await coordinator.recheckInstallerCurrencyBeforeMutation(
             currentVersion: current.version
         )
         let stillPrepared = await coordinator.prepareVerifiedCompositionSession()
+        let preparerCalls = await preparer.callCount()
 
+        XCTAssertEqual(enforcement, .current(release.release))
+        XCTAssertEqual(initialPrepared, .prepared(plan))
         XCTAssertEqual(recheck, .verifiedGitHubRelease(release.release))
         XCTAssertEqual(stillPrepared, .prepared(plan))
-        XCTAssertEqual(await preparer.callCount(), 1)
+        XCTAssertEqual(preparerCalls, 1)
     }
 
     func testPreMutationCurrencyRecheckInvalidatesSessionWhenNewerReleaseAppears() async throws {
@@ -382,17 +385,15 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             compositionSessionPreparer: preparer
         )
 
-        XCTAssertEqual(
-            await coordinator.enforceCurrentInstaller(currentVersion: current.version),
-            .current(currentRelease.release)
-        )
-        XCTAssertEqual(await coordinator.prepareVerifiedCompositionSession(), .prepared(plan))
-
+        let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let initialPrepared = await coordinator.prepareVerifiedCompositionSession()
         let recheck = await coordinator.recheckInstallerCurrencyBeforeMutation(
             currentVersion: current.version
         )
         let after = await coordinator.prepareVerifiedCompositionSession()
 
+        XCTAssertEqual(enforcement, .current(currentRelease.release))
+        XCTAssertEqual(initialPrepared, .prepared(plan))
         XCTAssertEqual(recheck, .verifiedGitHubRelease(newerRelease.release))
         XCTAssertEqual(after, .unavailable(.selectionUnavailable))
     }
