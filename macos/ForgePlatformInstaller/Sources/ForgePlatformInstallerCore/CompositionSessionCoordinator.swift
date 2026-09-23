@@ -72,6 +72,16 @@ public protocol VerifiedCompositionSessionPreparing: Sendable {
     ) async -> InstallerSessionPreparationResult
 }
 
+extension VerifiedCompositionSessionPreparing {
+    func prepareVerifiedCompositionSession(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        request: InstallerCompositionRequest
+    ) async -> InstallerSessionPreparationResult {
+        _ = request
+        return await prepareVerifiedCompositionSession(for: currentInstaller)
+    }
+}
+
 /// Default until a later increment adds a reviewed sealed catalog trust policy
 /// and native transport/verifier.  Keeping the default unavailable prevents a
 /// source build or merely current installer from becoming a catalog authority.
