@@ -28,6 +28,7 @@ TARGETS = (
     "forge_platform/managed_installer.py",
     "forge_platform/managed_pairing.py",
     "forge_platform/provider_fanout.py",
+    "forge_platform/provider_runtime.py",
     "forge_platform/engineering_platform_system_adapter.py",
     "forge_platform/forge_server_adapter.py",
 )
@@ -43,6 +44,7 @@ TESTS = (
     "tests/installer/test_managed_pairing.py",
     "tests/installer/test_provider_targets.py",
     "tests/installer/test_provider_fanout.py",
+    "tests/installer/test_provider_runtime.py",
 )
 
 
