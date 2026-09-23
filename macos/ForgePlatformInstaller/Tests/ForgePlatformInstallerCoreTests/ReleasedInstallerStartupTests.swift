@@ -92,8 +92,9 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         guard case .updateRequired(let actualRelease) = outcome else {
             return XCTFail("A newer installer must be presented for confirmation")
         }
+        let handoffCallsBeforeConfirmation = await runtime.handoffCallCount()
         XCTAssertEqual(actualRelease, release)
-        XCTAssertEqual(await runtime.handoffCallCount(), 0)
+        XCTAssertEqual(handoffCallsBeforeConfirmation, 0)
 
         let repeatedStartup = await boundary.start(currentVersion: currentVersion)
         guard case .blocked = repeatedStartup else {
@@ -104,8 +105,9 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         guard case .relaunching(let relaunched) = confirmed else {
             return XCTFail("Explicit confirmation should hand off to the verified successor")
         }
+        let handoffCallsAfterConfirmation = await runtime.handoffCallCount()
         XCTAssertEqual(relaunched, release)
-        XCTAssertEqual(await runtime.handoffCallCount(), 1)
+        XCTAssertEqual(handoffCallsAfterConfirmation, 1)
     }
 
 
