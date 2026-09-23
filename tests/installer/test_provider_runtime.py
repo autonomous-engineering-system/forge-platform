@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import io
+import json
 from pathlib import Path
 import stat
 import sys
@@ -21,6 +22,7 @@ from forge_platform.provider_runtime import (
     ProviderRuntimeError,
     ProviderRuntimeInstaller,
     ProviderRuntimeTarget,
+    SubprocessProviderProcessRunner,
 )
 from forge_platform.universal_installer import ProviderRequirement, ProviderRuntimeArtifact, SemanticVersion
 
@@ -171,6 +173,81 @@ class ProviderRuntimeTests(unittest.TestCase):
             self.assertEqual(len(device),2)
             self.assertEqual(len(status),2)
             self.assertTrue(all(c[2] is None for c in runner.calls))
+
+    def test_target_paths_and_subprocess_executable_authority_fail_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            with self.assertRaisesRegex(ValueError,"escaped"):
+                ProviderRuntimeTarget(
+                    "codex","forge-runtime","forge-one",
+                    root/"target",root/"outside-runtime",root/"outside-runtime/bin/codex",
+                    root/"target/home",root/"target/config",
+                )
+            with self.assertRaisesRegex(ProviderRuntimeError,"absolute"):
+                SubprocessProviderProcessRunner().run(
+                    ("codex","login","status"),
+                    environment={"PATH":"/usr/bin:/bin","HOME":str(root)},
+                )
+
+    def test_descriptor_identity_substitution_is_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            req,payload=requirement("codex","forge-one")
+            target=self.make_target(Path(d)/"target",req)
+            installer=ProviderRuntimeInstaller(Transport(payload))
+            installer.install(req,target)
+            descriptor=target.runtime_root/"provider-runtime.json"
+            data=json.loads(descriptor.read_text(encoding="utf-8"))
+            data["target_identity"]="forge-other"
+            descriptor.write_text(json.dumps(data),encoding="utf-8")
+            with self.assertRaisesRegex(ProviderRuntimeError,"descriptor identity mismatch"):
+                installer.install(req,target)
+
+    def test_codex_and_github_auth_failures_never_create_verified_receipts(self):
+        class FailingRunner(Runner):
+            def __init__(self,needle):
+                super().__init__()
+                self.needle=needle
+            def run(self,argv,*,environment,input_text=None):
+                self.calls.append((tuple(argv),dict(environment),input_text))
+                if self.needle in tuple(argv):
+                    return ProviderProcessResult(1,"","failed")
+                if tuple(argv)[1:4]==("auth","token","--hostname"):
+                    return ProviderProcessResult(0,self.token+"\n","")
+                return ProviderProcessResult(0,"ok\n","")
+
+        with tempfile.TemporaryDirectory() as d:
+            codex,payload=requirement("codex","forge-one")
+            installer=ProviderRuntimeInstaller(Transport(payload))
+            with self.assertRaisesRegex(ProviderRuntimeError,"device authentication failed"):
+                ManagedProviderRuntimeCoordinator(
+                    installer=installer,
+                    targets={codex.key:self.make_target(Path(d)/"codex",codex)},
+                    runner=FailingRunner("--device-auth"),
+                ).execute((codex,))
+
+        with tempfile.TemporaryDirectory() as d:
+            gh,payload=requirement("github-cli","ep-one")
+            installer=ProviderRuntimeInstaller(Transport(payload))
+            with self.assertRaisesRegex(ProviderRuntimeError,"web authentication failed"):
+                ManagedProviderRuntimeCoordinator(
+                    installer=installer,
+                    targets={gh.key:self.make_target(Path(d)/"gh",gh)},
+                    runner=FailingRunner("--web"),
+                ).execute((gh,))
+
+    def test_provider_target_key_mismatch_is_rejected_before_download(self):
+        with tempfile.TemporaryDirectory() as d:
+            req,payload=requirement("codex","forge-one")
+            wrong=ProviderRuntimeTarget(
+                "codex","forge-runtime","forge-two",
+                Path(d)/"target",Path(d)/"target/runtime",
+                Path(d)/"target/runtime/bin/codex",
+                Path(d)/"target/home",Path(d)/"target/config",
+            )
+            transport=Transport(payload)
+            with self.assertRaisesRegex(ProviderRuntimeError,"target changed"):
+                ProviderRuntimeInstaller(transport).install(req,wrong)
+            self.assertEqual(transport.calls,0)
 
     def test_requirement_without_runtime_or_wrong_target_is_blocked(self):
         with tempfile.TemporaryDirectory() as d:
