@@ -9,6 +9,12 @@ os_version="$(sw_vers -productVersion)"
 major="${os_version%%.*}"
 [[ "$major" =~ ^[0-9]+$ && "$major" -ge 26 ]] || fail macos-too-old
 [[ -n "${RUNNER_NAME:-}" ]] || fail missing-runner-name
+[[ "$RUNNER_NAME" == *signer* ]] || fail unexpected-signer-runner-name
+[[ -n "${FORGE_PLATFORM_SIGNER_ACCOUNT:-}" ]] || fail signer-account-required
+[[ "$(id -un)" == "$FORGE_PLATFORM_SIGNER_ACCOUNT" ]] || fail signer-account-mismatch
+runner_root="${FORGE_PLATFORM_SIGNER_RUNNER_ROOT:-$HOME/actions-runner-forge-platform-signer}"
+[[ -x "$runner_root/svc.sh" ]] || fail signer-runner-service-unavailable
+"$runner_root/svc.sh" status >/dev/null 2>&1 || fail signer-runner-service-not-running
 # RUNNER_LABELS is not a standard Actions environment variable or an ACL.
 [[ "${FORGE_PLATFORM_APPLE_TEAM_ID:-}" =~ ^[A-Z0-9]{10}$ ]] || fail invalid-team-id
 [[ -n "${FORGE_PLATFORM_CODESIGN_IDENTITY:-}" ]] || fail codesign-identity-required
@@ -99,5 +105,5 @@ except (OSError, ValueError):
 sys.exit(0 if valid else 1)
 PY
 printf 'MAC_SIGNING_TOOLCHAIN os=%s developer_dir=%s sdk=%s\n%s\n' "$os_version" "$developer_dir" "$sdk_version" "$xcode_version"
-echo "MAC_SIGNING_READINESS=PASS runner=$RUNNER_NAME team_id=$FORGE_PLATFORM_APPLE_TEAM_ID"
+echo "MAC_SIGNING_READINESS=PASS runner=$RUNNER_NAME user=$(id -un) team_id=$FORGE_PLATFORM_APPLE_TEAM_ID"
 echo 'NOTARIZATION_ACCEPTANCE=NOT_RUN RUNNER_REBOOT_PERSISTENCE=NOT_VERIFIED'

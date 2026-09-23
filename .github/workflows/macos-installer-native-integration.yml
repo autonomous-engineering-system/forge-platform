@@ -52,10 +52,10 @@ jobs:
   native-integration:
     name: Native Mac mini integration
     needs: admission
-    runs-on: [self-hosted, macOS, ARM64, forge-platform-mini]
+    runs-on: [self-hosted, macOS, ARM64, forge-platform-integration]
     timeout-minutes: 45
     environment:
-      name: forge-platform-installer-signing
+      name: forge-platform-installer-integration
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
@@ -78,6 +78,14 @@ jobs:
           xcode-select -p
           xcodebuild -version
           xcrun --sdk macosx --show-sdk-version
+      - name: Prove integration account cannot see Developer ID signing keys
+        run: |
+          set -euo pipefail
+          if security find-identity -v -p codesigning 2>/dev/null | grep -Fq 'Developer ID Application:'; then
+            echo 'INTEGRATION_KEYCHAIN_ISOLATION=FAIL reason=developer-id-visible' >&2
+            exit 1
+          fi
+          echo "INTEGRATION_KEYCHAIN_ISOLATION=PASS user=$(id -un) runner=$RUNNER_NAME"
       - name: Repository unit and integration suite
         run: sh scripts/validate.sh
       - name: Native Swift unit and integration suite
@@ -112,7 +120,7 @@ jobs:
     name: Mac mini signing readiness
     if: ${{ inputs.signing_readiness }}
     needs: native-integration
-    runs-on: [self-hosted, macOS, ARM64, forge-platform-mini, forge-platform-signer]
+    runs-on: [self-hosted, macOS, ARM64, forge-platform-signer]
     timeout-minutes: 15
     environment:
       name: forge-platform-installer-signing
@@ -121,6 +129,8 @@ jobs:
       FORGE_PLATFORM_APPLE_TEAM_ID: ${{ vars.FORGE_PLATFORM_APPLE_TEAM_ID }}
       FORGE_PLATFORM_CODESIGN_IDENTITY: ${{ vars.FORGE_PLATFORM_CODESIGN_IDENTITY }}
       FORGE_PLATFORM_NOTARYTOOL_PROFILE: ${{ vars.FORGE_PLATFORM_NOTARYTOOL_PROFILE }}
+      FORGE_PLATFORM_SIGNER_ACCOUNT: ${{ vars.FORGE_PLATFORM_SIGNER_ACCOUNT }}
+      FORGE_PLATFORM_SIGNER_RUNNER_ROOT: ${{ vars.FORGE_PLATFORM_SIGNER_RUNNER_ROOT }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:

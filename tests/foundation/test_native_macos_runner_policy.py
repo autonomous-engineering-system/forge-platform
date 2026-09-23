@@ -33,11 +33,13 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         text = NATIVE.read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", text)
         self.assertNotIn("pull_request:", text)
-        self.assertIn("runs-on: [self-hosted, macOS, ARM64, forge-platform-mini]", text)
+        self.assertIn("runs-on: [self-hosted, macOS, ARM64, forge-platform-integration]", text)
         self.assertIn(
-            "runs-on: [self-hosted, macOS, ARM64, forge-platform-mini, forge-platform-signer]",
+            "runs-on: [self-hosted, macOS, ARM64, forge-platform-signer]",
             text,
         )
+        self.assertIn("forge-platform-installer-integration", text)
+        self.assertIn("INTEGRATION_KEYCHAIN_ISOLATION=PASS", text)
         self.assertIn('test "$SOURCE_SHA" = "$(git rev-parse origin/main)"', text)
         self.assertIn("environment:", text)
         self.assertIn("forge-platform-installer-signing", text)
@@ -47,6 +49,8 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertIn("security find-identity -v -p codesigning", text)
         self.assertIn("Developer ID Application:", text)
         self.assertIn("codesign --verify --strict --deep", text)
+        self.assertIn("FORGE_PLATFORM_SIGNER_ACCOUNT", text)
+        self.assertIn("signer-runner-service-not-running", text)
         forbidden = (
             "security export",
             "find-generic-password -w",
@@ -66,7 +70,11 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         )
         self.assertIn("actions-runner-osx-arm64-", text)
         self.assertIn('shasum -a 256 "$tmp/$RUNNER_ARCHIVE"', text)
-        self.assertIn('RUNNER_LABELS="forge-platform-mini,forge-platform-signer"', text)
+        self.assertIn('FORGE_PLATFORM_RUNNER_ROLE', text)
+        self.assertIn('RUNNER_LABELS="forge-platform-integration"', text)
+        self.assertIn('RUNNER_LABELS="forge-platform-signer"', text)
+        self.assertIn('signer-and-integration-user-must-differ', text)
+        self.assertIn('integration-and-signer-user-must-differ', text)
         self.assertNotIn("/releases/latest/", text)
 
     def test_release_workflow_remains_fail_closed_until_signer_wiring_is_replaced(self) -> None:
