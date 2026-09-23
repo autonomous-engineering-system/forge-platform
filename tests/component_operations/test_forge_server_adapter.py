@@ -161,14 +161,14 @@ class ForgeServerAdapterTests(unittest.TestCase):
         self.assertTrue(any("provider-context configure" in call for call in flattened))
         self.assertTrue(any("execution-host configure" in call for call in flattened))
 
-    def test_remove_is_exact_and_cannot_escape_installer_owned_root(self) -> None:
-        self.adapter.execute(self.request("install"))
-        receipt = self.adapter.execute(self.request("remove", "forge-operation-remove"))
-        self.assertEqual(receipt.state, "COMPLETED")
-        self.assertFalse(self.data.exists())
-        self.assertIn("remove", self.supervisor.calls)
+    def test_remove_remains_blocked_without_product_owned_uninstall_dispatcher(self) -> None:
+        self.assertEqual(self.adapter.removal_support(), "UNSUPPORTED")
+        with self.assertRaisesRegex(Exception, "no product-owned uninstall"):
+            self.adapter.execute(self.request("remove", "forge-operation-remove"))
+        self.assertTrue(self.data.exists())
+        self.assertNotIn("remove", self.supervisor.calls)
 
-    def test_update_remains_blocked_without_qualified_external_updater_binding(self) -> None:
+    def test_update_remains_blocked_without_product_owned_update_assessment(self) -> None:
         candidate = QualifiedArtifact(
             "2.7.35", "b" * 40, ARTIFACT.source,
             "sha256:" + "c" * 64, ARTIFACT.qualification,
