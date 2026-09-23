@@ -10,6 +10,7 @@ enum ManagedCompositionSessionPlanFailure: Error, Equatable, Sendable {
 struct ManagedCompositionSessionPlanBuilder {
     private static let schemaV1 = "forge-platform.composition/v1"
     private static let schemaV2 = "forge-platform.composition/v2"
+    private static let schemaV3 = "forge-platform.composition/v3"
     private static let rootFields: Set<String> = [
         "schema", "composition_id", "channel", "requires_installer",
         "host_requirements", "managed_tools", "python_runtime", "product_venvs",
@@ -36,7 +37,7 @@ struct ManagedCompositionSessionPlanBuilder {
             guard let fields = root.objectValue,
                   Set(fields.keys) == Self.rootFields,
                   let schema = fields["schema"]?.stringValue,
-                  schema == Self.schemaV1 || schema == Self.schemaV2,
+                  schema == Self.schemaV1 || schema == Self.schemaV2 || schema == Self.schemaV3,
                   let compositionID = fields["composition_id"]?.stringValue,
                   compositionID == selectedEntry.compositionID,
                   let channel = fields["channel"]?.stringValue,
@@ -122,9 +123,20 @@ struct ManagedCompositionSessionPlanBuilder {
         guard let fields = value.objectValue else {
             throw ManagedCompositionSessionPlanFailure.rejected
         }
-        let expectedFields: Set<String> = schema == schemaV2
-            ? ["identity", "required", "minimum_version", "credential_scope", "owner_component", "target_identity"]
-            : ["identity", "required", "minimum_version", "credential_scope"]
+        let expectedFields: Set<String>
+        switch schema {
+        case schemaV1:
+            expectedFields = ["identity", "required", "minimum_version", "credential_scope"]
+        case schemaV2:
+            expectedFields = ["identity", "required", "minimum_version", "credential_scope", "owner_component", "target_identity"]
+        case schemaV3:
+            expectedFields = [
+                "identity", "required", "minimum_version", "credential_scope",
+                "owner_component", "target_identity", "runtime",
+            ]
+        default:
+            throw ManagedCompositionSessionPlanFailure.rejected
+        }
         guard Set(fields.keys) == expectedFields,
               let providerRaw = fields["identity"]?.stringValue,
               let provider = ProviderID(rawValue: providerRaw),
@@ -166,13 +178,45 @@ struct ManagedCompositionSessionPlanBuilder {
               scope == owner.requiredCredentialScope else {
             throw ManagedCompositionSessionPlanFailure.rejected
         }
+        let runtime: ProviderRuntimeRequirement?
+        if schema == schemaV3 {
+            guard let runtimeFields = fields["runtime"]?.objectValue,
+                  Set(runtimeFields.keys) == Set([
+                    "version", "archive_kind", "artifact",
+                    "executable_relative_path", "executable_digest",
+                  ]),
+                  let versionRaw = runtimeFields["version"]?.stringValue,
+                  let runtimeVersion = try? InstallerVersion(versionRaw),
+                  let archiveRaw = runtimeFields["archive_kind"]?.stringValue,
+                  let archiveKind = ProviderRuntimeArchiveKind(rawValue: archiveRaw),
+                  let artifact = runtimeFields["artifact"]?.objectValue,
+                  Set(artifact.keys) == Set(["url", "digest"]),
+                  let artifactURL = artifact["url"]?.stringValue,
+                  let artifactDigest = artifact["digest"]?.stringValue,
+                  let executableRelativePath = runtimeFields["executable_relative_path"]?.stringValue,
+                  let executableDigest = runtimeFields["executable_digest"]?.stringValue,
+                  let parsedRuntime = try? ProviderRuntimeRequirement(
+                    version: runtimeVersion,
+                    archiveKind: archiveKind,
+                    artifactURL: artifactURL,
+                    artifactSHA256: artifactDigest,
+                    executableRelativePath: executableRelativePath,
+                    executableSHA256: executableDigest
+                  ) else {
+                throw ManagedCompositionSessionPlanFailure.rejected
+            }
+            runtime = parsedRuntime
+        } else {
+            runtime = nil
+        }
         return ProviderRequirement(
             provider: provider,
             isRequired: required,
             minimumVersion: minimumVersion,
             credentialScope: scope,
             ownerComponent: owner,
-            targetIdentity: target
+            targetIdentity: target,
+            runtime: runtime
         )
     }
 
