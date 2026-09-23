@@ -181,11 +181,10 @@ final class InstallerCLITests: XCTestCase {
             options: InstallerCLIOptions(nonInteractive: true, assumeYes: true),
             confirm: { _ in false }
         )
-        // --yes acknowledges the reviewed plan and is also explicit confirmation
-        // for a mandatory update in the current CLI contract.
-        XCTAssertEqual(result.status, "relaunching")
+        XCTAssertEqual(result.exitCode, .installerUpdateRequired)
+        XCTAssertEqual(result.status, "installer-update-required")
         let handoffCalls2 = await coordinator.handoffCallCount()
-        XCTAssertEqual(handoffCalls2, 1)
+        XCTAssertEqual(handoffCalls2, 0)
     }
 
     func testExecutionFailureAndReadinessFailureNeverClaimComplete() async throws {

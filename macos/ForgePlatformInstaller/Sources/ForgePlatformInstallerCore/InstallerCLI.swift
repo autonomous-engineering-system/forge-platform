@@ -472,7 +472,7 @@ public struct InstallerCLIWorkflow: Sendable {
         confirm: Confirmation
     ) async -> InstallerCLIResult {
         let accepted: Bool
-        if options.acceptInstallerUpdate || options.assumeYes {
+        if options.acceptInstallerUpdate {
             accepted = true
         } else if options.nonInteractive {
             accepted = false
