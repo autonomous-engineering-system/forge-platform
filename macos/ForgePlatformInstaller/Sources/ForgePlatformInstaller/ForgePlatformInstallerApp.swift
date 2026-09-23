@@ -23,6 +23,9 @@ final class InstallerWizardViewModel: ObservableObject {
     @Published private(set) var state: InstallerWizardState
 
     private let coordinator: any InstallerWizardCoordinator
+    @Published private(set) var isPreflightRequestInFlight = false
+    @Published private(set) var isReviewRequestInFlight = false
+    @Published private(set) var isExecutionRequestInFlight = false
 
     init(
         state: InstallerWizardState,
@@ -80,6 +83,49 @@ final class InstallerWizardViewModel: ObservableObject {
         }
     }
 
+
+    func prepareHostPreflight() {
+        guard !isPreflightRequestInFlight,
+              state.step == .preflight,
+              let session = state.acceptedSessionPlan,
+              case .selected(let deployment, _) = state.deploymentSelection else {
+            return
+        }
+        isPreflightRequestInFlight = true
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.prepareHostPreflight(
+                session: session,
+                deployment: deployment
+            )
+            guard let self else { return }
+            _ = self.state.recordHostPreflightPreparation(result)
+            self.isPreflightRequestInFlight = false
+        }
+    }
+
+    func prepareCompositionReview() {
+        guard !isReviewRequestInFlight,
+              state.step == .review,
+              state.preflight.isPassed,
+              state.enabledProvidersVerified,
+              let session = state.acceptedSessionPlan,
+              case .selected(let deployment, _) = state.deploymentSelection else {
+            return
+        }
+        isReviewRequestInFlight = true
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.prepareCompositionReview(
+                session: session,
+                deployment: deployment
+            )
+            guard let self else { return }
+            _ = self.state.recordCompositionReviewPreparation(result)
+            self.isReviewRequestInFlight = false
+        }
+    }
+
     func setProviderSelected(_ target: ProviderTargetID, isSelected: Bool) {
         _ = state.setProviderTargetSelected(target, isSelected: isSelected)
     }
@@ -110,8 +156,12 @@ final class InstallerWizardViewModel: ObservableObject {
                 let result = await coordinator.recheckInstallerBeforeMutation(
                     currentVersion: currentVersion
                 )
-                if self.state.recordPreMutationCurrencyCheck(result) {
-                    _ = self.state.advance()
+                if self.state.recordPreMutationCurrencyCheck(result),
+                   let operation = self.state.beginManagedDeploymentExecution() {
+                    self.isExecutionRequestInFlight = true
+                    let execution = await coordinator.executeReviewedManagedDeployment(operation)
+                    _ = self.state.recordManagedDeploymentExecution(execution, for: operation)
+                    self.isExecutionRequestInFlight = false
                 }
             }
             return
@@ -176,10 +226,7 @@ struct InstallerWizardView: View {
         case .composition:
             CompositionSelectionScreen(viewModel: viewModel)
         case .preflight:
-            PreflightScreen(
-                preflight: viewModel.state.preflight,
-                sessionPlan: viewModel.state.acceptedSessionPlan
-            )
+            PreflightScreen(viewModel: viewModel)
         case .providers:
             ProviderScreen(viewModel: viewModel)
         case .review:
@@ -495,8 +542,10 @@ private struct CompositionSelectionScreen: View {
 }
 
 private struct PreflightScreen: View {
-    let preflight: HostPreflight
-    let sessionPlan: VerifiedCompositionSessionPlan?
+    @ObservedObject var viewModel: InstallerWizardViewModel
+
+    private var preflight: HostPreflight { viewModel.state.preflight }
+    private var sessionPlan: VerifiedCompositionSessionPlan? { viewModel.state.acceptedSessionPlan }
 
     var body: some View {
         ScreenHeader(
@@ -527,6 +576,18 @@ private struct PreflightScreen: View {
                 }
             }
 
+            if viewModel.isPreflightRequestInFlight {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Sessiespecifieke hostcontrole wordt uitgevoerd…")
+                }
+                .font(.callout)
+            } else if !preflight.isPassed {
+                Button("Voer sessiespecifieke hostcontrole uit") {
+                    viewModel.prepareHostPreflight()
+                }
+                .buttonStyle(.borderedProminent)
+            }
             Text("Een mislukte of ontbrekende preflight blokkeert de volgende stap fail-closed.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -653,6 +714,19 @@ private struct CompositionReviewScreen: View {
         )
 
         VStack(alignment: .leading, spacing: 16) {
+            if viewModel.isReviewRequestInFlight {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Gekwalificeerd wijzigingsplan wordt opgebouwd…")
+                }
+                .font(.callout)
+            } else if case .pending = viewModel.state.composition.status {
+                Button("Bouw gekwalificeerd wijzigingsplan") {
+                    viewModel.prepareCompositionReview()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
             GroupBox("Compositiestatus") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(viewModel.state.composition.manifestIdentity).textSelection(.enabled)

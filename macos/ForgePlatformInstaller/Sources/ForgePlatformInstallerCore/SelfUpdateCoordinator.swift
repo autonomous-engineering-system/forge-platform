@@ -544,6 +544,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     /// reviewed catalog trust policy and native verifier.
     private let compositionSessionPreparer: any VerifiedCompositionSessionPreparing
     private let providerCoordinator: any ProviderActionCoordinating
+    private let managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating
 
     private var pendingUpdate: PendingUpdate?
     /// A release record observed during an update check is not yet authority
@@ -575,7 +576,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         recoveryStore: any InstallerSelfUpdateRecoveryStoring,
         operationLock: any InstallerSelfUpdateOperationLocking,
         compositionSessionPreparer: any VerifiedCompositionSessionPreparing = UnavailableVerifiedCompositionSessionPreparer(),
-        providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator()
+        providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator(),
+        managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator()
     ) {
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
@@ -586,6 +588,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.operationLock = operationLock
         self.compositionSessionPreparer = compositionSessionPreparer
         self.providerCoordinator = providerCoordinator
+        self.managedDeploymentRouteCoordinator = managedDeploymentRouteCoordinator
     }
 
     public func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
@@ -683,6 +686,36 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         ) {
             await self.enforceCurrentInstallerWhileLocked(currentVersion: currentVersion)
         }
+    }
+
+    public func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
+        await managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory()
+    }
+
+    public func prepareHostPreflight(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> HostPreflightPreparationResult {
+        await managedDeploymentRouteCoordinator.prepareHostPreflight(
+            session: session,
+            deployment: deployment
+        )
+    }
+
+    public func prepareCompositionReview(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> CompositionReviewPreparationResult {
+        await managedDeploymentRouteCoordinator.prepareCompositionReview(
+            session: session,
+            deployment: deployment
+        )
+    }
+
+    public func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult {
+        await managedDeploymentRouteCoordinator.executeReviewedManagedDeployment(operation)
     }
 
     /// A composition session may cross into the wizard only after this runtime

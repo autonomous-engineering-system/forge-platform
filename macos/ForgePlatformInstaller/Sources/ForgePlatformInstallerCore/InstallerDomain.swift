@@ -1161,6 +1161,13 @@ public struct InstallerWizardState: Equatable, Sendable {
            providers.contains(where: { Self.isProviderActionInFlight($0.state) }) {
             return false
         }
+        if step == .execution,
+           executionStages.contains(where: {
+               if case .running = $0.state { return true }
+               return false
+           }) {
+            return false
+        }
         return true
     }
 
@@ -1541,11 +1548,26 @@ public protocol InstallerWizardCoordinator: Sendable {
     /// self-update and managed-deployment gates. Implementations must not return
     /// catalog bytes, URLs, commands, credentials, product readbacks or an operation authority.
     func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult
+    /// Read-only host/tool preflight for the exact accepted session/deployment.
+    func prepareHostPreflight(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> HostPreflightPreparationResult
+    /// Read-only exact product inventory/diff planning after provider verification.
+    func prepareCompositionReview(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> CompositionReviewPreparationResult
     /// Re-checks the signed installer release immediately before the reviewed
     /// plan is allowed to cross into product mutation.
     func recheckInstallerBeforeMutation(
         currentVersion: InstallerVersion
     ) async -> InstallerCurrencyCheckResult
+    /// Executes the immutable reviewed operation. The trusted implementation
+    /// owns fresh currency checks at every real mutation boundary.
+    func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult
     /// Legacy targetless route retained for composition/v1 coordinators.
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult
     /// Target-aware route used by composition/v2. Existing coordinators inherit
@@ -1566,11 +1588,36 @@ public extension InstallerWizardCoordinator {
         .unavailable(.coordinatorUnavailable)
     }
 
+    func prepareHostPreflight(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> HostPreflightPreparationResult {
+        _ = session
+        _ = deployment
+        return .unavailable(.coordinatorUnavailable)
+    }
+
+    func prepareCompositionReview(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> CompositionReviewPreparationResult {
+        _ = session
+        _ = deployment
+        return .unavailable(.coordinatorUnavailable)
+    }
+
     func recheckInstallerBeforeMutation(
         currentVersion: InstallerVersion
     ) async -> InstallerCurrencyCheckResult {
         _ = currentVersion
         return .failed("De installer kon vlak vóór uitvoering niet opnieuw worden geverifieerd.")
+    }
+
+    func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult {
+        _ = operation
+        return .failed(.coordinatorUnavailable, stages: [])
     }
 
     func performProviderAction(
