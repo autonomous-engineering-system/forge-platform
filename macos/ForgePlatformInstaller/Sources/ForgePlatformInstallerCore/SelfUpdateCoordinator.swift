@@ -573,9 +573,14 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         }
     }
 
-    private func checkForUpdateWhileLocked(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+    private func checkForUpdateWhileLocked(
+        currentVersion: InstallerVersion,
+        invalidateCompositionSession: Bool = true
+    ) async -> SelfUpdateCheckResult {
         pendingUpdate = nil
-        invalidateVerifiedCompositionSession()
+        if invalidateCompositionSession {
+            invalidateVerifiedCompositionSession()
+        }
 
         switch await recoverInterruptedUpdate() {
         case .success:
@@ -589,6 +594,47 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             return await evaluate(latestRelease: latestRelease, currentVersion: currentVersion)
         case .failure(let failure):
             return rejected(failure.code)
+        }
+    }
+
+    /// Performs a read-only signed-release currency check without staging or
+    /// downloading a newer installer. It is used both before the first wizard
+    /// session and immediately before reviewed product mutation. A newer
+    /// release leaves a verified pending update for an explicit user-confirmed
+    /// handoff; the caller cannot continue with the old binary.
+    public func recheckInstallerBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> InstallerCurrencyCheckResult {
+        await whileExclusivelyLocked(
+            unavailable: { .failed($0.code.userFacingMessage) }
+        ) {
+            switch await self.checkForUpdateWhileLocked(
+                currentVersion: currentVersion,
+                invalidateCompositionSession: false
+            ) {
+            case .rejected(let reason):
+                return .failed(reason)
+            case .verifiedGitHubRelease(let release):
+                if release.version == currentVersion {
+                    guard let checked = self.checkedCurrentReleaseRecord,
+                          checked.release == release else {
+                        return .failed(
+                            InstallerSelfUpdateFailureCode.releaseMetadataRejected.userFacingMessage
+                        )
+                    }
+                    if let current = self.currentVerifiedReleaseRecord,
+                       current != checked {
+                        return .failed(
+                            InstallerSelfUpdateFailureCode.releaseIdentityConflict.userFacingMessage
+                        )
+                    }
+                    self.currentVerifiedReleaseRecord = checked
+                    self.checkedCurrentReleaseRecord = nil
+                    return .current(release)
+                }
+                self.invalidateVerifiedCompositionSession()
+                return .updateRequired(release)
+            }
         }
     }
 
