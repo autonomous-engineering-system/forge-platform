@@ -55,7 +55,7 @@ struct CompositionCatalogSignaturePolicy: Equatable, Sendable {
 /// Exact bytes observed at the only catalog locator admitted by the current
 /// verified installer release.  A future bounded transport constructs this
 /// after fetching the fixed locator; it cannot carry a user-supplied endpoint.
-struct CompositionCatalogFeedReadback: Sendable {
+struct CompositionCatalogFeedReadback: Equatable, Sendable {
     static let maximumCatalogBytes = 512 * 1024
     static let maximumTrustedClockFreshness: TimeInterval = 5 * 60
 
