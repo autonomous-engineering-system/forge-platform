@@ -82,6 +82,12 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         # This assertion intentionally prevents the existing explicit blocker
         # from being removed without a separately reviewed signer implementation.
         self.assertIn(
+            "runs-on: [self-hosted, macOS, ARM64, forge-platform-signer]",
+            text,
+        )
+        self.assertIn("bash scripts/ci/verify_macos_signing_runner.sh", text)
+        self.assertIn("FORGE_PLATFORM_SIGNER_ACCOUNT", text)
+        self.assertIn(
             "No protected Apple signing/notarization and descriptor-trust implementation is configured.",
             text,
         )

@@ -14,8 +14,9 @@ there is no `continue-on-error` or unsigned release fallback.
 Manual Mac-mini qualification requires a workflow dispatched from protected
 `main`, with workflow SHA and source SHA equal to the exact reviewed source.
 A GitHub-hosted admission job checks the current main ref before a privileged
-job is allocated. Both Mac-mini jobs use the protected
-`forge-platform-installer-signing` Environment, require the preceding job,
+job is allocated. The integration runner uses the protected
+`forge-platform-installer-integration` Environment; the signer uses the separate
+`forge-platform-installer-signing` Environment. Both require the preceding job,
 disable persisted checkout credentials, and recheck the current main ref after
 approval. The qualification slice has an explicit exact ancestor coverage SHA.
 
@@ -29,9 +30,11 @@ variable or self-written local receipt is not evidence of those protections.
 Any required change in repository/organization control architecture requires an
 explicitly reviewed decision; do not silently move repositories or broaden scope.
 
-Use exclusive `forge-platform-macmini-privileged` concurrency for this workflow.
-The eventual production signing path must join the same exclusivity boundary;
-the existing intentionally blocked release workflow is not enabled by this change.
+Use exclusive `forge-platform-macmini-privileged` concurrency for native qualification.
+The installer release workflow has its own exclusive release concurrency and now routes
+its credential-bearing signing stage to the same isolated `forge-platform-signer`
+runner account. The signing stage remains intentionally blocked until live host evidence
+and protected signing/notarization publication wiring are qualified.
 Persistent-host cleanup/isolation and reboot persistence still require physical
 runner evidence. A clean checkout does not prove a clean host. Preserve useful
 signing/runner state; fresh-install acceptance needs an isolated target strategy.
