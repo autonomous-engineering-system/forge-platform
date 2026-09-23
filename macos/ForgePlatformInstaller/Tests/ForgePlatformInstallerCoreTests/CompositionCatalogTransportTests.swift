@@ -116,10 +116,8 @@ final class CompositionCatalogTransportTests: XCTestCase {
                 timeout: 5,
                 protocolClassesForTesting: [CatalogTransportURLProtocol.self]
             )
-            XCTAssertEqual(
-                await transport.fetchDocument(at: locator),
-                .failure(.unavailable)
-            )
+            let result = await transport.fetchDocument(at: locator)
+            XCTAssertEqual(result, .failure(.unavailable))
         }
     }
 

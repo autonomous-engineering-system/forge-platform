@@ -296,7 +296,9 @@ final class CompositionCatalogAdmissionCoordinatorTests: XCTestCase {
                 )
             )
             let result = await attester.attestCatalogReadback(rawReadback)
-            XCTAssertEqual(result, .failure(.unavailable))
+            guard case .failure(.unavailable) = result else {
+                return XCTFail("trusted clock must reject invalid HTTPS evidence")
+            }
         }
     }
 

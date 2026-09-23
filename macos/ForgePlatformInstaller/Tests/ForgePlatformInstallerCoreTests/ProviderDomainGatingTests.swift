@@ -283,8 +283,10 @@ final class ProviderDomainGatingTests: XCTestCase {
         XCTAssertNotEqual(agent.id, server.id)
     }
 
-    func testUnavailableCoordinatorReturnsTypedCompositionSessionResult() async {
-        let result = await UnavailableInstallerWizardCoordinator().prepareVerifiedCompositionSession()
+    func testUnavailableCoordinatorReturnsTypedCompositionSessionResult() async throws {
+        let deployment = try ManagedDeploymentTarget(id: "deployment-new", exists: false)
+        let result = await UnavailableInstallerWizardCoordinator()
+            .prepareVerifiedCompositionSession(for: deployment)
 
         XCTAssertEqual(result, .unavailable(.coordinatorUnavailable))
         XCTAssertFalse(InstallerSessionPreparationFailure.coordinatorUnavailable.userFacingMessage.contains("coordinator-unavailable"))

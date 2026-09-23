@@ -11,12 +11,10 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             inspector: InspectorSpy(responses: [.success(currentIdentity)]),
             staging: StagingSpy(result: .success(try makeStagedAsset()))
         )
-        XCTAssertEqual(
-            await currentCoordinator.recheckInstallerBeforeMutation(
-                currentVersion: currentIdentity.version
-            ),
-            .current(currentRecord.release)
+        let currentCurrency = await currentCoordinator.recheckInstallerBeforeMutation(
+            currentVersion: currentIdentity.version
         )
+        XCTAssertEqual(currentCurrency, .current(currentRecord.release))
 
         let newerRecord = try makeReleaseRecord(version: "1.2.4", sequence: 21)
         let updateCoordinator = makeCoordinator(
@@ -24,12 +22,10 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             inspector: InspectorSpy(responses: [.success(currentIdentity)]),
             staging: StagingSpy(result: .success(try makeStagedAsset()))
         )
-        XCTAssertEqual(
-            await updateCoordinator.recheckInstallerBeforeMutation(
-                currentVersion: currentIdentity.version
-            ),
-            .updateRequired(newerRecord.release)
+        let updateCurrency = await updateCoordinator.recheckInstallerBeforeMutation(
+            currentVersion: currentIdentity.version
         )
+        XCTAssertEqual(updateCurrency, .updateRequired(newerRecord.release))
 
         let failedCoordinator = makeCoordinator(
             feed: FeedSpy(result: .failure(
@@ -62,29 +58,23 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             managedDeploymentRouteCoordinator: route
         )
 
-        XCTAssertEqual(
-            await coordinator.prepareManagedDeploymentInventory(),
-            .unavailable(.inventoryUnavailable)
-        )
+        let inventoryResult = await coordinator.prepareManagedDeploymentInventory()
+        XCTAssertEqual(inventoryResult, .unavailable(.inventoryUnavailable))
         let session = try makeSessionPlan(for: currentRecord)
         let deployment = try ManagedDeploymentTarget(
             id: "deployment-new",
             exists: false
         )
-        XCTAssertEqual(
-            await coordinator.prepareHostPreflight(
-                session: session,
-                deployment: deployment
-            ),
-            .unavailable(.preflightUnavailable)
+        let preflightResult = await coordinator.prepareHostPreflight(
+            session: session,
+            deployment: deployment
         )
-        XCTAssertEqual(
-            await coordinator.prepareCompositionReview(
-                session: session,
-                deployment: deployment
-            ),
-            .unavailable(.reviewUnavailable)
+        XCTAssertEqual(preflightResult, .unavailable(.preflightUnavailable))
+        let reviewResult = await coordinator.prepareCompositionReview(
+            session: session,
+            deployment: deployment
         )
+        XCTAssertEqual(reviewResult, .unavailable(.reviewUnavailable))
         let operation = ReviewedManagedDeploymentOperation(
             sessionID: session.sessionID,
             compositionIdentity: session.compositionIdentity,
@@ -95,33 +85,33 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             currentInstallerRelease: currentRecord.release,
             components: []
         )
-        XCTAssertEqual(
-            await coordinator.executeReviewedManagedDeployment(operation),
-            .failed(.executionFailed, stages: [])
-        )
+        let executionResult = await coordinator.executeReviewedManagedDeployment(operation)
+        XCTAssertEqual(executionResult, .failed(.executionFailed, stages: []))
 
         let requirement = ProviderRequirement(
             provider: .codex,
             isRequired: true
         )
-        XCTAssertEqual(
-            await coordinator.performProviderAction(.authenticate, for: requirement),
-            .verified
+        let targetedProvider = await coordinator.performProviderAction(
+            .authenticate,
+            for: requirement
         )
-        XCTAssertEqual(
-            await coordinator.performProviderAction(.authenticate, for: ProviderID.codex),
-            .failed(.coordinatorUnavailable)
+        XCTAssertEqual(targetedProvider, .verified)
+        let legacyProvider = await coordinator.performProviderAction(
+            .authenticate,
+            for: ProviderID.codex
         )
-        XCTAssertEqual(await route.calls(), 4)
-        XCTAssertEqual(await provider.calls(), [.authenticate])
+        XCTAssertEqual(legacyProvider, .failed(.coordinatorUnavailable))
+        let routeCallCount = await route.calls()
+        let providerCalls = await provider.calls()
+        XCTAssertEqual(routeCallCount, 4)
+        XCTAssertEqual(providerCalls, [.authenticate])
 
-        XCTAssertEqual(
-            await UnavailableProviderActionCoordinator().performProviderAction(
-                .install,
-                for: requirement
-            ),
-            .failed(.coordinatorUnavailable)
+        let unavailableProvider = await UnavailableProviderActionCoordinator().performProviderAction(
+            .install,
+            for: requirement
         )
+        XCTAssertEqual(unavailableProvider, .failed(.coordinatorUnavailable))
     }
 
     func testVerifiedNewerGitHubReleaseStagesVerifiesAndAtomicallyRelaunches() async throws {
