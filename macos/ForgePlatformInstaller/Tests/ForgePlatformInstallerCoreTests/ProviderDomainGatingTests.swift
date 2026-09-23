@@ -340,7 +340,10 @@ final class ProviderDomainGatingTests: XCTestCase {
         state.applyProviderActionResult(.installationReady, for: provider, action: .install)
         XCTAssertTrue(state.requestProviderAction(.authenticate, for: provider))
         state.applyProviderActionResult(.verified, for: provider, action: .authenticate)
-        XCTAssertEqual(state.providers.first(where: { $0.id == provider })?.state, .verified)
+        XCTAssertEqual(
+            state.providers.first(where: { $0.requirement.provider == provider })?.state,
+            .verified
+        )
     }
 
     private func makeSessionPlan(
