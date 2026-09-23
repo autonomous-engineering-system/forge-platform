@@ -409,17 +409,18 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
 
         let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
         XCTAssertEqual(enforcement, .current(release.release))
-        let firstTask = Task { await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment()) }
+        let deployment = sessionDeployment()
+        let firstTask = Task { await coordinator.prepareVerifiedCompositionSession(for: deployment) }
         guard await waitForSessionPreparerCall(preparer) else {
             await preparer.resumeNext(with: .unavailable(.selectionUnavailable))
             _ = await firstTask.value
             return XCTFail("The first session preparer was not invoked")
         }
-        let concurrent = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
+        let concurrent = await coordinator.prepareVerifiedCompositionSession(for: deployment)
         let preparerCalls = await preparer.callCount()
         await preparer.resumeNext(with: .prepared(plan))
         let first = await firstTask.value
-        let cached = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
+        let cached = await coordinator.prepareVerifiedCompositionSession(for: deployment)
 
         XCTAssertEqual(concurrent, .unavailable(.selectionUnavailable))
         XCTAssertEqual(preparerCalls, 1)
@@ -447,7 +448,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
 
         let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
         XCTAssertEqual(enforcement, .current(release.release))
-        let task = Task { await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment()) }
+        let deployment = sessionDeployment()
+        let task = Task { await coordinator.prepareVerifiedCompositionSession(for: deployment) }
         guard await waitForSessionPreparerCall(preparer) else {
             await preparer.resumeNext(with: .unavailable(.selectionUnavailable))
             _ = await task.value
@@ -457,7 +459,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         let recheck = await coordinator.checkForUpdate(currentVersion: current.version)
         await preparer.resumeNext(with: .prepared(plan))
         let inFlightResult = await task.value
-        let nextPreparation = await coordinator.prepareVerifiedCompositionSession(for: sessionDeployment())
+        let nextPreparation = await coordinator.prepareVerifiedCompositionSession(for: deployment)
 
         XCTAssertEqual(recheck, .verifiedGitHubRelease(release.release))
         XCTAssertEqual(inFlightResult, .unavailable(.selectionUnavailable))
