@@ -13,7 +13,8 @@ HOSTED = ROOT / ".github" / "workflows" / "macos-installer-validation.yml"
 NATIVE = ROOT / ".github" / "workflows" / "macos-installer-native-integration.yml"
 RELEASE = ROOT / ".github" / "workflows" / "forge-platform-installer-release.yml"
 BOOTSTRAP = ROOT / "scripts" / "ci" / "bootstrap_macos_signing_runner.sh"
-READINESS = ROOT / "scripts" / "ci" / "verify_macos_signing_runner.sh"
+READINESS = ROOT / "scripts" / "ci" / "verify_macos_offline_signing_host.sh"
+ACTIONS_SIGNER_GUARD = ROOT / "scripts" / "ci" / "verify_macos_signing_runner.sh"
 
 
 class NativeMacRunnerPolicyTests(unittest.TestCase):
@@ -50,7 +51,7 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertIn("Developer ID Application:", text)
         self.assertIn("codesign --verify --strict --deep", text)
         self.assertIn("FORGE_PLATFORM_SIGNER_ACCOUNT", text)
-        self.assertIn("signer-runner-service-not-running", text)
+        self.assertIn("github-actions-signing-forbidden", text)
         forbidden = (
             "security export",
             "find-generic-password -w",
@@ -60,6 +61,14 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         )
         for pattern in forbidden:
             self.assertNotRegex(text, re.compile(pattern, re.IGNORECASE))
+
+    def test_actions_signer_guard_is_terminal_and_contains_no_apple_probe(self) -> None:
+        text = ACTIONS_SIGNER_GUARD.read_text(encoding="utf-8")
+        self.assertIn("github-actions-signer-disabled-public-repository", text)
+        self.assertIn("exit 1", text)
+        self.assertNotIn("security find-identity", text)
+        self.assertNotIn("notarytool", text)
+        self.assertNotIn("codesign --sign", text)
 
     def test_runner_bootstrap_pins_official_arm64_version_and_digest(self) -> None:
         text = BOOTSTRAP.read_text(encoding="utf-8")
@@ -72,8 +81,8 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertIn('shasum -a 256 "$tmp/$RUNNER_ARCHIVE"', text)
         self.assertIn('FORGE_PLATFORM_RUNNER_ROLE', text)
         self.assertIn('RUNNER_LABELS="forge-platform-integration"', text)
-        self.assertIn('RUNNER_LABELS="forge-platform-signer"', text)
-        self.assertIn('signer-and-integration-user-must-differ', text)
+        self.assertIn("credential-bearing-actions-signer-disabled-public-repository", text)
+        self.assertNotIn('RUNNER_LABELS="forge-platform-signer"', text)
         self.assertIn('integration-and-signer-user-must-differ', text)
         self.assertNotIn("/releases/latest/", text)
 

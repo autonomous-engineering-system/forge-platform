@@ -21,7 +21,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 COVERAGE = ROOT / "scripts/check_managed_installer_swift_coverage.py"
 PYTHON_COVERAGE = ROOT / "scripts/check_managed_installer_python_coverage.py"
-READINESS = ROOT / "scripts/ci/verify_macos_signing_runner.sh"
+READINESS = ROOT / "scripts/ci/verify_macos_offline_signing_host.sh"
 spec = importlib.util.spec_from_file_location("swift_coverage_gate", COVERAGE)
 assert spec is not None and spec.loader is not None
 gate = importlib.util.module_from_spec(spec)
@@ -278,11 +278,10 @@ class SigningReadinessContractTests(unittest.TestCase):
             service.chmod(0o700)
             env = {
                 "PATH": str(bindir) + ":/usr/bin:/bin", "HOME": str(root), "TMPDIR": str(tempdir),
-                "RUNNER_NAME": "fixture-not-a-real-mini", "FORGE_PLATFORM_APPLE_TEAM_ID": "AAAAAAAAAA",
+                "FORGE_PLATFORM_APPLE_TEAM_ID": "AAAAAAAAAA",
                 "FORGE_PLATFORM_CODESIGN_IDENTITY": "Developer ID Application: Expected Test (AAAAAAAAAA)",
                 "FORGE_PLATFORM_NOTARYTOOL_PROFILE": "fixture-only",
                 "FORGE_PLATFORM_SIGNER_ACCOUNT": os.environ.get("USER", ""),
-                "FORGE_PLATFORM_SIGNER_RUNNER_ROOT": str(runner_root),
                 "FAKE_MODE": mode,
                 "FAKE_DEVELOPER_DIR": str(developer), "FAKE_HISTORY_CALLED": str(history),
                 "FAKE_SIGN_CALLED": str(sign), "FAKE_ANCHOR_CALLED": str(anchor),
@@ -294,13 +293,26 @@ class SigningReadinessContractTests(unittest.TestCase):
             self.assertEqual(list(tempdir.iterdir()), [], "Private probe was not cleaned up")
             return result, history.exists(), sign.read_text() if sign.exists() else None, anchor.exists()
 
-    def test_complete_simulated_chain_includes_exact_signer_and_apple_anchor(self) -> None:
+    def test_complete_offline_simulated_chain_includes_exact_signer_and_apple_anchor(self) -> None:
         result, history, signed, anchor = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(history and anchor)
         self.assertEqual(signed, "1" * 40)
         self.assertIn("NOTARIZATION_ACCEPTANCE=NOT_RUN", result.stdout)
+        self.assertIn("mode=offline-local", result.stdout)
         self.assertIn("Build version TEST_ONLY", result.stdout)
+
+    def test_actions_context_is_forbidden_before_signing(self) -> None:
+        for overrides in (
+            {"GITHUB_ACTIONS": "true"},
+            {"RUNNER_NAME": "public-repo-self-hosted-signer"},
+        ):
+            with self.subTest(overrides=overrides):
+                result, history, signed, _ = self.run_gate(overrides=overrides)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(history)
+                self.assertIsNone(signed)
+                self.assertNotIn("READINESS=PASS", result.stdout)
 
     def test_exact_fingerprint_configuration_is_supported(self) -> None:
         result, _, signed, _ = self.run_gate(overrides={"FORGE_PLATFORM_CODESIGN_IDENTITY": "1" * 40})
