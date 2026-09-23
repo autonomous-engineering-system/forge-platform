@@ -69,14 +69,16 @@ final class ReleasedInstallerStartupTests: XCTestCase {
             return XCTFail("A newer release must stop at explicit operator confirmation")
         }
         XCTAssertEqual(actualRelease, release)
-        XCTAssertEqual(await runtime.handoffCallCount(), 0)
+        let handoffCallsBeforeConfirmation = await runtime.handoffCallCount()
+        XCTAssertEqual(handoffCallsBeforeConfirmation, 0)
 
         let confirmed = await boundary.confirmRequiredUpdate(release)
         guard case .relaunching(let relaunchedRelease) = confirmed else {
             return XCTFail("Only explicit confirmation may enter download/stage/handoff")
         }
         XCTAssertEqual(relaunchedRelease, release)
-        XCTAssertEqual(await runtime.handoffCallCount(), 1)
+        let handoffCallsAfterConfirmation = await runtime.handoffCallCount()
+        XCTAssertEqual(handoffCallsAfterConfirmation, 1)
 
         let repeatedOutcome = await boundary.start(currentVersion: currentVersion)
         guard case .blocked(let reason) = repeatedOutcome else {
