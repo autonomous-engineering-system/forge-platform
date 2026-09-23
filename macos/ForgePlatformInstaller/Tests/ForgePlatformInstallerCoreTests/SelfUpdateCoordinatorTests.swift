@@ -1159,6 +1159,25 @@ private actor FeedSpy: SignedInstallerReleaseFeedVerifying {
     }
 }
 
+private actor SequencedFeedSpy: SignedInstallerReleaseFeedVerifying {
+    private var results: [Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>]
+    private var calls = 0
+
+    init(results: [Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>]) {
+        self.results = results
+    }
+
+    func latestVerifiedInstallerRelease() async -> Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure> {
+        calls += 1
+        guard !results.isEmpty else {
+            return .failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable))
+        }
+        return results.removeFirst()
+    }
+
+    func callCount() -> Int { calls }
+}
+
 private actor SessionPreparerSpy: VerifiedCompositionSessionPreparing {
     private let result: InstallerSessionPreparationResult
     private var receivedContexts: [CurrentVerifiedInstallerCompositionContext] = []
