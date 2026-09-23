@@ -387,6 +387,7 @@ public enum InstallerSessionPreparationFailure: String, CaseIterable, Codable, E
     /// A trusted collaborator was present but could not admit one immutable
     /// composition/session plan for this installer run.
     case selectionUnavailable = "selection-unavailable"
+    case installerUpdateRequired = "installer-update-required"
 
     public var userFacingMessage: String {
         switch self {
@@ -394,6 +395,8 @@ public enum InstallerSessionPreparationFailure: String, CaseIterable, Codable, E
             return "Geverifieerde compositiekeuze is nog niet beschikbaar in deze installer-runtime."
         case .selectionUnavailable:
             return "De geverifieerde compositiekeuze is niet beschikbaar; doorgaan blijft geblokkeerd."
+        case .installerUpdateRequired:
+            return "De nieuwste gekwalificeerde compositie vereist een nieuwere Forge Platform Installer. Herstart om de verplichte self-update uit te voeren."
         }
     }
 }
