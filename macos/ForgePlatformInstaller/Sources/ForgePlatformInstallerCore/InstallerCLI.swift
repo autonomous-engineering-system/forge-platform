@@ -502,7 +502,12 @@ public struct InstallerCLIWorkflow: Sendable {
         }
     }
 
-    private func inventoryState() async -> Result<ManagedDeploymentInventory, InstallerCLIResult> {
+    private enum InventoryOutcome {
+        case success(ManagedDeploymentInventory)
+        case failure(InstallerCLIResult)
+    }
+
+    private func inventoryState() async -> InventoryOutcome {
         let result = await coordinator.prepareManagedDeploymentInventory()
         switch result {
         case .available(let inventory):
