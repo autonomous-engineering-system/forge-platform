@@ -1054,6 +1054,7 @@ public struct InstallerWizardState: Equatable, Sendable {
     /// Review for real execution. It is never persisted as product authority.
     public private(set) var preMutationInstallerCurrency: PreMutationInstallerCurrencyGate
     public private(set) var deploymentSelection: ManagedDeploymentSelectionGate
+    public private(set) var componentSelection: InstallerComponentSelection
     /// Exactly one composition plan may be accepted for this wizard session.
     /// The plan is the exclusive source of provider requirements and provides
     /// the correlation identity for later preflight, review and operation
@@ -1076,6 +1077,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         self.selfUpdate = .checking
         self.preMutationInstallerCurrency = .pending
         self.deploymentSelection = .pending
+        self.componentSelection = InstallerComponentSelection()
         self.sessionPreparation = .pending
         self.acceptedSessionPlan = nil
         self.preflight = HostPreflight()
@@ -1088,6 +1090,17 @@ public struct InstallerWizardState: Equatable, Sendable {
 
     public var hasSelectedManagedDeployment: Bool {
         deploymentSelection.isSelected
+    }
+
+    public var compositionRequest: InstallerCompositionRequest? {
+        guard componentSelection.isValid,
+              let target = deploymentSelection.selectedTarget else {
+            return nil
+        }
+        return try? InstallerCompositionRequest(
+            componentIdentities: Set(componentSelection.selected.map(\.rawValue)),
+            installedCompositionID: target.compositionIdentity?.compositionID
+        )
     }
 
     /// Returns whether a trusted coordinator has explicitly supplied a valid
@@ -1311,6 +1324,49 @@ public struct InstallerWizardState: Equatable, Sendable {
             return false
         }
         deploymentSelection = .selected(selected, evidenceReference: inventory.evidenceReference)
+        var initial = InstallerComponentSelection()
+        if selected.forgeInstanceID != nil {
+            _ = initial.setSelected(.forgeRuntime, selected: true)
+        }
+        if selected.engineeringPlatformInstanceID != nil {
+            _ = initial.setSelected(.engineeringPlatformServer, selected: true)
+        }
+        componentSelection = initial
+        invalidateCompositionEvidencePreservingDeployment()
+        return true
+    }
+
+    @discardableResult
+    public mutating func setComponentSelected(
+        _ component: InstallerComponentID,
+        selected: Bool
+    ) -> Bool {
+        guard step == .composition,
+              selfUpdate.isCurrent,
+              hasSelectedManagedDeployment,
+              acceptedSessionPlan == nil,
+              !sessionPreparation.isPreparing else {
+            return false
+        }
+        guard componentSelection.setSelected(component, selected: selected) else {
+            return false
+        }
+        invalidateCompositionEvidencePreservingDeployment()
+        return true
+    }
+
+    @discardableResult
+    public mutating func applyComponentPreset(_ preset: InstallerPresetID) -> Bool {
+        guard step == .composition,
+              selfUpdate.isCurrent,
+              hasSelectedManagedDeployment,
+              acceptedSessionPlan == nil,
+              !sessionPreparation.isPreparing else {
+            return false
+        }
+        guard componentSelection.applyPreset(preset) else {
+            return false
+        }
         invalidateCompositionEvidencePreservingDeployment()
         return true
     }
@@ -1322,6 +1378,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         guard step == .composition,
               selfUpdate.isCurrent,
               hasSelectedManagedDeployment,
+              compositionRequest != nil,
               acceptedSessionPlan == nil else {
             return false
         }
@@ -1570,6 +1627,9 @@ public protocol InstallerWizardCoordinator: Sendable {
     /// self-update and managed-deployment gates. Implementations must not return
     /// catalog bytes, URLs, commands, credentials, product readbacks or an operation authority.
     func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult
+    func prepareVerifiedCompositionSession(
+        request: InstallerCompositionRequest
+    ) async -> InstallerSessionPreparationResult
     /// Legacy targetless route retained for composition/v1 coordinators.
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult
     /// Target-aware route used by composition/v2. Existing coordinators inherit
@@ -1597,6 +1657,13 @@ public extension InstallerWizardCoordinator {
 
     func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
         .unavailable(.coordinatorUnavailable)
+    }
+
+    func prepareVerifiedCompositionSession(
+        request: InstallerCompositionRequest
+    ) async -> InstallerSessionPreparationResult {
+        _ = request
+        return await prepareVerifiedCompositionSession()
     }
 
     func performProviderAction(
