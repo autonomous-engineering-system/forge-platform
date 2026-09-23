@@ -1,5 +1,6 @@
 name: Foundation validation
 
+# This existing required check aggregates both suites; neither may be skipped.
 on:
   pull_request:
   push:
@@ -9,10 +10,38 @@ permissions:
   contents: read
 
 jobs:
-  foundation:
-    name: Foundation validation
+  repository-validation:
+    name: Repository unit and integration tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Validate repository foundation
         run: sh scripts/validate.sh
+
+  native-validation:
+    name: Native macOS validation
+    uses: ./.github/workflows/macos-installer-validation.yml
+    with:
+      coverage_base_sha: ${{ github.event.pull_request.base.sha || github.event.before }}
+
+  foundation:
+    name: Foundation validation
+    if: ${{ always() }}
+    needs: [repository-validation, native-validation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both test suites and coverage gates to succeed
+        env:
+          REPOSITORY_RESULT: ${{ needs.repository-validation.result }}
+          NATIVE_RESULT: ${{ needs.native-validation.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${REPOSITORY_RESULT:-}" != "success" || "${NATIVE_RESULT:-}" != "success" ]]; then
+            echo "FOUNDATION_GATE=FAIL required_suites_not_successful" >&2
+            exit 1
+          fi
+          echo "FOUNDATION_GATE=PASS repository_tests=PASS native_tests_and_coverage=PASS"

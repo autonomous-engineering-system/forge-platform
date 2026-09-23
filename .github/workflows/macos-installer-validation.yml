@@ -1,10 +1,13 @@
 name: macOS installer validation
 
-# Do not path-filter a required check: CI/security-only PRs need these tests too.
+# Called at the same commit by the merge-required Foundation workflow.
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      coverage_base_sha:
+        description: Exact ancestor for all changed production files
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,7 +18,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 30
     env:
-      COVERAGE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
@@ -33,7 +36,9 @@ jobs:
           xcrun --sdk macosx --show-sdk-version
           swift --version
       - name: Exercise CI-gate unit and subprocess integration regressions
-        run: python3 tests/foundation/test_ci_gate_regressions.py
+        run: |
+          python3 tests/foundation/test_ci_gate_regressions.py
+          python3 tests/foundation/test_required_ci_aggregation.py
       - name: Run native installer tests with coverage
         working-directory: macos/ForgePlatformInstaller
         env:

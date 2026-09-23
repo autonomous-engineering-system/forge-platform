@@ -19,7 +19,11 @@ READINESS = ROOT / "scripts" / "ci" / "verify_macos_signing_runner.sh"
 class NativeMacRunnerPolicyTests(unittest.TestCase):
     def test_untrusted_pull_request_validation_stays_on_github_hosted_macos(self) -> None:
         text = HOSTED.read_text(encoding="utf-8")
-        self.assertIn("pull_request:", text)
+        self.assertIn("workflow_call:", text)
+        foundation = ROOT / ".github" / "workflows" / "foundation-validation.yml"
+        foundation_text = foundation.read_text(encoding="utf-8")
+        self.assertIn("pull_request:", foundation_text)
+        self.assertIn("uses: ./.github/workflows/macos-installer-validation.yml", foundation_text)
         self.assertIn("runs-on: macos-26", text)
         self.assertNotIn("self-hosted", text)
         self.assertNotIn("forge-platform-signer", text)
