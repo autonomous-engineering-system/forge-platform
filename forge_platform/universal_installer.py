@@ -49,7 +49,8 @@ INSTALLER_RELEASE_SCHEMA = "forge-platform.installer-release/v1"
 COMPOSITION_CATALOG_SCHEMA = "forge-platform.composition-catalog/v1"
 COMPOSITION_SCHEMA = "forge-platform.composition/v1"
 COMPOSITION_SCHEMA_V2 = "forge-platform.composition/v2"
-COMPOSITION_SCHEMAS = frozenset({COMPOSITION_SCHEMA, COMPOSITION_SCHEMA_V2})
+COMPOSITION_SCHEMA_V3 = "forge-platform.composition/v3"
+COMPOSITION_SCHEMAS = frozenset({COMPOSITION_SCHEMA, COMPOSITION_SCHEMA_V2, COMPOSITION_SCHEMA_V3})
 INSTALLER_CHANNELS = frozenset({"stable", "candidate"})
 SUPPORTED_MACOS_ARCHITECTURES = INSTALLER_ARCHITECTURES
 # Host observations retain Intel as an explicit negative input so preflight can
@@ -68,6 +69,7 @@ PROVIDER_CREDENTIAL_SCOPES = frozenset({"user", "component"})
 PROVIDER_OWNER_COMPONENTS = frozenset({
     "forge-runtime", "engineering-platform-server", "engineering-platform-project-agent",
 })
+PROVIDER_RUNTIME_ARCHIVE_KINDS = frozenset({"tar.gz", "zip"})
 PROVIDER_STATES = frozenset({"ABSENT", "INSTALLED", "AUTHENTICATION_REQUIRED", "VERIFIED", "FAILED"})
 TOOL_STATES = frozenset({"ABSENT", "ACTIVE", "UNKNOWN"})
 SERVICE_COMPONENTS = frozenset({"forge-runtime", "workspace-server", "engineering-platform-server"})
@@ -2045,6 +2047,39 @@ def _validate_provider_target(
 
 
 @dataclass(frozen=True)
+class ProviderRuntimeRequirement:
+    """Exact immutable provider CLI bytes selected by composition/v3."""
+
+    version: SemanticVersion
+    archive_kind: str
+    artifact: DownloadIdentity
+    executable_relative_path: str
+    executable_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.version, SemanticVersion):
+            raise ValueError("provider runtime version must be semantic")
+        if self.archive_kind not in PROVIDER_RUNTIME_ARCHIVE_KINDS:
+            raise ValueError("provider runtime archive kind is unsupported")
+        if not isinstance(self.artifact, DownloadIdentity):
+            raise ValueError("provider runtime artifact is invalid")
+        if (
+            not isinstance(self.executable_relative_path, str)
+            or not self.executable_relative_path
+            or len(self.executable_relative_path) > 256
+        ):
+            raise ValueError("provider runtime executable path is invalid")
+        segments = self.executable_relative_path.split("/")
+        if any(
+            segment in {"", ".", ".."}
+            or re.fullmatch(r"[A-Za-z0-9._-]+", segment) is None
+            for segment in segments
+        ):
+            raise ValueError("provider runtime executable path is unsafe")
+        _digest(self.executable_digest, "provider runtime executable_digest")
+
+
+@dataclass(frozen=True)
 class ProviderRequirement:
     """One provider requirement bound to its owning component-instance target.
 
@@ -2060,6 +2095,7 @@ class ProviderRequirement:
     credential_scope: str = "user"
     owner_component: str | None = None
     target_identity: str | None = None
+    runtime: ProviderRuntimeRequirement | None = None
 
     def __post_init__(self) -> None:
         _validate_provider_target(
@@ -2069,6 +2105,11 @@ class ProviderRequirement:
             raise ValueError("provider required must be boolean")
         if self.minimum_version is not None and not isinstance(self.minimum_version, SemanticVersion):
             raise ValueError("provider minimum version must be semantic")
+        if self.runtime is not None:
+            if not isinstance(self.runtime, ProviderRuntimeRequirement):
+                raise ValueError("provider runtime requirement is invalid")
+            if self.minimum_version is not None and self.runtime.version < self.minimum_version:
+                raise ValueError("provider runtime is older than the required minimum")
 
     @property
     def key(self) -> str:
@@ -2081,6 +2122,7 @@ class ProviderSelection:
     enabled: bool
     owner_component: str | None = None
     target_identity: str | None = None
+    executable_digest: str | None = None
 
     def __post_init__(self) -> None:
         if self.identity not in PROVIDER_IDENTITIES:
@@ -2125,6 +2167,8 @@ class ProviderReadback:
             if not isinstance(self.target_identity, str) or _SAFE_TARGET_ID.fullmatch(self.target_identity) is None:
                 raise ValueError("provider readback target_identity is invalid")
         _required(self.evidence_reference, "provider evidence_reference")
+        if self.executable_digest is not None:
+            _digest(self.executable_digest, "provider executable_digest")
         if self.state == "VERIFIED":
             if not isinstance(self.version, SemanticVersion):
                 raise ValueError("verified provider requires a version")
@@ -2266,6 +2310,18 @@ def evaluate_provider_gate(
         elif readback.state == "FAILED":
             actions.append(ProviderAction(
                 requirement.identity, "RESOLVE_FAILURE", "provider target validation failed", readback, *action_args
+            ))
+            blocking.append(key)
+        elif requirement.runtime is not None and (
+            readback.version != requirement.runtime.version
+            or readback.executable_digest != requirement.runtime.executable_digest
+        ):
+            actions.append(ProviderAction(
+                requirement.identity,
+                "INSTALL",
+                "provider target runtime does not match the exact composition artifact",
+                readback,
+                *action_args,
             ))
             blocking.append(key)
         elif requirement.minimum_version is not None and readback.version < requirement.minimum_version:
@@ -2559,20 +2615,47 @@ def _parse_providers(value: object, *, schema: str = COMPOSITION_SCHEMA) -> tupl
             )
             owner_component = None
             target_identity = None
-        elif schema == COMPOSITION_SCHEMA_V2:
-            item = _mapping(
-                entry,
-                frozenset({
-                    "identity", "required", "minimum_version", "credential_scope",
-                    "owner_component", "target_identity",
-                }),
-                "provider",
-            )
+        elif schema in {COMPOSITION_SCHEMA_V2, COMPOSITION_SCHEMA_V3}:
+            expected = {
+                "identity", "required", "minimum_version", "credential_scope",
+                "owner_component", "target_identity",
+            }
+            if schema == COMPOSITION_SCHEMA_V3:
+                expected.add("runtime")
+            item = _mapping(entry, frozenset(expected), "provider")
             owner_component = _required(item["owner_component"], "provider owner_component")
             target_identity = _required(item["target_identity"], "provider target_identity")
         else:
             raise ValueError("provider schema is unsupported")
         version = item["minimum_version"]
+        runtime = None
+        if schema == COMPOSITION_SCHEMA_V3:
+            runtime_payload = _mapping(
+                item["runtime"],
+                frozenset({
+                    "version", "archive_kind", "artifact",
+                    "executable_relative_path", "executable_digest",
+                }),
+                "provider runtime",
+            )
+            artifact = _mapping(
+                runtime_payload["artifact"],
+                frozenset({"url", "digest"}),
+                "provider runtime artifact",
+            )
+            runtime = ProviderRuntimeRequirement(
+                SemanticVersion.parse(runtime_payload["version"], "provider runtime version"),
+                _required(runtime_payload["archive_kind"], "provider runtime archive_kind"),
+                DownloadIdentity(
+                    _https_url(artifact["url"], "provider runtime artifact URL"),
+                    _digest(artifact["digest"], "provider runtime artifact digest"),
+                ),
+                _required(
+                    runtime_payload["executable_relative_path"],
+                    "provider runtime executable_relative_path",
+                ),
+                _digest(runtime_payload["executable_digest"], "provider runtime executable_digest"),
+            )
         result.append(ProviderRequirement(
             _required(item["identity"], "provider identity"),
             _boolean(item["required"], "provider required"),
@@ -2580,6 +2663,7 @@ def _parse_providers(value: object, *, schema: str = COMPOSITION_SCHEMA) -> tupl
             _required(item["credential_scope"], "provider credential_scope"),
             owner_component,
             target_identity,
+            runtime,
         ))
     return tuple(result)
 
