@@ -277,7 +277,8 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             version: "1.2.3"
         )
         XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
-        XCTAssertTrue(result.stderr.joined().contains("compositiesessie"))
+        XCTAssertTrue(result.stdout.joined().contains("compositiesessie"))
+        XCTAssertTrue(result.stderr.isEmpty)
     }
 
     func testReadySelfUpdateApplyIsNoOpCurrentAndRemoveSurfacesProducerBlocker() async throws {
