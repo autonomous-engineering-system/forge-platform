@@ -26,6 +26,9 @@ final class InstallerApplicationStartupModel: ObservableObject {
     /// persisted.  Keeping termination here prevents the old UI process from
     /// ever returning to a wizard after it has delegated to a newer installer.
     private let terminateCurrentProcess: @MainActor @Sendable () -> Void
+    /// A code-injected read seam, never an environment/CLI override. Production
+    /// retains the signed-bundle version reader and the real sealed boundary.
+    private let readCurrentVersion: @MainActor @Sendable () -> InstallerVersion?
     private var hasStarted = false
 
     func confirmRequiredUpdate() {
@@ -46,7 +49,7 @@ final class InstallerApplicationStartupModel: ObservableObject {
     private func apply(_ outcome: ReleasedInstallerStartupOutcome) {
         switch outcome {
         case .ready(let session):
-            guard let currentVersion = InstallerBuild.currentVersion else {
+            guard let currentVersion = readCurrentVersion() else {
                 state = .blocked("De code-ondertekende installerversie ontbreekt of is niet geldig.")
                 return
             }
@@ -77,10 +80,14 @@ final class InstallerApplicationStartupModel: ObservableObject {
         startupBoundary: ReleasedInstallerStartupBoundary = .bundledFailClosed(),
         terminateCurrentProcess: @escaping @MainActor @Sendable () -> Void = {
             NSApplication.shared.terminate(nil)
+        },
+        readCurrentVersion: @escaping @MainActor @Sendable () -> InstallerVersion? = {
+            InstallerBuild.currentVersion
         }
     ) {
         self.startupBoundary = startupBoundary
         self.terminateCurrentProcess = terminateCurrentProcess
+        self.readCurrentVersion = readCurrentVersion
     }
 
     func start() {
@@ -89,7 +96,7 @@ final class InstallerApplicationStartupModel: ObservableObject {
         }
         hasStarted = true
         let startupBoundary = startupBoundary
-        guard let currentVersion = InstallerBuild.currentVersion else {
+        guard let currentVersion = readCurrentVersion() else {
             state = .blocked("De code-ondertekende installerversie ontbreekt of is niet geldig.")
             return
         }
