@@ -72,8 +72,14 @@ def _load_test_module(path: Path, index: int):
 
 
 def _run_tests() -> unittest.result.TestResult:
-    if str(ROOT) not in sys.path:
-        sys.path.insert(0, str(ROOT))
+    for directory in (
+        ROOT,
+        ROOT / "tests" / "component_operations",
+        ROOT / "tests" / "installer",
+    ):
+        value = str(directory)
+        if value not in sys.path:
+            sys.path.insert(0, value)
     suite = unittest.TestSuite()
     loader = unittest.defaultTestLoader
     for index, relative in enumerate(TESTS):
