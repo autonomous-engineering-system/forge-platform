@@ -68,6 +68,186 @@ final class ManagedPythonRuntimeParentJournalAdapterTests: XCTestCase {
         ).commitManagedPythonRuntimeTerminalReceipt(fixture.receipt, for: fixture.request)
         XCTAssertEqual(journalFailure.failure, .journalBridgeFailed)
     }
+
+    func testFileStoreAtomicallyAdvancesExactPlannedRecordAndRetryIsIdempotent() async throws {
+        let fixture = try ParentJournalFixture()
+        let root = temporaryParentJournalRoot()
+        defer { removeParentJournalRootIfPresent(root) }
+        let store = FileManagedPythonRuntimeRecoveryStore(rootDirectory: root)
+        let planned = try ManagedPythonRuntimeParentJournalRecord(
+            request: fixture.request,
+            stablePlanFingerprint: fixture.stableFingerprint,
+            requiresManagedToolReconciliation: true
+        )
+        let evidence = try fixture.receipt.installerJournalEvidence(
+            postToolPlanFingerprint: fixture.postFingerprint,
+            toolReceiptReferences: ["receipt:git"]
+        )
+
+        let initialLoad = await store.loadOperation(operationID: fixture.request.operationID)
+        XCTAssertNil(try loadedParentRecord(initialLoad))
+        let firstStart = await store.startPlannedOperation(planned)
+        let repeatedStart = await store.startPlannedOperation(planned)
+        XCTAssertNil(firstStart.failure)
+        XCTAssertNil(repeatedStart.failure)
+        let plannedLoad = await store.loadOperation(operationID: fixture.request.operationID)
+        XCTAssertEqual(
+            try loadedParentRecord(plannedLoad),
+            planned
+        )
+
+        let first = await store.advancePlannedOperationToManagedTools(
+            request: fixture.request,
+            receipt: fixture.receipt,
+            evidence: evidence,
+            expectedStablePlanFingerprint: fixture.stableFingerprint
+        )
+        let retry = await store.advancePlannedOperationToManagedTools(
+            request: fixture.request,
+            receipt: fixture.receipt,
+            evidence: evidence,
+            expectedStablePlanFingerprint: fixture.stableFingerprint
+        )
+        XCTAssertNil(first.failure)
+        XCTAssertNil(retry.failure)
+
+        let advancedLoad = await store.loadOperation(operationID: fixture.request.operationID)
+        let advanced = try XCTUnwrap(loadedParentRecord(advancedLoad))
+        XCTAssertEqual(advanced.state, .managedTools)
+        XCTAssertEqual(advanced.managedToolsEvidence, evidence)
+        XCTAssertEqual(advanced.stablePlanFingerprint, fixture.stableFingerprint)
+        XCTAssertEqual(advanced.requestFingerprint, fixture.request.executionRequestFingerprint)
+
+        let recordURL = parentJournalRecordURL(root: root, operationID: fixture.request.operationID)
+        let attributes = try FileManager.default.attributesOfItem(atPath: recordURL.path)
+        XCTAssertEqual(attributes[.posixPermissions] as? NSNumber, NSNumber(value: 0o600))
+        let bytes = try Data(contentsOf: recordURL)
+        XCTAssertEqual(try JSONEncoder.parentJournal.encode(advanced), bytes)
+        XCTAssertFalse(String(decoding: bytes, as: UTF8.self).contains(root.path))
+    }
+
+    func testFileStoreRejectsConflictingPlanAdvanceAndIdempotentEvidence() async throws {
+        let fixture = try ParentJournalFixture()
+        let root = temporaryParentJournalRoot()
+        defer { removeParentJournalRootIfPresent(root) }
+        let store = FileManagedPythonRuntimeRecoveryStore(rootDirectory: root)
+        let planned = try ManagedPythonRuntimeParentJournalRecord(
+            request: fixture.request,
+            stablePlanFingerprint: fixture.stableFingerprint,
+            requiresManagedToolReconciliation: true
+        )
+        let started = await store.startPlannedOperation(planned)
+        XCTAssertNil(started.failure)
+
+        let conflictingPlan = try ManagedPythonRuntimeParentJournalRecord(
+            request: fixture.request,
+            stablePlanFingerprint: String(repeating: "c", count: 64),
+            requiresManagedToolReconciliation: true
+        )
+        let conflictingStart = await store.startPlannedOperation(conflictingPlan)
+        XCTAssertEqual(conflictingStart.failure, .rejected)
+
+        let evidence = try fixture.receipt.installerJournalEvidence(
+            postToolPlanFingerprint: fixture.postFingerprint,
+            toolReceiptReferences: ["receipt:git"]
+        )
+        let wrongPlanAdvance = await store.advancePlannedOperationToManagedTools(
+            request: fixture.request,
+            receipt: fixture.receipt,
+            evidence: evidence,
+            expectedStablePlanFingerprint: String(repeating: "d", count: 64)
+        )
+        XCTAssertEqual(wrongPlanAdvance.failure, .rejected)
+        let advance = await store.advancePlannedOperationToManagedTools(
+            request: fixture.request,
+            receipt: fixture.receipt,
+            evidence: evidence,
+            expectedStablePlanFingerprint: fixture.stableFingerprint
+        )
+        XCTAssertNil(advance.failure)
+
+        let conflictingEvidence = try fixture.receipt.installerJournalEvidence(
+            postToolPlanFingerprint: String(repeating: "e", count: 64),
+            toolReceiptReferences: ["receipt:git"]
+        )
+        let conflictingAdvance = await store.advancePlannedOperationToManagedTools(
+            request: fixture.request,
+            receipt: fixture.receipt,
+            evidence: conflictingEvidence,
+            expectedStablePlanFingerprint: fixture.stableFingerprint
+        )
+        XCTAssertEqual(conflictingAdvance.failure, .rejected)
+    }
+
+    func testFileStoreFailsClosedForMissingCorruptLinkedAndInsecureState() async throws {
+        let fixture = try ParentJournalFixture()
+
+        let missingRoot = temporaryParentJournalRoot()
+        let missingStore = FileManagedPythonRuntimeRecoveryStore(rootDirectory: missingRoot)
+        let evidence = try fixture.receipt.installerJournalEvidence(
+            postToolPlanFingerprint: fixture.postFingerprint
+        )
+        let missingAdvance = await missingStore.advancePlannedOperationToManagedTools(
+            request: fixture.request,
+            receipt: fixture.receipt,
+            evidence: evidence,
+            expectedStablePlanFingerprint: fixture.stableFingerprint
+        )
+        XCTAssertEqual(missingAdvance.failure, .journalBridgeFailed)
+
+        let corruptRoot = temporaryParentJournalRoot()
+        defer { removeParentJournalRootIfPresent(corruptRoot) }
+        let corruptStore = FileManagedPythonRuntimeRecoveryStore(rootDirectory: corruptRoot)
+        let planned = try ManagedPythonRuntimeParentJournalRecord(
+            request: fixture.request,
+            stablePlanFingerprint: fixture.stableFingerprint,
+            requiresManagedToolReconciliation: true
+        )
+        let corruptStarted = await corruptStore.startPlannedOperation(planned)
+        XCTAssertNil(corruptStarted.failure)
+        let recordURL = parentJournalRecordURL(
+            root: corruptRoot,
+            operationID: fixture.request.operationID
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: recordURL)) as? [String: Any]
+        )
+        object["unexpected"] = true
+        try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: recordURL)
+        let corruptLoad = await corruptStore.loadOperation(
+            operationID: fixture.request.operationID
+        )
+        XCTAssertEqual(corruptLoad.failure, .journalBridgeFailed)
+
+        let linkedRoot = temporaryParentJournalRoot()
+        defer { removeParentJournalRootIfPresent(linkedRoot) }
+        let linkedStore = FileManagedPythonRuntimeRecoveryStore(rootDirectory: linkedRoot)
+        let linkedStarted = await linkedStore.startPlannedOperation(planned)
+        XCTAssertNil(linkedStarted.failure)
+        let linkedRecord = parentJournalRecordURL(
+            root: linkedRoot,
+            operationID: fixture.request.operationID
+        )
+        try FileManager.default.linkItem(
+            at: linkedRecord,
+            to: linkedRoot.appendingPathComponent("duplicate.json")
+        )
+        let linkedLoad = await linkedStore.loadOperation(
+            operationID: fixture.request.operationID
+        )
+        XCTAssertEqual(linkedLoad.failure, .journalBridgeFailed)
+
+        let insecureRoot = temporaryParentJournalRoot()
+        defer { removeParentJournalRootIfPresent(insecureRoot) }
+        try FileManager.default.createDirectory(at: insecureRoot, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o755)],
+            ofItemAtPath: insecureRoot.path
+        )
+        let insecureStore = FileManagedPythonRuntimeRecoveryStore(rootDirectory: insecureRoot)
+        let insecureStart = await insecureStore.startPlannedOperation(planned)
+        XCTAssertEqual(insecureStart.failure, .journalBridgeFailed)
+    }
 }
 
 private enum ParentJournalPlan: Equatable, Sendable {
@@ -212,4 +392,43 @@ private extension Result where Success == Void,
     var failure: Failure? {
         if case .failure(let failure) = self { failure } else { nil }
     }
+}
+
+private extension Result where Success == ManagedPythonRuntimeParentJournalRecord?,
+    Failure == ManagedPythonRuntimeTerminalReceiptFailure {
+    var failure: Failure? {
+        if case .failure(let failure) = self { failure } else { nil }
+    }
+}
+
+private extension JSONEncoder {
+    static var parentJournal: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return encoder
+    }
+}
+
+private func loadedParentRecord(
+    _ result: Result<ManagedPythonRuntimeParentJournalRecord?, ManagedPythonRuntimeTerminalReceiptFailure>
+) throws -> ManagedPythonRuntimeParentJournalRecord? {
+    switch result {
+    case .success(let record): return record
+    case .failure(let failure): throw failure
+    }
+}
+
+private func temporaryParentJournalRoot() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("forge-parent-journal-\(UUID().uuidString.lowercased())")
+}
+
+private func parentJournalRecordURL(root: URL, operationID: String) -> URL {
+    _ = operationID
+    return root.appendingPathComponent("active-installer-operation.json")
+}
+
+private func removeParentJournalRootIfPresent(_ root: URL) {
+    guard FileManager.default.fileExists(atPath: root.path) else { return }
+    try? FileManager.default.removeItem(at: root)
 }

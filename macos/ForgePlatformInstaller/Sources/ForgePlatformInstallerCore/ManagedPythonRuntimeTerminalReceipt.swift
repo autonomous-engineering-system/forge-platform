@@ -41,18 +41,46 @@ public struct ManagedPythonInstallerJournalEvidence: Equatable, Sendable {
         postToolPlanFingerprint: String,
         toolReceiptReferences: [String]
     ) throws {
+        try self.init(
+            result: .toolsVerified,
+            toolReceiptReferences: toolReceiptReferences.isEmpty
+                ? [receipt.evidenceReference] : toolReceiptReferences,
+            pythonRuntimeReceiptReference: receipt.evidenceReference,
+            pythonRuntimeIdentity: receipt.runtimeIdentitySHA256,
+            retainedPythonRuntimeIdentity: receipt.rollbackRuntimeIdentitySHA256,
+            postToolPlanFingerprint: postToolPlanFingerprint
+        )
+    }
+
+    init(
+        result: Result,
+        toolReceiptReferences: [String],
+        pythonRuntimeReceiptReference: String,
+        pythonRuntimeIdentity: String,
+        retainedPythonRuntimeIdentity: String?,
+        postToolPlanFingerprint: String
+    ) throws {
         guard Self.isFingerprint(postToolPlanFingerprint),
+              !toolReceiptReferences.isEmpty,
               toolReceiptReferences.allSatisfy(
                   ManagedPythonRuntimeInstalledReadback.isEvidenceReference
-              ) else {
+              ),
+              ManagedPythonRuntimeInstalledReadback.isEvidenceReference(
+                  pythonRuntimeReceiptReference
+              ),
+              CompositionCatalogValidation.isTaggedSHA256(pythonRuntimeIdentity),
+              retainedPythonRuntimeIdentity != pythonRuntimeIdentity,
+              retainedPythonRuntimeIdentity == nil
+                || CompositionCatalogValidation.isTaggedSHA256(
+                    retainedPythonRuntimeIdentity ?? ""
+                ) else {
             throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
         }
-        result = .toolsVerified
-        self.toolReceiptReferences = toolReceiptReferences.isEmpty
-            ? [receipt.evidenceReference] : toolReceiptReferences
-        pythonRuntimeReceiptReference = receipt.evidenceReference
-        pythonRuntimeIdentity = receipt.runtimeIdentitySHA256
-        retainedPythonRuntimeIdentity = receipt.rollbackRuntimeIdentitySHA256
+        self.result = result
+        self.toolReceiptReferences = toolReceiptReferences
+        self.pythonRuntimeReceiptReference = pythonRuntimeReceiptReference
+        self.pythonRuntimeIdentity = pythonRuntimeIdentity
+        self.retainedPythonRuntimeIdentity = retainedPythonRuntimeIdentity
         self.postToolPlanFingerprint = postToolPlanFingerprint
     }
 

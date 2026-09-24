@@ -265,14 +265,14 @@ public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecover
         }
     }
 
-    private func requireSecureRootDirectory() throws -> Int32 {
+    func requireSecureRootDirectory() throws -> Int32 {
         guard let descriptor = try openSecureRootDirectory(createIfMissing: true) else {
             throw FileManagedPythonRuntimeRecoveryStoreError.insecure
         }
         return descriptor
     }
 
-    private func openSecureRootDirectory(createIfMissing: Bool) throws -> Int32? {
+    func openSecureRootDirectory(createIfMissing: Bool) throws -> Int32? {
         if createIfMissing {
             let result = rootDirectory.withUnsafeFileSystemRepresentation { path -> Int32 in
                 guard let path else { return -1 }
@@ -297,7 +297,7 @@ public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecover
         return descriptor
     }
 
-    private func readSecureRegularFileIfPresent(
+    func readSecureRegularFileIfPresent(
         in root: Int32,
         fileName: String = Self.pendingRecordFileName
     ) throws -> Data? {
@@ -316,7 +316,7 @@ public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecover
         return try readBoundedData(from: descriptor, initialDetails: initial)
     }
 
-    private func writeAtomically(
+    func writeAtomically(
         _ data: Data,
         in root: Int32,
         fileName: String = Self.pendingRecordFileName,
@@ -358,6 +358,48 @@ public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecover
         try validateExistingRegularFileIfPresent(in: root, fileName: fileName)
     }
 
+    func replaceAtomically(
+        _ data: Data,
+        in root: Int32,
+        fileName: String,
+        temporaryPrefix: String
+    ) throws {
+        guard !data.isEmpty, data.count <= Self.maximumRecordBytes else {
+            throw FileManagedPythonRuntimeRecoveryStoreError.insecure
+        }
+        try validateExistingRegularFileIfPresent(in: root, fileName: fileName)
+        let temporaryName = "\(temporaryPrefix)\(UUID().uuidString.lowercased())"
+        let descriptor = temporaryName.withCString {
+            Darwin.openat(
+                root, $0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW_ANY, mode_t(0o600)
+            )
+        }
+        guard descriptor >= 0 else { throw FileManagedPythonRuntimeRecoveryStoreError.insecure }
+        var renamed = false
+        defer {
+            _ = Darwin.close(descriptor)
+            if !renamed {
+                _ = temporaryName.withCString { Darwin.unlinkat(root, $0, 0) }
+            }
+        }
+        _ = try secureRegularFileDetails(descriptor)
+        try writeAll(data, to: descriptor)
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw FileManagedPythonRuntimeRecoveryStoreError.insecure
+        }
+        try validateExistingRegularFileIfPresent(in: root, fileName: fileName)
+        let result = temporaryName.withCString { source in
+            fileName.withCString { destination in
+                Darwin.renameat(root, source, root, destination)
+            }
+        }
+        guard result == 0, Darwin.fsync(root) == 0 else {
+            throw FileManagedPythonRuntimeRecoveryStoreError.insecure
+        }
+        renamed = true
+        try validateExistingRegularFileIfPresent(in: root, fileName: fileName)
+    }
+
     private func removeSecureRegularFile(
         in root: Int32,
         fileName: String = Self.pendingRecordFileName
@@ -384,7 +426,7 @@ public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecover
         _ = try secureRegularFileDetails(descriptor)
     }
 
-    private func secureRegularFileDetails(_ descriptor: Int32) throws -> stat {
+    func secureRegularFileDetails(_ descriptor: Int32) throws -> stat {
         var details = stat()
         guard Darwin.fstat(descriptor, &details) == 0,
               (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),

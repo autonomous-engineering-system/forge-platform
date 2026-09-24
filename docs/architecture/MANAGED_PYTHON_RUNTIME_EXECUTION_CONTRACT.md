@@ -200,16 +200,19 @@ projects that receipt into the same typed `MANAGED_TOOLS` journal evidence as
 the Python contract, and offers it to an injected durable parent-journal bridge. The pending native
 receipt is cleared only after the terminal coordinator, under the host-wide
 lease, freshly re-reads every venv and the active runtime and the bridge then
-accepts the exact terminal receipt. The concrete fresh replanner, atomic
-file-backed parent-journal implementation and released route are not yet implemented.
+accepts the exact terminal receipt. The native file-backed parent-journal store
+now admits one canonical private `PLANNED` record, rejects a second identity,
+and atomically advances only an exact terminal request/evidence set to
+`MANAGED_TOOLS`; identical retries are idempotent. The concrete fresh replanner,
+released journal seeding and released route are not yet implemented.
 
 The native parent-journal admission adapter now requires a fresh post-tool
 qualification with the original stable-plan fingerprint, the exact runtime,
 rollback and ordered venv identities, no remaining managed-tool or Python
 action, and explicit product-dispatch readiness. Only then does it construct
 the typed `TOOLS_VERIFIED` evidence and call the atomic journal-advance seam.
-The concrete fresh replanner and file-backed parent-journal implementation are
-not yet implemented.
+The concrete fresh replanner and released journal seeding are not yet
+implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -295,7 +298,10 @@ idempotently admit that exact receipt before native pending state is cleared;
 the coordinator first repeats all venv and active-runtime readbacks under its
 host-wide lease. The native admission adapter additionally rejects stable-plan,
 runtime, rollback, venv or terminal-action drift before calling its atomic
-parent-journal seam. Its concrete fresh replanner and durable journal store are
+parent-journal seam. Its durable native store uses one fixed active-record name,
+canonical bounded JSON, a private exclusive lock, no-follow reads, ownership,
+mode and link-count checks, durable atomic replacement and exact idempotent
+retry comparison. The concrete fresh replanner and released journal seeding are
 not implemented, and these coordinators are not wired into the released runtime. A concrete reviewed
 privileged adapter, released mutation wiring and an actual protected arm64
 runtime publication remain required before operational installation can be
