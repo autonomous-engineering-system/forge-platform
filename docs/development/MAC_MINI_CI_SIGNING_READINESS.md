@@ -10,9 +10,10 @@ test, static check, or simulated Apple command is never reported as a live pass.
 Pull requests and ordinary validation stay on GitHub-hosted macOS runners. The
 Mac mini Actions account is a credentialless build account. It has no Developer
 ID private key, no notarytool profile, no descriptor-signing private key, and no
-GitHub publication credential. The organization runner group
+GitHub publication credential. The intended organization runner group
 `forge-platform-build` is restricted to this repository and the exact reviewed
-workflows on protected `main`.
+workflows on protected `main`. GitHub can create that restriction only after
+both workflow files exist on `main`; the group remains absent until then.
 
 Developer ID signing, notarization, stapling, Gatekeeper assessment, descriptor
 signing, GitHub Release publication, and remote digest readback run only from a
@@ -82,7 +83,7 @@ identity, a running service, the exact runner name, and continued absence of a
 Developer ID identity from the build account. A service status check without a
 real reboot does not satisfy this gate.
 
-## Current live evidence, 2026-09-23
+## Current live evidence, 2026-09-24
 
 Verified in GitHub:
 
@@ -93,7 +94,12 @@ Verified in GitHub:
 - repository-level self-hosted runners are disabled at organization level;
 - protected Environment `forge-platform-installer-signing` exists, requires
   reviewer `pcvantol`, has admin bypass disabled, has no secrets, and allows
-  only branch `main`.
+  only branch `main`;
+- GitHub rejected creation of `forge-platform-build` while both allowlisted
+  workflow files exist only on PR #75, reporting that the first exact workflow
+  does not exist at `refs/heads/main`. No group or broader temporary workflow
+  access was created. The safe order is protected merge first, then exact-main
+  group creation, then credentialless runner registration.
 
 Verified locally:
 
