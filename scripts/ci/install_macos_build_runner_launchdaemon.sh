@@ -8,6 +8,7 @@ SERVICE_LABEL="org.autonomous-engineering-system.forge-platform.build-runner"
 PLIST_PATH="/Library/LaunchDaemons/${SERVICE_LABEL}.plist"
 BUILD_USER="${FORGE_PLATFORM_EXPECTED_BUILD_USER:-}"
 RUNNER_NAME="${FORGE_PLATFORM_RUNNER_NAME:-forge-platform-macmini-build}"
+SAFE_RUNNER_PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Library/Apple/usr/bin"
 
 fail() { echo "BUILD_RUNNER_SERVICE=FAIL reason=$1" >&2; exit 1; }
 [[ "$(id -u)" == "0" ]] || fail root-required
@@ -38,10 +39,18 @@ if sudo -H -u "$BUILD_USER" security find-identity -v -p codesigning 2>/dev/null
   fail developer-id-visible-in-build-account
 fi
 
+# GitHub's runsvc.sh restores PATH from this runner-owned file. Replace the
+# registration shell's captured value so personal home directories cannot enter
+# jobs executed by the no-login system service.
+[[ ! -L "$RUNNER_ROOT/.path" ]] || fail runner-path-must-not-be-symlink
+path_tmp="$(mktemp)"
+printf '%s\n' "$SAFE_RUNNER_PATH" >"$path_tmp"
+install -o "$BUILD_USER" -g staff -m 0600 "$path_tmp" "$RUNNER_ROOT/.path"
+
 LOG_ROOT="/var/log/$SERVICE_LABEL"
 install -d -o "$BUILD_USER" -g staff -m 0700 "$LOG_ROOT"
 tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+trap 'rm -f "$path_tmp" "$tmp"' EXIT
 cat >"$tmp" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -85,5 +94,5 @@ for _ in {1..20}; do
 done
 pgrep -u "$build_uid" -f "$RUNNER_ROOT/bin/Runner.Listener" >/dev/null 2>&1 || fail runner-listener-not-owned-by-build-user
 
-echo "BUILD_RUNNER_SERVICE=PASS label=$SERVICE_LABEL user=$BUILD_USER uid=$build_uid runner=$RUNNER_NAME root=$RUNNER_ROOT automatic_login=disabled"
+echo "BUILD_RUNNER_SERVICE=PASS label=$SERVICE_LABEL user=$BUILD_USER uid=$build_uid runner=$RUNNER_NAME root=$RUNNER_ROOT automatic_login=disabled path=sanitized"
 echo "BUILD_RUNNER_REBOOT_PERSISTENCE=NOT_VERIFIED action=record-reboot-verify"
