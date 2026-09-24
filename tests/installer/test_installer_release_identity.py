@@ -45,6 +45,14 @@ class InstallerReleaseIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "publication is blocked"):
             identity_policy.load_identity(require_ready=True)
 
+    def test_committed_ready_identity_and_public_trust_resources_are_exactly_bound(self) -> None:
+        identity = identity_policy.load_identity(
+            require_ready=True,
+            path=ROOT / "installer-release-identity.json",
+        )
+        assert identity is not None
+        identity_policy.validate_ready_resources(identity)
+
     def test_ready_identity_binds_public_app_repository_and_key_policy_facts(self) -> None:
         self.write(
             {

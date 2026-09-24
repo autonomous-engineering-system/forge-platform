@@ -101,32 +101,47 @@ Verified in GitHub:
 - protected Environment `forge-platform-installer-signing` exists, requires
   reviewer `pcvantol`, has admin bypass disabled, has no secrets, and allows
   only branch `main`;
-- PR #75 was squash-merged as exact protected `main`
-  `e1df97313fe5cb48e215b76a98b198b340ab767d`; its post-merge required checks
-  are green;
+- PR #75 and its runner, coverage, service, and signing-readiness follow-ups
+  through PR #84 are merged; exact protected `main` is
+  `a9e0f21f5b1b5b2eca99845e94e81134339bbb4a` and its required checks are green;
 - organization runner group `forge-platform-build` exists as group 3, permits
   exactly this one public repository, and is restricted to the native build and
-  installer release workflows at `refs/heads/main`; it contains zero runners.
+  installer release workflows at `refs/heads/main`;
+- the credentialless runner completed exact-main native tests, changed-file
+  coverage, and unsigned GUI plus CLI packaging successfully after reboot.
 
 Verified locally:
 
 - Mac mini `macmini-m6` is Apple Silicon and runs macOS 27.0;
-- standard local account `forgebuild` exists and automatic login is disabled;
-- shell and Python syntax checks pass for the new controls;
-- workflow YAML parses successfully;
-- 9 runner policy tests, 31 CI gate regressions, and 4 release workflow tests
-  pass in local simulation.
+- standard non-admin account `forgebuild` runs the build runner as the
+  no-login system LaunchDaemon
+  `org.autonomous-engineering-system.forge-platform.build-runner`; automatic
+  login is disabled;
+- a real reboot changed the boot identity and the runner returned before login;
+  the live verifier reported `BUILD_RUNNER_REBOOT_PERSISTENCE=PASS` while the
+  build account still had no Developer ID identity;
+- signer account `pcvantol` has Developer ID Application Team `ZEML4LPXH4` and
+  the noninteractive `forge-platform-installer-notary` profile; the build
+  account has neither credential;
+- a temporary hardened-runtime app was signed, accepted by Apple notarization
+  as submission `2e813227-d54a-4d72-a0c6-295aa9414414`, stapled, and accepted
+  by Gatekeeper;
+- separate descriptor and composition-catalog Ed25519 keys were provisioned as
+  non-synchronizing, when-unlocked-this-device-only items under separate local
+  Keychain services. Rebuilt Developer ID signed helpers read them
+  noninteractively without exporting private bytes or changing Keychain ACLs;
+- the public key policies, Team, bundle, and GitHub namespace now bind the
+  committed `READY` identity and both strict public trust resources.
 
 Still unverified:
 
-- credentialless build-account registration and first real workflow run;
-- real post-reboot runner persistence;
-- dedicated signer-account Developer ID/keychain/notary readiness;
-- exact real artifact signing, Apple notarization acceptance, stapling and
-  Gatekeeper acceptance;
+- signer-account credential readiness after a subsequent reboot;
+- exact release-candidate signing, Apple notarization, stapling and Gatekeeper
+  acceptance for the production installer artifact;
 - GitHub Release publication and remote public asset digest readback.
 
-Accordingly `installer-release-identity.json` remains exactly
-`UNCONFIGURED`. It may become `READY` only after the live signer evidence,
-public Team/bundle/key policy, and matching public release-trust resource have
-been reviewed and committed.
+`installer-release-identity.json` is `READY` because the live host evidence and
+matching public trust facts now exist. `READY` authorizes the protected release
+flow; it does not claim that a production installer release has passed. The
+remaining production artifact and publication evidence stays explicitly open
+until the exact release flow completes.

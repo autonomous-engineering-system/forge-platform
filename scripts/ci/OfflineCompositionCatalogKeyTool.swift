@@ -11,11 +11,11 @@ enum ToolFailure: Error {
     case unsafeOutput
 }
 
-let service = "org.autonomous-engineering-system.forge-platform.installer-descriptor-signing-v1"
+let service = "org.autonomous-engineering-system.forge-platform.composition-catalog-signing-v1"
 let maximumInputBytes = 512 * 1024
 
 func fail(_ reason: String) -> Never {
-    FileHandle.standardError.write(Data(("OFFLINE_DESCRIPTOR_KEY=FAIL reason=" + reason + "\n").utf8))
+    FileHandle.standardError.write(Data(("OFFLINE_CATALOG_KEY=FAIL reason=" + reason + "\n").utf8))
     exit(1)
 }
 
@@ -133,11 +133,11 @@ do {
     case "provision":
         guard arguments.count == 2 else { fail("usage") }
         let key = try provision(keyID)
-        print("OFFLINE_DESCRIPTOR_KEY=READY key_id=\(keyID) public_key_base64=\(publicKeyBase64(key))")
+        print("OFFLINE_CATALOG_KEY=READY key_id=\(keyID) public_key_base64=\(publicKeyBase64(key))")
     case "public-key":
         guard arguments.count == 2 else { fail("usage") }
         let key = try loadPrivateKey(keyID)
-        print("OFFLINE_DESCRIPTOR_KEY=READY key_id=\(keyID) public_key_base64=\(publicKeyBase64(key))")
+        print("OFFLINE_CATALOG_KEY=READY key_id=\(keyID) public_key_base64=\(publicKeyBase64(key))")
     case "sign":
         guard arguments.count == 4 else { fail("usage") }
         let key = try loadPrivateKey(keyID)
@@ -152,7 +152,7 @@ do {
         var encoded = try JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys])
         encoded.append(Data("\n".utf8))
         try writeNewOutput(arguments[3], data: encoded)
-        print("OFFLINE_DESCRIPTOR_SIGNATURE=PASS key_id=\(keyID)")
+        print("OFFLINE_CATALOG_SIGNATURE=PASS key_id=\(keyID)")
     default:
         fail("usage")
     }

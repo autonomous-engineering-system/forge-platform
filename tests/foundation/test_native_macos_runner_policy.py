@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import re
 import unittest
 
@@ -17,6 +18,10 @@ READINESS = ROOT / "scripts/ci/verify_macos_offline_signing_host.sh"
 OLD_READINESS = ROOT / "scripts/ci/verify_macos_signing_runner.sh"
 LOCAL_RELEASE = ROOT / "scripts/run_local_macos_installer_release.sh"
 IDENTITY = ROOT / "installer-release-identity.json"
+RELEASE_TRUST = ROOT / "release-trust/ForgePlatformInstallerReleaseTrust.json"
+CATALOG_TRUST = ROOT / "release-trust/ForgePlatformInstallerCompositionCatalogTrust.json"
+DESCRIPTOR_KEY_TOOL = ROOT / "scripts/ci/OfflineInstallerDescriptorKeyTool.swift"
+CATALOG_KEY_TOOL = ROOT / "scripts/ci/OfflineCompositionCatalogKeyTool.swift"
 
 
 class NativeMacRunnerPolicyTests(unittest.TestCase):
@@ -153,14 +158,47 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertNotIn("security export", text)
         self.assertNotIn("set-key-partition-list", text)
         self.assertIn("OfflineInstallerDescriptorKeyTool.swift", text)
+        self.assertIn("descriptor-key-tool-signature-invalid", text)
+        self.assertIn("--identifier \"$DESCRIPTOR_KEY_TOOL_IDENTIFIER\"", text)
         self.assertNotIn("DESCRIPTOR_SIGNING_KEY_PATHS", text)
 
-    def test_release_identity_stays_unconfigured_until_live_readiness(self) -> None:
+    def test_live_ready_identity_exactly_binds_public_release_and_catalog_trust(self) -> None:
+        identity = json.loads(IDENTITY.read_text(encoding="utf-8"))
+        release = json.loads(RELEASE_TRUST.read_text(encoding="utf-8"))
+        catalog = json.loads(CATALOG_TRUST.read_text(encoding="utf-8"))
+        self.assertEqual(identity["status"], "READY")
+        self.assertEqual(identity["identity"]["github_repository"], release["repository"])
+        self.assertEqual(identity["identity"]["bundle_identifier"], release["expected_bundle_identifier"])
+        self.assertEqual(identity["identity"]["team_identifier"], release["expected_team_identifier"])
         self.assertEqual(
-            IDENTITY.read_text(encoding="utf-8"),
-            '{\n  "identity": null,\n  "schema": "forge-platform.installer-release-identity/v1",\n'
-            '  "signing_key_policy": null,\n  "status": "UNCONFIGURED"\n}\n',
+            identity["identity"]["release_trust_configuration_sha256"],
+            release["configuration_sha256"],
         )
+        self.assertEqual(
+            catalog["installer_release_trust_configuration_sha256"],
+            release["configuration_sha256"],
+        )
+        self.assertEqual(
+            identity["signing_key_policy"]["key_ids"],
+            [key["key_id"] for key in release["ed25519_public_keys"]],
+        )
+
+    def test_descriptor_and_catalog_keys_are_separate_local_non_sync_keychain_items(self) -> None:
+        descriptor = DESCRIPTOR_KEY_TOOL.read_text(encoding="utf-8")
+        catalog = CATALOG_KEY_TOOL.read_text(encoding="utf-8")
+        self.assertIn("installer-descriptor-signing-v1", descriptor)
+        self.assertIn("composition-catalog-signing-v1", catalog)
+        self.assertIn("kSecAttrSynchronizable", descriptor)
+        self.assertIn("kSecAttrSynchronizable", catalog)
+        self.assertIn("kSecAttrAccessibleWhenUnlockedThisDeviceOnly", descriptor)
+        self.assertIn("kSecAttrAccessibleWhenUnlockedThisDeviceOnly", catalog)
+        self.assertNotEqual(
+            re.search(r'let service = "([^"]+)"', descriptor).group(1),
+            re.search(r'let service = "([^"]+)"', catalog).group(1),
+        )
+        for text in (descriptor, catalog):
+            self.assertNotIn("security export", text)
+            self.assertNotIn("set-key-partition-list", text)
 
 
 if __name__ == "__main__":
