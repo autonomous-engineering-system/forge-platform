@@ -1,11 +1,14 @@
 # Managed Python runtime execution contract
 
-**Status:** source-level executor kernel and native immutable session projection
-implemented. The native projection recomputes the complete runtime identity,
-binds it to the signed outer-catalog approval, and retains one exact venv
-identity per selected component. No production runtime artifact, native
-transport/archive inspector, privileged helper, released mutation wiring, or
-live machine installation is approved by this increment.
+**Status:** source-level executor kernel, native immutable session projection,
+and credential-free native HTTPS asset transport implemented. The native
+projection recomputes the complete runtime identity, binds it to the signed
+outer-catalog approval, and retains one exact venv identity per selected
+component. The transport derives each of the four bounded downloads only from
+that admitted identity, denies redirects and verifies the exact SHA-256 before
+returning bytes. No production runtime artifact, native archive inspector,
+privileged helper, released mutation wiring, or live machine installation is
+approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -44,6 +47,15 @@ The transport receives the exact signed locator and an executor-chosen file.
 Redirected final URLs, changed bytes, digest/size disagreement, symlinks,
 non-regular files, or post-download modification are rejected. Every resume
 re-hashes the captured files before using an earlier journal phase.
+
+The native HTTPS transport implements the read-only network half of this
+boundary. Its caller supplies only the already admitted runtime identity and a
+closed asset-kind value. It uses an ephemeral credential-free session, permits
+no redirect or final-URL drift, applies distinct runtime/source/provenance byte
+limits while streaming, rejects empty responses, and validates the tagged
+SHA-256 before returning identity-bound bytes. It does not choose a locator,
+write a staging file, inspect or extract an archive, persist a receipt, or
+authorize mutation.
 
 An independently injected archive inspector must bind the captured inputs to
 the complete runtime identity and prove:
@@ -113,7 +125,8 @@ fingerprint.
 The executor does not verify an outer catalog, select a composition, install a
 product, modify product data or services, publish artifacts, store credentials,
 or authorize cleanup. The native session layer verifies the exact nested
-runtime commitment and venv bindings after catalog and manifest admission, but
-does not download or execute them. Native transport, archive inspection,
+runtime commitment and venv bindings after catalog and manifest admission. The
+native transport can acquire the identity-bound bytes but is not wired into a
+staging, inspection, execution, or mutation route. Native archive inspection,
 privileged mutation wiring and an actual protected arm64 runtime publication
 remain required before operational installation can be claimed.

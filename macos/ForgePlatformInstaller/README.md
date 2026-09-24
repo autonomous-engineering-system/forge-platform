@@ -134,16 +134,20 @@ outer catalog. A separate platform-neutral source executor durably coordinates
 exact managed-Python downloads, archive
 inspection, immutable runtime slots, isolated product venvs, activation,
 interruption resume and exact-identity rollback through injected interfaces.
-It is not wired to the native mutation route and ships no runtime transport,
-archive inspector or privileged mutation adapter. The native signed-catalog
+It is not wired to the native mutation route. The core ships a native,
+credential-free HTTPS transport that accepts only the admitted runtime identity
+and a closed asset-kind value, denies redirects and final-URL drift, streams
+under fixed size limits, and verifies the exact tagged digest before returning
+identity-bound bytes. It ships no archive inspector, staging/receipt bridge or
+privileged mutation adapter. The native signed-catalog
 verifier requires and returns one exact approved managed-Python identity; the Python
 policy kernel verifies the complete version, thin arm64 macOS artifact,
 source/build provenance, ABI/tag, minimum macOS and policy-revision material,
 requires every product's build/test evidence to name that identity, assigns
 each product a distinct opaque venv identity, and freezes target/rollback
 identities in the operation journal. This remains source-only capability: the
-released package does not download or install Python, create a venv, or claim
-that a production arm64 runtime artifact has been approved. It ships no real
+released package does not stage, inspect or install Python, create a venv, or
+claim that a production arm64 runtime artifact has been approved. It ships no real
 release URL, signing key, credential, shell invocation, privileged helper or
 product adapter. A production composition must inject implementations for the
 signed-feed verifier, current-bundle inspector, operation-owned downloader,
