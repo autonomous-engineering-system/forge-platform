@@ -15,9 +15,11 @@ that admitted identity, denies redirects and verifies the exact SHA-256 before
 returning bytes. Staging writes those exact bytes under fixed internal names,
 returns no caller path, and re-hashes every no-follow readback. The mutation
 coordinator admits only descriptor-derived identities and requires staging and
-slot readback around its injected privilege seam. No production runtime
-artifact, concrete privileged helper, released mutation wiring, or live
-machine installation is approved by this increment.
+slot readback around its injected privilege seam. A separate native activation
+coordinator now binds exact component venvs, activation, rollback retention and
+final runtime readback under the host-wide lock contract. No production runtime
+artifact, concrete privileged helper, released mutation wiring, or live machine
+installation is approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -176,6 +178,19 @@ coordinator uses a private pending-record store for exact staging cleanup but
 does not itself persist the parent installer-operation journal, implement the
 privilege seam or expose a released-app route.
 
+After exact slot preparation, the native activation coordinator derives
+`INSTALL`, `UPGRADE` or `NO_CHANGE` only from a trusted installed-runtime
+readback. Under the same host-wide lock contract it binds every component venv
+to the admitted runtime slot, treats an exact existing venv as idempotent,
+requires a fresh readback after every venv creation, rechecks the initial active
+runtime before activation, preserves every pre-existing retained runtime plus
+the exact upgrade rollback runtime, and requires a final active-runtime
+readback. The privilege seam receives only operation, component, venv, runtime,
+slot and retained-runtime identities. It accepts no path, executable, command,
+environment value or credential. The resulting native `READY` receipt binds
+the preparation, venv, activation and final-readback evidence, but is not yet a
+durable platform-neutral executor `COMPLETE` receipt or installer-journal event.
+
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
 adapter—not the UI or manifest—maps those opaque identities to fixed paths.
@@ -245,7 +260,11 @@ staging directories left by an interrupted acquisition. That reconciliation
 accepts only the fixed operation-name shape and fixed asset names, revalidates
 every directory and file by descriptor, and fails closed on ownership, mode,
 link, type, size or name drift. The platform-neutral terminal-receipt bridge is
-implemented, but this native preparation receipt is not assembled into that
-bridge or the released runtime. A concrete reviewed privileged adapter,
+implemented. The native activation coordinator now continues from that exact
+preparation receipt through idempotent component-venv readiness, activation,
+rollback retention and final readback. Its `READY` receipt is not yet durably
+assembled into the platform-neutral `COMPLETE` executor receipt or parent
+journal bridge, and neither coordinator is wired into the released runtime. A
+concrete reviewed privileged adapter, durable native bridge integration,
 released mutation wiring and an actual protected arm64 runtime publication
 remain required before operational installation can be claimed.
