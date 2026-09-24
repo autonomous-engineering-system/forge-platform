@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from hashlib import sha256
 import subprocess
 import sys
 import unittest
@@ -14,6 +15,12 @@ from scripts import qualify_local_installer_release as qualification
 
 
 class DescriptorSignatureVerificationTests(unittest.TestCase):
+    def test_descriptor_digest_covers_exact_newline_terminated_document(self) -> None:
+        raw, digest = qualification._descriptor_document({"z": 2, "a": 1})
+        self.assertEqual(raw, b'{"a":1,"z":2}\n')
+        self.assertEqual(digest, "sha256:" + sha256(raw).hexdigest())
+        self.assertNotEqual(digest, "sha256:" + sha256(raw.rstrip(b"\n")).hexdigest())
+
     def test_ed25519_verification_uses_regular_payload_file(self) -> None:
         payload = b'{"release":"candidate"}'
         observed: dict[str, object] = {}
