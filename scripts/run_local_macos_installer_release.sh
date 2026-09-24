@@ -28,7 +28,7 @@ bash scripts/ci/verify_macos_offline_signing_host.sh
 STATE_ROOT="${FORGE_PLATFORM_SIGNER_STATE_ROOT:-$HOME/Library/Application Support/ForgePlatformSigner}"
 mkdir -p "$STATE_ROOT/locks" "$STATE_ROOT/journal" "$STATE_ROOT/receipts"
 chmod 700 "$STATE_ROOT" "$STATE_ROOT/locks" "$STATE_ROOT/journal" "$STATE_ROOT/receipts"
-LOCK="$STATE_ROOT/locks/exclusive-installer-signing"
+LOCK="$STATE_ROOT/locks/exclusive-offline-signing"
 mkdir "$LOCK" 2>/dev/null || fail signing-concurrency-lock-held
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/forge-platform-local-release.XXXXXX")"
 cleanup() {

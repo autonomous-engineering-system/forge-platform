@@ -38,9 +38,17 @@ local signer accepts the candidate only after independently reading back the
 successful workflow and both required job conclusions from GitHub.
 
 The organization runner group and workflow concurrency serialize build routing.
-The local signer has an additional persistent exclusive signing lock and a
-durable installer release journal. Exact-main is checked before signing and
-again before publication.
+The local installer and composition-catalog publishers share one persistent
+exclusive offline-signing lock, while each retains its own durable journal.
+Exact-main is checked before signing and again before publication.
+
+The catalog workflow uses the same credentialless runner group and protected
+non-secret Environment handoff. Its private Ed25519 key remains a separate
+this-device-only item in the local signer Keychain. Source qualification of
+that route does not imply a live feed: no catalog may be published until a
+reviewed composition manifest and component index bind complete immutable
+producer and managed-runtime evidence. See
+[`COMPOSITION_CATALOG_RELEASE.md`](COMPOSITION_CATALOG_RELEASE.md).
 
 ## Local Apple and publication chain
 
