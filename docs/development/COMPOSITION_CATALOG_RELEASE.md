@@ -10,6 +10,12 @@ The catalog release framework prepares this feed without putting its private
 Ed25519 key on a GitHub Actions runner. It does not make the feed live merely
 by existing in source.
 
+The organization runner group now admits this workflow only through the exact
+`autonomous-engineering-system/forge-platform/.github/workflows/forge-platform-composition-catalog-release.yml@refs/heads/main`
+reference. The group remains limited to the one public Forge Platform
+repository, and the credential-bearing signer account remains outside GitHub
+Actions.
+
 ## Protected candidate build
 
 `.github/workflows/forge-platform-composition-catalog-release.yml` accepts only
