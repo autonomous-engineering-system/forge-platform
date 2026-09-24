@@ -4,7 +4,7 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
-    func testAssemblesOnlyExistingSelfUpdateAdaptersFromOnePrivateRoot() async throws {
+    func testAssemblesSelfUpdateAndReadOnlyCompositionAdaptersFromOnePrivateRoot() async throws {
         let root = try makeSecureTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let builder = try supportedBuilder(stateRoot: root)
@@ -17,7 +17,7 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
         )
 
         guard case .success(let runtime) = result else {
-            return XCTFail("A valid sealed configuration and private root should assemble the existing self-update runtime")
+            return XCTFail("A valid sealed configuration and private root should assemble the trusted native runtime")
         }
         XCTAssertTrue(runtime is VerifiedInstallerSelfUpdateCoordinator)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
@@ -168,6 +168,59 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
                 )
             )
         }
+    }
+
+    func testUserStateRootCreatesPrivateSeparateInstallerControlDirectories() throws {
+        let container = try makeSecureTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let applicationSupport = container.appendingPathComponent(
+            "Application Support",
+            isDirectory: true
+        )
+        try makeDirectory(applicationSupport, mode: 0o700)
+
+        let root = try MacOSInstallerUserStateRoot.prepare(
+            applicationSupportDirectory: applicationSupport
+        )
+
+        XCTAssertEqual(root.lastPathComponent, "ForgePlatformInstaller")
+        XCTAssertEqual(root.deletingLastPathComponent().lastPathComponent, "AutonomousEngineeringSystem")
+        for directory in [root.deletingLastPathComponent(), root] {
+            var details = stat()
+            XCTAssertEqual(directory.path.withCString { Darwin.lstat($0, &details) }, 0)
+            XCTAssertEqual(details.st_uid, Darwin.geteuid())
+            XCTAssertEqual(details.st_mode & mode_t(0o7777), mode_t(0o700))
+        }
+        XCTAssertNoThrow(try MacOSInstallerUserStateRoot.prepare(
+            applicationSupportDirectory: applicationSupport
+        ))
+        XCTAssertNoThrow(try supportedBuilder(stateRoot: root))
+    }
+
+    func testUserStateRootRejectsExistingSymlinkAndPermissiveDirectory() throws {
+        let container = try makeSecureTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let applicationSupport = container.appendingPathComponent(
+            "Application Support",
+            isDirectory: true
+        )
+        try makeDirectory(applicationSupport, mode: 0o700)
+        let target = container.appendingPathComponent("target", isDirectory: true)
+        try makeDirectory(target, mode: 0o700)
+        let vendor = applicationSupport.appendingPathComponent(
+            "AutonomousEngineeringSystem",
+            isDirectory: true
+        )
+        try FileManager.default.createSymbolicLink(at: vendor, withDestinationURL: target)
+        XCTAssertThrowsError(try MacOSInstallerUserStateRoot.prepare(
+            applicationSupportDirectory: applicationSupport
+        ))
+
+        try FileManager.default.removeItem(at: vendor)
+        try makeDirectory(vendor, mode: 0o755)
+        XCTAssertThrowsError(try MacOSInstallerUserStateRoot.prepare(
+            applicationSupportDirectory: applicationSupport
+        ))
     }
 
     private func assertInvalidStateRoot(_ root: URL) {
