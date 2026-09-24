@@ -2,15 +2,18 @@
 
 **Status:** source-level executor kernel, native immutable session projection,
 credential-free native HTTPS asset transport, private operation-scoped native
-asset staging, and read-only native archive inspection implemented. The native
+asset staging, read-only native archive inspection, and a closed native
+runtime-slot mutation coordinator implemented. The native
 projection recomputes the complete runtime identity, binds it to the signed
 outer-catalog approval, and retains one exact venv identity per selected
 component. The transport derives each of the four bounded downloads only from
 that admitted identity, denies redirects and verifies the exact SHA-256 before
 returning bytes. Staging writes those exact bytes under fixed internal names,
-returns no caller path, and re-hashes every no-follow readback. No production
-runtime artifact, privileged helper, released
-mutation wiring, or live machine installation is approved by this increment.
+returns no caller path, and re-hashes every no-follow readback. The mutation
+coordinator admits only descriptor-derived identities and requires staging and
+slot readback around its injected privilege seam. No production runtime
+artifact, concrete privileged helper, released mutation wiring, or live
+machine installation is approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -114,6 +117,19 @@ managed-Python root. Its readback must repeat the runtime identity, archive
 digest, fixed interpreter-relative path, thin arm64 architecture and macOS
 floor.
 
+The native runtime-slot coordinator turns the admitted runtime, exact staged
+asset set and successful archive inspection into one closed mutation request.
+That request carries the derived slot identity, opaque staging reference,
+descriptor-derived file identity and inspected runtime commitments. It carries
+no caller-selected path, executable, command, environment value or credential.
+The coordinator reopens and verifies the staged archive before crossing the
+privilege seam. For a missing slot, the adapter's install response is
+insufficient: the coordinator verifies the staged archive again and requires a
+separate fresh slot readback that matches every requested identity before it
+returns `READY`. An exact existing slot is idempotent; any existing, returned
+or read-back drift fails closed. The protocol does not itself provide the
+privileged implementation or authorize a live installation.
+
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
 adapter—not the UI or manifest—maps those opaque identities to fixed paths.
@@ -162,7 +178,10 @@ or authorize cleanup. The native session layer verifies the exact nested
 runtime commitment and venv bindings after catalog and manifest admission. The
 native transport and private stager can acquire, durably capture and re-read
 the identity-bound bytes, and the native inspector can validate the frozen
-archive envelope, layout, manifest and interpreter identity. These pieces are
-not assembled into the released runtime or wired into executor journaling or
-mutation. Privileged mutation wiring and an actual protected arm64 runtime
-publication remain required before operational installation can be claimed.
+archive envelope, layout, manifest and interpreter identity. The native
+runtime-slot coordinator also binds those exact results to a closed injected
+privilege seam and requires fresh post-mutation readback. These pieces are not
+assembled into the released runtime or wired into executor journaling. A
+concrete reviewed privileged adapter, released mutation wiring and an actual
+protected arm64 runtime publication remain required before operational
+installation can be claimed.
