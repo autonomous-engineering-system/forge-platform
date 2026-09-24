@@ -200,8 +200,16 @@ projects that receipt into the same typed `MANAGED_TOOLS` journal evidence as
 the Python contract, and offers it to an injected durable parent-journal bridge. The pending native
 receipt is cleared only after the terminal coordinator, under the host-wide
 lease, freshly re-reads every venv and the active runtime and the bridge then
-accepts the exact terminal receipt. A concrete parent-journal adapter and
-released route are not yet implemented.
+accepts the exact terminal receipt. The concrete fresh replanner, atomic
+file-backed parent-journal implementation and released route are not yet implemented.
+
+The native parent-journal admission adapter now requires a fresh post-tool
+qualification with the original stable-plan fingerprint, the exact runtime,
+rollback and ordered venv identities, no remaining managed-tool or Python
+action, and explicit product-dispatch readiness. Only then does it construct
+the typed `TOOLS_VERIFIED` evidence and call the atomic journal-advance seam.
+The concrete fresh replanner and file-backed parent-journal implementation are
+not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -285,8 +293,10 @@ evidence projection, including the platform-neutral default that uses the
 Python runtime receipt when no generic tool receipts are present. An injected bridge must durably and
 idempotently admit that exact receipt before native pending state is cleared;
 the coordinator first repeats all venv and active-runtime readbacks under its
-host-wide lease. Neither the concrete parent-journal adapter nor these
-coordinators are wired into the released runtime. A concrete reviewed
+host-wide lease. The native admission adapter additionally rejects stable-plan,
+runtime, rollback, venv or terminal-action drift before calling its atomic
+parent-journal seam. Its concrete fresh replanner and durable journal store are
+not implemented, and these coordinators are not wired into the released runtime. A concrete reviewed
 privileged adapter, released mutation wiring and an actual protected arm64
 runtime publication remain required before operational installation can be
 claimed.
