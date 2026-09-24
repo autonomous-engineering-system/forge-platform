@@ -8,6 +8,7 @@ public final class GitHubReleaseDescriptorTransport: NSObject, GitHubInstallerRe
     private let timeout: TimeInterval
     private let maximumLocatorBytes: Int
     private let maximumDescriptorBytes: Int
+    private let protocolClassesForTesting: [AnyClass]
 
     public init(
         timeout: TimeInterval = 20,
@@ -17,6 +18,21 @@ public final class GitHubReleaseDescriptorTransport: NSObject, GitHubInstallerRe
         self.timeout = min(max(timeout, 5), 60)
         self.maximumLocatorBytes = min(max(maximumLocatorBytes, 1024), 1024 * 1024)
         self.maximumDescriptorBytes = min(maximumDescriptorBytes, GitHubInstallerReleaseDescriptor.maximumDescriptorBytes)
+        self.protocolClassesForTesting = []
+        super.init()
+    }
+
+    init(
+        timeout: TimeInterval = 20,
+        maximumLocatorBytes: Int = 256 * 1024,
+        maximumDescriptorBytes: Int = 128 * 1024,
+        protocolClassesForTesting: [AnyClass]
+    ) {
+        self.timeout = min(max(timeout, 5), 60)
+        self.maximumLocatorBytes = min(max(maximumLocatorBytes, 1024), 1024 * 1024)
+        self.maximumDescriptorBytes = min(maximumDescriptorBytes, GitHubInstallerReleaseDescriptor.maximumDescriptorBytes)
+        self.protocolClassesForTesting = protocolClassesForTesting
+        super.init()
     }
 
     public func latestReleaseTag(
@@ -94,6 +110,9 @@ public final class GitHubReleaseDescriptorTransport: NSObject, GitHubInstallerRe
         configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = timeout
         configuration.timeoutIntervalForResource = timeout
+        if !protocolClassesForTesting.isEmpty {
+            configuration.protocolClasses = protocolClassesForTesting
+        }
         let session = URLSession(configuration: configuration, delegate: redirectDelegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
 

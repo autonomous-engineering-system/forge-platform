@@ -75,7 +75,7 @@ public struct MacOSInstallerBundleCodeSigningInspector: MacOSInstallerBundleCode
         }
     }
 
-    private func createAndValidateStaticCode(at bundleURL: URL) throws -> SecStaticCode {
+    func createAndValidateStaticCode(at bundleURL: URL) throws -> SecStaticCode {
         var staticCode: SecStaticCode?
         guard SecStaticCodeCreateWithPath(bundleURL as CFURL, SecCSFlags(), &staticCode) == errSecSuccess,
               let staticCode,
@@ -89,7 +89,7 @@ public struct MacOSInstallerBundleCodeSigningInspector: MacOSInstallerBundleCode
         return staticCode
     }
 
-    private func copySigningInformation(
+    func copySigningInformation(
         from staticCode: SecStaticCode
     ) throws -> MacOSInstallerBundleSigningInformation {
         var signingInformation: CFDictionary?
@@ -117,7 +117,7 @@ public struct MacOSInstallerBundleCodeSigningInspector: MacOSInstallerBundleCode
         )
     }
 
-    private func fullCodeDirectorySHA256(for bundleURL: URL) throws -> String {
+    func fullCodeDirectorySHA256(for bundleURL: URL) throws -> String {
         guard FileManager.default.isExecutableFile(atPath: Self.codeSignToolURL.path) else {
             throw MacOSInstallerBundleCodeSigningInspectorError.invalidCode
         }
@@ -254,7 +254,7 @@ public struct MacOSCurrentInstallerBundleInspector: CurrentInstallerBundleInspec
     }
 }
 
-private struct MacOSInstallerBundleSigningInformation {
+struct MacOSInstallerBundleSigningInformation {
     let bundleIdentifier: String
     let installerVersion: InstallerVersion
     let teamIdentifier: String
@@ -274,7 +274,7 @@ private struct MacOSInstallerBundleSigningInformation {
     }
 }
 
-private enum MacOSInstallerBundleCodeSigningInspectorError: Error {
+enum MacOSInstallerBundleCodeSigningInspectorError: Error {
     case invalidCode
 }
 
@@ -303,7 +303,7 @@ enum MacOSCodeSignEvidenceParser {
 /// Drains a fixed-tool diagnostic pipe while retaining a small bounded copy.
 /// An unexpected large diagnostic stream is discarded and reported as invalid
 /// evidence, but it never blocks the child process or becomes unbounded memory.
-private final class BoundedProcessOutputCollector: @unchecked Sendable {
+final class BoundedProcessOutputCollector: @unchecked Sendable {
     private let maximumBytes: Int
     private let lock = NSLock()
     private var data = Data()

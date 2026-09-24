@@ -3,6 +3,18 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class MacOSInstallerNotarizationAssessorTests: XCTestCase {
+    func testProductionExecutorRunsFixedToolsForARealAppDirectoryAndFailsClosed() async throws {
+        let bundle = try temporaryAppBundle()
+        defer { try? FileManager.default.removeItem(at: bundle.deletingLastPathComponent()) }
+        let executor = MacOSSystemNotarizationToolExecutor()
+
+        let policy = await executor.executeNotarizationAssessment(.systemPolicy, bundleURL: bundle)
+        let stapler = await executor.executeNotarizationAssessment(.stapler, bundleURL: bundle)
+
+        XCTAssertEqual(failureCode(policy), .notarizationVerificationFailed)
+        XCTAssertEqual(failureCode(stapler), .notarizationVerificationFailed)
+    }
+
     func testCommandFactoryUsesOnlyFixedAbsoluteToolsAndTheExactBundlePath() {
         let bundleURL = URL(
             fileURLWithPath: "/private/tmp/forge platform/Forge Platform Installer.app",
