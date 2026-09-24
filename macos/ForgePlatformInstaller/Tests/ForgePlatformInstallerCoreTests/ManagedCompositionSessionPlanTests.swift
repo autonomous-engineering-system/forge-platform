@@ -3,6 +3,42 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedCompositionSessionPlanTests: XCTestCase {
+    func testManagedGitRequirementIsProjectedFromExactManifestIdentity() throws {
+        let digest = "sha256:" + String(repeating: "9", count: 64)
+        let manifest = manifestData(
+            providers: [],
+            managedTools: [[
+                "identity": "git",
+                "version": "2.45.0",
+                "url": "https://artifacts.example.test/git.pkg",
+                "digest": digest,
+            ]]
+        )
+        guard case .success(let plan) = try buildResult(manifest) else {
+            return XCTFail("expected managed Git projection")
+        }
+        XCTAssertEqual(plan.managedTools.count, 1)
+        XCTAssertEqual(plan.managedTools[0].identity, .git)
+        XCTAssertEqual(plan.managedTools[0].version, try InstallerVersion("2.45.0"))
+        XCTAssertEqual(plan.managedTools[0].artifact.sha256, digest)
+
+        var payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: manifest) as? [String: Any]
+        )
+        payload["managed_tools"] = [
+            [
+                "identity": "git", "version": "2.45.0",
+                "url": "https://artifacts.example.test/git.pkg", "digest": digest,
+            ],
+            [
+                "identity": "git", "version": "2.46.0",
+                "url": "https://artifacts.example.test/git-2.pkg", "digest": digest,
+            ],
+        ]
+        let duplicate = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        XCTAssertEqual(try buildResult(duplicate), .failure(.rejected))
+    }
+
     func testV2ManifestProjectsTwoCodexTargetsWithoutConflatingThem() throws {
         let context = try currentContext()
         let manifest = manifestData(providers: [
@@ -337,7 +373,8 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
     private func manifestData(
         schema: String = "forge-platform.composition/v2",
         providers: [[String: Any]],
-        components: [String] = ["forge-runtime", "engineering-platform-server"]
+        components: [String] = ["forge-runtime", "engineering-platform-server"],
+        managedTools: [[String: Any]] = []
     ) -> Data {
         let componentObjects: [[String: Any]] = components.map {
             [
@@ -357,7 +394,7 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
                 "capabilities": ["catalog-component-set/v1"],
             ],
             "host_requirements": [:],
-            "managed_tools": [],
+            "managed_tools": managedTools,
             "python_runtime": [
                 "schema": ManagedPythonRuntimeIdentity.schema,
                 "implementation": ManagedPythonRuntimeIdentity.implementation,

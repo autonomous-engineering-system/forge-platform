@@ -329,7 +329,7 @@ struct ActivationFixture {
     let session: VerifiedCompositionSessionPlan
     let preparation: ManagedPythonRuntimePreparationReceipt
 
-    init() throws {
+    init(managedTools: [ManagedToolRequirement] = []) throws {
         deployment = try ManagedDeploymentTarget(
             id: "activation-deployment",
             exists: true,
@@ -357,7 +357,8 @@ struct ActivationFixture {
             componentSelectionSequence: 4,
             managedPythonRuntime: runtime,
             productVirtualEnvironments: managedPythonTestVenvs,
-            providerRequirements: []
+            providerRequirements: [],
+            managedTools: managedTools
         )
         let operationID = ManagedPythonRuntimePreparationCoordinator.operationID(
             session: session,
