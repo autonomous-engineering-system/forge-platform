@@ -84,7 +84,7 @@ public struct ManagedPythonRuntimeIdentity: Equatable, Sendable {
         )
     }
 
-    private var identityMaterial: StrictJSONResourceValue {
+    var identityMaterial: StrictJSONResourceValue {
         .object([
             "schema": .string(Self.schema),
             "implementation": .string(Self.implementation),

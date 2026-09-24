@@ -23,7 +23,7 @@ final class ManagedPythonRuntimeActivationStoreTests: XCTestCase {
         let data = try Data(contentsOf: file)
         let text = try XCTUnwrap(String(data: data, encoding: .utf8))
         XCTAssertTrue(text.contains(
-            "forge-platform.managed-python-runtime-activation-receipt/v1"
+            "forge-platform.managed-python-runtime-activation-receipt/v2"
         ))
         XCTAssertTrue(text.contains("\"state\":\"READY\""))
         XCTAssertTrue(text.contains("\"rollback_runtime_identity_sha256\":null"))
@@ -64,8 +64,8 @@ final class ManagedPythonRuntimeActivationStoreTests: XCTestCase {
         )
         let mutations = [
             canonical.replacingOccurrences(
-                of: "forge-platform.managed-python-runtime-activation-receipt/v1",
-                with: "forge-platform.managed-python-runtime-activation-receipt/v2"
+                of: "forge-platform.managed-python-runtime-activation-receipt/v2",
+                with: "forge-platform.managed-python-runtime-activation-receipt/v3"
             ),
             canonical.replacingOccurrences(of: "\"READY\"", with: "\"BROKEN\""),
             canonical.replacingOccurrences(
@@ -220,6 +220,10 @@ private func activationStoreReceipt(
             for: managedPythonTestRuntime.identitySHA256
         ),
         rollbackRuntimeIdentitySHA256: nil,
+        assetEvidenceReferences: [
+            "receipt:asset-runtime", "receipt:asset-source",
+            "receipt:asset-source-provenance", "receipt:asset-build-provenance",
+        ],
         preparationEvidenceReferences: ["receipt:inspection", "receipt:slot"],
         productVenvEvidenceReferences: [
             "engineering-platform-server": "receipt:venv-ep",

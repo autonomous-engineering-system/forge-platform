@@ -193,8 +193,14 @@ the installer-owned mode-0700 recovery root. An exact retry reloads that
 receipt and freshly verifies every component venv plus the active runtime
 without repeating mutation. A conflicting, malformed or insecure record fails
 closed. This durable native receipt binds the preparation, venv,
-activation and final-readback evidence, but is not yet the platform-neutral
-executor `COMPLETE` receipt or installer-journal event.
+activation and final-readback evidence. The native terminal coordinator
+projects it into the exact platform-neutral executor `COMPLETE` shape,
+including the same canonical request fingerprint used by the Python contract,
+and offers it to an injected durable parent-journal bridge. The pending native
+receipt is cleared only after the terminal coordinator, under the host-wide
+lease, freshly re-reads every venv and the active runtime and the bridge then
+accepts the exact terminal receipt. A concrete parent-journal adapter and
+released route are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -270,9 +276,14 @@ preparation receipt through idempotent component-venv readiness, activation,
 rollback retention and final readback. It atomically preserves its canonical
 `READY` receipt in the same private recovery root and, on an exact retry,
 revalidates every venv and the active runtime before returning the stored
-evidence. That receipt is not yet assembled into the platform-neutral
-`COMPLETE` executor receipt or parent journal bridge, and neither coordinator
-is wired into the released runtime. A
-concrete reviewed privileged adapter, durable native bridge integration,
-released mutation wiring and an actual protected arm64 runtime publication
-remain required before operational installation can be claimed.
+evidence. The native terminal coordinator then assembles the same ordered
+asset, inspection, slot, venv, activation and final-readback references used by
+the platform-neutral `COMPLETE` receipt. Its request fingerprint is tested
+against the Python implementation. An injected bridge must durably and
+idempotently admit that exact receipt before native pending state is cleared;
+the coordinator first repeats all venv and active-runtime readbacks under its
+host-wide lease. Neither the concrete parent-journal adapter nor these
+coordinators are wired into the released runtime. A concrete reviewed
+privileged adapter, released mutation wiring and an actual protected arm64
+runtime publication remain required before operational installation can be
+claimed.
