@@ -4,7 +4,10 @@
 credential-free native HTTPS asset transport, private operation-scoped native
 asset staging, read-only native archive inspection, and a closed native
 runtime-slot mutation coordinator implemented and composed into one
-unprivileged runtime-preparation coordinator. The native
+unprivileged runtime-preparation coordinator. A separate native durable
+recovery store now preserves the exact four staged-asset identities in strict,
+bounded, private atomic storage, but is not yet connected to that coordinator.
+The native
 projection recomputes the complete runtime identity, binds it to the signed
 outer-catalog approval, and retains one exact venv identity per selected
 component. The transport derives each of the four bounded downloads only from
@@ -77,7 +80,17 @@ Cleanup is retry-safe for the same validated staged identity: an already absent
 operation or exact staged file is treated as removed, while changed files,
 symlinks, insecure directories and unknown residual entries still fail closed.
 This closes the crash window between deletion and durable pending-record
-clearance; the durable recovery record itself remains a later increment.
+clearance. The separate durable recovery record uses a fixed V1 schema and
+persists the exact operation, runtime, opaque staging and per-role
+download/file identities in canonical JSON. Its installer-owned root is
+effective-user-owned `0700`; its single-link regular record is `0600`, opened
+without following symlinks, bounded to 64 KiB, written by file-and-directory
+`fsync` plus atomic rename, and revalidated around each operation. A repeated
+save/clear of the same complete identity is idempotent, while a different,
+malformed, insecure or corrupt pending identity cannot replace or clear it.
+The record contains no path, command, environment value or credential. Wiring
+save-before-mutation, cleanup-before-clear and restart recovery into the native
+preparation coordinator remains a separate increment.
 
 The native archive inspector accepts only the exact staged asset set plus the
 admitted runtime identity. It re-reads all four assets through the staging
@@ -202,6 +215,8 @@ privilege seam and requires fresh post-mutation readback. The native
 preparation coordinator now assembles those pieces into one fail-closed,
 cleanup-enforcing source-level transaction and emits an exact `READY` receipt.
 It is not assembled into the released runtime or wired into executor
-journaling. A concrete reviewed privileged adapter, durable recovery bridge,
-released mutation wiring and an actual protected arm64 runtime publication
-remain required before operational installation can be claimed.
+journaling. The native pending store is likewise not yet connected to the
+preparation transaction or restart entry point. That recovery integration, a
+concrete reviewed privileged adapter, released mutation wiring and an actual
+protected arm64 runtime publication remain required before operational
+installation can be claimed.
