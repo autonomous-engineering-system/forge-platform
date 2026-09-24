@@ -38,7 +38,7 @@ if sudo -H -u "$BUILD_USER" security find-identity -v -p codesigning 2>/dev/null
   fail developer-id-visible-in-build-account
 fi
 
-LOG_ROOT="$build_home/Library/Logs/$SERVICE_LABEL"
+LOG_ROOT="/var/log/$SERVICE_LABEL"
 install -d -o "$BUILD_USER" -g staff -m 0700 "$LOG_ROOT"
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT

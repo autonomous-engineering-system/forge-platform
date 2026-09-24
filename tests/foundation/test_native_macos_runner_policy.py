@@ -95,6 +95,8 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
             self.assertIn('launchctl print "system/$SERVICE_LABEL"', text)
             self.assertIn("Runner.Listener", text)
         self.assertIn('PLIST_PATH="/Library/LaunchDaemons/${SERVICE_LABEL}.plist"', service)
+        self.assertIn('LOG_ROOT="/var/log/$SERVICE_LABEL"', service)
+        self.assertNotIn('$build_home/Library/Logs', service)
         self.assertIn("<key>UserName</key><string>$BUILD_USER</string>", service)
         self.assertIn("<key>RunAtLoad</key><true/>", service)
         self.assertNotIn("LaunchAgents", reboot)
