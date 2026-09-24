@@ -159,17 +159,20 @@ def _verify_signature(public_key: bytes, payload: bytes, signature: bytes) -> No
         root = Path(temporary)
         public_path = root / "public.der"
         signature_path = root / "signature.bin"
+        payload_path = root / "descriptor.json"
         public_path.write_bytes(_SPKI_PREFIX + public_key)
         signature_path.write_bytes(signature)
+        payload_path.write_bytes(payload)
         public_path.chmod(0o600)
         signature_path.chmod(0o600)
+        payload_path.chmod(0o600)
         verified = subprocess.run(
             [
                 "openssl", "pkeyutl", "-verify", "-rawin", "-pubin",
                 "-keyform", "DER", "-inkey", str(public_path),
                 "-sigfile", str(signature_path),
+                "-in", str(payload_path),
             ],
-            input=payload,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=30,
