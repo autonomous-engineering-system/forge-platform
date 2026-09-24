@@ -170,6 +170,18 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
         }
     }
 
+    func testPublicBuilderReadsAndAdmitsTheQualifiedNativeHost() throws {
+        let facts = try XCTUnwrap(MacOSInstallerPlatformFacts.current)
+        XCTAssertEqual(facts.processArchitecture, "arm64")
+        XCTAssertTrue(facts.appleSiliconHardware)
+        XCTAssertFalse(facts.rosettaTranslated)
+        XCTAssertGreaterThanOrEqual(facts.macOSMajorVersion, 26)
+
+        let root = try makeSecureTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertNoThrow(try MacOSTrustedInstallerRuntimeBuilder(stateRoot: root))
+    }
+
     func testUserStateRootCreatesPrivateSeparateInstallerControlDirectories() throws {
         let container = try makeSecureTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: container) }
