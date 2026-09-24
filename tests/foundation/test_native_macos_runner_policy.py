@@ -13,6 +13,7 @@ RELEASE = ROOT / ".github/workflows/forge-platform-installer-release.yml"
 BUILD_BOOTSTRAP = ROOT / "scripts/ci/bootstrap_macos_build_runner.sh"
 BUILD_SERVICE = ROOT / "scripts/ci/install_macos_build_runner_launchdaemon.sh"
 BUILD_REBOOT = ROOT / "scripts/ci/verify_macos_build_runner_reboot.sh"
+SIGNER_REBOOT = ROOT / "scripts/ci/verify_macos_offline_signer_reboot.sh"
 OLD_BOOTSTRAP = ROOT / "scripts/ci/bootstrap_macos_signing_runner.sh"
 READINESS = ROOT / "scripts/ci/verify_macos_offline_signing_host.sh"
 OLD_READINESS = ROOT / "scripts/ci/verify_macos_signing_runner.sh"
@@ -120,6 +121,25 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         for text in (bootstrap, service, reboot):
             self.assertIn('open(', text)
             self.assertIn('encoding="utf-8-sig"', text)
+
+    def test_offline_signer_reboot_evidence_rechecks_every_local_credential(self) -> None:
+        text = SIGNER_REBOOT.read_text(encoding="utf-8")
+        for required in (
+            "usage-record-or-verify",
+            "source-not-exact-current-main",
+            "verify_macos_offline_signing_host.sh",
+            "OfflineInstallerDescriptorKeyTool.swift",
+            "OfflineCompositionCatalogKeyTool.swift",
+            "OFFLINE_DESCRIPTOR_KEY",
+            "OFFLINE_CATALOG_KEY",
+            "host-has-not-rebooted",
+            "OFFLINE_SIGNER_REBOOT_READINESS=PASS",
+        ):
+            self.assertIn(required, text)
+        self.assertIn("kSecAttrAccessibleWhenUnlockedThisDeviceOnly", DESCRIPTOR_KEY_TOOL.read_text())
+        self.assertIn("kSecAttrAccessibleWhenUnlockedThisDeviceOnly", CATALOG_KEY_TOOL.read_text())
+        self.assertNotIn("security export", text)
+        self.assertNotIn("set-key-partition-list", text)
 
     def test_release_workflow_only_authorizes_the_local_signer(self) -> None:
         text = RELEASE.read_text(encoding="utf-8")
