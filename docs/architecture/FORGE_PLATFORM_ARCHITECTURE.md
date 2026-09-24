@@ -25,8 +25,12 @@ venv identity per product bind that same digest. Runtime selection never uses
 `PATH`; the accepted operation freezes the target and any retained rollback
 identity. The source-level executor now durably coordinates exact acquisition,
 archive-evidence verification, immutable runtime/venv slots, final readback and
-frozen-identity rollback through injected adapters. No production Python
-artifact, privileged adapter or operational runtime installation is claimed.
+frozen-identity rollback through injected adapters. The native source kernel
+also continues an exact prepared runtime through idempotent component-venv
+readiness, activation, rollback retention and final readback behind a closed
+injected privilege seam. Its native receipt is not yet the durable
+platform-neutral terminal receipt. No production Python artifact, privileged
+adapter or operational runtime installation is claimed.
 
 ## Installed-server deployment and topology bootstrap
 
