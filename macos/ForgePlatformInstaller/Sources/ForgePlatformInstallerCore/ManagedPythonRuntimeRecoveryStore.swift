@@ -468,7 +468,7 @@ public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecover
 }
 
 private struct ManagedPythonRuntimeActivationStoreRecord: Codable, Equatable {
-    static let schema = "forge-platform.managed-python-runtime-activation-receipt/v1"
+    static let schema = "forge-platform.managed-python-runtime-activation-receipt/v2"
 
     let receipt: ManagedPythonRuntimeActivationReceipt
 
@@ -484,6 +484,7 @@ private struct ManagedPythonRuntimeActivationStoreRecord: Codable, Equatable {
         case runtimeIdentitySHA256 = "runtime_identity_sha256"
         case runtimeSlotIdentity = "runtime_slot_identity"
         case rollbackRuntimeIdentitySHA256 = "rollback_runtime_identity_sha256"
+        case assetEvidenceReferences = "asset_evidence_references"
         case preparationEvidenceReferences = "preparation_evidence_references"
         case productVenvEvidenceReferences = "product_venv_evidence_references"
         case activationEvidenceReference = "activation_evidence_reference"
@@ -512,6 +513,10 @@ private struct ManagedPythonRuntimeActivationStoreRecord: Codable, Equatable {
                 rollbackRuntimeIdentitySHA256: container.decodeIfPresent(
                     String.self,
                     forKey: .rollbackRuntimeIdentitySHA256
+                ),
+                assetEvidenceReferences: container.decode(
+                    [String].self,
+                    forKey: .assetEvidenceReferences
                 ),
                 preparationEvidenceReferences: container.decode(
                     [String].self,
@@ -554,6 +559,10 @@ private struct ManagedPythonRuntimeActivationStoreRecord: Codable, Equatable {
             forKey: .rollbackRuntimeIdentitySHA256
         )
         try container.encode(
+            validated.assetEvidenceReferences,
+            forKey: .assetEvidenceReferences
+        )
+        try container.encode(
             validated.preparationEvidenceReferences,
             forKey: .preparationEvidenceReferences
         )
@@ -582,6 +591,7 @@ private struct ManagedPythonRuntimeActivationStoreRecord: Codable, Equatable {
             runtimeIdentitySHA256: receipt.runtimeIdentitySHA256,
             runtimeSlotIdentity: receipt.runtimeSlotIdentity,
             rollbackRuntimeIdentitySHA256: receipt.rollbackRuntimeIdentitySHA256,
+            assetEvidenceReferences: receipt.assetEvidenceReferences,
             preparationEvidenceReferences: receipt.preparationEvidenceReferences,
             productVenvEvidenceReferences: receipt.productVenvEvidenceReferences,
             activationEvidenceReference: receipt.activationEvidenceReference,
@@ -691,7 +701,8 @@ extension FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeActivationS
               Set(fields.keys) == Set([
                 "schema", "operation_id", "session_id", "deployment_id",
                 "runtime_identity_sha256", "runtime_slot_identity",
-                "rollback_runtime_identity_sha256", "preparation_evidence_references",
+                "rollback_runtime_identity_sha256", "asset_evidence_references",
+                "preparation_evidence_references",
                 "product_venv_evidence_references", "activation_evidence_reference",
                 "final_readback_evidence_reference", "state",
               ]),
@@ -702,6 +713,9 @@ extension FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeActivationS
               fields["runtime_identity_sha256"]?.stringValue != nil,
               fields["runtime_slot_identity"]?.stringValue != nil,
               fields["rollback_runtime_identity_sha256"] != nil,
+              let assets = fields["asset_evidence_references"]?.arrayValue,
+              assets.count == ManagedPythonRuntimeAssetKind.allCases.count,
+              assets.allSatisfy({ $0.stringValue != nil }),
               let preparation = fields["preparation_evidence_references"]?.arrayValue,
               preparation.count == 2,
               preparation.allSatisfy({ $0.stringValue != nil }),

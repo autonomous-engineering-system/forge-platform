@@ -30,9 +30,12 @@ also continues an exact prepared runtime through idempotent component-venv
 readiness, activation, rollback retention and final readback behind a closed
 injected privilege seam. It persists the exact native `READY` receipt in a
 private atomic recovery record and revalidates all venv and active-runtime
-readbacks on an exact retry. That receipt is not yet the platform-neutral
-terminal receipt. No production Python artifact, privileged adapter or
-operational runtime installation is claimed.
+readbacks on an exact retry. A separate native terminal coordinator projects it
+into the platform-neutral `COMPLETE` receipt with a cross-implementation request
+fingerprint and clears pending state only after an injected parent-journal
+bridge succeeds. The concrete parent-journal adapter is not implemented. No
+production Python artifact, privileged adapter or operational runtime
+installation is claimed.
 
 ## Installed-server deployment and topology bootstrap
 

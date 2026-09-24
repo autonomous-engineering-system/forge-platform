@@ -22,6 +22,7 @@ public struct ManagedPythonRuntimePreparationReceipt: Equatable, Sendable {
     public let runtimeIdentitySHA256: String
     public let runtimeSlotIdentity: String
     public let archiveSHA256: String
+    public let assetEvidenceReferences: [String]
     public let inspectionEvidenceReference: String
     public let slotEvidenceReference: String
     public let state: State
@@ -30,6 +31,7 @@ public struct ManagedPythonRuntimePreparationReceipt: Equatable, Sendable {
         session: VerifiedCompositionSessionPlan,
         deployment: ManagedDeploymentTarget,
         operationID: String,
+        stagedAssets: ManagedPythonStagedAssetSet,
         inspection: ManagedPythonRuntimeArchiveInspection,
         slot: ManagedPythonRuntimeSlotReceipt
     ) throws {
@@ -40,6 +42,12 @@ public struct ManagedPythonRuntimePreparationReceipt: Equatable, Sendable {
         ),
               inspection.runtimeIdentitySHA256 == runtime.identitySHA256,
               inspection.archiveSHA256 == runtime.artifact.sha256,
+              stagedAssets.operationID == operationID,
+              stagedAssets.runtimeIdentitySHA256 == runtime.identitySHA256,
+              stagedAssets.assets.map(\.kind) == ManagedPythonRuntimeAssetKind.allCases,
+              stagedAssets.assets.allSatisfy({
+                  ManagedPythonRuntimeInstalledReadback.isEvidenceReference($0.evidenceReference)
+              }),
               slot.operationID == operationID,
               slot.runtimeIdentitySHA256 == runtime.identitySHA256,
               slot.runtimeSlotIdentity == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
@@ -58,6 +66,7 @@ public struct ManagedPythonRuntimePreparationReceipt: Equatable, Sendable {
         runtimeIdentitySHA256 = runtime.identitySHA256
         runtimeSlotIdentity = slot.runtimeSlotIdentity
         archiveSHA256 = slot.archiveSHA256
+        assetEvidenceReferences = stagedAssets.assets.map(\.evidenceReference)
         inspectionEvidenceReference = inspection.evidenceReference
         slotEvidenceReference = slot.evidenceReference
         state = .ready
@@ -275,6 +284,7 @@ public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
                 session: session,
                 deployment: deployment,
                 operationID: operationID,
+                stagedAssets: stagedAssets,
                 inspection: inspection,
                 slot: slot
             ))

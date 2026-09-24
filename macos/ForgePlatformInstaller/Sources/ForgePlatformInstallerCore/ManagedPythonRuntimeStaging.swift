@@ -52,6 +52,11 @@ public struct ManagedPythonStagedAsset: Equatable, Sendable {
         self.opaqueReference = opaqueReference
         self.fileIdentity = fileIdentity
     }
+
+    var evidenceReference: String {
+        "receipt:managed-python-asset-\(kind.rawValue)-"
+            + downloadIdentity.sha256.dropFirst("sha256:".count)
+    }
 }
 
 public struct ManagedPythonStagedAssetSet: Equatable, Sendable {

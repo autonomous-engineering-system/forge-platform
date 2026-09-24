@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum ManagedPythonRuntimeActivationFailure: Error, Equatable, Sendable {
@@ -53,7 +54,7 @@ public struct ManagedPythonRuntimeInstalledReadback: Equatable, Sendable {
                 == request.initialReadback.retainedRuntimeIdentitySHA256s
     }
 
-    fileprivate func matchesFinal(_ request: ManagedPythonRuntimeActivationRequest) -> Bool {
+    func matchesFinal(_ request: ManagedPythonRuntimeActivationRequest) -> Bool {
         activeRuntimeIdentitySHA256 == request.runtimeIdentitySHA256
             && activeRuntimeSlotIdentity == request.runtimeSlotIdentity
             && retainedRuntimeIdentitySHA256s == request.requiredRetainedRuntimeIdentitySHA256s
@@ -97,6 +98,7 @@ public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
     public let productVirtualEnvironments: [ManagedProductVirtualEnvironmentIdentity]
     public let preparationReceipt: ManagedPythonRuntimePreparationReceipt
     public let initialReadback: ManagedPythonRuntimeInstalledReadback
+    public let executionRequestFingerprint: String
 
     public init(
         session: VerifiedCompositionSessionPlan,
@@ -157,6 +159,63 @@ public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
         }
         self.preparationReceipt = preparationReceipt
         self.initialReadback = initialReadback
+        executionRequestFingerprint = Self.fingerprint(
+            operationID: operationID,
+            action: action,
+            runtime: runtime,
+            rollbackRuntimeIdentitySHA256: rollback,
+            productVirtualEnvironments: productVirtualEnvironments,
+            initialReadback: initialReadback
+        )
+    }
+
+    private static func fingerprint(
+        operationID: String,
+        action: Action,
+        runtime: ManagedPythonRuntimeIdentity,
+        rollbackRuntimeIdentitySHA256: String?,
+        productVirtualEnvironments: [ManagedProductVirtualEnvironmentIdentity],
+        initialReadback: ManagedPythonRuntimeInstalledReadback
+    ) -> String {
+        guard case .object(var target) = runtime.identityMaterial else {
+            preconditionFailure("managed Python runtime identity material must be an object")
+        }
+        target["identity_digest"] = .string(runtime.identitySHA256)
+        let hasActiveRuntime = initialReadback.activeRuntimeIdentitySHA256 != nil
+        let material: StrictJSONResourceValue = .object([
+            "schema": .string("forge-platform.managed-python-runtime-execution/v1"),
+            "operation_id": .string(operationID),
+            "action": .string(action.rawValue),
+            "target": .object(target),
+            "initial_readback": .object([
+                "state": .string(hasActiveRuntime ? "ACTIVE" : "ABSENT"),
+                "runtime_identity": initialReadback.activeRuntimeIdentitySHA256.map {
+                    .string($0)
+                } ?? .null,
+                "managed_root_identity": hasActiveRuntime
+                    ? .string(ManagedPythonRuntimeIdentity.managedRootIdentity) : .null,
+                "runtime_slot_identity": initialReadback.activeRuntimeSlotIdentity.map {
+                    .string($0)
+                } ?? .null,
+                "retained_runtime_identities": .array(
+                    initialReadback.retainedRuntimeIdentitySHA256s.map { .string($0) }
+                ),
+                "evidence_reference": .string(initialReadback.evidenceReference),
+            ]),
+            "rollback_runtime_identity": rollbackRuntimeIdentitySHA256.map {
+                .string($0)
+            } ?? .null,
+            "product_venvs": .array(productVirtualEnvironments.map {
+                .object([
+                    "component_identity": .string($0.componentIdentity),
+                    "venv_identity": .string($0.venvIdentity),
+                    "python_runtime_identity": .string($0.pythonRuntimeIdentitySHA256),
+                ])
+            }),
+        ])
+        return SHA256.hash(data: StrictSignedJSON.canonicalPayload(from: material))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 }
 
@@ -167,7 +226,7 @@ public struct ManagedPythonProductVenvMutationRequest: Equatable, Sendable {
     public let runtimeIdentitySHA256: String
     public let runtimeSlotIdentity: String
 
-    fileprivate init(
+    init(
         operationID: String,
         environment: ManagedProductVirtualEnvironmentIdentity,
         runtimeSlotIdentity: String
@@ -220,7 +279,7 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
         self.evidenceReference = evidenceReference
     }
 
-    fileprivate func matches(_ request: ManagedPythonProductVenvMutationRequest) -> Bool {
+    func matches(_ request: ManagedPythonProductVenvMutationRequest) -> Bool {
         operationID == request.operationID
             && componentIdentity == request.componentIdentity
             && venvIdentity == request.venvIdentity
@@ -290,6 +349,7 @@ public struct ManagedPythonRuntimeActivationReceipt: Equatable, Sendable {
     public let runtimeIdentitySHA256: String
     public let runtimeSlotIdentity: String
     public let rollbackRuntimeIdentitySHA256: String?
+    public let assetEvidenceReferences: [String]
     public let preparationEvidenceReferences: [String]
     public let productVenvEvidenceReferences: [String: String]
     public let activationEvidenceReference: String
@@ -315,6 +375,7 @@ public struct ManagedPythonRuntimeActivationReceipt: Equatable, Sendable {
             runtimeIdentitySHA256: request.runtimeIdentitySHA256,
             runtimeSlotIdentity: request.runtimeSlotIdentity,
             rollbackRuntimeIdentitySHA256: request.rollbackRuntimeIdentitySHA256,
+            assetEvidenceReferences: request.preparationReceipt.assetEvidenceReferences,
             preparationEvidenceReferences: [
                 request.preparationReceipt.inspectionEvidenceReference,
                 request.preparationReceipt.slotEvidenceReference,
@@ -337,6 +398,7 @@ public struct ManagedPythonRuntimeActivationReceipt: Equatable, Sendable {
         runtimeIdentitySHA256: String,
         runtimeSlotIdentity: String,
         rollbackRuntimeIdentitySHA256: String?,
+        assetEvidenceReferences: [String],
         preparationEvidenceReferences: [String],
         productVenvEvidenceReferences: [String: String],
         activationEvidenceReference: String,
@@ -356,6 +418,10 @@ public struct ManagedPythonRuntimeActivationReceipt: Equatable, Sendable {
                 || CompositionCatalogValidation.isTaggedSHA256(
                     rollbackRuntimeIdentitySHA256 ?? ""
                 ),
+              assetEvidenceReferences.count == ManagedPythonRuntimeAssetKind.allCases.count,
+              assetEvidenceReferences.allSatisfy(
+                  ManagedPythonRuntimeInstalledReadback.isEvidenceReference
+              ),
               preparationEvidenceReferences.count == 2,
               preparationEvidenceReferences.allSatisfy(
                   ManagedPythonRuntimeInstalledReadback.isEvidenceReference
@@ -379,6 +445,7 @@ public struct ManagedPythonRuntimeActivationReceipt: Equatable, Sendable {
         self.runtimeIdentitySHA256 = runtimeIdentitySHA256
         self.runtimeSlotIdentity = runtimeSlotIdentity
         self.rollbackRuntimeIdentitySHA256 = rollbackRuntimeIdentitySHA256
+        self.assetEvidenceReferences = assetEvidenceReferences
         self.preparationEvidenceReferences = preparationEvidenceReferences
         self.productVenvEvidenceReferences = productVenvEvidenceReferences
         self.activationEvidenceReference = activationEvidenceReference
@@ -386,13 +453,14 @@ public struct ManagedPythonRuntimeActivationReceipt: Equatable, Sendable {
         self.state = state
     }
 
-    fileprivate func matches(_ request: ManagedPythonRuntimeActivationRequest) -> Bool {
+    func matches(_ request: ManagedPythonRuntimeActivationRequest) -> Bool {
         operationID == request.operationID
             && sessionID == request.sessionID
             && deploymentID == request.deploymentID
             && runtimeIdentitySHA256 == request.runtimeIdentitySHA256
             && runtimeSlotIdentity == request.runtimeSlotIdentity
             && rollbackRuntimeIdentitySHA256 == request.rollbackRuntimeIdentitySHA256
+            && assetEvidenceReferences == request.preparationReceipt.assetEvidenceReferences
             && preparationEvidenceReferences == [
                 request.preparationReceipt.inspectionEvidenceReference,
                 request.preparationReceipt.slotEvidenceReference,
@@ -421,18 +489,21 @@ public protocol ManagedPythonRuntimeActivationStoring: Sendable {
 /// Closed privilege seam for component-venv and active-runtime mutation. It
 /// receives only identities derived from an admitted session and preparation
 /// receipt; no path, executable, command, environment value or credential.
-public protocol ManagedPythonRuntimeActivating: Sendable {
+public protocol ManagedPythonRuntimeActivationReading: Sendable {
     func readProductVenv(
         _ request: ManagedPythonProductVenvMutationRequest
     ) async -> Result<ManagedPythonProductVenvReceipt?, ManagedPythonRuntimeActivationFailure>
 
-    func ensureProductVenv(
-        _ request: ManagedPythonProductVenvMutationRequest
-    ) async -> Result<ManagedPythonProductVenvReceipt, ManagedPythonRuntimeActivationFailure>
-
     func readActiveRuntime(
         _ request: ManagedPythonRuntimeActivationRequest
     ) async -> Result<ManagedPythonRuntimeInstalledReadback, ManagedPythonRuntimeActivationFailure>
+}
+
+public protocol ManagedPythonRuntimeActivating: ManagedPythonRuntimeActivationReading {
+
+    func ensureProductVenv(
+        _ request: ManagedPythonProductVenvMutationRequest
+    ) async -> Result<ManagedPythonProductVenvReceipt, ManagedPythonRuntimeActivationFailure>
 
     func activateRuntime(
         _ request: ManagedPythonRuntimeActivationRequest

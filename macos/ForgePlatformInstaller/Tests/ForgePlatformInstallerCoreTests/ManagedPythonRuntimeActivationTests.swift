@@ -190,6 +190,7 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
             runtimeIdentitySHA256: seed.runtimeIdentitySHA256,
             runtimeSlotIdentity: seed.runtimeSlotIdentity,
             rollbackRuntimeIdentitySHA256: seed.rollbackRuntimeIdentitySHA256,
+            assetEvidenceReferences: seed.assetEvidenceReferences,
             preparationEvidenceReferences: seed.preparationEvidenceReferences,
             productVenvEvidenceReferences: seed.productVenvEvidenceReferences,
             activationEvidenceReference: seed.activationEvidenceReference,
@@ -322,7 +323,7 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
     }
 }
 
-private struct ActivationFixture {
+struct ActivationFixture {
     let runtime = managedPythonTestRuntime
     let deployment: ManagedDeploymentTarget
     let session: VerifiedCompositionSessionPlan
@@ -399,6 +400,7 @@ private struct ActivationFixture {
             session: session,
             deployment: deployment,
             operationID: operationID,
+            stagedAssets: try Self.stagedAssets(operationID: operationID, runtime: runtime),
             inspection: inspection,
             slot: slot
         )
@@ -406,6 +408,45 @@ private struct ActivationFixture {
 
     var runtimeSlotIdentity: String {
         ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(for: runtime.identitySHA256)
+    }
+
+    private static func stagedAssets(
+        operationID: String,
+        runtime: ManagedPythonRuntimeIdentity
+    ) throws -> ManagedPythonStagedAssetSet {
+        let reference = "managed-python-activation-stage"
+        let assets = try ManagedPythonRuntimeAssetKind.allCases.enumerated().map { index, kind in
+            try ManagedPythonStagedAsset(
+                operationID: operationID,
+                runtimeIdentitySHA256: runtime.identitySHA256,
+                kind: kind,
+                downloadIdentity: downloadIdentity(kind, runtime: runtime),
+                opaqueReference: reference,
+                fileIdentity: ManagedPythonStagedFileIdentity(
+                    volumeReference: "volume-1",
+                    fileReference: "file-\(index)",
+                    byteCount: UInt64(index + 1)
+                )
+            )
+        }
+        return try ManagedPythonStagedAssetSet(
+            operationID: operationID,
+            runtimeIdentitySHA256: runtime.identitySHA256,
+            opaqueReference: reference,
+            assets: assets
+        )
+    }
+
+    private static func downloadIdentity(
+        _ kind: ManagedPythonRuntimeAssetKind,
+        runtime: ManagedPythonRuntimeIdentity
+    ) -> ManagedPythonDownloadIdentity {
+        switch kind {
+        case .runtimeArchive: runtime.artifact
+        case .sourceArchive: runtime.source
+        case .sourceProvenance: runtime.sourceProvenance
+        case .buildProvenance: runtime.buildProvenance
+        }
     }
 
     func request(
