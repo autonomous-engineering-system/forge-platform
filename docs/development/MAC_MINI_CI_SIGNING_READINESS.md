@@ -10,10 +10,10 @@ test, static check, or simulated Apple command is never reported as a live pass.
 Pull requests and ordinary validation stay on GitHub-hosted macOS runners. The
 Mac mini Actions account is a credentialless build account. It has no Developer
 ID private key, no notarytool profile, no descriptor-signing private key, and no
-GitHub publication credential. The intended organization runner group
+GitHub publication credential. The organization runner group
 `forge-platform-build` is restricted to this repository and the exact reviewed
-workflows on protected `main`. GitHub can create that restriction only after
-both workflow files exist on `main`; the group remains absent until then.
+native-validation, installer-release and composition-catalog-release workflows
+on protected `main`.
 
 Developer ID signing, notarization, stapling, Gatekeeper assessment, descriptor
 signing, GitHub Release publication, and remote digest readback run only from a
@@ -117,14 +117,21 @@ Verified in GitHub:
 - protected Environment `forge-platform-installer-signing` exists, requires
   reviewer `pcvantol`, has admin bypass disabled, has no secrets, and allows
   only branch `main`;
-- PR #75 and its runner, coverage, service, and signing-readiness follow-ups
-  through PR #84 are merged; exact protected `main` is
-  `a9e0f21f5b1b5b2eca99845e94e81134339bbb4a` and its required checks are green;
+- PR #75 and its runner, coverage, service, signing-readiness, installer-release
+  and catalog-release follow-ups through PR #94 are merged; exact protected
+  `main` is `1445e8244b1a4360b19ea6d1ef61e949ae91ba64` and the required PR #94
+  checks are green;
 - organization runner group `forge-platform-build` exists as group 3, permits
-  exactly this one public repository, and is restricted to the native build and
-  installer release workflows at `refs/heads/main`;
-- the credentialless runner completed exact-main native tests, changed-file
-  coverage, and unsigned GUI plus CLI packaging successfully after reboot.
+  exactly this one public repository, and is restricted to these exact workflow
+  references:
+  - `autonomous-engineering-system/forge-platform/.github/workflows/macos-installer-native-integration.yml@refs/heads/main`;
+  - `autonomous-engineering-system/forge-platform/.github/workflows/forge-platform-installer-release.yml@refs/heads/main`;
+  - `autonomous-engineering-system/forge-platform/.github/workflows/forge-platform-composition-catalog-release.yml@refs/heads/main`;
+- installer release run
+  [`36000084309`](https://github.com/autonomous-engineering-system/forge-platform/actions/runs/36000084309)
+  completed exact-main admission, native tests, combined coverage, unsigned GUI
+  plus CLI packaging and the protected non-secret signing authorization from
+  source `0e00e3f1ddb8589f840724dc2818d534a7a314fc`.
 
 Verified locally:
 
@@ -147,17 +154,31 @@ Verified locally:
   Keychain services. Rebuilt Developer ID signed helpers read them
   noninteractively without exporting private bytes or changing Keychain ACLs;
 - the public key policies, Team, bundle, and GitHub namespace now bind the
-  committed `READY` identity and both strict public trust resources.
+  committed `READY` identity and both strict public trust resources;
+- the exact 0.2.4 production candidate passed local signer readiness and the
+  exclusive offline-signing lock, Developer ID signing, Apple notarization
+  (`Accepted`, submission `9e3ff0c8-af37-4afc-823d-8f8afffa8ffe`), stapling,
+  Gatekeeper assessment, strict nested signature verification and Ed25519
+  descriptor verification;
+- public release
+  [`forge-platform-installer-v0.2.4`](https://github.com/autonomous-engineering-system/forge-platform/releases/tag/forge-platform-installer-v0.2.4)
+  is bound to source `0e00e3f1ddb8589f840724dc2818d534a7a314fc`, release
+  sequence 2 and the exact public readback digests
+  `sha256:8a07405a141e5236b2cf46b56ee636a1f0063ec4d9c68f50472fe1fe8b3bf3d4`
+  for the arm64 archive and
+  `sha256:962745230ed2b61a0ef75787bd40e48371048b72e1e7ab7b2b242c6bbf9b6e11`
+  for the signed descriptor. Its durable operation state is `PUBLISHED`.
 
-Still unverified:
+Still deliberately open:
 
-- signer-account credential readiness after a subsequent reboot;
-- exact release-candidate signing, Apple notarization, stapling and Gatekeeper
-  acceptance for the production installer artifact;
-- GitHub Release publication and remote public asset digest readback.
+- no sequence-1 composition catalog or stable catalog asset is published; the
+  reviewed immutable component, managed Git, managed Python and Workspace
+  producer evidence required for a safe composition is incomplete;
+- a released-installer qualification on a separate fresh Mac target, including
+  Forge+EP installation, cold reboot without user login, rediscovery and
+  multi-instance isolation, has not been performed and has no PASS claim.
 
 `installer-release-identity.json` is `READY` because the live host evidence and
-matching public trust facts now exist. `READY` authorizes the protected release
-flow; it does not claim that a production installer release has passed. The
-remaining production artifact and publication evidence stays explicitly open
-until the exact release flow completes.
+matching public trust facts exist. The exact production installer release has
+now also passed and is published as 0.2.4. That result does not make the
+composition catalog live and does not qualify a fresh-host installation.
