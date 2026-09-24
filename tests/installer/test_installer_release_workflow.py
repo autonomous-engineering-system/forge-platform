@@ -33,6 +33,9 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
     def test_native_tests_coverage_gui_cli_and_unsigned_candidate_are_mandatory(self) -> None:
         self.assertIn("coverage_base_sha:", self.workflow)
         self.assertIn("swift test --enable-code-coverage", self.workflow)
+        self.assertIn("export_managed_installer_swift_coverage.sh", self.workflow)
+        self.assertIn("$RUNNER_TEMP/forge-platform-installer-release-swift-coverage.json", self.workflow)
+        self.assertNotIn("swift test --show-codecov-path", self.workflow)
         self.assertIn("check_managed_installer_swift_coverage.py", self.workflow)
         self.assertIn("--product ForgePlatformInstaller", self.workflow)
         self.assertIn("--product forge-platform-installer", self.workflow)

@@ -455,6 +455,11 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertNotIn("FORGE_PLATFORM_CODESIGN_IDENTITY", text)
         self.assertNotIn("continue-on-error", text)
 
+    def test_release_workflow_combines_all_swift_coverage_bundles(self) -> None:
+        release = (ROOT / ".github/workflows/forge-platform-installer-release.yml").read_text()
+        self.assertIn("export_managed_installer_swift_coverage.sh", release)
+        self.assertNotIn("swift test --show-codecov-path", release)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
