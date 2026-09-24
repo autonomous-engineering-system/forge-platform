@@ -25,7 +25,6 @@ os_major="$(sw_vers -productVersion | cut -d. -f1)"
 [[ "$(id -un)" == "$EXPECTED_USER" ]] || fail build-user-mismatch
 [[ -n "$SIGNER_USER" ]] || fail signer-user-required
 [[ "$(id -un)" != "$SIGNER_USER" ]] || fail build-and-signer-user-must-differ
-[[ -n "${ACTIONS_RUNNER_TOKEN:-}" ]] || fail ACTIONS_RUNNER_TOKEN-required
 [[ "$ORGANIZATION_URL" == "https://github.com/autonomous-engineering-system" ]] || fail organization-url-mismatch
 [[ "$RUNNER_GROUP" == "forge-platform-build" ]] || fail runner-group-mismatch
 [[ -z "${FORGE_PLATFORM_NOTARYTOOL_PROFILE:-}" ]] || fail notary-profile-must-not-enter-build-account
@@ -52,16 +51,17 @@ if [[ -f .runner ]]; then
   [[ "$existing_name" == "$RUNNER_NAME" ]] || fail existing-runner-name-mismatch
   echo "RUNNER_BOOTSTRAP=EXISTING mode=credentialless-build root=$RUNNER_ROOT name=$RUNNER_NAME"
 else
+  [[ -n "${ACTIONS_RUNNER_TOKEN:-}" ]] || fail ACTIONS_RUNNER_TOKEN-required
   ./config.sh     --unattended     --url "$ORGANIZATION_URL"     --token "$ACTIONS_RUNNER_TOKEN"     --runnergroup "$RUNNER_GROUP"     --name "$RUNNER_NAME"     --no-default-labels     --labels "$RUNNER_LABELS"     --work _work
 fi
 
-if ./svc.sh status >/dev/null 2>&1; then
-  ./svc.sh stop >/dev/null 2>&1 || true
-else
-  ./svc.sh install >/dev/null
+[[ ! -f .service ]] || fail per-user-service-must-not-be-installed
+if [[ -d "$HOME/Library/LaunchAgents" ]] && find "$HOME/Library/LaunchAgents" -maxdepth 1 -name 'actions.runner.*.plist' -print -quit | grep -q .; then
+  fail per-user-launchagent-must-not-be-installed
 fi
-./svc.sh start >/dev/null
-./svc.sh status
+cp ./bin/runsvc.sh ./runsvc.sh
+chmod 700 ./runsvc.sh
 
 echo "RUNNER_BOOTSTRAP=PASS mode=credentialless-build user=$(id -un) name=$RUNNER_NAME group=$RUNNER_GROUP labels=$RUNNER_LABELS version=$RUNNER_VERSION root=$RUNNER_ROOT"
-echo "RUNNER_REBOOT_PERSISTENCE=NOT_VERIFIED action=reboot-and-run-live-verifier"
+echo "RUNNER_SYSTEM_SERVICE=NOT_INSTALLED action=run-install_macos_build_runner_launchdaemon-as-root"
+echo "RUNNER_REBOOT_PERSISTENCE=NOT_VERIFIED action=install-service-record-reboot-verify"
