@@ -84,6 +84,7 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertNotIn("./svc.sh install", text)
 
     def test_build_runner_uses_a_no_login_system_launchdaemon(self) -> None:
+        bootstrap = BUILD_BOOTSTRAP.read_text(encoding="utf-8")
         service = BUILD_SERVICE.read_text(encoding="utf-8")
         reboot = BUILD_REBOOT.read_text(encoding="utf-8")
         for text in (service, reboot):
@@ -97,6 +98,9 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertIn("<key>UserName</key><string>$BUILD_USER</string>", service)
         self.assertIn("<key>RunAtLoad</key><true/>", service)
         self.assertNotIn("LaunchAgents", reboot)
+        for text in (bootstrap, service, reboot):
+            self.assertIn('open(', text)
+            self.assertIn('encoding="utf-8-sig"', text)
 
     def test_release_workflow_only_authorizes_the_local_signer(self) -> None:
         text = RELEASE.read_text(encoding="utf-8")
