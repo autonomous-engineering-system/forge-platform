@@ -137,20 +137,21 @@ public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
 
     private func recoverInterruptedPreparationWithLeaseHeld()
         async -> Result<Void, ManagedPythonRuntimePreparationFailure> {
-        let pending: ManagedPythonRuntimeRecoveryRecord
         switch await recoveryStore.loadPendingRuntimePreparation() {
         case .success(nil):
-            return .success(())
+            break
         case .success(let record?):
-            pending = record
+            guard case .success = await staging.discardStagedAssets(record.stagedAssets) else {
+                return .failure(.cleanupPending)
+            }
+            guard case .success = await recoveryStore.clearPendingRuntimePreparation(record) else {
+                return .failure(.cleanupPending)
+            }
         case .failure:
             return .failure(.cleanupPending)
         }
 
-        guard case .success = await staging.discardStagedAssets(pending.stagedAssets) else {
-            return .failure(.cleanupPending)
-        }
-        guard case .success = await recoveryStore.clearPendingRuntimePreparation(pending) else {
+        guard case .success = await staging.reconcileUnrecordedStagingOperations() else {
             return .failure(.cleanupPending)
         }
         return .success(())

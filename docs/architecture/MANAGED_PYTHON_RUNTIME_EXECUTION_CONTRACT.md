@@ -228,7 +228,11 @@ runtime-slot coordinator also binds those exact results to a closed injected
 privilege seam and requires fresh post-mutation readback. The native
 preparation coordinator now assembles those pieces into one fail-closed,
 cleanup-enforcing source-level transaction and emits an exact `READY` receipt.
-It is not assembled into the released runtime or wired into executor
-journaling. Acquisition-orphan reconciliation, a concrete reviewed privileged
-adapter, released mutation wiring and an actual protected arm64 runtime
-publication remain required before operational installation can be claimed.
+While holding the host-wide operation lease, it also reconciles unrecorded
+staging directories left by an interrupted acquisition. That reconciliation
+accepts only the fixed operation-name shape and fixed asset names, revalidates
+every directory and file by descriptor, and fails closed on ownership, mode,
+link, type, size or name drift. It is not assembled into the released runtime
+or wired into executor journaling. A concrete reviewed privileged adapter,
+released mutation wiring and an actual protected arm64 runtime publication
+remain required before operational installation can be claimed.

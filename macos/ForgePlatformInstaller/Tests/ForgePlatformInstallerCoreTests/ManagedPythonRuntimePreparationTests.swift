@@ -42,9 +42,9 @@ final class ManagedPythonRuntimePreparationTests: XCTestCase {
         XCTAssertEqual(recoverySnapshot, .init(loads: 1, saves: 1, clears: 1, pending: nil))
         let recordedEvents = events.values()
         XCTAssertEqual(recordedEvents, [
-            "lock.acquire", "recovery.load", "staging.stage", "recovery.save",
-            "inspection.inspect", "slot.ensure", "staging.discard", "recovery.clear",
-            "lock.release",
+            "lock.acquire", "recovery.load", "staging.reconcile", "staging.stage",
+            "recovery.save", "inspection.inspect", "slot.ensure", "staging.discard",
+            "recovery.clear", "lock.release",
         ])
         XCTAssertEqual(operationLock.snapshot(), .init(acquires: 1, releases: 1, held: false))
     }
@@ -81,8 +81,9 @@ final class ManagedPythonRuntimePreparationTests: XCTestCase {
         let recoverySnapshot = await recovery.snapshot()
         XCTAssertEqual(recoverySnapshot, .init(loads: 1, saves: 1, clears: 2, pending: nil))
         let recordedEvents = events.values()
-        XCTAssertEqual(Array(recordedEvents.prefix(5)), [
-            "lock.acquire", "recovery.load", "staging.discard", "recovery.clear", "staging.stage",
+        XCTAssertEqual(Array(recordedEvents.prefix(6)), [
+            "lock.acquire", "recovery.load", "staging.discard", "recovery.clear",
+            "staging.reconcile", "staging.stage",
         ])
     }
 
@@ -330,6 +331,40 @@ final class ManagedPythonRuntimePreparationTests: XCTestCase {
             )
             XCTAssertEqual(operationLock.snapshot(), .init(acquires: 1, releases: 0, held: false))
         }
+    }
+
+    func testOrphanReconciliationFailureBlocksFreshStagingUnderTheLease() async throws {
+        let fixture = try PreparationFixture()
+        let staging = PreparationStaging(fixture: fixture, reconcileFailure: .rejected)
+        let inspector = PreparationInspector(inspection: fixture.inspection)
+        let slot = PreparationSlotCoordinator(fixture: fixture)
+        let recovery = PreparationRecoveryStore()
+        let operationLock = PreparationOperationLock()
+        let coordinator = ManagedPythonRuntimePreparationCoordinator(
+            staging: staging,
+            inspector: inspector,
+            slotCoordinator: slot,
+            recoveryStore: recovery,
+            operationLock: operationLock
+        )
+
+        let result = await coordinator.prepareRuntime(
+            for: fixture.session,
+            deployment: fixture.deployment
+        )
+        let stagingSnapshot = await staging.snapshot()
+        let reconciliationCalls = await staging.reconciliationCalls()
+        let recoverySnapshot = await recovery.snapshot()
+        let inspectionCalls = await inspector.calls()
+        let slotCalls = await slot.calls()
+
+        XCTAssertEqual(result.failure, .cleanupPending)
+        XCTAssertEqual(stagingSnapshot, .init(stages: 0, discards: 0, operationID: nil))
+        XCTAssertEqual(reconciliationCalls, 1)
+        XCTAssertEqual(recoverySnapshot, .init(loads: 1, saves: 0, clears: 0, pending: nil))
+        XCTAssertEqual(inspectionCalls, 0)
+        XCTAssertEqual(slotCalls, 0)
+        XCTAssertEqual(operationLock.snapshot(), .init(acquires: 1, releases: 1, held: false))
     }
 
     func testCleanupOnlyRecoveryAlsoRequiresTheExclusiveOperationLock() async throws {
@@ -959,26 +994,38 @@ private actor PreparationStaging: ManagedPythonRuntimeAssetStaging {
     }
 
     private let fixture: PreparationFixture
+    private let reconcileFailure: ManagedPythonRuntimeStagingFailure?
     private let stageFailure: ManagedPythonRuntimeStagingFailure?
     private let discardFailure: ManagedPythonRuntimeStagingFailure?
     private let driftStagedIdentity: Bool
     private let events: PreparationEventLog?
+    private var reconciles = 0
     private var stages = 0
     private var discards = 0
     private var operationID: String?
 
     init(
         fixture: PreparationFixture,
+        reconcileFailure: ManagedPythonRuntimeStagingFailure? = nil,
         stageFailure: ManagedPythonRuntimeStagingFailure? = nil,
         discardFailure: ManagedPythonRuntimeStagingFailure? = nil,
         driftStagedIdentity: Bool = false,
         events: PreparationEventLog? = nil
     ) {
         self.fixture = fixture
+        self.reconcileFailure = reconcileFailure
         self.stageFailure = stageFailure
         self.discardFailure = discardFailure
         self.driftStagedIdentity = driftStagedIdentity
         self.events = events
+    }
+
+    func reconcileUnrecordedStagingOperations()
+        async -> Result<Void, ManagedPythonRuntimeStagingFailure> {
+        reconciles += 1
+        if let events { events.append("staging.reconcile") }
+        if let reconcileFailure { return .failure(reconcileFailure) }
+        return .success(())
     }
 
     func stageAssets(
@@ -1024,6 +1071,8 @@ private actor PreparationStaging: ManagedPythonRuntimeAssetStaging {
     func snapshot() -> Snapshot {
         Snapshot(stages: stages, discards: discards, operationID: operationID)
     }
+
+    func reconciliationCalls() -> Int { reconciles }
 }
 
 private actor PreparationInspector: ManagedPythonRuntimeArchiveInspecting {

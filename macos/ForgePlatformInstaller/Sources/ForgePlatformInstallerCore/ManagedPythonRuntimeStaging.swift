@@ -89,6 +89,9 @@ public struct ManagedPythonStagedAssetSet: Equatable, Sendable {
 }
 
 public protocol ManagedPythonRuntimeAssetStaging: Sendable {
+    func reconcileUnrecordedStagingOperations()
+        async -> Result<Void, ManagedPythonRuntimeStagingFailure>
+
     func stageAssets(
         operationID: String,
         runtime: ManagedPythonRuntimeIdentity
@@ -190,6 +193,35 @@ public struct MacOSManagedPythonRuntimeAssetStaging: ManagedPythonRuntimeAssetSt
                 try cleanupCreatedOperation(operation, in: stagingDescriptor)
                 return .failure(.rejected)
             }
+        } catch let failure as ManagedPythonRuntimeStagingFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.rejected)
+        }
+    }
+
+    /// Removes operation directories left before `stageAssets` could return a
+    /// complete identity. The coordinator calls this only while holding the
+    /// host-wide managed-Python operation lease.
+    public func reconcileUnrecordedStagingOperations()
+        async -> Result<Void, ManagedPythonRuntimeStagingFailure> {
+        do {
+            guard let root = try openSecureStateRootDirectory(createIfMissing: false) else {
+                return .success(())
+            }
+            defer { _ = Darwin.close(root) }
+            guard let staging = try openSecureDirectory(
+                named: Self.stagingDirectoryName,
+                in: root,
+                createIfMissing: false
+            ) else {
+                return .success(())
+            }
+            defer { _ = Darwin.close(staging) }
+            for name in try directoryEntryNames(staging).sorted() {
+                try reconcileUnrecordedOperation(named: name, in: staging)
+            }
+            return .success(())
         } catch let failure as ManagedPythonRuntimeStagingFailure {
             return .failure(failure)
         } catch {
@@ -406,6 +438,80 @@ public struct MacOSManagedPythonRuntimeAssetStaging: ManagedPythonRuntimeAssetSt
         guard result == 0, Darwin.fsync(stagingDescriptor) == 0 else {
             throw ManagedPythonRuntimeStagingFailure.rejected
         }
+    }
+
+    private func reconcileUnrecordedOperation(
+        named name: String,
+        in stagingDescriptor: Int32
+    ) throws {
+        guard Self.isOperationDirectoryName(name),
+              let operation = try openSecureDirectory(
+                  named: name,
+                  in: stagingDescriptor,
+                  createIfMissing: false
+              ) else {
+            throw ManagedPythonRuntimeStagingFailure.rejected
+        }
+        defer { _ = Darwin.close(operation) }
+        let operationDetails = try secureDirectoryDetails(operation)
+        for fileName in try directoryEntryNames(operation).sorted() {
+            guard let kind = Self.assetKind(forFileName: fileName) else {
+                throw ManagedPythonRuntimeStagingFailure.rejected
+            }
+            let descriptor = fileName.withCString {
+                Darwin.openat(operation, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+            }
+            guard descriptor >= 0 else { throw ManagedPythonRuntimeStagingFailure.rejected }
+            defer { _ = Darwin.close(descriptor) }
+            let details = try secureRegularFileDetails(descriptor)
+            guard details.st_size >= 0,
+                  details.st_size <= off_t(Self.maximumBytes(for: kind)) else {
+                throw ManagedPythonRuntimeStagingFailure.rejected
+            }
+            try verifyRegularFileEntry(named: fileName, in: operation, matches: details)
+            guard fileName.withCString({ Darwin.unlinkat(operation, $0, 0) }) == 0 else {
+                throw ManagedPythonRuntimeStagingFailure.rejected
+            }
+        }
+        guard Darwin.fsync(operation) == 0 else {
+            throw ManagedPythonRuntimeStagingFailure.rejected
+        }
+        try verifyDirectoryEntry(named: name, in: stagingDescriptor, matches: operationDetails)
+        guard name.withCString({ Darwin.unlinkat(stagingDescriptor, $0, AT_REMOVEDIR) }) == 0,
+              Darwin.fsync(stagingDescriptor) == 0 else {
+            throw ManagedPythonRuntimeStagingFailure.rejected
+        }
+    }
+
+    private func directoryEntryNames(_ descriptor: Int32) throws -> [String] {
+        let duplicate = Darwin.dup(descriptor)
+        guard duplicate >= 0 else { throw ManagedPythonRuntimeStagingFailure.rejected }
+        guard let directory = fdopendir(duplicate) else {
+            _ = Darwin.close(duplicate)
+            throw ManagedPythonRuntimeStagingFailure.rejected
+        }
+        defer { _ = closedir(directory) }
+        var names: [String] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(directory) else {
+                guard errno == 0 else { throw ManagedPythonRuntimeStagingFailure.rejected }
+                break
+            }
+            var storage = entry.pointee.d_name
+            let capacity = MemoryLayout.size(ofValue: storage)
+            let name = withUnsafePointer(to: &storage) {
+                $0.withMemoryRebound(to: CChar.self, capacity: capacity) {
+                    String(cString: $0)
+                }
+            }
+            if name == "." || name == ".." { continue }
+            guard ManagedPythonRuntimeStagingValidation.isInternalName(name), names.count < 1024 else {
+                throw ManagedPythonRuntimeStagingFailure.rejected
+            }
+            names.append(name)
+        }
+        return names
     }
 
     private func write(
@@ -660,6 +766,26 @@ public struct MacOSManagedPythonRuntimeAssetStaging: ManagedPythonRuntimeAssetSt
         return details
     }
 
+    private func verifyRegularFileEntry(
+        named name: String,
+        in parentDescriptor: Int32,
+        matches expected: stat
+    ) throws {
+        var observed = stat()
+        let result = name.withCString {
+            Darwin.fstatat(parentDescriptor, $0, &observed, AT_SYMLINK_NOFOLLOW)
+        }
+        guard result == 0,
+              (observed.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              observed.st_uid == Darwin.geteuid(),
+              observed.st_nlink == 1,
+              (observed.st_mode & mode_t(0o7777)) == mode_t(0o600),
+              observed.st_dev == expected.st_dev,
+              observed.st_ino == expected.st_ino else {
+            throw ManagedPythonRuntimeStagingFailure.rejected
+        }
+    }
+
     private func fileIdentity(_ details: stat) throws -> ManagedPythonStagedFileIdentity {
         try ManagedPythonStagedFileIdentity(
             volumeReference: "volume-\(UInt64(details.st_dev))",
@@ -697,6 +823,29 @@ public struct MacOSManagedPythonRuntimeAssetStaging: ManagedPythonRuntimeAssetSt
         case .sourceProvenance: "source-provenance.json"
         case .buildProvenance: "build-provenance.json"
         }
+    }
+
+    private static func assetKind(forFileName name: String) -> ManagedPythonRuntimeAssetKind? {
+        ManagedPythonRuntimeAssetKind.allCases.first { fileName(for: $0) == name }
+    }
+
+    private static func isOperationDirectoryName(_ name: String) -> Bool {
+        let fields = name.split(separator: "-", omittingEmptySubsequences: false)
+        guard fields.count == 8,
+              fields[0] == "operation",
+              fields[6].count == 64,
+              fields[7].count == 64,
+              fields[6].unicodeScalars.allSatisfy(Self.isLowercaseHexScalar),
+              fields[7].unicodeScalars.allSatisfy(Self.isLowercaseHexScalar) else {
+            return false
+        }
+        let identifier = fields[1...5].joined(separator: "-")
+        guard let uuid = UUID(uuidString: identifier) else { return false }
+        return uuid.uuidString.lowercased() == identifier
+    }
+
+    private static func isLowercaseHexScalar(_ scalar: Unicode.Scalar) -> Bool {
+        (48...57).contains(scalar.value) || (97...102).contains(scalar.value)
     }
 
     private static func maximumBytes(for kind: ManagedPythonRuntimeAssetKind) -> Int {
