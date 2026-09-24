@@ -173,7 +173,7 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
             "gh release edit",
         ):
             self.assertIn(command, text)
-        self.assertIn("exclusive-installer-signing", text)
+        self.assertIn("exclusive-offline-signing", text)
         self.assertIn("git rev-parse origin/main", text)
         self.assertNotIn("security export", text)
         self.assertNotIn("set-key-partition-list", text)

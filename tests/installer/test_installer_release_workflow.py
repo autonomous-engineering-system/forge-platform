@@ -80,7 +80,7 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(readback_index, publish_index)
         self.assertIn("cmp ", self.local_release)
         self.assertIn("git rev-parse origin/main", self.local_release)
-        self.assertIn("exclusive-installer-signing", self.local_release)
+        self.assertIn("exclusive-offline-signing", self.local_release)
         self.assertIn("OfflineInstallerDescriptorKeyTool.swift", self.local_release)
         self.assertNotIn("DESCRIPTOR_SIGNING_KEY_PATHS", self.local_release)
 

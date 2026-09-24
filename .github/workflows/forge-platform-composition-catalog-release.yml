@@ -1,0 +1,225 @@
+name: Forge Platform composition catalog release framework
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact already-merged protected origin/main commit
+        required: true
+        type: string
+      composition_manifest:
+        description: Reviewed repository-relative composition/v3 manifest
+        required: true
+        type: string
+      component_combination_catalog:
+        description: Reviewed repository-relative component-combination index
+        required: true
+        type: string
+      catalog_sequence:
+        description: Positive monotonic stable catalog sequence
+        required: true
+        type: string
+      published_at:
+        description: Canonical UTC publication time (whole seconds)
+        required: true
+        type: string
+      expires_at:
+        description: Canonical UTC expiry time (whole seconds)
+        required: true
+        type: string
+      request_publication:
+        description: Request protected offline catalog-signing authorization
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-platform-composition-catalog-release
+  cancel-in-progress: false
+
+jobs:
+  release-context:
+    if: >-
+      ${{ github.repository == 'autonomous-engineering-system/forge-platform' &&
+          github.ref == 'refs/heads/main' && github.ref_protected &&
+          github.sha == inputs.source_sha && github.workflow_sha == inputs.source_sha }}
+    runs-on: ubuntu-24.04
+    outputs:
+      source_sha: ${{ steps.context.outputs.source_sha }}
+      sequence: ${{ steps.context.outputs.sequence }}
+      manifest: ${{ steps.context.outputs.manifest }}
+      index: ${{ steps.context.outputs.index }}
+      manifest_asset: ${{ steps.context.outputs.manifest_asset }}
+      index_asset: ${{ steps.context.outputs.index_asset }}
+      candidate_artifact: ${{ steps.context.outputs.candidate_artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: context
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SEQUENCE: ${{ inputs.catalog_sequence }}
+          MANIFEST: ${{ inputs.composition_manifest }}
+          INDEX: ${{ inputs.component_combination_catalog }}
+        run: |
+          set -euo pipefail
+          python3 - "$SOURCE_SHA" "$SEQUENCE" "$MANIFEST" "$INDEX" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          source, sequence, *paths = sys.argv[1:]
+          if re.fullmatch(r"[0-9a-f]{40}", source) is None:
+              raise SystemExit("source_sha must be one full lowercase Git SHA")
+          if re.fullmatch(r"[1-9][0-9]*", sequence) is None or int(sequence) > (2**64) - 1:
+              raise SystemExit("catalog_sequence must be a positive UInt64")
+          for value in paths:
+              path = Path(value)
+              if path.is_absolute() or ".." in path.parts or path.name != value.split("/")[-1]:
+                  raise SystemExit("catalog input path must remain within the checkout")
+          PY
+          test -z "$(git status --porcelain)"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$SOURCE_SHA" = "$(git rev-parse HEAD)"
+          test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
+          test "$(git ls-files -- "$MANIFEST")" = "$MANIFEST"
+          test "$(git ls-files -- "$INDEX")" = "$INDEX"
+          MANIFEST_ASSET="ForgePlatformComposition-$SEQUENCE.json"
+          INDEX_ASSET="ForgePlatformComponentCombinationCatalog-$SEQUENCE.json"
+          CANDIDATE_ARTIFACT="forge-platform-composition-catalog-candidate-$SEQUENCE-$SOURCE_SHA"
+          printf 'source_sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          printf 'sequence=%s\n' "$SEQUENCE" >> "$GITHUB_OUTPUT"
+          printf 'manifest=%s\n' "$MANIFEST" >> "$GITHUB_OUTPUT"
+          printf 'index=%s\n' "$INDEX" >> "$GITHUB_OUTPUT"
+          printf 'manifest_asset=%s\n' "$MANIFEST_ASSET" >> "$GITHUB_OUTPUT"
+          printf 'index_asset=%s\n' "$INDEX_ASSET" >> "$GITHUB_OUTPUT"
+          printf 'candidate_artifact=%s\n' "$CANDIDATE_ARTIFACT" >> "$GITHUB_OUTPUT"
+
+  build-catalog-candidate:
+    name: Build unsigned composition catalog candidate
+    needs: release-context
+    timeout-minutes: 30
+    runs-on:
+      group: forge-platform-build
+      labels: forge-platform-build
+    outputs:
+      candidate_digest: ${{ steps.candidate.outputs.candidate_digest }}
+      unsigned_catalog_digest: ${{ steps.candidate.outputs.unsigned_catalog_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ needs.release-context.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: candidate
+        env:
+          SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
+          SEQUENCE: ${{ needs.release-context.outputs.sequence }}
+          MANIFEST: ${{ needs.release-context.outputs.manifest }}
+          INDEX: ${{ needs.release-context.outputs.index }}
+          MANIFEST_ASSET: ${{ needs.release-context.outputs.manifest_asset }}
+          INDEX_ASSET: ${{ needs.release-context.outputs.index_asset }}
+          PUBLISHED_AT: ${{ inputs.published_at }}
+          EXPIRES_AT: ${{ inputs.expires_at }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          sh scripts/validate.sh
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          KEY_TOOL="$RUNNER_TEMP/offline-catalog-key-tool"
+          xcrun swiftc scripts/ci/OfflineCompositionCatalogKeyTool.swift \
+            -framework Security -framework CryptoKit -o "$KEY_TOOL"
+          KEY_IDS="$(python3 -c 'import json; print(" ".join(k["key_id"] for k in json.load(open("release-trust/ForgePlatformInstallerCompositionCatalogTrust.json"))["ed25519_public_keys"]))')"
+          for key_id in $KEY_IDS; do
+            if "$KEY_TOOL" public-key "$key_id" >"$RUNNER_TEMP/catalog-key-check" 2>&1; then
+              echo 'BUILD_RUNNER_ISOLATION=FAIL reason=catalog-signing-key-visible' >&2
+              exit 1
+            fi
+          done
+          mkdir catalog-input
+          key_args=()
+          for key_id in $KEY_IDS; do key_args+=(--key-id "$key_id"); done
+          python3 scripts/prepare_composition_catalog_candidate.py \
+            --manifest "$MANIFEST" \
+            --component-index "$INDEX" \
+            --output-directory catalog-input/candidate \
+            --source-sha "$SOURCE_SHA" \
+            --sequence "$SEQUENCE" \
+            --published-at "$PUBLISHED_AT" \
+            --expires-at "$EXPIRES_AT" \
+            --manifest-asset-name "$MANIFEST_ASSET" \
+            --index-asset-name "$INDEX_ASSET" \
+            "${key_args[@]}"
+          CANDIDATE_DIGEST="sha256:$(shasum -a 256 catalog-input/candidate/composition-catalog-candidate.json | awk '{print $1}')"
+          UNSIGNED_DIGEST="$(python3 -c 'import json; print(json.load(open("catalog-input/candidate/composition-catalog-candidate.json"))["unsigned_catalog_digest"])')"
+          printf 'candidate_digest=%s\n' "$CANDIDATE_DIGEST" >> "$GITHUB_OUTPUT"
+          printf 'unsigned_catalog_digest=%s\n' "$UNSIGNED_DIGEST" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ needs.release-context.outputs.candidate_artifact }}
+          path: catalog-input/candidate/
+          if-no-files-found: error
+          retention-days: 14
+
+  authorize-local-catalog-signing:
+    name: Authorize exact local catalog signing handoff
+    if: ${{ inputs.request_publication }}
+    needs: [release-context, build-catalog-candidate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: forge-platform-installer-signing
+    steps:
+      - name: Emit exact non-secret catalog authorization
+        env:
+          SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
+          SEQUENCE: ${{ needs.release-context.outputs.sequence }}
+          CANDIDATE_ARTIFACT: ${{ needs.release-context.outputs.candidate_artifact }}
+          CANDIDATE_DIGEST: ${{ needs.build-catalog-candidate.outputs.candidate_digest }}
+          UNSIGNED_CATALOG_DIGEST: ${{ needs.build-catalog-candidate.outputs.unsigned_catalog_digest }}
+        run: |
+          set -euo pipefail
+          mkdir catalog-signing-authorization
+          export SOURCE_SHA SEQUENCE CANDIDATE_ARTIFACT CANDIDATE_DIGEST UNSIGNED_CATALOG_DIGEST
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          authorization = {
+              "schema": "forge-platform.local-catalog-signing-authorization/v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "ref": os.environ["GITHUB_REF"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "environment": "forge-platform-installer-signing",
+              "candidate_artifact": os.environ["CANDIDATE_ARTIFACT"],
+              "candidate_digest": os.environ["CANDIDATE_DIGEST"],
+              "unsigned_catalog_digest": os.environ["UNSIGNED_CATALOG_DIGEST"],
+              "catalog_sequence": int(os.environ["SEQUENCE"]),
+              "requested_by": os.environ["GITHUB_ACTOR"],
+              "result": "AUTHORIZED_FOR_LOCAL_CATALOG_SIGNER",
+          }
+          Path("catalog-signing-authorization/authorization.json").write_text(
+              json.dumps(authorization, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forge-platform-catalog-signing-authorization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: catalog-signing-authorization/authorization.json
+          if-no-files-found: error
+          retention-days: 14
