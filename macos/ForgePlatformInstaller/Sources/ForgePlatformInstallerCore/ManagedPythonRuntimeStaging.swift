@@ -251,7 +251,11 @@ public struct MacOSManagedPythonRuntimeAssetStaging: ManagedPythonRuntimeAssetSt
             }) else {
                 throw ManagedPythonRuntimeStagingFailure.invalidRequest
             }
-            let (stagingDescriptor, operationDescriptor, operationDetails) = try openOperation(reference)
+            guard let (stagingDescriptor, operationDescriptor, operationDetails) = try openOperationIfPresent(
+                reference
+            ) else {
+                return .success(())
+            }
             defer {
                 _ = Darwin.close(operationDescriptor)
                 _ = Darwin.close(stagingDescriptor)
@@ -310,8 +314,17 @@ public struct MacOSManagedPythonRuntimeAssetStaging: ManagedPythonRuntimeAssetSt
     private func openOperation(
         _ reference: ManagedPythonStagingReference
     ) throws -> (Int32, Int32, stat) {
-        guard let rootDescriptor = try openSecureStateRootDirectory(createIfMissing: false) else {
+        guard let opened = try openOperationIfPresent(reference) else {
             throw ManagedPythonRuntimeStagingFailure.rejected
+        }
+        return opened
+    }
+
+    private func openOperationIfPresent(
+        _ reference: ManagedPythonStagingReference
+    ) throws -> (Int32, Int32, stat)? {
+        guard let rootDescriptor = try openSecureStateRootDirectory(createIfMissing: false) else {
+            return nil
         }
         defer { _ = Darwin.close(rootDescriptor) }
         guard let stagingDescriptor = try openSecureDirectory(
@@ -319,7 +332,7 @@ public struct MacOSManagedPythonRuntimeAssetStaging: ManagedPythonRuntimeAssetSt
             in: rootDescriptor,
             createIfMissing: false
         ) else {
-            throw ManagedPythonRuntimeStagingFailure.rejected
+            return nil
         }
         let operationDescriptor: Int32
         do {
@@ -328,7 +341,8 @@ public struct MacOSManagedPythonRuntimeAssetStaging: ManagedPythonRuntimeAssetSt
                 in: stagingDescriptor,
                 createIfMissing: false
             ) else {
-                throw ManagedPythonRuntimeStagingFailure.rejected
+                _ = Darwin.close(stagingDescriptor)
+                return nil
             }
             operationDescriptor = opened
         } catch {
@@ -353,7 +367,10 @@ public struct MacOSManagedPythonRuntimeAssetStaging: ManagedPythonRuntimeAssetSt
         let descriptor = name.withCString {
             Darwin.openat(operationDescriptor, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
         }
-        guard descriptor >= 0 else { throw ManagedPythonRuntimeStagingFailure.rejected }
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return }
+            throw ManagedPythonRuntimeStagingFailure.rejected
+        }
         defer { _ = Darwin.close(descriptor) }
         let details = try secureRegularFileDetails(descriptor)
         guard try fileIdentity(details) == asset.fileIdentity else {
