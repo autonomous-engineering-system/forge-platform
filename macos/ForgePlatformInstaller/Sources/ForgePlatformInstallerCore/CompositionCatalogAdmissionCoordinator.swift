@@ -45,6 +45,169 @@ protocol TrustedCompositionCatalogClockAttesting: Sendable {
     ) async -> Result<TrustedCompositionCatalogClockAttestation, TrustedCompositionCatalogClockAttestationFailure>
 }
 
+
+enum IndependentTrustedTimeFailure: Error, Equatable, Sendable {
+    case unavailable
+}
+
+protocol IndependentTrustedTimeReading: Sendable {
+    func verifiedNow() async -> Result<Date, IndependentTrustedTimeFailure>
+}
+
+/// Independent HTTPS time source used only to bound catalog freshness. It uses
+/// GitHub's fixed public API endpoint and its TLS-authenticated HTTP Date header;
+/// no catalog host, local wall clock, environment variable or credential can
+/// supply the trusted instant.
+final class GitHubHTTPSDateTrustedTimeSource: NSObject, IndependentTrustedTimeReading, @unchecked Sendable {
+    static let endpoint = URL(string: "https://api.github.com/meta")!
+    private static let maximumBodyBytes = 256 * 1024
+
+    private let timeout: TimeInterval
+    private let protocolClassesForTesting: [AnyClass]
+
+    init(timeout: TimeInterval = 20) {
+        self.timeout = min(max(timeout, 5), 60)
+        protocolClassesForTesting = []
+        super.init()
+    }
+
+    init(timeout: TimeInterval = 20, protocolClassesForTesting: [AnyClass]) {
+        self.timeout = min(max(timeout, 5), 60)
+        self.protocolClassesForTesting = protocolClassesForTesting
+        super.init()
+    }
+
+    func verifiedNow() async -> Result<Date, IndependentTrustedTimeFailure> {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCache = nil
+        configuration.urlCredentialStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        if !protocolClassesForTesting.isEmpty {
+            configuration.protocolClasses = protocolClassesForTesting
+        }
+        let delegate = TrustedTimeRedirectDelegate()
+        let session = URLSession(
+            configuration: configuration,
+            delegate: delegate,
+            delegateQueue: nil
+        )
+        defer { session.invalidateAndCancel() }
+
+        var request = URLRequest(
+            url: Self.endpoint,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: timeout
+        )
+        request.httpMethod = "GET"
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("ForgePlatformInstaller-trusted-clock/1", forHTTPHeaderField: "User-Agent")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+
+        do {
+            let (stream, response) = try await session.bytes(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  http.statusCode == 200,
+                  http.url?.absoluteString == Self.endpoint.absoluteString,
+                  let date = TrustedHTTPDate.parse(
+                    http.value(forHTTPHeaderField: "Date")
+                  ),
+                  date.timeIntervalSinceReferenceDate.isFinite else {
+                return .failure(.unavailable)
+            }
+            var count = 0
+            for try await _ in stream {
+                count += 1
+                if count > Self.maximumBodyBytes {
+                    return .failure(.unavailable)
+                }
+            }
+            return .success(date)
+        } catch {
+            return .failure(.unavailable)
+        }
+    }
+}
+
+struct GitHubTrustedCompositionCatalogClockAttester: TrustedCompositionCatalogClockAttesting {
+    private let timeSource: any IndependentTrustedTimeReading
+    private let freshness: TimeInterval
+
+    init(
+        timeSource: any IndependentTrustedTimeReading = GitHubHTTPSDateTrustedTimeSource(),
+        freshness: TimeInterval = 60
+    ) {
+        self.timeSource = timeSource
+        self.freshness = min(
+            max(freshness, 1),
+            CompositionCatalogFeedReadback.maximumTrustedClockFreshness
+        )
+    }
+
+    func attestCatalogReadback(
+        _ readback: UntrustedCompositionCatalogFeedReadback
+    ) async -> Result<TrustedCompositionCatalogClockAttestation, TrustedCompositionCatalogClockAttestationFailure> {
+        guard case .success(let verifiedAt) = await timeSource.verifiedNow() else {
+            return .failure(.unavailable)
+        }
+        do {
+            let trustedReadback = try CompositionCatalogFeedReadback(
+                feed: readback.feed,
+                bytes: readback.bytes,
+                observedAt: verifiedAt,
+                freshUntil: verifiedAt.addingTimeInterval(freshness),
+                trustedClock: true
+            )
+            return .success(try TrustedCompositionCatalogClockAttestation(
+                readback: trustedReadback,
+                verifiedAt: verifiedAt
+            ))
+        } catch {
+            return .failure(.unavailable)
+        }
+    }
+}
+
+private final class TrustedTimeRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
+            completionHandler(.performDefaultHandling, nil)
+        } else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+        }
+    }
+}
+
+private enum TrustedHTTPDate {
+    static func parse(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss zzz"
+        return formatter.date(from: value)
+    }
+}
+
+
 /// Fail-closed default until a separately reviewed independent time-evidence
 /// implementation is assembled into a released installer.
 struct UnavailableTrustedCompositionCatalogClockAttester: TrustedCompositionCatalogClockAttesting {
@@ -63,6 +226,29 @@ enum CompositionCatalogAdmissionFailure: Error, Equatable, Sendable {
     case unavailable
 }
 
+
+struct VerifiedCompositionCatalogAdmission: Equatable, Sendable {
+    let catalog: VerifiedCompositionCatalog
+    let verifiedAt: Date
+
+    init(catalog: VerifiedCompositionCatalog, verifiedAt: Date) throws {
+        guard verifiedAt.timeIntervalSinceReferenceDate.isFinite,
+              catalog.publishedAt <= verifiedAt,
+              verifiedAt < catalog.expiresAt else {
+            throw CompositionCatalogAdmissionFailure.unavailable
+        }
+        self.catalog = catalog
+        self.verifiedAt = verifiedAt
+    }
+}
+
+
+protocol CompositionCatalogAdmitting: Sendable {
+    func admitVerifiedCatalogWithEvidence(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext
+    ) async -> Result<VerifiedCompositionCatalogAdmission, CompositionCatalogAdmissionFailure>
+}
+
 /// Combines sealed catalog trust, the exact catalog transport, independently
 /// attested time and a read-only durable anti-replay anchor. It deliberately
 /// does not persist a candidate anchor, select an entry, fetch an index or
@@ -72,7 +258,7 @@ enum CompositionCatalogAdmissionFailure: Error, Equatable, Sendable {
 /// The output is ephemeral. Any future mutating operation must reload and
 /// reverify the catalog under its own operation lock; it may not treat this
 /// result as durable session or terminal-operation authority.
-struct CompositionCatalogAdmissionCoordinator: Sendable {
+struct CompositionCatalogAdmissionCoordinator: CompositionCatalogAdmitting, Sendable {
     private let trustLoader: any SealedCompositionCatalogTrustConfigurationLoading
     private let transport: any CompositionCatalogFetching
     private let trustedClockAttester: any TrustedCompositionCatalogClockAttesting
@@ -93,6 +279,17 @@ struct CompositionCatalogAdmissionCoordinator: Sendable {
     func admitVerifiedCatalog(
         for currentInstaller: CurrentVerifiedInstallerCompositionContext
     ) async -> Result<VerifiedCompositionCatalog, CompositionCatalogAdmissionFailure> {
+        switch await admitVerifiedCatalogWithEvidence(for: currentInstaller) {
+        case .success(let admission):
+            return .success(admission.catalog)
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
+    func admitVerifiedCatalogWithEvidence(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext
+    ) async -> Result<VerifiedCompositionCatalogAdmission, CompositionCatalogAdmissionFailure> {
         guard case .success(let trustConfiguration) = await trustLoader.loadSealedCompositionCatalogTrustConfiguration(),
               trustConfiguration.signaturePolicy.installerReleaseTrustConfigurationSHA256
                 == currentInstaller.installerReleaseTrustConfigurationSHA256 else {
@@ -141,7 +338,14 @@ struct CompositionCatalogAdmissionCoordinator: Sendable {
             now: clockAttestation.verifiedAt
         ) {
         case .success(let catalog):
-            return .success(catalog)
+            do {
+                return .success(try VerifiedCompositionCatalogAdmission(
+                    catalog: catalog,
+                    verifiedAt: clockAttestation.verifiedAt
+                ))
+            } catch {
+                return .failure(.unavailable)
+            }
         case .failure:
             return .failure(.unavailable)
         }

@@ -1,112 +1,85 @@
 #!/usr/bin/env python3
-"""Static safety checks for the installer-specific release workflow framework."""
-
+"""Static safety checks for the installer release workflow and local signer handoff."""
 from __future__ import annotations
 
 from pathlib import Path
 import unittest
 
-
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW_PATH = ROOT / ".github" / "workflows" / "forge-platform-installer-release.yml"
-NATIVE_VALIDATION_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "macos-installer-validation.yml"
+WORKFLOW = ROOT / ".github/workflows/forge-platform-installer-release.yml"
+LOCAL_RELEASE = ROOT / "scripts/run_local_macos_installer_release.sh"
 
 
 class InstallerReleaseWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-        self.native_validation_workflow = NATIVE_VALIDATION_WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.local_release = LOCAL_RELEASE.read_text(encoding="utf-8")
 
-    def test_native_validation_uses_an_arm64_macos_26_hosted_image(self) -> None:
-        self.assertIn("runs-on: macos-26", self.native_validation_workflow)
-        self.assertIn('test "$(uname -m)" = "arm64"', self.native_validation_workflow)
-        self.assertIn('sw_vers -productVersion', self.native_validation_workflow)
-        self.assertIn("working-directory: macos/ForgePlatformInstaller", self.native_validation_workflow)
-        self.assertIn("run: swift test", self.native_validation_workflow)
+    def test_exact_protected_main_and_credentialless_org_runner_group(self) -> None:
+        for guard in (
+            "github.repository == 'autonomous-engineering-system/forge-platform'",
+            "github.ref == 'refs/heads/main'",
+            "github.ref_protected",
+            "github.sha == inputs.source_sha",
+            "github.workflow_sha == inputs.source_sha",
+        ):
+            self.assertIn(guard, self.workflow)
+        self.assertIn("group: forge-platform-build", self.workflow)
+        self.assertIn("labels: forge-platform-build", self.workflow)
+        self.assertIn("BUILD_RUNNER_ISOLATION=FAIL", self.workflow)
+        self.assertIn("persist-credentials: false", self.workflow)
+        self.assertNotIn("forge-platform-signer", self.workflow)
 
-    def test_uses_a_separate_installer_tag_and_never_reuses_composition_flow_identity(self) -> None:
-        self.assertIn("name: Forge Platform installer release framework", self.workflow)
-        self.assertIn("group: forge-platform-installer-release", self.workflow)
-        self.assertIn('TAG="$TAG_PREFIX$INSTALLER_VERSION"', self.workflow)
-        self.assertIn('OPERATION_ID="forge-platform-installer-$INSTALLER_VERSION-$SOURCE_SHA"', self.workflow)
-        self.assertNotIn("forge-platform-production-release", self.workflow)
-        self.assertNotIn("forge_platform.release_operation", self.workflow)
-        self.assertNotIn("composition_manifest", self.workflow)
-        self.assertNotIn("com.pcvantol.forge-platform-installer", self.workflow)
-
-    def test_qualifies_only_the_exact_current_main_candidate_and_builds_an_app_archive(self) -> None:
-        self.assertIn('test "$SOURCE_SHA" = "$(git rev-parse HEAD)"', self.workflow)
-        self.assertIn('test "$SOURCE_SHA" = "$(git rev-parse origin/main)"', self.workflow)
-        self.assertIn("scripts/advance_installer_version.py", self.workflow)
-        self.assertIn(
-            "--verify-operation --require-operation --require-version-advance --candidate-head \"$SOURCE_SHA\"",
-            self.workflow,
-        )
-        self.assertIn("scripts/validate_installer_release_identity.py --require-ready", self.workflow)
-        self.assertIn("release_sequence:", self.workflow)
-        self.assertIn("provenance_sha256:", self.workflow)
-        self.assertIn("release_sequence must be a positive UInt64 decimal integer", self.workflow)
-        self.assertIn("provenance_sha256 must be a raw lowercase SHA-256 identity", self.workflow)
-        self.assertIn("INSTALLER_RELEASE_POLICY_REVISION", self.workflow)
-        self.assertIn("git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main", self.workflow)
-        self.assertIn('test "$GITHUB_REPOSITORY" = "$IDENTITY_REPOSITORY"', self.workflow)
-        self.assertIn("runs-on: macos-26", self.workflow)
-        self.assertIn('test "$(uname -m)" = "arm64"', self.workflow)
-        self.assertIn('ARCHITECTURE="arm64"', self.workflow)
-        self.assertNotIn("arm64|x86_64", self.workflow)
-        self.assertIn("swift test", self.workflow)
-        self.assertIn("swift build -c release --show-bin-path", self.workflow)
-        self.assertIn("scripts/package_macos_installer_app.py", self.workflow)
-        self.assertIn('--bundle-identifier "$BUNDLE_IDENTIFIER"', self.workflow)
-        self.assertIn("release-input/ForgePlatformInstaller.app", self.workflow)
-        self.assertIn('ARCHIVE="$ASSET_PREFIX$ARCHITECTURE.zip"', self.workflow)
+    def test_native_tests_coverage_gui_cli_and_unsigned_candidate_are_mandatory(self) -> None:
+        self.assertIn("coverage_base_sha:", self.workflow)
+        self.assertIn("swift test --enable-code-coverage", self.workflow)
+        self.assertIn("check_managed_installer_swift_coverage.py", self.workflow)
+        self.assertIn("--product ForgePlatformInstaller", self.workflow)
+        self.assertIn("--product forge-platform-installer", self.workflow)
+        self.assertIn("scripts/prepare_offline_installer_resources.py", self.workflow)
+        self.assertIn("--sealed-release-trust-resource", self.workflow)
+        self.assertIn("--sealed-release-provenance-resource", self.workflow)
+        self.assertIn("--sealed-composition-catalog-trust-resource", self.workflow)
         self.assertIn("scripts/package_macos_installer_archive.py", self.workflow)
-        self.assertIn("--app-bundle release-input/ForgePlatformInstaller.app", self.workflow)
-        self.assertIn('--output "release-input/$ARCHIVE"', self.workflow)
-        self.assertNotIn("ditto -c -k --sequesterRsrc --keepParent", self.workflow)
-        self.assertIn("shasum -a 256", self.workflow)
         self.assertIn('"packaging": "UNSIGNED_APP_CANDIDATE"', self.workflow)
-        self.assertIn('"release_trust_configuration_sha256": os.environ["RELEASE_TRUST_CONFIGURATION_SHA256"]', self.workflow)
-        self.assertIn('"provenance_sha256": os.environ["PROVENANCE_SHA256"]', self.workflow)
         self.assertIn("scripts/prepare_installer_release_candidate.py", self.workflow)
         self.assertIn("installer-release-preparation.json", self.workflow)
-        self.assertIn('--preparation-receipt-reference "receipt:installer-preparation-$OPERATION_ID"', self.workflow)
 
-    def test_requires_explicit_protected_signing_and_publication_gates_without_secret_or_publish_fallback(self) -> None:
-        self.assertIn("name: forge-platform-installer-signing", self.workflow)
-        self.assertIn("name: forge-platform-installer-publication", self.workflow)
-        self.assertIn("if: ${{ inputs.request_publication }}", self.workflow)
-        self.assertIn("No protected Apple signing/notarization and descriptor-trust implementation is configured.", self.workflow)
-        self.assertIn("No protected cross-run installer release-operation/sequence store is configured.", self.workflow)
-        self.assertIn("durable PREPARED candidate", self.workflow)
-        self.assertIn("Refuse public GitHub Release publication until a protected publisher is implemented", self.workflow)
-        self.assertIn("permissions:\n      contents: write", self.workflow)
-        self.assertNotIn("secrets.", self.workflow)
-        self.assertNotIn("gh release", self.workflow)
+    def test_protected_environment_emits_only_exact_non_secret_authorization(self) -> None:
+        authorization = self.workflow.split("  authorize-local-signing:\n", 1)[1]
+        self.assertIn("environment:\n      name: forge-platform-installer-signing", authorization)
+        self.assertIn('"result": "AUTHORIZED_FOR_LOCAL_SIGNER"', authorization)
+        self.assertIn('"workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"]', authorization)
+        self.assertIn('"archive_digest": os.environ["ARCHIVE_DIGEST"]', authorization)
+        self.assertIn("contents: read", authorization)
+        self.assertNotIn("secrets.", authorization)
+        self.assertNotIn("notarytool", authorization)
+        self.assertNotIn("codesign", authorization)
+        self.assertNotIn("contents: write", authorization)
 
-    def test_future_publication_handoff_verifies_exact_durable_installer_evidence_before_it_can_publish(self) -> None:
-        verify_index = self.workflow.index("scripts/verify_installer_release_evidence.py")
-        refuse_index = self.workflow.index("Refuse public GitHub Release publication until a protected publisher is implemented")
-        self.assertLess(verify_index, refuse_index)
-        self.assertIn("signed-release-input/installer-release-operation.json", self.workflow)
-        self.assertIn('--descriptor "signed-release-input/$DESCRIPTOR_ASSET_NAME"', self.workflow)
-        self.assertIn('name: forge-platform-installer-signed-${{ needs.release-context.outputs.installer_version }}-${{ needs.release-context.outputs.source_sha }}', self.workflow)
-        for flag in (
-            '--operation-id "$OPERATION_ID"',
-            '--installer-version "$INSTALLER_VERSION"',
-            '--channel "$CHANNEL"',
-            '--release-sequence "$RELEASE_SEQUENCE"',
-            '--policy-revision "$POLICY_REVISION"',
-            '--provenance-sha256 "$PROVENANCE_SHA256"',
-            '--release-trust-configuration-sha256 "$RELEASE_TRUST_CONFIGURATION_SHA256"',
-            '--github-repository "$IDENTITY_GITHUB_REPOSITORY"',
-            '--release-tag "$RELEASE_TAG"',
-            '--descriptor-asset-name "$DESCRIPTOR_ASSET_NAME"',
-            '--bundle-identifier "$BUNDLE_IDENTIFIER"',
-            '--team-identifier "$TEAM_IDENTIFIER"',
-            '--asset-prefix "$ASSET_PREFIX"',
-        ):
-            self.assertIn(flag, self.workflow)
+    def test_local_signer_owns_full_apple_and_github_release_chain(self) -> None:
+        build_index = self.local_release.index("verify_local_signing_authorization.py")
+        sign_index = self.local_release.index("codesign --force")
+        notary_index = self.local_release.index("notarytool submit")
+        staple_index = self.local_release.index("stapler staple")
+        gatekeeper_index = self.local_release.index("spctl --assess")
+        qualify_index = self.local_release.index("qualify_local_installer_release.py")
+        draft_index = self.local_release.index("gh release create")
+        readback_index = self.local_release.index("gh release download")
+        publish_index = self.local_release.index("gh release edit")
+        self.assertLess(build_index, sign_index)
+        self.assertLess(sign_index, notary_index)
+        self.assertLess(notary_index, staple_index)
+        self.assertLess(staple_index, gatekeeper_index)
+        self.assertLess(gatekeeper_index, qualify_index)
+        self.assertLess(qualify_index, draft_index)
+        self.assertLess(draft_index, readback_index)
+        self.assertLess(readback_index, publish_index)
+        self.assertIn("cmp ", self.local_release)
+        self.assertIn("git rev-parse origin/main", self.local_release)
+        self.assertIn("exclusive-installer-signing", self.local_release)
+        self.assertIn("OfflineInstallerDescriptorKeyTool.swift", self.local_release)
+        self.assertNotIn("DESCRIPTOR_SIGNING_KEY_PATHS", self.local_release)
 
 
 if __name__ == "__main__":

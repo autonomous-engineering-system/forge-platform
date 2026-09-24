@@ -93,6 +93,55 @@ final class ManagedDeploymentWizardTests: XCTestCase {
         }
     }
 
+
+    func testTerminalCompositionProvenanceIsOptionalForLegacyButExactWhenPresent() throws {
+        let legacy = try ManagedDeploymentTarget(
+            id: "legacy",
+            exists: true,
+            forgeInstanceID: "forge-legacy",
+            engineeringPlatformInstanceID: "ep-legacy"
+        )
+        XCTAssertNil(legacy.installedCompositionID)
+        XCTAssertNil(legacy.installedCompositionManifestSHA256)
+
+        let qualified = try ManagedDeploymentTarget(
+            id: "production",
+            exists: true,
+            forgeInstanceID: "forge-prod",
+            engineeringPlatformInstanceID: "ep-prod",
+            installedCompositionID: "forge-ep-stable-001",
+            installedCompositionManifestSHA256: "sha256:" + String(repeating: "a", count: 64)
+        )
+        XCTAssertEqual(qualified.installedCompositionID, "forge-ep-stable-001")
+
+        XCTAssertThrowsError(
+            try ManagedDeploymentTarget(
+                id: "incomplete",
+                exists: true,
+                forgeInstanceID: "forge-prod",
+                installedCompositionID: "forge-ep-stable-001"
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ManagedDeploymentTargetError,
+                .incompleteCompositionProvenance
+            )
+        }
+        XCTAssertThrowsError(
+            try ManagedDeploymentTarget(
+                id: "new",
+                exists: false,
+                installedCompositionID: "forge-ep-stable-001",
+                installedCompositionManifestSHA256: "sha256:" + String(repeating: "b", count: 64)
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ManagedDeploymentTargetError,
+                .precreateTargetContainsProductIdentity
+            )
+        }
+    }
+
     func testUnavailableCoordinatorFailsClosedAtDeploymentStep() async throws {
         let result = await UnavailableInstallerWizardCoordinator().prepareManagedDeploymentInventory()
         XCTAssertEqual(result, .unavailable(.coordinatorUnavailable))

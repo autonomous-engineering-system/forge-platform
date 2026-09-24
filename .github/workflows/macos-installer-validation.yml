@@ -1,17 +1,13 @@
 name: macOS installer validation
 
+# Called at the same commit by the merge-required Foundation workflow.
 on:
-  pull_request:
-    paths:
-      - "macos/ForgePlatformInstaller/**"
-      - "scripts/check_managed_installer_swift_coverage.py"
-      - ".github/workflows/macos-installer-validation.yml"
-  push:
-    branches: [main]
-    paths:
-      - "macos/ForgePlatformInstaller/**"
-      - "scripts/check_managed_installer_swift_coverage.py"
-      - ".github/workflows/macos-installer-validation.yml"
+  workflow_call:
+    inputs:
+      coverage_base_sha:
+        description: Exact ancestor for all changed production files
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,31 +15,76 @@ permissions:
 jobs:
   swift-package-tests:
     name: Swift installer-domain tests
-    # The product contract and package deployment target are macOS 26 on
-    # native Apple Silicon. The hosted label resolves to the arm64 image.
     runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
-      - name: Verify native Apple Silicon macOS 26 runner
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Retain exact committed source for reproducible qualification
         run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/forge-platform-native-evidence"
+          mkdir -p "$evidence"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$COVERAGE_BASE_SHA" HEAD
+          git archive --format=tar --prefix=source/ HEAD > "$evidence/source.tar"
+          git rev-parse HEAD > "$evidence/source-revision.txt"
+          git rev-parse 'HEAD^{tree}' > "$evidence/source-tree.txt"
+          printf '%s\n' "$COVERAGE_BASE_SHA" > "$evidence/coverage-base.txt"
+          (cd "$evidence" && shasum -a 256 source.tar > source.sha256)
+      - name: Verify native Apple Silicon macOS 26 runner and record toolchain
+        run: |
+          set -euo pipefail
           test "$(uname -m)" = "arm64"
           test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          test -n "$COVERAGE_BASE_SHA"
+          sw_vers
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          swift --version
+      - name: Exercise CI-gate unit and subprocess integration regressions
+        run: |
+          python3 tests/foundation/test_ci_gate_regressions.py
+          python3 tests/foundation/test_required_ci_aggregation.py
+      - name: Compile offline descriptor-key helper without invoking Keychain
+        run: |
+          set -euo pipefail
+          xcrun swiftc scripts/ci/OfflineInstallerDescriptorKeyTool.swift \
+            -framework Security -framework CryptoKit \
+            -o "$RUNNER_TEMP/offline-installer-descriptor-key-tool"
+          test -x "$RUNNER_TEMP/offline-installer-descriptor-key-tool"
       - name: Run native installer tests with coverage
         working-directory: macos/ForgePlatformInstaller
         env:
           FORGE_PLATFORM_UI_ARTIFACT_DIR: ${{ runner.temp }}/forge-platform-ui-screenshots
         run: swift test --enable-code-coverage
-      - name: Upload read-only native UI screenshots
+      - name: Enforce every changed production-file coverage
+        working-directory: macos/ForgePlatformInstaller
+        run: |
+          set -euo pipefail
+          coverage_path="$(swift test --show-codecov-path)"
+          test -n "$coverage_path"
+          cp "$coverage_path" "$RUNNER_TEMP/forge-platform-native-evidence/swift-coverage.json"
+          python3 ../../scripts/check_managed_installer_swift_coverage.py "$coverage_path" \
+            --minimum 80.2 --base-ref "$COVERAGE_BASE_SHA"
+      - name: Upload exact source and measured coverage evidence
         if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: forge-platform-native-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/forge-platform-native-evidence
+          if-no-files-found: error
+          retention-days: 2
+      - name: Upload read-only native UI screenshots
+        if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: forge-platform-read-only-ui-${{ github.sha }}
           path: ${{ runner.temp }}/forge-platform-ui-screenshots
           if-no-files-found: error
           retention-days: 14
-      - name: Report changed production-file coverage
-        working-directory: macos/ForgePlatformInstaller
-        run: |
-          coverage_path="$(swift test --show-codecov-path)"
-          test -n "$coverage_path"
-          python3 ../../scripts/check_managed_installer_swift_coverage.py "$coverage_path" --minimum 80.2

@@ -110,6 +110,43 @@ final class ComponentCombinationCatalogTests: XCTestCase {
         XCTAssertNil(blocked.entry)
     }
 
+
+    func testDeploymentBoundRequestUsesTerminalProvenanceAndRejectsLegacyExistingDeployment() throws {
+        let qualified = try ManagedDeploymentTarget(
+            id: "production",
+            exists: true,
+            forgeInstanceID: "forge-prod",
+            engineeringPlatformInstanceID: "ep-prod",
+            installedCompositionID: "forge-ep-stable-001",
+            installedCompositionManifestSHA256: "sha256:" + String(repeating: "a", count: 64)
+        )
+        let request = try ComponentCombinationRequest(
+            componentIdentities: ["forge-runtime", "engineering-platform-server"],
+            deployment: qualified
+        )
+        XCTAssertEqual(request.installedCompositionID, "forge-ep-stable-001")
+
+        let fresh = try ManagedDeploymentTarget(id: "new-deployment", exists: false)
+        let freshRequest = try ComponentCombinationRequest(
+            componentIdentities: ["forge-runtime", "engineering-platform-server"],
+            deployment: fresh
+        )
+        XCTAssertNil(freshRequest.installedCompositionID)
+
+        let legacy = try ManagedDeploymentTarget(
+            id: "legacy",
+            exists: true,
+            forgeInstanceID: "forge-legacy",
+            engineeringPlatformInstanceID: "ep-legacy"
+        )
+        XCTAssertThrowsError(
+            try ComponentCombinationRequest(
+                componentIdentities: ["forge-runtime", "engineering-platform-server"],
+                deployment: legacy
+            )
+        )
+    }
+
     func testNewerUnsupportedEntryForcesInstallerUpdateWithoutFallback() throws {
         let fixture = try makeFixture()
         let catalog = try admittedCatalog(

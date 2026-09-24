@@ -62,6 +62,65 @@ final class CompositionCatalogTransportTests: XCTestCase {
         }
     }
 
+
+    func testDocumentTransportReadsOnlyExactDigestPinnedLocatorWithoutCredentials() async throws {
+        let body = Data("{\"manifest\":true}".utf8)
+        let locator = VerifiedCompositionCatalogDocumentLocator(
+            url: "https://catalog.example.test/manifest.json",
+            sha256: "sha256:" + String(repeating: "a", count: 64)
+        )
+        CatalogTransportURLProtocol.configure([
+            locator.url: .response(
+                statusCode: 200,
+                headers: ["Content-Length": "\(body.count)"],
+                body: body
+            ),
+        ])
+        let transport = HTTPSCompositionDocumentTransport(
+            timeout: 5,
+            protocolClassesForTesting: [CatalogTransportURLProtocol.self]
+        )
+        guard case .success(let bytes) = await transport.fetchDocument(at: locator) else {
+            return XCTFail("Exact signed document locator should be readable")
+        }
+        XCTAssertEqual(bytes, body)
+        let observation = try XCTUnwrap(CatalogTransportURLProtocol.observations().first)
+        XCTAssertNil(observation.authorization)
+        XCTAssertNil(observation.cookie)
+        XCTAssertEqual(observation.cacheControl, "no-cache")
+    }
+
+    func testDocumentTransportRejectsRedirectMismatchFailureAndOversize() async throws {
+        let locator = VerifiedCompositionCatalogDocumentLocator(
+            url: "https://catalog.example.test/index.json",
+            sha256: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let cases: [CatalogTransportURLProtocolScript] = [
+            .redirect(statusCode: 302, destination: "https://catalog.example.test/other.json"),
+            .response(
+                statusCode: 200,
+                headers: [:],
+                body: Data("{}".utf8),
+                responseURL: "https://catalog.example.test/other.json"
+            ),
+            .response(statusCode: 500, headers: [:], body: Data("{}".utf8)),
+            .response(
+                statusCode: 200,
+                headers: ["Content-Length": "\(CompositionCatalogFeedReadback.maximumCatalogBytes + 1)"],
+                body: Data()
+            ),
+        ]
+        for script in cases {
+            CatalogTransportURLProtocol.configure([locator.url: script])
+            let transport = HTTPSCompositionDocumentTransport(
+                timeout: 5,
+                protocolClassesForTesting: [CatalogTransportURLProtocol.self]
+            )
+            let result = await transport.fetchDocument(at: locator)
+            XCTAssertEqual(result, .failure(.unavailable))
+        }
+    }
+
     func testBoundedAccumulatorRejectsEmptyAndOverLimitBodies() throws {
         var empty = try CompositionCatalogByteAccumulator(maximumBytes: 2)
         XCTAssertThrowsError(try empty.finish())

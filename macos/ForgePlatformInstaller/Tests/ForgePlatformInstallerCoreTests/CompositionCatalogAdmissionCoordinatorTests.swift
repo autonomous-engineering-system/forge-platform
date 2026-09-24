@@ -44,6 +44,28 @@ final class CompositionCatalogAdmissionCoordinatorTests: XCTestCase {
         XCTAssertEqual(attestedReadbacks, [rawReadback])
     }
 
+
+    func testEvidenceAdmissionRetainsTheExactIndependentVerifiedInstant() async throws {
+        let fixture = try CatalogFixture()
+        let bytes = try fixture.signedCatalogBytes()
+        let coordinator = CompositionCatalogAdmissionCoordinator(
+            trustLoader: FixedCatalogTrustLoader(result: .success(fixture.trustConfiguration)),
+            transport: CatalogFetcherSpy(result: .success(try fixture.transportReadback(bytes))),
+            trustedClockAttester: TrustedClockAttesterSpy(
+                result: .success(try fixture.clockAttestation(bytes))
+            ),
+            acceptanceReader: CatalogAcceptanceReaderSpy(result: .success(nil))
+        )
+
+        guard case .success(let admission) = await coordinator.admitVerifiedCatalogWithEvidence(
+            for: fixture.currentInstaller
+        ) else {
+            return XCTFail("Expected exact admission evidence")
+        }
+        XCTAssertEqual(admission.verifiedAt, fixture.now)
+        XCTAssertEqual(admission.catalog.identity.sequence, 2)
+    }
+
     func testFailsClosedWhenAnyRequiredReadOnlyDependencyIsUnavailable() async throws {
         let fixture = try CatalogFixture()
         let bytes = try fixture.signedCatalogBytes()
@@ -213,6 +235,73 @@ final class CompositionCatalogAdmissionCoordinatorTests: XCTestCase {
         }
     }
 
+
+    func testGitHubTrustedClockAttesterBindsExactCatalogBytesToIndependentHTTPSDate() async throws {
+        let fixture = try CatalogFixture()
+        let bytes = try fixture.signedCatalogBytes()
+        let rawReadback = try fixture.transportReadback(bytes)
+        TrustedClockURLProtocol.configure(
+            status: 200,
+            headers: ["Date": "Thu, 10 Sep 2026 12:00:00 GMT"],
+            body: Data("{}".utf8)
+        )
+        let source = GitHubHTTPSDateTrustedTimeSource(
+            timeout: 5,
+            protocolClassesForTesting: [TrustedClockURLProtocol.self]
+        )
+        let attester = GitHubTrustedCompositionCatalogClockAttester(
+            timeSource: source,
+            freshness: 60
+        )
+        guard case .success(let attestation) = await attester.attestCatalogReadback(rawReadback) else {
+            return XCTFail("Fixed independent HTTPS Date should attest the exact readback")
+        }
+        XCTAssertEqual(attestation.readback.feed, rawReadback.feed)
+        XCTAssertEqual(attestation.readback.bytes, rawReadback.bytes)
+        XCTAssertTrue(attestation.readback.trustedClock)
+        XCTAssertEqual(attestation.verifiedAt, fixture.now)
+        XCTAssertEqual(
+            attestation.readback.freshUntil.timeIntervalSince(attestation.verifiedAt),
+            60,
+            accuracy: 0.001
+        )
+        let observations = TrustedClockURLProtocol.observations()
+        XCTAssertEqual(observations.count, 1)
+        XCTAssertEqual(observations.first?.url, GitHubHTTPSDateTrustedTimeSource.endpoint.absoluteString)
+        XCTAssertNil(observations.first?.authorization)
+        XCTAssertNil(observations.first?.cookie)
+        XCTAssertEqual(observations.first?.cacheControl, "no-cache")
+    }
+
+    func testGitHubTrustedClockFailsClosedForBadDateStatusRedirectAndOversizedBody() async throws {
+        let fixture = try CatalogFixture()
+        let rawReadback = try fixture.transportReadback(try fixture.signedCatalogBytes())
+        let cases: [(Int, [String: String], Data, String?)] = [
+            (503, ["Date": "Thu, 10 Sep 2026 12:00:00 GMT"], Data("{}".utf8), nil),
+            (200, ["Date": "not-a-date"], Data("{}".utf8), nil),
+            (302, ["Date": "Thu, 10 Sep 2026 12:00:00 GMT"], Data(), "https://example.test/other"),
+            (200, ["Date": "Thu, 10 Sep 2026 12:00:00 GMT"], Data(repeating: 0x61, count: (256 * 1024) + 1), nil),
+        ]
+        for (status, headers, body, redirect) in cases {
+            TrustedClockURLProtocol.configure(
+                status: status,
+                headers: headers,
+                body: body,
+                redirect: redirect
+            )
+            let attester = GitHubTrustedCompositionCatalogClockAttester(
+                timeSource: GitHubHTTPSDateTrustedTimeSource(
+                    timeout: 5,
+                    protocolClassesForTesting: [TrustedClockURLProtocol.self]
+                )
+            )
+            let result = await attester.attestCatalogReadback(rawReadback)
+            guard case .failure(.unavailable) = result else {
+                return XCTFail("trusted clock must reject invalid HTTPS evidence")
+            }
+        }
+    }
+
     func testUnavailableClockDefaultFailsClosed() async throws {
         let fixture = try CatalogFixture()
         let bytes = try fixture.signedCatalogBytes()
@@ -308,5 +397,105 @@ private actor CatalogAcceptanceReaderSpy: CompositionCatalogAcceptanceReading {
 
     func readCount() -> Int {
         scopes.count
+    }
+}
+
+
+private struct TrustedClockObservation: Equatable, Sendable {
+    let url: String
+    let authorization: String?
+    let cookie: String?
+    let cacheControl: String?
+}
+
+private final class TrustedClockURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var statusCode = 200
+    nonisolated(unsafe) private static var headers: [String: String] = [:]
+    nonisolated(unsafe) private static var body = Data()
+    nonisolated(unsafe) private static var redirect: String?
+    nonisolated(unsafe) private static var recorded: [TrustedClockObservation] = []
+
+    static func configure(
+        status: Int,
+        headers: [String: String],
+        body: Data,
+        redirect: String? = nil
+    ) {
+        lock.lock()
+        statusCode = status
+        self.headers = headers
+        self.body = body
+        self.redirect = redirect
+        recorded = []
+        lock.unlock()
+    }
+
+    static func observations() -> [TrustedClockObservation] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.scheme == "https"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let client, let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        let snapshot: (Int, [String: String], Data, String?) = Self.snapshot(request: request)
+        if let destination = snapshot.3,
+           let destinationURL = URL(string: destination),
+           let response = HTTPURLResponse(
+                url: url,
+                statusCode: snapshot.0,
+                httpVersion: "HTTP/1.1",
+                headerFields: snapshot.1.merging(["Location": destination]) { first, _ in first }
+           ) {
+            client.urlProtocol(
+                self,
+                wasRedirectedTo: URLRequest(url: destinationURL),
+                redirectResponse: response
+            )
+            client.urlProtocolDidFinishLoading(self)
+            return
+        }
+        guard let response = HTTPURLResponse(
+            url: url,
+            statusCode: snapshot.0,
+            httpVersion: "HTTP/1.1",
+            headerFields: snapshot.1
+        ) else {
+            client.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !snapshot.2.isEmpty {
+            client.urlProtocol(self, didLoad: snapshot.2)
+        }
+        client.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func snapshot(
+        request: URLRequest
+    ) -> (Int, [String: String], Data, String?) {
+        lock.lock()
+        defer { lock.unlock() }
+        recorded.append(TrustedClockObservation(
+            url: request.url?.absoluteString ?? "",
+            authorization: request.value(forHTTPHeaderField: "Authorization"),
+            cookie: request.value(forHTTPHeaderField: "Cookie"),
+            cacheControl: request.value(forHTTPHeaderField: "Cache-Control")
+        ))
+        return (statusCode, headers, body, redirect)
     }
 }

@@ -58,6 +58,7 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
                         "Forge Platform Installer.app/Contents/Resources/",
                         "Forge Platform Installer.app/Contents/Info.plist",
                         "Forge Platform Installer.app/Contents/MacOS/ForgePlatformInstaller",
+                        "Forge Platform Installer.app/Contents/MacOS/forge-platform-installer",
                         "Forge Platform Installer.app/Contents/Resources/Read Me.txt",
                     }.issubset(names)
                 )
@@ -258,6 +259,9 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
         binary = macos / "ForgePlatformInstaller"
         binary.write_bytes(thin_arm64_macho_test_bytes(b"native installer candidate bytes\n"))
         binary.chmod(0o755)
+        cli_binary = macos / "forge-platform-installer"
+        cli_binary.write_bytes(thin_arm64_macho_test_bytes(b"native installer cli candidate bytes\n"))
+        cli_binary.chmod(0o755)
         readme = resources / "Read Me.txt"
         readme.write_bytes(b"strict archive input\n")
         readme.chmod(0o644)

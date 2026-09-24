@@ -26,6 +26,7 @@ TARGETS = (
     "forge_platform/universal_installer.py",
     "forge_platform/managed_deployments.py",
     "forge_platform/managed_installer.py",
+    "forge_platform/managed_install_flow.py",
     "forge_platform/managed_pairing.py",
     "forge_platform/provider_fanout.py",
     "forge_platform/engineering_platform_system_adapter.py",
@@ -40,6 +41,7 @@ TESTS = (
     "tests/installer/test_universal_installer.py",
     "tests/installer/test_managed_deployments.py",
     "tests/installer/test_managed_installer.py",
+    "tests/installer/test_managed_install_flow.py",
     "tests/installer/test_managed_pairing.py",
     "tests/installer/test_provider_targets.py",
     "tests/installer/test_provider_fanout.py",
@@ -51,7 +53,13 @@ def _executable_lines(path: Path) -> set[int]:
     lines: set[int] = set()
 
     def walk(current: types.CodeType) -> None:
-        lines.update(line for _offset, line in dis.findlinestarts(current) if line > 0)
+        # Some recent CPython bytecode line tables use ``None`` for synthetic
+        # instructions. They do not represent executable source lines.
+        lines.update(
+            line
+            for _offset, line in dis.findlinestarts(current)
+            if line is not None and line > 0
+        )
         for constant in current.co_consts:
             if isinstance(constant, types.CodeType):
                 walk(constant)

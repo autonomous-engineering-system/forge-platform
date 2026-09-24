@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/pcvantol/forge-platform/schemas/universal-installer-composition.schema.json",
+  "$id": "https://github.com/autonomous-engineering-system/forge-platform/schemas/universal-installer-composition.schema.json",
   "title": "Forge Platform universal installer composition",
   "description": "The immutable, digest-pinned component, exact managed-Python runtime and host policy consumed after catalog verification.",
   "type": "object",

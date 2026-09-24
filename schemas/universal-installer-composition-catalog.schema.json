@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/pcvantol/forge-platform/schemas/universal-installer-composition-catalog.schema.json",
+  "$id": "https://github.com/autonomous-engineering-system/forge-platform/schemas/universal-installer-composition-catalog.schema.json",
   "title": "Forge Platform universal installer composition catalog",
   "description": "Signed, expiring index of immutable qualified Forge/EP/Workspace compositions and the one currently approved managed-Python runtime identity.",
   "type": "object",

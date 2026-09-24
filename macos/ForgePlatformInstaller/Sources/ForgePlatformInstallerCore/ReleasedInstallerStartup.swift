@@ -1151,6 +1151,9 @@ public struct ReleasedInstallerWizardSession: Sendable {
 /// case and must not fall back to an unavailable/manual coordinator.
 public enum ReleasedInstallerStartupOutcome: Sendable {
     case ready(ReleasedInstallerWizardSession)
+    /// A newer trusted release exists. No download/staging has started yet;
+    /// the application must ask the operator to update or close.
+    case updateRequired(VerifiedInstallerRelease)
     case relaunching(VerifiedInstallerRelease)
     case blocked(String)
 }
@@ -1158,14 +1161,22 @@ public enum ReleasedInstallerStartupOutcome: Sendable {
 /// Production composition boundary for the native app.  It does not start a
 /// platform installation, create a provider, or make a service change.  Its
 /// sole role is requiring sealed trust configuration and release provenance,
-/// then successful automatic self-update enforcement before handing a trusted
-/// runtime to the wizard.
+/// then a successful currency check before handing a trusted runtime to the
+/// wizard. A newer release requires explicit operator confirmation before the
+/// trusted runtime may download/stage/handoff the replacement.
 public actor ReleasedInstallerStartupBoundary {
     private let trustConfigurationLoader: any SealedInstallerReleaseTrustConfigurationLoading
     private let provenanceLoader: any SealedInstallerReleaseProvenanceLoading
     private let runtimeBuilder: any TrustedInstallerRuntimeBuilding
     private let concurrentOperationRetryLimit: Int
     private let concurrentOperationRetryNanoseconds: UInt64
+    /// Keeps the verified coordinator alive while the app shows the mandatory
+    /// update prompt. The runtime already holds the exact verified pending
+    /// release identity but has not downloaded or staged it.
+    private var pendingUpdate: (
+        runtime: any TrustedInstallerRuntime,
+        release: VerifiedInstallerRelease
+    )?
     /// Keeps the verified coordinator (and therefore its handoff lease) alive
     /// while the old executable is displaying only its relaunch status.  The
     /// app-owned startup model retains this boundary until process termination.
@@ -1231,30 +1242,40 @@ public actor ReleasedInstallerStartupBoundary {
             return .blocked(failure.code.userFacingMessage)
         }
 
-        for attempt in 0...concurrentOperationRetryLimit {
-            switch await runtime.enforceCurrentInstaller(currentVersion: currentVersion) {
-            case .current(let release):
-                return .ready(ReleasedInstallerWizardSession(
-                    runtime: runtime,
-                    currentRelease: release,
-                    sealedReleaseProvenance: sealedReleaseProvenance
-                ))
-            case .relaunching(let release):
-                relaunchingRuntime = runtime
-                return .relaunching(release)
-            case .concurrentOperationInProgress:
-                guard attempt < concurrentOperationRetryLimit else {
-                    return .blocked(InstallerSelfUpdateFailureCode.selfUpdateOperationInProgress.userFacingMessage)
-                }
-                do {
-                    try await Task.sleep(nanoseconds: concurrentOperationRetryNanoseconds)
-                } catch {
-                    return .blocked(InstallerSelfUpdateFailureCode.selfUpdateOperationInProgress.userFacingMessage)
-                }
-            case .failed(let reason):
-                return .blocked(reason)
-            }
+        switch await runtime.recheckInstallerBeforeMutation(currentVersion: currentVersion) {
+        case .current(let release):
+            pendingUpdate = nil
+            return .ready(ReleasedInstallerWizardSession(
+                runtime: runtime,
+                currentRelease: release,
+                sealedReleaseProvenance: sealedReleaseProvenance
+            ))
+        case .updateRequired(let release):
+            pendingUpdate = (runtime, release)
+            return .updateRequired(release)
+        case .failed(let reason):
+            return .blocked(reason)
         }
-        return .blocked(InstallerSelfUpdateFailureCode.selfUpdateOperationInProgress.userFacingMessage)
+    }
+
+    /// Called only after the operator explicitly accepts the mandatory update.
+    /// The exact runtime/release pair came from the preceding signed currency
+    /// check; arbitrary releases cannot be injected through this API.
+    public func confirmRequiredUpdate(
+        _ release: VerifiedInstallerRelease
+    ) async -> ReleasedInstallerStartupOutcome {
+        guard relaunchingRuntime == nil,
+              let pendingUpdate,
+              pendingUpdate.release == release else {
+            return .blocked(InstallerSelfUpdateFailureCode.noVerifiedPendingUpdate.userFacingMessage)
+        }
+        switch await pendingUpdate.runtime.handOffSelfUpdate(release) {
+        case .relaunching:
+            self.pendingUpdate = nil
+            relaunchingRuntime = pendingUpdate.runtime
+            return .relaunching(release)
+        case .failed(let reason):
+            return .blocked(reason)
+        }
     }
 }

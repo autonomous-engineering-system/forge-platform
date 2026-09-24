@@ -1,0 +1,113 @@
+name: Native Mac installer integration
+
+# The Mac mini runner is credentialless and may only be routed through the
+# organization runner group restricted to this exact workflow. Apple signing
+# and notarization stay in the dedicated local signer account outside Actions.
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact already-merged origin/main commit to qualify
+        required: true
+        type: string
+      coverage_base_sha:
+        description: Exact reviewed ancestor for the entire qualification slice
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-platform-macmini-build
+  cancel-in-progress: false
+
+jobs:
+  admission:
+    name: Admit protected workflow and exact main source
+    if: >-
+      ${{ github.repository == 'autonomous-engineering-system/forge-platform' &&
+          github.ref == 'refs/heads/main' && github.ref_protected &&
+          github.sha == inputs.source_sha && github.workflow_sha == inputs.source_sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check exact remote main before allocating the Mac mini
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$COVERAGE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$SOURCE_SHA" != "$COVERAGE_BASE_SHA"
+          current="$(git ls-remote https://github.com/autonomous-engineering-system/forge-platform.git refs/heads/main | cut -f1)"
+          test "$SOURCE_SHA" = "$current"
+
+  native-integration:
+    name: Credentialless Mac mini build and coverage
+    needs: admission
+    runs-on:
+      group: forge-platform-build
+      labels: forge-platform-build
+    timeout-minutes: 45
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Recheck exact protected main and credential isolation
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
+          git merge-base --is-ancestor "$COVERAGE_BASE_SHA" HEAD
+          test "$(uname -m)" = "arm64"
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          if security find-identity -v -p codesigning 2>/dev/null | grep -Fq 'Developer ID Application:'; then
+            echo 'BUILD_RUNNER_ISOLATION=FAIL reason=developer-id-visible' >&2
+            exit 1
+          fi
+          test -z "${FORGE_PLATFORM_NOTARYTOOL_PROFILE:-}"
+          echo "BUILD_RUNNER_ISOLATION=PASS user=$(id -un) runner=$RUNNER_NAME"
+          sw_vers
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+      - name: Repository unit and integration suite
+        run: sh scripts/validate.sh
+      - name: Native Swift unit and integration suite
+        working-directory: macos/ForgePlatformInstaller
+        env:
+          FORGE_PLATFORM_UI_ARTIFACT_DIR: ${{ runner.temp }}/forge-platform-ui-screenshots
+        run: swift test --enable-code-coverage
+      - name: Enforce native Swift per-file coverage
+        working-directory: macos/ForgePlatformInstaller
+        run: |
+          set -euo pipefail
+          coverage_path="$(swift test --show-codecov-path)"
+          python3 ../../scripts/check_managed_installer_swift_coverage.py "$coverage_path" --minimum 80.2 --base-ref "$COVERAGE_BASE_SHA"
+      - name: Build unsigned GUI and CLI candidates
+        working-directory: macos/ForgePlatformInstaller
+        run: |
+          set -euo pipefail
+          swift build -c release --product ForgePlatformInstaller
+          swift build -c release --product forge-platform-installer
+          binary_directory="$(swift build -c release --show-bin-path)"
+          for binary in ForgePlatformInstaller forge-platform-installer; do
+            test -x "$binary_directory/$binary"
+            file "$binary_directory/$binary" | grep -Fq 'arm64'
+          done
+      - name: Upload read-only UI evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forge-platform-macmini-ui-${{ github.sha }}
+          path: ${{ runner.temp }}/forge-platform-ui-screenshots
+          if-no-files-found: error
+          retention-days: 14

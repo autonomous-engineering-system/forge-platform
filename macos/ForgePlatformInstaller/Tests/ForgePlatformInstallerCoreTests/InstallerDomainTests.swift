@@ -142,6 +142,74 @@ final class InstallerDomainTests: XCTestCase {
         )
     }
 
+    func testReviewCannotEnterExecutionUntilFreshInstallerCurrencyPasses() throws {
+        var state = try providerState([
+            ProviderRequirement(provider: .codex, isRequired: true),
+        ])
+        verifyRequiredProvider(.codex, state: &state)
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .review)
+        state.composition = CompositionReview(
+            manifestIdentity: "qualified-composition",
+            status: .compatible,
+            components: [
+                ComponentDiff(
+                    componentID: "forge-runtime",
+                    title: "Forge Server",
+                    change: .update,
+                    installedVersion: "2.7.34",
+                    candidateVersion: "2.8.0",
+                    artifactDigest: "sha256:" + String(repeating: "a", count: 64),
+                    detail: "Qualified exact artifact"
+                ),
+            ]
+        )
+        XCTAssertTrue(state.setCompositionAcknowledged(true))
+
+        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.canBeginPreMutationCurrencyCheck)
+        XCTAssertTrue(state.beginPreMutationCurrencyCheck())
+        XCTAssertFalse(state.canBeginPreMutationCurrencyCheck)
+        let current = try makeRelease("1.2.3")
+        XCTAssertTrue(state.recordPreMutationCurrencyCheck(.current(current)))
+        XCTAssertTrue(state.canAdvance)
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .execution)
+    }
+
+    func testNewerInstallerAtPreMutationGateInvalidatesPlanAndReturnsToMandatorySelfUpdate() throws {
+        var state = try providerState([
+            ProviderRequirement(provider: .codex, isRequired: true),
+        ])
+        verifyRequiredProvider(.codex, state: &state)
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .review)
+        state.composition = CompositionReview(
+            manifestIdentity: "qualified-composition",
+            status: .compatible,
+            components: [
+                ComponentDiff(
+                    componentID: "engineering-platform-server",
+                    title: "Engineering Platform Server",
+                    change: .repair,
+                    detail: "Repair selected exact instance"
+                ),
+            ]
+        )
+        XCTAssertTrue(state.setCompositionAcknowledged(true))
+        XCTAssertTrue(state.beginPreMutationCurrencyCheck())
+
+        let newer = try makeRelease("1.2.4")
+        XCTAssertFalse(state.recordPreMutationCurrencyCheck(.updateRequired(newer)))
+        XCTAssertEqual(state.step, .selfUpdate)
+        XCTAssertEqual(state.selfUpdate, .updateRequired(newer))
+        XCTAssertNil(state.acceptedSessionPlan)
+        XCTAssertTrue(state.providers.isEmpty)
+        XCTAssertEqual(state.providerRequirementsProjection, .pending)
+        XCTAssertFalse(state.preflight.isPassed)
+        XCTAssertFalse(state.canAdvance)
+    }
+
     func testSelfUpdateRecheckClearsTheAcceptedSessionAndProviderProjection() throws {
         var state = try acceptedSessionState([
             ProviderRequirement(provider: .codex, isRequired: true),

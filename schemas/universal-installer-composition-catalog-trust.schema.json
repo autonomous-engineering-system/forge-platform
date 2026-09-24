@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/pcvantol/forge-platform/schemas/universal-installer-composition-catalog-trust.schema.json",
+  "$id": "https://github.com/autonomous-engineering-system/forge-platform/schemas/universal-installer-composition-catalog-trust.schema.json",
   "title": "Forge Platform installer composition catalog trust",
   "description": "Public, code-signed trust policy for the separately signed composition catalog. It binds a distinct Ed25519 key threshold to exactly one installer release-trust configuration; it contains no locator, transport, credential, private key, product runtime authority, or install action.",
   "$comment": "maxSerializedUtf8Bytes=32768; maxJsonNestingDepth=64; maxJsonNodes=16384. JSON Schema validates values, while the strict runtime parser enforces byte/node bounds, canonical Base64, key ordering/uniqueness, threshold cardinality, and configuration_sha256 recomputation.",

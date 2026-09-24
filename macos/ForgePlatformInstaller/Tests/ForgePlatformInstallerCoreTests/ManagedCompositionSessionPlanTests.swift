@@ -28,7 +28,8 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
             componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
                 sequence: 11, sha256: "sha256:" + String(repeating: "c", count: 64)
             ),
-            currentInstaller: context
+            currentInstaller: context,
+            selectedDeployment: existingDeployment()
         )
         guard case .success(let plan) = result else {
             return XCTFail("expected a v2 session plan")
@@ -41,6 +42,85 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
             ["forge-prod", "ep-prod"]
         )
         XCTAssertTrue(plan.providerRequirements.allSatisfy { $0.credentialScope == .component })
+    }
+
+    func testV3ManifestBindsExactProviderRuntimeArchiveAndExecutableDigest() throws {
+        let runtime: [String: Any] = [
+            "version": "0.147.0",
+            "archive_kind": "tar.gz",
+            "artifact": [
+                "url": "https://github.com/openai/codex/releases/download/rust-v0.147.0/codex-package-aarch64-apple-darwin.tar.gz",
+                "digest": "sha256:" + String(repeating: "a", count: 64),
+            ],
+            "executable_relative_path": "codex-aarch64-apple-darwin",
+            "executable_digest": "sha256:" + String(repeating: "b", count: 64),
+        ]
+        let manifest = manifestData(
+            schema: "forge-platform.composition/v3",
+            providers: [[
+                "identity": "codex", "required": true, "minimum_version": "0.147.0",
+                "credential_scope": "component", "owner_component": "forge-runtime",
+                "target_identity": "forge-prod", "runtime": runtime,
+            ]]
+        )
+        let result = ManagedCompositionSessionPlanBuilder().build(
+            sessionID: "managed-session-v3",
+            manifestBytes: manifest,
+            selectedEntry: try selectedEntry(manifest: manifest),
+            compositionCatalogIdentity: try VerifiedCompositionCatalogIdentity(
+                sequence: 12, sha256: "sha256:" + String(repeating: "c", count: 64)
+            ),
+            componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
+                sequence: 13, sha256: "sha256:" + String(repeating: "d", count: 64)
+            ),
+            currentInstaller: try currentContext(),
+            selectedDeployment: existingDeployment()
+        )
+        guard case .success(let plan) = result,
+              let provider = plan.providerRequirements.first,
+              let parsedRuntime = provider.runtime else {
+            return XCTFail("expected composition/v3 provider runtime evidence")
+        }
+        XCTAssertEqual(parsedRuntime.version, try InstallerVersion("0.147.0"))
+        XCTAssertEqual(parsedRuntime.archiveKind, .tarGzip)
+        XCTAssertEqual(parsedRuntime.artifactSHA256, "sha256:" + String(repeating: "a", count: 64))
+        XCTAssertEqual(parsedRuntime.executableSHA256, "sha256:" + String(repeating: "b", count: 64))
+        XCTAssertEqual(parsedRuntime.executableRelativePath, "codex-aarch64-apple-darwin")
+    }
+
+    func testV3ManifestRejectsUnsafeProviderExecutablePath() throws {
+        let manifest = manifestData(
+            schema: "forge-platform.composition/v3",
+            providers: [[
+                "identity": "codex", "required": true, "minimum_version": "0.147.0",
+                "credential_scope": "component", "owner_component": "forge-runtime",
+                "target_identity": "forge-prod",
+                "runtime": [
+                    "version": "0.147.0",
+                    "archive_kind": "tar.gz",
+                    "artifact": [
+                        "url": "https://downloads.example.invalid/codex.tar.gz",
+                        "digest": "sha256:" + String(repeating: "a", count: 64),
+                    ],
+                    "executable_relative_path": "../codex",
+                    "executable_digest": "sha256:" + String(repeating: "b", count: 64),
+                ],
+            ]]
+        )
+        let result = ManagedCompositionSessionPlanBuilder().build(
+            sessionID: "managed-session-v3-unsafe",
+            manifestBytes: manifest,
+            selectedEntry: try selectedEntry(manifest: manifest),
+            compositionCatalogIdentity: try VerifiedCompositionCatalogIdentity(
+                sequence: 12, sha256: "sha256:" + String(repeating: "c", count: 64)
+            ),
+            componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
+                sequence: 13, sha256: "sha256:" + String(repeating: "d", count: 64)
+            ),
+            currentInstaller: try currentContext(),
+            selectedDeployment: existingDeployment()
+        )
+        XCTAssertEqual(result, .failure(.rejected))
     }
 
     func testV2ManifestRejectsUserScopeForServerTarget() throws {
@@ -59,7 +139,8 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
             componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
                 sequence: 11, sha256: "sha256:" + String(repeating: "c", count: 64)
             ),
-            currentInstaller: try currentContext()
+            currentInstaller: try currentContext(),
+            selectedDeployment: existingDeployment()
         )
         XCTAssertEqual(result, .failure(.rejected))
     }
@@ -80,7 +161,8 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
                 componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
                     sequence: 11, sha256: "sha256:" + String(repeating: "c", count: 64)
                 ),
-                currentInstaller: try currentContext()
+                currentInstaller: try currentContext(),
+                selectedDeployment: existingDeployment()
             ),
             .failure(.rejected)
         )
@@ -101,9 +183,42 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
                 componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
                     sequence: 11, sha256: "sha256:" + String(repeating: "c", count: 64)
                 ),
-                currentInstaller: try currentContext()
+                currentInstaller: try currentContext(),
+                selectedDeployment: existingDeployment()
             ),
             .failure(.rejected)
+        )
+    }
+
+    func testV2ManifestRejectsProviderTargetFromDifferentExistingDeployment() throws {
+        let manifest = manifestData(providers: [[
+            "identity": "codex", "required": true, "minimum_version": "1.0.0",
+            "credential_scope": "component", "owner_component": "forge-runtime",
+            "target_identity": "forge-other",
+        ]])
+        let result = ManagedCompositionSessionPlanBuilder().build(
+            sessionID: "managed-session-wrong-target",
+            manifestBytes: manifest,
+            selectedEntry: try selectedEntry(manifest: manifest),
+            compositionCatalogIdentity: try VerifiedCompositionCatalogIdentity(
+                sequence: 10, sha256: "sha256:" + String(repeating: "b", count: 64)
+            ),
+            componentCombinationCatalogIdentity: try VerifiedCompositionCatalogIdentity(
+                sequence: 11, sha256: "sha256:" + String(repeating: "c", count: 64)
+            ),
+            currentInstaller: try currentContext(),
+            selectedDeployment: existingDeployment()
+        )
+        XCTAssertEqual(result, .failure(.rejected))
+    }
+
+    private func existingDeployment() -> ManagedDeploymentTarget {
+        try! ManagedDeploymentTarget(
+            id: "production",
+            label: "Production",
+            exists: true,
+            forgeInstanceID: "forge-prod",
+            engineeringPlatformInstanceID: "ep-prod"
         )
     }
 
@@ -168,6 +283,7 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
     }
 
     private func manifestData(
+        schema: String = "forge-platform.composition/v2",
         providers: [[String: Any]],
         components: [String] = ["forge-runtime", "engineering-platform-server"]
     ) -> Data {
@@ -181,7 +297,7 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
             ]
         }
         let value: [String: Any] = [
-            "schema": "forge-platform.composition/v2",
+            "schema": schema,
             "composition_id": "forge-ep-managed-v1",
             "channel": "stable",
             "requires_installer": [

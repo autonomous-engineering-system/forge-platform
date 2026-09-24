@@ -76,6 +76,32 @@ public enum SelfUpdateHandoffResult: Equatable, Sendable {
     case failed(String)
 }
 
+/// Read-only installer currency evidence. A newer verified release never
+/// authorizes platform mutation: callers must explicitly enter the self-update
+/// handoff path before they may continue.
+public enum InstallerCurrencyCheckResult: Equatable, Sendable {
+    case current(VerifiedInstallerRelease)
+    case updateRequired(VerifiedInstallerRelease)
+    case failed(String)
+}
+
+public enum PreMutationCurrencyGate: Equatable, Sendable {
+    case pending
+    case checking
+    case current(VerifiedInstallerRelease)
+    case failed(String)
+
+    public var isCurrent: Bool {
+        if case .current = self { return true }
+        return false
+    }
+
+    public var isChecking: Bool {
+        if case .checking = self { return true }
+        return false
+    }
+}
+
 public enum SelfUpdateGate: Equatable, Sendable {
     case checking
     case current(VerifiedInstallerRelease)
@@ -159,6 +185,67 @@ public enum ProviderOwnerComponent: String, CaseIterable, Codable, Equatable, Ha
     }
 }
 
+public enum ProviderRuntimeArchiveKind: String, Codable, Equatable, Hashable, Sendable {
+    case tarGzip = "tar.gz"
+    case zip
+}
+
+public struct ProviderRuntimeRequirement: Equatable, Sendable {
+    public let version: InstallerVersion
+    public let archiveKind: ProviderRuntimeArchiveKind
+    public let artifactURL: String
+    public let artifactSHA256: String
+    public let executableRelativePath: String
+    public let executableSHA256: String
+
+    public init(
+        version: InstallerVersion,
+        archiveKind: ProviderRuntimeArchiveKind,
+        artifactURL: String,
+        artifactSHA256: String,
+        executableRelativePath: String,
+        executableSHA256: String
+    ) throws {
+        guard GitHubInstallerReleaseDescriptorValidation.isHTTPSURL(artifactURL),
+              Self.isTaggedSHA256(artifactSHA256),
+              Self.isTaggedSHA256(executableSHA256),
+              Self.isSafeRelativeExecutablePath(executableRelativePath) else {
+            throw ProviderRuntimeRequirementError.invalid
+        }
+        self.version = version
+        self.archiveKind = archiveKind
+        self.artifactURL = artifactURL
+        self.artifactSHA256 = artifactSHA256
+        self.executableRelativePath = executableRelativePath
+        self.executableSHA256 = executableSHA256
+    }
+
+    private static func isTaggedSHA256(_ value: String) -> Bool {
+        GitHubInstallerReleaseDescriptorValidation.rawDigest(fromTaggedDigest: value) != nil
+    }
+
+    private static func isSafeRelativeExecutablePath(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 256 else { return false }
+        let segments = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard !segments.isEmpty else { return false }
+        return segments.allSatisfy { segment in
+            guard segment != ".", segment != "..", !segment.isEmpty else { return false }
+            return segment.unicodeScalars.allSatisfy { scalar in
+                switch scalar.value {
+                case 45, 46, 95, 48...57, 65...90, 97...122:
+                    return true
+                default:
+                    return false
+                }
+            }
+        }
+    }
+}
+
+public enum ProviderRuntimeRequirementError: Error, Equatable, Sendable {
+    case invalid
+}
+
 public struct ProviderRequirement: Equatable, Sendable, Identifiable {
     public let provider: ProviderID
     public let isRequired: Bool
@@ -168,9 +255,11 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
     public let credentialScope: ProviderCredentialScope
     /// Targetless requirements are legacy composition/v1 user requirements.
     /// v2 server requirements bind the provider to exactly one owning product
-    /// instance (or immutable pre-create target binding).
+    /// instance (or immutable pre-create target binding). v3 additionally
+    /// binds the exact provider CLI archive and extracted executable digest.
     public let ownerComponent: ProviderOwnerComponent?
     public let targetIdentity: String?
+    public let runtime: ProviderRuntimeRequirement?
 
     public var id: ProviderTargetID {
         if let ownerComponent, let targetIdentity {
@@ -187,7 +276,8 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
         minimumVersion: InstallerVersion? = nil,
         credentialScope: ProviderCredentialScope = .user,
         ownerComponent: ProviderOwnerComponent? = nil,
-        targetIdentity: String? = nil
+        targetIdentity: String? = nil,
+        runtime: ProviderRuntimeRequirement? = nil
     ) {
         precondition((ownerComponent == nil) == (targetIdentity == nil), "provider target must be complete")
         if let ownerComponent, let targetIdentity {
@@ -213,9 +303,16 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
         self.provider = provider
         self.isRequired = isRequired
         self.minimumVersion = minimumVersion
+        if let runtime, let minimumVersion {
+            precondition(
+                runtime.version >= minimumVersion,
+                "provider runtime is older than the minimum version"
+            )
+        }
         self.credentialScope = credentialScope
         self.ownerComponent = ownerComponent
         self.targetIdentity = targetIdentity
+        self.runtime = runtime
     }
 }
 
@@ -951,6 +1048,10 @@ public struct InstallerWizardState: Equatable, Sendable {
     /// provider gate.
     public private(set) var providers: [ProviderProgress]
     public var composition: CompositionReview
+    /// A fresh currency decision is required after the reviewed diff and
+    /// immediately before entering execution. It is invalidated with every
+    /// session/composition change.
+    public private(set) var preMutationCurrency: PreMutationCurrencyGate
     public var executionStages: [ExecutionStage]
     public var summaryItems: [InstallationSummaryItem]
 
@@ -965,6 +1066,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         self.providerRequirementsProjection = .pending
         self.providers = []
         self.composition = CompositionReview()
+        self.preMutationCurrency = .pending
         self.executionStages = []
         self.summaryItems = []
     }
@@ -1022,6 +1124,7 @@ public struct InstallerWizardState: Equatable, Sendable {
                 && preflight.isPassed
                 && enabledProvidersVerified
                 && composition.isReadyForExecution
+                && preMutationCurrency.isCurrent
         case .execution:
             return hasAcceptedSessionPlan
                 && preflight.isPassed
@@ -1056,6 +1159,13 @@ public struct InstallerWizardState: Equatable, Sendable {
         }
         if step == .providers,
            providers.contains(where: { Self.isProviderActionInFlight($0.state) }) {
+            return false
+        }
+        if step == .execution,
+           executionStages.contains(where: {
+               if case .running = $0.state { return true }
+               return false
+           }) {
             return false
         }
         return true
@@ -1311,7 +1421,55 @@ public struct InstallerWizardState: Equatable, Sendable {
             return false
         }
         composition.isAcknowledged = acknowledged
+        preMutationCurrency = .pending
         return true
+    }
+
+    /// The operator may request the final currency check only after the exact
+    /// reviewed diff is acknowledged. Nothing mutable happens at this point.
+    public var canBeginPreMutationCurrencyCheck: Bool {
+        step == .review
+            && hasAcceptedSessionPlan
+            && preflight.isPassed
+            && enabledProvidersVerified
+            && composition.isReadyForExecution
+            && !preMutationCurrency.isChecking
+    }
+
+    @discardableResult
+    public mutating func beginPreMutationCurrencyCheck() -> Bool {
+        guard canBeginPreMutationCurrencyCheck else { return false }
+        preMutationCurrency = .checking
+        return true
+    }
+
+    /// A newer verified installer invalidates every downstream plan and routes
+    /// back to the mandatory self-update gate. There is deliberately no
+    /// "continue anyway" state.
+    @discardableResult
+    public mutating func recordPreMutationCurrencyCheck(
+        _ result: InstallerCurrencyCheckResult
+    ) -> Bool {
+        guard step == .review, case .checking = preMutationCurrency else {
+            return false
+        }
+        switch result {
+        case .current(let release):
+            guard release.version == currentInstallerVersion else {
+                preMutationCurrency = .failed("De installer-versie veranderde tijdens de laatste controle.")
+                return false
+            }
+            preMutationCurrency = .current(release)
+            return true
+        case .updateRequired(let release):
+            invalidateAcceptedSessionPlan()
+            selfUpdate = .updateRequired(release)
+            step = .selfUpdate
+            return false
+        case .failed(let reason):
+            preMutationCurrency = .failed(reason)
+            return false
+        }
     }
 
     @discardableResult
@@ -1348,6 +1506,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         providers = []
         preflight = HostPreflight()
         composition = CompositionReview()
+        preMutationCurrency = .pending
         executionStages = []
         summaryItems = []
     }
@@ -1385,10 +1544,33 @@ public protocol InstallerWizardCoordinator: Sendable {
     /// Inventory existing managed deployments plus one coordinator-generated
     /// create target. This operation is read-only.
     func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult
-    /// Prepare exactly one verified composition session after the mandatory
-    /// self-update and managed-deployment gates. Implementations must not return
-    /// catalog bytes, URLs, commands, credentials, product readbacks or an operation authority.
-    func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult
+    /// Prepare exactly one verified composition session for the selected
+    /// managed deployment after the mandatory self-update gate. Implementations
+    /// must not return catalog bytes, URLs, commands, credentials, product
+    /// readbacks or an operation authority.
+    func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult
+    /// Read-only host/tool preflight for the exact accepted session/deployment.
+    func prepareHostPreflight(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> HostPreflightPreparationResult
+    /// Read-only exact product inventory/diff planning after provider verification.
+    func prepareCompositionReview(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> CompositionReviewPreparationResult
+    /// Re-checks the signed installer release immediately before the reviewed
+    /// plan is allowed to cross into product mutation.
+    func recheckInstallerBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> InstallerCurrencyCheckResult
+    /// Executes the immutable reviewed operation. The trusted implementation
+    /// owns fresh currency checks at every real mutation boundary.
+    func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult
     /// Legacy targetless route retained for composition/v1 coordinators.
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult
     /// Target-aware route used by composition/v2. Existing coordinators inherit
@@ -1405,8 +1587,43 @@ public extension InstallerWizardCoordinator {
         .unavailable(.coordinatorUnavailable)
     }
 
-    func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
-        .unavailable(.coordinatorUnavailable)
+    func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult {
+        _ = deployment
+        return .unavailable(.coordinatorUnavailable)
+    }
+
+    func prepareHostPreflight(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> HostPreflightPreparationResult {
+        _ = session
+        _ = deployment
+        return .unavailable(.coordinatorUnavailable)
+    }
+
+    func prepareCompositionReview(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> CompositionReviewPreparationResult {
+        _ = session
+        _ = deployment
+        return .unavailable(.coordinatorUnavailable)
+    }
+
+    func recheckInstallerBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> InstallerCurrencyCheckResult {
+        _ = currentVersion
+        return .failed("De installer kon vlak vóór uitvoering niet opnieuw worden geverifieerd.")
+    }
+
+    func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult {
+        _ = operation
+        return .failed(.coordinatorUnavailable, stages: [])
     }
 
     func performProviderAction(
@@ -1434,8 +1651,11 @@ public struct UnavailableInstallerWizardCoordinator: InstallerWizardCoordinator 
         .failed("Geen vertrouwde bootstrapper gekoppeld voor download, verificatie en herstart.")
     }
 
-    public func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
-        .unavailable(.coordinatorUnavailable)
+    public func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult {
+        _ = deployment
+        return .unavailable(.coordinatorUnavailable)
     }
 
     public func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult {

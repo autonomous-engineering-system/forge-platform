@@ -507,6 +507,26 @@ public enum InstallerSelfUpdateEnforcementResult: Equatable, Sendable {
     case failed(String)
 }
 
+public protocol ProviderActionCoordinating: Sendable {
+    func performProviderAction(
+        _ action: ProviderAction,
+        for requirement: ProviderRequirement
+    ) async -> ProviderActionResult
+}
+
+public struct UnavailableProviderActionCoordinator: ProviderActionCoordinating {
+    public init() {}
+
+    public func performProviderAction(
+        _ action: ProviderAction,
+        for requirement: ProviderRequirement
+    ) async -> ProviderActionResult {
+        _ = action
+        _ = requirement
+        return .failed(.coordinatorUnavailable)
+    }
+}
+
 /// Native shell coordinator for the Universal Installer's own update lifecycle.
 /// It has no product-component, venv, migration, service, provider, or database
 /// authority.  Every collaborator is injected so the security-sensitive native
@@ -523,6 +543,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     /// self-update.  The default is fail-closed until a later increment adds a
     /// reviewed catalog trust policy and native verifier.
     private let compositionSessionPreparer: any VerifiedCompositionSessionPreparing
+    private let providerCoordinator: any ProviderActionCoordinating
+    private let managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating
 
     private var pendingUpdate: PendingUpdate?
     /// A release record observed during an update check is not yet authority
@@ -531,6 +553,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     private var checkedCurrentReleaseRecord: VerifiedInstallerReleaseRecord?
     private var currentVerifiedReleaseRecord: VerifiedInstallerReleaseRecord?
     private var preparedCompositionSession: VerifiedCompositionSessionPlan?
+    private var preparedCompositionSessionTarget: ManagedDeploymentTarget?
     /// A selector may perform independent verification asynchronously.  Admit
     /// only one request for a current release generation; a second request
     /// cannot create a competing catalog/index/manifest decision while the
@@ -553,7 +576,9 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         atomicHandoff: any InstallerAtomicHandoffPerforming,
         recoveryStore: any InstallerSelfUpdateRecoveryStoring,
         operationLock: any InstallerSelfUpdateOperationLocking,
-        compositionSessionPreparer: any VerifiedCompositionSessionPreparing = UnavailableVerifiedCompositionSessionPreparer()
+        compositionSessionPreparer: any VerifiedCompositionSessionPreparing = UnavailableVerifiedCompositionSessionPreparer(),
+        providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator(),
+        managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator()
     ) {
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
@@ -563,6 +588,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.recoveryStore = recoveryStore
         self.operationLock = operationLock
         self.compositionSessionPreparer = compositionSessionPreparer
+        self.providerCoordinator = providerCoordinator
+        self.managedDeploymentRouteCoordinator = managedDeploymentRouteCoordinator
     }
 
     public func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
@@ -573,9 +600,14 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         }
     }
 
-    private func checkForUpdateWhileLocked(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+    private func checkForUpdateWhileLocked(
+        currentVersion: InstallerVersion,
+        invalidateCompositionSession: Bool = true
+    ) async -> SelfUpdateCheckResult {
         pendingUpdate = nil
-        invalidateVerifiedCompositionSession()
+        if invalidateCompositionSession {
+            invalidateVerifiedCompositionSession()
+        }
 
         switch await recoverInterruptedUpdate() {
         case .success:
@@ -589,6 +621,47 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             return await evaluate(latestRelease: latestRelease, currentVersion: currentVersion)
         case .failure(let failure):
             return rejected(failure.code)
+        }
+    }
+
+    /// Performs a read-only signed-release currency check without staging or
+    /// downloading a newer installer. It is used both before the first wizard
+    /// session and immediately before reviewed product mutation. A newer
+    /// release leaves a verified pending update for an explicit user-confirmed
+    /// handoff; the caller cannot continue with the old binary.
+    public func recheckInstallerBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> InstallerCurrencyCheckResult {
+        await whileExclusivelyLocked(
+            unavailable: { .failed($0.code.userFacingMessage) }
+        ) {
+            switch await self.checkForUpdateWhileLocked(
+                currentVersion: currentVersion,
+                invalidateCompositionSession: false
+            ) {
+            case .rejected(let reason):
+                return .failed(reason)
+            case .verifiedGitHubRelease(let release):
+                if release.version == currentVersion {
+                    guard let checked = self.checkedCurrentReleaseRecord,
+                          checked.release == release else {
+                        return .failed(
+                            InstallerSelfUpdateFailureCode.releaseMetadataRejected.userFacingMessage
+                        )
+                    }
+                    if let current = self.currentVerifiedReleaseRecord,
+                       current != checked {
+                        return .failed(
+                            InstallerSelfUpdateFailureCode.releaseIdentityConflict.userFacingMessage
+                        )
+                    }
+                    self.currentVerifiedReleaseRecord = checked
+                    self.checkedCurrentReleaseRecord = nil
+                    return .current(release)
+                }
+                self.invalidateVerifiedCompositionSession()
+                return .updateRequired(release)
+            }
         }
     }
 
@@ -616,17 +689,52 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         }
     }
 
+    public func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
+        await managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory()
+    }
+
+    public func prepareHostPreflight(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> HostPreflightPreparationResult {
+        await managedDeploymentRouteCoordinator.prepareHostPreflight(
+            session: session,
+            deployment: deployment
+        )
+    }
+
+    public func prepareCompositionReview(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> CompositionReviewPreparationResult {
+        await managedDeploymentRouteCoordinator.prepareCompositionReview(
+            session: session,
+            deployment: deployment
+        )
+    }
+
+    public func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult {
+        await managedDeploymentRouteCoordinator.executeReviewedManagedDeployment(operation)
+    }
+
     /// A composition session may cross into the wizard only after this runtime
     /// retained one exact current release record through mandatory startup
     /// enforcement.  The injected preparer supplies no new trust root here:
     /// the default remains unavailable, and a future implementation is still
     /// responsible for catalog/index/manifest verification under its own
     /// reviewed policy.
-    public func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
+    public func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget
+    ) async -> InstallerSessionPreparationResult {
         guard let currentVerifiedReleaseRecord else {
             return .unavailable(.selectionUnavailable)
         }
         if let preparedCompositionSession {
+            guard preparedCompositionSessionTarget == deployment else {
+                return .unavailable(.selectionUnavailable)
+            }
             return .prepared(preparedCompositionSession)
         }
 
@@ -636,7 +744,10 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             return .unavailable(.selectionUnavailable)
         }
         inFlightCompositionSessionGeneration = generation
-        let result = await compositionSessionPreparer.prepareVerifiedCompositionSession(for: context)
+        let result = await compositionSessionPreparer.prepareVerifiedCompositionSession(
+            for: context,
+            deployment: deployment
+        )
 
         // Actor reentrancy permits a concurrent update check or a second
         // preparation request while the collaborator is suspended.  A result
@@ -664,6 +775,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                 return .prepared(preparedCompositionSession)
             }
             self.preparedCompositionSession = plan
+            self.preparedCompositionSessionTarget = deployment
             return .prepared(plan)
         }
     }
@@ -988,10 +1100,23 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         }
     }
 
-    /// Provider workflows are intentionally not folded into installer self
-    /// update.  The shell's separate bounded provider coordinator owns them.
-    public func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult {
-        .failed("Geen provider-coördinator gekoppeld voor \(provider.displayName).")
+    /// Provider workflows remain a separately injected authority. Legacy
+    /// targetless composition/v1 requests stay unavailable in the production
+    /// managed-deployment path.
+    public func performProviderAction(
+        _ action: ProviderAction,
+        for provider: ProviderID
+    ) async -> ProviderActionResult {
+        _ = action
+        _ = provider
+        return .failed(.coordinatorUnavailable)
+    }
+
+    public func performProviderAction(
+        _ action: ProviderAction,
+        for requirement: ProviderRequirement
+    ) async -> ProviderActionResult {
+        await providerCoordinator.performProviderAction(action, for: requirement)
     }
 
     private func hasExpectedApplicationIdentity(
@@ -1028,6 +1153,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         checkedCurrentReleaseRecord = nil
         currentVerifiedReleaseRecord = nil
         preparedCompositionSession = nil
+        preparedCompositionSessionTarget = nil
         inFlightCompositionSessionGeneration = nil
         compositionSessionGeneration &+= 1
     }

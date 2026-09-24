@@ -23,6 +23,9 @@ final class InstallerWizardViewModel: ObservableObject {
     @Published private(set) var state: InstallerWizardState
 
     private let coordinator: any InstallerWizardCoordinator
+    @Published private(set) var isPreflightRequestInFlight = false
+    @Published private(set) var isReviewRequestInFlight = false
+    @Published private(set) var isExecutionRequestInFlight = false
 
     init(
         state: InstallerWizardState,
@@ -70,13 +73,57 @@ final class InstallerWizardViewModel: ObservableObject {
     /// The coordinator must return one typed, immutable composition session
     /// after an exact managed deployment has been selected.
     func prepareVerifiedCompositionSession() {
-        guard state.beginSessionPreparation() else {
+        guard case .selected(let deployment, _) = state.deploymentSelection,
+              state.beginSessionPreparation() else {
             return
         }
         let coordinator = coordinator
         Task { @MainActor [weak self] in
-            let result = await coordinator.prepareVerifiedCompositionSession()
+            let result = await coordinator.prepareVerifiedCompositionSession(for: deployment)
             _ = self?.state.recordSessionPreparation(result)
+        }
+    }
+
+
+    func prepareHostPreflight() {
+        guard !isPreflightRequestInFlight,
+              state.step == .preflight,
+              let session = state.acceptedSessionPlan,
+              case .selected(let deployment, _) = state.deploymentSelection else {
+            return
+        }
+        isPreflightRequestInFlight = true
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.prepareHostPreflight(
+                session: session,
+                deployment: deployment
+            )
+            guard let self else { return }
+            _ = self.state.recordHostPreflightPreparation(result)
+            self.isPreflightRequestInFlight = false
+        }
+    }
+
+    func prepareCompositionReview() {
+        guard !isReviewRequestInFlight,
+              state.step == .review,
+              state.preflight.isPassed,
+              state.enabledProvidersVerified,
+              let session = state.acceptedSessionPlan,
+              case .selected(let deployment, _) = state.deploymentSelection else {
+            return
+        }
+        isReviewRequestInFlight = true
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.prepareCompositionReview(
+                session: session,
+                deployment: deployment
+            )
+            guard let self else { return }
+            _ = self.state.recordCompositionReviewPreparation(result)
+            self.isReviewRequestInFlight = false
         }
     }
 
@@ -101,6 +148,25 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func advance() {
+        if state.step == .review {
+            guard state.beginPreMutationCurrencyCheck() else { return }
+            let currentVersion = state.currentInstallerVersion
+            let coordinator = coordinator
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let result = await coordinator.recheckInstallerBeforeMutation(
+                    currentVersion: currentVersion
+                )
+                if self.state.recordPreMutationCurrencyCheck(result),
+                   let operation = self.state.beginManagedDeploymentExecution() {
+                    self.isExecutionRequestInFlight = true
+                    let execution = await coordinator.executeReviewedManagedDeployment(operation)
+                    _ = self.state.recordManagedDeploymentExecution(execution, for: operation)
+                    self.isExecutionRequestInFlight = false
+                }
+            }
+            return
+        }
         _ = state.advance()
     }
 
@@ -161,10 +227,7 @@ struct InstallerWizardView: View {
         case .composition:
             CompositionSelectionScreen(viewModel: viewModel)
         case .preflight:
-            PreflightScreen(
-                preflight: viewModel.state.preflight,
-                sessionPlan: viewModel.state.acceptedSessionPlan
-            )
+            PreflightScreen(viewModel: viewModel)
         case .providers:
             ProviderScreen(viewModel: viewModel)
         case .review:
@@ -189,13 +252,33 @@ struct InstallerWizardView: View {
             Spacer()
 
             if viewModel.state.step != .summary {
-                Button(viewModel.state.step == .execution ? "Naar samenvatting" : "Volgende") {
+                Button(primaryActionTitle) {
                     viewModel.advance()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.state.canAdvance)
+                .disabled(primaryActionDisabled)
             }
         }
+    }
+
+    private var primaryActionTitle: String {
+        switch viewModel.state.step {
+        case .review:
+            return viewModel.state.preMutationCurrency.isChecking
+                ? "Installer opnieuw controleren…"
+                : "Controleer en voer uit"
+        case .execution:
+            return "Naar samenvatting"
+        default:
+            return "Volgende"
+        }
+    }
+
+    private var primaryActionDisabled: Bool {
+        if viewModel.state.step == .review {
+            return !viewModel.state.canBeginPreMutationCurrencyCheck
+        }
+        return !viewModel.state.canAdvance
     }
 }
 
@@ -460,8 +543,10 @@ private struct CompositionSelectionScreen: View {
 }
 
 private struct PreflightScreen: View {
-    let preflight: HostPreflight
-    let sessionPlan: VerifiedCompositionSessionPlan?
+    @ObservedObject var viewModel: InstallerWizardViewModel
+
+    private var preflight: HostPreflight { viewModel.state.preflight }
+    private var sessionPlan: VerifiedCompositionSessionPlan? { viewModel.state.acceptedSessionPlan }
 
     var body: some View {
         ScreenHeader(
@@ -492,6 +577,18 @@ private struct PreflightScreen: View {
                 }
             }
 
+            if viewModel.isPreflightRequestInFlight {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Sessiespecifieke hostcontrole wordt uitgevoerd…")
+                }
+                .font(.callout)
+            } else if !preflight.isPassed {
+                Button("Voer sessiespecifieke hostcontrole uit") {
+                    viewModel.prepareHostPreflight()
+                }
+                .buttonStyle(.borderedProminent)
+            }
             Text("Een mislukte of ontbrekende preflight blokkeert de volgende stap fail-closed.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -618,6 +715,19 @@ private struct CompositionReviewScreen: View {
         )
 
         VStack(alignment: .leading, spacing: 16) {
+            if viewModel.isReviewRequestInFlight {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Gekwalificeerd wijzigingsplan wordt opgebouwd…")
+                }
+                .font(.callout)
+            } else if case .pending = viewModel.state.composition.status {
+                Button("Bouw gekwalificeerd wijzigingsplan") {
+                    viewModel.prepareCompositionReview()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
             GroupBox("Compositiestatus") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(viewModel.state.composition.manifestIdentity).textSelection(.enabled)
@@ -649,6 +759,28 @@ private struct CompositionReviewScreen: View {
                 )
             )
             .disabled(!isCompatible(viewModel.state.composition.status))
+
+            switch viewModel.state.preMutationCurrency {
+            case .pending:
+                Text("Vlak vóór uitvoering wordt de signed installer-release opnieuw gecontroleerd.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .checking:
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Installer-release opnieuw controleren…")
+                }
+                .font(.caption)
+            case .current(let release):
+                Label(
+                    "Installer \(release.version.description) is direct vóór uitvoering opnieuw geverifieerd.",
+                    systemImage: "checkmark.shield.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.green)
+            case .failed(let reason):
+                FailureCallout(reason: reason)
+            }
         }
         .padding(.top, 12)
     }

@@ -7,11 +7,16 @@ let package = Package(
     products: [
         .library(name: "ForgePlatformInstallerCore", targets: ["ForgePlatformInstallerCore"]),
         .executable(name: "ForgePlatformInstaller", targets: ["ForgePlatformInstaller"]),
+        .executable(name: "forge-platform-installer", targets: ["ForgePlatformInstallerCLI"]),
     ],
     targets: [
         .target(name: "ForgePlatformInstallerCore"),
         .executableTarget(
             name: "ForgePlatformInstaller",
+            dependencies: ["ForgePlatformInstallerCore"]
+        ),
+        .executableTarget(
+            name: "ForgePlatformInstallerCLI",
             dependencies: ["ForgePlatformInstallerCore"]
         ),
         .testTarget(
@@ -21,6 +26,10 @@ let package = Package(
         .testTarget(
             name: "ForgePlatformInstallerTests",
             dependencies: ["ForgePlatformInstaller", "ForgePlatformInstallerCore"]
+        ),
+        .testTarget(
+            name: "ForgePlatformInstallerCLITests",
+            dependencies: ["ForgePlatformInstallerCLI", "ForgePlatformInstallerCore"]
         ),
     ]
 )

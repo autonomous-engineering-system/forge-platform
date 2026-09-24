@@ -14,8 +14,10 @@ from forge_platform.universal_installer import (
     CompositionComponent,
     CompositionPlanner,
     DownloadIdentity,
+    DownloadIdentity,
     ProviderReadback,
     ProviderRequirement,
+    ProviderRuntimeRequirement,
     ProviderSelection,
     PythonRuntimeQualification,
     SemanticVersion,
@@ -121,6 +123,85 @@ class ProviderTargetTests(unittest.TestCase):
         duplicate = requirement("codex", "forge-runtime", "forge-prod")
         with self.assertRaisesRegex(ValueError, "duplicate target"):
             evaluate_provider_gate((forge, duplicate), {}, {})
+
+    def test_v3_provider_runtime_binds_exact_archive_and_executable_digest(self) -> None:
+        runtime = ProviderRuntimeRequirement(
+            SemanticVersion.parse("0.147.0"),
+            "tar.gz",
+            DownloadIdentity(
+                "https://github.com/openai/codex/releases/download/rust-v0.147.0/codex-package-aarch64-apple-darwin.tar.gz",
+                "sha256:" + "a" * 64,
+            ),
+            "codex-aarch64-apple-darwin",
+            "sha256:" + "b" * 64,
+        )
+        requirement = ProviderRequirement(
+            "codex",
+            True,
+            SemanticVersion.parse("0.147.0"),
+            "component",
+            "forge-runtime",
+            "forge-prod",
+            runtime,
+        )
+        self.assertEqual(requirement.runtime, runtime)
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            ProviderRuntimeRequirement(
+                SemanticVersion.parse("0.147.0"),
+                "tar.gz",
+                runtime.artifact,
+                "../codex",
+                runtime.executable_digest,
+            )
+
+    def test_v3_gate_rejects_verified_provider_with_wrong_runtime_digest(self) -> None:
+        runtime = ProviderRuntimeRequirement(
+            SemanticVersion.parse("0.147.0"),
+            "tar.gz",
+            DownloadIdentity(
+                "https://downloads.example.invalid/codex.tar.gz",
+                "sha256:" + "a" * 64,
+            ),
+            "codex",
+            "sha256:" + "b" * 64,
+        )
+        requirement = ProviderRequirement(
+            "codex", True, SemanticVersion.parse("0.147.0"), "component",
+            "forge-runtime", "forge-prod", runtime,
+        )
+        observed = ProviderReadback(
+            "codex",
+            "VERIFIED",
+            SemanticVersion.parse("0.147.0"),
+            "executable:forge-prod",
+            "evidence:forge-prod",
+            "forge-runtime",
+            "forge-prod",
+            "sha256:" + "c" * 64,
+        )
+        gate = evaluate_provider_gate(
+            (requirement,),
+            {requirement.key: ProviderSelection("codex", True, "forge-runtime", "forge-prod")},
+            {requirement.key: observed},
+        )
+        self.assertFalse(gate.permits_platform_mutation)
+        self.assertEqual(gate.actions[0].action, "INSTALL")
+
+    def test_v3_schema_requires_runtime_evidence(self) -> None:
+        schema = json.loads(
+            (ROOT / "schemas/universal-installer-composition-v3.schema.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(schema["properties"]["schema"]["const"], "forge-platform.composition/v3")
+        provider = schema["$defs"]["provider"]
+        self.assertIn("runtime", provider["required"])
+        runtime = schema["$defs"]["provider_runtime"]
+        self.assertEqual(
+            set(runtime["required"]),
+            {
+                "version", "archive_kind", "artifact",
+                "executable_relative_path", "executable_digest",
+            },
+        )
 
     def test_v2_schema_requires_exact_owner_target_and_scope(self) -> None:
         schema = json.loads(
