@@ -51,6 +51,23 @@ The scripts never export a private key or weaken a Keychain ACL.
 
 ## Deliberately unresolved producer input
 
+`.github/workflows/forge-platform-composition-producer-observer.yml` polls the
+public Forge, Engineering Platform and Workspace release surfaces hourly and on
+manual dispatch from a GitHub-hosted runner. It has read-only repository
+permission and uploads one canonical observation report. The observer verifies
+exact release tags and source revisions, terminal release receipts, GitHub
+asset digests, registry readback and exact PyPI wheel/sdist identities. It does
+not create a branch, PR, manifest, signing authorization or release.
+
+`composition-producer-sources.json` is the reviewed binding from product roles
+to their public producer repositories and release contracts. Forge 2.7.34 and
+Engineering Platform 2.3.102 currently satisfy their producer observation
+contracts. Workspace has no public production release; its current release
+contract would publish only a source bundle, which is explicitly observed as
+not installable even after such a release exists. Managed Git and managed
+Python inputs remain `UNCONFIGURED`. Those conditions keep
+`manifest_generation` at `BLOCKED`.
+
 A Forge, Engineering Platform or Workspace release is not automatically a safe
 composition. Promotion also needs immutable managed Git and managed Python
 runtime artifacts, their provenance, product build/test evidence, compatibility

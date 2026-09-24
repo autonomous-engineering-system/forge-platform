@@ -1,0 +1,50 @@
+{
+  "external_inputs": [
+    {
+      "evidence": null,
+      "identity": "managed-git",
+      "status": "UNCONFIGURED"
+    },
+    {
+      "evidence": null,
+      "identity": "managed-python-runtime",
+      "status": "UNCONFIGURED"
+    }
+  ],
+  "producers": [
+    {
+      "component": "server",
+      "composition_eligible": true,
+      "identity": "engineering-platform-server",
+      "product": "engineering-platform",
+      "pypi_project": "engineering-platform",
+      "receipt_asset_prefix": "engineering-platform-release-complete-",
+      "registry": "pypi",
+      "repository": "pcvantol/engineering-platform",
+      "tag_prefix": "engineering-platform-v"
+    },
+    {
+      "component": "forge-autonomy",
+      "composition_eligible": true,
+      "identity": "forge-runtime",
+      "product": "forge",
+      "pypi_project": "forge-autonomy",
+      "receipt_asset_prefix": "forge-release-complete-",
+      "registry": "pypi",
+      "repository": "pcvantol/forge",
+      "tag_prefix": "forge-v"
+    },
+    {
+      "component": "source-bundle",
+      "composition_eligible": false,
+      "identity": "workspace-server-client",
+      "product": "workspace",
+      "pypi_project": null,
+      "receipt_asset_prefix": "workspace-release-complete-",
+      "registry": "github-release",
+      "repository": "pcvantol/workspace",
+      "tag_prefix": "workspace-v"
+    }
+  ],
+  "schema": "forge-platform.composition-producer-sources/v1"
+}
