@@ -1204,6 +1204,26 @@ public actor ReleasedInstallerStartupBoundary {
         )
     }
 
+    /// Released macOS entry point. Source/test bundles still fail closed while
+    /// loading their absent sealed resources. A malformed platform or private
+    /// installer state root also falls back to the same absent runtime rather
+    /// than a weaker updater or manual composition path.
+    public static func bundledMacOS() -> ReleasedInstallerStartupBoundary {
+        let runtimeBuilder: any TrustedInstallerRuntimeBuilding
+        do {
+            runtimeBuilder = try MacOSTrustedInstallerRuntimeBuilder(
+                stateRoot: MacOSInstallerUserStateRoot.prepare()
+            )
+        } catch {
+            runtimeBuilder = AbsentTrustedInstallerRuntimeBuilder()
+        }
+        return ReleasedInstallerStartupBoundary(
+            trustConfigurationLoader: BundleSealedInstallerReleaseTrustConfigurationLoader(),
+            provenanceLoader: BundleSealedInstallerReleaseProvenanceLoader(),
+            runtimeBuilder: runtimeBuilder
+        )
+    }
+
     public func start(currentVersion: InstallerVersion) async -> ReleasedInstallerStartupOutcome {
         guard relaunchingRuntime == nil else {
             return .blocked(InstallerSelfUpdateFailureCode.selfUpdateOperationInProgress.userFacingMessage)

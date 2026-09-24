@@ -23,6 +23,57 @@ public enum MacOSTrustedInstallerRuntimeBuilderConfigurationError: Error, Equata
     case unsupportedMacOSVersion
 }
 
+/// Creates the private per-login installer control root used before a future
+/// privileged product-operation helper is admitted. This root stores only
+/// installer self-update and read-only catalog state; product services, venvs,
+/// provider credentials and machine-wide mutation locks never live here.
+enum MacOSInstallerUserStateRoot {
+    private static let vendorDirectoryName = "AutonomousEngineeringSystem"
+    private static let installerDirectoryName = "ForgePlatformInstaller"
+
+    static func prepare() throws -> URL {
+        guard let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
+            throw MacOSTrustedInstallerRuntimeBuilderConfigurationError.invalidInstallerStateRoot
+        }
+        return try prepare(applicationSupportDirectory: applicationSupport)
+    }
+
+    static func prepare(applicationSupportDirectory: URL) throws -> URL {
+        guard applicationSupportDirectory.isFileURL,
+              applicationSupportDirectory.baseURL == nil,
+              applicationSupportDirectory.path.hasPrefix("/") else {
+            throw MacOSTrustedInstallerRuntimeBuilderConfigurationError.invalidInstallerStateRoot
+        }
+        let vendor = applicationSupportDirectory.appendingPathComponent(
+            vendorDirectoryName,
+            isDirectory: true
+        )
+        let root = vendor.appendingPathComponent(installerDirectoryName, isDirectory: true)
+        try createOrValidatePrivateDirectory(vendor)
+        try createOrValidatePrivateDirectory(root)
+        return root
+    }
+
+    private static func createOrValidatePrivateDirectory(_ directory: URL) throws {
+        let creation = directory.path.withCString { Darwin.mkdir($0, mode_t(0o700)) }
+        guard creation == 0 || errno == EEXIST else {
+            throw MacOSTrustedInstallerRuntimeBuilderConfigurationError.invalidInstallerStateRoot
+        }
+        var details = stat()
+        let inspection = directory.path.withCString { Darwin.lstat($0, &details) }
+        guard inspection == 0,
+              (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+              (details.st_mode & mode_t(S_IFLNK)) == 0,
+              details.st_uid == Darwin.geteuid(),
+              (details.st_mode & mode_t(0o7777)) == mode_t(0o700) else {
+            throw MacOSTrustedInstallerRuntimeBuilderConfigurationError.invalidInstallerStateRoot
+        }
+    }
+}
+
 /// Read-only facts used before any self-update store, transport, staging,
 /// handoff, provider, or product component can be reached.
 struct MacOSInstallerPlatformFacts: Equatable, Sendable {
@@ -69,7 +120,8 @@ enum MacOSInstallerPlatformContract {
     }
 }
 
-/// Concrete assembly of the native, installer-only self-update runtime.
+/// Concrete assembly of the native self-update and read-only composition
+/// selection runtime.
 ///
 /// This is deliberately an assembly boundary rather than another update
 /// engine.  It wires the individually bounded, sealed-trust adapters already
@@ -85,11 +137,13 @@ enum MacOSInstallerPlatformContract {
 /// every released installer process; this source-level builder cannot turn a
 /// per-user location into evidence of cross-account uniqueness.
 ///
-/// It does not wire application startup, select a composition, install a
-/// product, launch a provider command, or create a service.  Until the app is
-/// explicitly wired through this builder by a separately qualified release,
-/// `ReleasedInstallerStartupBoundary.bundledFailClosed()` remains the active
-/// source-build boundary.
+/// It does not wire application startup, install a product, launch a provider
+/// command, or create a service. The catalog path assembled here remains
+/// read-only: it can verify and select exact catalog/index/manifest bytes after
+/// current-installer enforcement, but it has no acceptance-write or mutation
+/// authority. Until the app is explicitly wired through this builder by a
+/// separately qualified release, `ReleasedInstallerStartupBoundary.bundledFailClosed()`
+/// remains the active source-build boundary.
 public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuilding {
     private let stateRoot: URL
     private let architecture: String
@@ -129,6 +183,32 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
 
         do {
             let acceptanceStore = FileInstallerReleaseAcceptanceStore(rootDirectory: stateRoot)
+            let outerCatalogAcceptanceStore = FileCompositionCatalogAcceptanceStore(
+                rootDirectory: stateRoot.appendingPathComponent(
+                    "outer-composition-catalog",
+                    isDirectory: true
+                )
+            )
+            let componentCatalogAcceptanceStore = FileCompositionCatalogAcceptanceStore(
+                rootDirectory: stateRoot.appendingPathComponent(
+                    "component-combination-catalog",
+                    isDirectory: true
+                )
+            )
+            let catalogAdmission = CompositionCatalogAdmissionCoordinator(
+                trustLoader: BundleSealedCompositionCatalogTrustConfigurationLoader(),
+                transport: HTTPSCompositionCatalogTransport(),
+                trustedClockAttester: GitHubTrustedCompositionCatalogClockAttester(),
+                acceptanceReader: outerCatalogAcceptanceStore
+            )
+            let compositionSessionPreparer = ManagedVerifiedCompositionSessionPreparer(
+                catalogAdmission: catalogAdmission,
+                documentFetcher: HTTPSCompositionDocumentTransport(),
+                componentAcceptanceReader:
+                    CompositionCatalogBackedComponentCombinationAcceptanceReader(
+                        reader: componentCatalogAcceptanceStore
+                    )
+            )
             let releaseFeed = try GitHubSignedInstallerReleaseFeed(
                 trustConfiguration: sealedTrustConfiguration,
                 sealedReleaseProvenance: sealedReleaseProvenance,
@@ -170,7 +250,8 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 artifactVerifier: artifactVerifier,
                 atomicHandoff: atomicHandoff,
                 recoveryStore: FileInstallerSelfUpdateRecoveryStore(rootDirectory: stateRoot),
-                operationLock: FileInstallerSelfUpdateOperationLock(rootDirectory: stateRoot)
+                operationLock: FileInstallerSelfUpdateOperationLock(rootDirectory: stateRoot),
+                compositionSessionPreparer: compositionSessionPreparer
             ))
         } catch {
             // Do not leak a filesystem location, architecture detail, network

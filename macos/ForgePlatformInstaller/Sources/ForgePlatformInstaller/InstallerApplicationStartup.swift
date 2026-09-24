@@ -77,7 +77,7 @@ final class InstallerApplicationStartupModel: ObservableObject {
     }
 
     init(
-        startupBoundary: ReleasedInstallerStartupBoundary = .bundledFailClosed(),
+        startupBoundary: ReleasedInstallerStartupBoundary = .bundledMacOS(),
         terminateCurrentProcess: @escaping @MainActor @Sendable () -> Void = {
             NSApplication.shared.terminate(nil)
         },

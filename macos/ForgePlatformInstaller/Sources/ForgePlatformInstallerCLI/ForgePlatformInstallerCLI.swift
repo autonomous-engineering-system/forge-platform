@@ -19,7 +19,7 @@ enum InstallerCLIStartupOutcome: Sendable {
 actor ReleasedInstallerCLIStartupAdapter: InstallerCLIStarting {
     private let boundary: ReleasedInstallerStartupBoundary
 
-    init(boundary: ReleasedInstallerStartupBoundary = .bundledFailClosed()) {
+    init(boundary: ReleasedInstallerStartupBoundary = .bundledMacOS()) {
         self.boundary = boundary
     }
 
