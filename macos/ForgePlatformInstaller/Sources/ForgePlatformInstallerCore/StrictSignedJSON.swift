@@ -17,6 +17,13 @@ enum StrictSignedJSONError: Error {
 /// It matches Python's `json.dumps(sort_keys=True, separators=(",", ":"),
 /// ensure_ascii=True, allow_nan=False)` over `StrictJSONResourceValue`.
 enum StrictSignedJSON {
+    /// Canonical bytes for an already strictly parsed JSON value. This is used
+    /// for nested identity commitments whose digest is part of a separately
+    /// verified signed document.
+    static func canonicalPayload(from value: StrictJSONResourceValue) -> Data {
+        Data(canonicalJSON(value).utf8)
+    }
+
     static func canonicalUnsignedPayload(
         from root: StrictJSONResourceValue
     ) throws -> Data {

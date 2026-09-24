@@ -84,6 +84,8 @@ final class InstallerWizardViewModelTests: XCTestCase {
                 sha256: "sha256:" + String(repeating: "d", count: 64)
             ),
             componentSelectionSequence: 4,
+            managedPythonRuntime: managedPythonTestRuntime,
+            productVirtualEnvironments: managedPythonTestVenvs,
             providerRequirements: [
                 ProviderRequirement(provider: .codex, isRequired: true),
                 ProviderRequirement(provider: .githubCLI, isRequired: false),

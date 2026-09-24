@@ -275,6 +275,8 @@ final class InstallerDomainTests: XCTestCase {
             compositionCatalog: outerCatalog,
             componentCombinationCatalog: componentCombinationCatalog,
             componentSelectionSequence: 40,
+            managedPythonRuntime: managedPythonTestRuntime,
+            productVirtualEnvironments: managedPythonTestVenvs,
             providerRequirements: [requirement]
         )
 
@@ -389,10 +391,34 @@ final class InstallerDomainTests: XCTestCase {
                 compositionCatalog: catalog,
                 componentCombinationCatalog: catalog,
                 componentSelectionSequence: 4,
+                managedPythonRuntime: managedPythonTestRuntime,
+                productVirtualEnvironments: managedPythonTestVenvs,
                 providerRequirements: []
             )
         ) { error in
             XCTAssertEqual(error as? VerifiedCompositionSessionPlanError, .conflatedCatalogIdentities)
+        }
+
+        XCTAssertThrowsError(
+            try makeSessionPlan(requirements: [], productVirtualEnvironments: [])
+        ) { error in
+            XCTAssertEqual(
+                error as? VerifiedCompositionSessionPlanError,
+                .invalidProductVirtualEnvironments
+            )
+        }
+        let unbound = try ManagedProductVirtualEnvironmentIdentity(
+            componentIdentity: "forge-runtime",
+            venvIdentity: "forge-unbound-v1",
+            pythonRuntimeIdentitySHA256: "sha256:" + String(repeating: "f", count: 64)
+        )
+        XCTAssertThrowsError(
+            try makeSessionPlan(requirements: [], productVirtualEnvironments: [unbound])
+        ) { error in
+            XCTAssertEqual(
+                error as? VerifiedCompositionSessionPlanError,
+                .invalidProductVirtualEnvironments
+            )
         }
     }
 
@@ -485,7 +511,8 @@ final class InstallerDomainTests: XCTestCase {
         installerReleaseSequence: UInt64 = 1,
         installerProvenanceSHA256: String = String(repeating: "b", count: 64),
         installerReleaseTrustConfigurationSHA256: String = String(repeating: "e", count: 64),
-        componentSelectionSequence: UInt64 = 4
+        componentSelectionSequence: UInt64 = 4,
+        productVirtualEnvironments: [ManagedProductVirtualEnvironmentIdentity] = managedPythonTestVenvs
     ) throws -> VerifiedCompositionSessionPlan {
         try VerifiedCompositionSessionPlan(
             sessionID: sessionID,
@@ -506,6 +533,8 @@ final class InstallerDomainTests: XCTestCase {
                 sha256: "sha256:" + String(repeating: "d", count: 64)
             ),
             componentSelectionSequence: componentSelectionSequence,
+            managedPythonRuntime: managedPythonTestRuntime,
+            productVirtualEnvironments: productVirtualEnvironments,
             providerRequirements: requirements
         )
     }

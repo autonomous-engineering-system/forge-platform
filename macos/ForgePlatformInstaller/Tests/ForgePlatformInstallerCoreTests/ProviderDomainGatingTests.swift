@@ -57,6 +57,8 @@ final class ProviderDomainGatingTests: XCTestCase {
                     sha256: "sha256:" + String(repeating: "d", count: 64)
                 ),
                 componentSelectionSequence: 4,
+                managedPythonRuntime: managedPythonTestRuntime,
+                productVirtualEnvironments: managedPythonTestVenvs,
                 providerRequirements: [
                     ProviderRequirement(provider: .codex, isRequired: true),
                     ProviderRequirement(provider: .codex, isRequired: false),
@@ -371,6 +373,8 @@ final class ProviderDomainGatingTests: XCTestCase {
                 sha256: "sha256:" + String(repeating: "d", count: 64)
             ),
             componentSelectionSequence: 4,
+            managedPythonRuntime: managedPythonTestRuntime,
+            productVirtualEnvironments: managedPythonTestVenvs,
             providerRequirements: requirements
         )
     }

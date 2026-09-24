@@ -92,6 +92,7 @@ struct ManagedVerifiedCompositionSessionPreparer: VerifiedCompositionSessionPrep
             selectedEntry: entry,
             compositionCatalogIdentity: admission.catalog.identity,
             componentCombinationCatalogIdentity: index.identity,
+            approvedPythonRuntimeIdentity: admission.catalog.approvedPythonRuntimeIdentity,
             currentInstaller: currentInstaller,
             selectedDeployment: deployment
         ) {

@@ -1181,6 +1181,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
                 sha256: "sha256:" + String(repeating: "d", count: 64)
             ),
             componentSelectionSequence: 40,
+            managedPythonRuntime: managedPythonTestRuntime,
+            productVirtualEnvironments: managedPythonTestVenvs,
             providerRequirements: [
                 ProviderRequirement(
                     provider: .codex,

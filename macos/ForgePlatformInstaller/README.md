@@ -127,13 +127,16 @@ descriptor verifier; it does not fetch a feed, authorize an update, stage
 bytes, or grant product authority. Source builds carry no provenance resource
 and remain fail-closed.
 
-The default coordinator fails closed. A separate platform-neutral source
-executor now durably coordinates exact managed-Python downloads, archive
+The default product coordinator fails closed. The native verified session now
+retains the complete managed-Python identity and exact per-component venv
+bindings after recomputing the runtime commitment and matching it to the signed
+outer catalog. A separate platform-neutral source executor durably coordinates
+exact managed-Python downloads, archive
 inspection, immutable runtime slots, isolated product venvs, activation,
 interruption resume and exact-identity rollback through injected interfaces.
-It is not wired to this native package and ships no transport, archive inspector
-or privileged mutation adapter. The native signed-catalog verifier now
-requires and returns one exact approved managed-Python identity; the Python
+It is not wired to the native mutation route and ships no runtime transport,
+archive inspector or privileged mutation adapter. The native signed-catalog
+verifier requires and returns one exact approved managed-Python identity; the Python
 policy kernel verifies the complete version, thin arm64 macOS artifact,
 source/build provenance, ABI/tag, minimum macOS and policy-revision material,
 requires every product's build/test evidence to name that identity, assigns
