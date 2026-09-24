@@ -427,6 +427,11 @@ private actor ArchiveInspectionStaging: ManagedPythonRuntimeAssetStaging {
         self.failure = failure
     }
 
+    func reconcileUnrecordedStagingOperations()
+        async -> Result<Void, ManagedPythonRuntimeStagingFailure> {
+        .success(())
+    }
+
     func stageAssets(
         operationID: String,
         runtime: ManagedPythonRuntimeIdentity

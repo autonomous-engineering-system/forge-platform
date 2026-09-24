@@ -379,6 +379,11 @@ private actor RuntimeSlotStaging: ManagedPythonRuntimeAssetStaging {
         self.corruptAtRead = corruptAtRead
     }
 
+    func reconcileUnrecordedStagingOperations()
+        async -> Result<Void, ManagedPythonRuntimeStagingFailure> {
+        .success(())
+    }
+
     func stageAssets(
         operationID: String,
         runtime: ManagedPythonRuntimeIdentity

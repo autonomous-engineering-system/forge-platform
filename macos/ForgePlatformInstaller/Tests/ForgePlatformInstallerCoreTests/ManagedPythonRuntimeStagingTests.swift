@@ -243,6 +243,104 @@ final class ManagedPythonRuntimeStagingTests: XCTestCase {
         }
     }
 
+    func testReconcilesEmptyPartialAndCompleteUnrecordedOperations() async throws {
+        let fixture = try RuntimeTransportFixture()
+        for retainedFiles in [0, 1, ManagedPythonRuntimeAssetKind.allCases.count] {
+            let root = try stagingTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let staging = MacOSManagedPythonRuntimeAssetStaging(
+                stateRoot: root,
+                fetcher: StagingFetcher(fixture: fixture)
+            )
+            _ = try stagingSuccess(await staging.stageAssets(
+                operationID: "operation-orphan-\(retainedFiles)",
+                runtime: fixture.runtime
+            ))
+            let operation = try stagingOperationDirectory(root)
+            for kind in ManagedPythonRuntimeAssetKind.allCases.dropFirst(retainedFiles) {
+                try FileManager.default.removeItem(
+                    at: operation.appendingPathComponent(stagingFileName(kind))
+                )
+            }
+
+            try stagingVoidSuccess(await staging.reconcileUnrecordedStagingOperations())
+            try stagingVoidSuccess(await staging.reconcileUnrecordedStagingOperations())
+
+            XCTAssertTrue(try stagingOperationDirectories(root).isEmpty)
+        }
+    }
+
+    func testOrphanReconciliationRejectsUnknownEntriesAndDirectoryNames() async throws {
+        let fixture = try RuntimeTransportFixture()
+        let root = try stagingTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let staging = MacOSManagedPythonRuntimeAssetStaging(
+            stateRoot: root,
+            fetcher: StagingFetcher(fixture: fixture)
+        )
+        _ = try stagingSuccess(await staging.stageAssets(
+            operationID: "operation-orphan-unknown",
+            runtime: fixture.runtime
+        ))
+        let operation = try stagingOperationDirectory(root)
+        try Data("unexpected".utf8).write(to: operation.appendingPathComponent("unexpected"))
+        try stagingSetMode(operation.appendingPathComponent("unexpected"), mode_t(0o600))
+
+        let unknownEntryResult = await staging.reconcileUnrecordedStagingOperations()
+        XCTAssertEqual(stagingFailure(unknownEntryResult), .rejected)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: operation.path))
+
+        try FileManager.default.removeItem(at: root)
+        let secondRoot = try stagingTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: secondRoot) }
+        let second = MacOSManagedPythonRuntimeAssetStaging(
+            stateRoot: secondRoot,
+            fetcher: StagingFetcher(fixture: fixture)
+        )
+        _ = try stagingSuccess(await second.stageAssets(
+            operationID: "operation-orphan-name",
+            runtime: fixture.runtime
+        ))
+        let stagingRoot = secondRoot.appendingPathComponent(
+            MacOSManagedPythonRuntimeAssetStaging.stagingDirectoryName,
+            isDirectory: true
+        )
+        try stagingMakePrivateDirectory(stagingRoot.appendingPathComponent("unknown-operation"))
+        let unknownNameResult = await second.reconcileUnrecordedStagingOperations()
+        XCTAssertEqual(stagingFailure(unknownNameResult), .rejected)
+    }
+
+    func testOrphanReconciliationRejectsSymlinkAndHardlinkDrift() async throws {
+        let fixture = try RuntimeTransportFixture()
+        for hardLink in [false, true] {
+            let root = try stagingTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let staging = MacOSManagedPythonRuntimeAssetStaging(
+                stateRoot: root,
+                fetcher: StagingFetcher(fixture: fixture)
+            )
+            _ = try stagingSuccess(await staging.stageAssets(
+                operationID: hardLink ? "operation-orphan-hardlink" : "operation-orphan-symlink",
+                runtime: fixture.runtime
+            ))
+            let operation = try stagingOperationDirectory(root)
+            let asset = operation.appendingPathComponent(stagingFileName(.runtimeArchive))
+            try FileManager.default.removeItem(at: asset)
+            let target = root.appendingPathComponent("target")
+            try fixture.body(for: .runtimeArchive).write(to: target)
+            try stagingSetMode(target, mode_t(0o600))
+            if hardLink {
+                XCTAssertEqual(Darwin.link(target.path, asset.path), 0)
+            } else {
+                try FileManager.default.createSymbolicLink(at: asset, withDestinationURL: target)
+            }
+
+            let driftResult = await staging.reconcileUnrecordedStagingOperations()
+            XCTAssertEqual(stagingFailure(driftResult), .rejected)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: operation.path))
+        }
+    }
+
     func testTypedModelsRejectUnboundOrMalformedValues() throws {
         XCTAssertThrowsError(try ManagedPythonStagedFileIdentity(
             volumeReference: "",
