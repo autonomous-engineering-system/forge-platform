@@ -15,6 +15,7 @@ from forge_platform.engineering_platform_system_adapter import (
     EngineeringPlatformAdapterError,
     EngineeringPlatformSystemProvisionerAdapter,
     ProductCommandResult,
+    SubprocessProductCommandRunner,
 )
 
 
@@ -224,6 +225,61 @@ class EPSystemAdapterTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(EngineeringPlatformAdapterError, "product_request"):
             self.adapter.execute(extended)
+
+    def test_invalid_target_adapter_paths_and_request_role_fail_closed(self) -> None:
+        for arguments in (
+            ("", "Production", "_ep_prod", 8876),
+            ("ep-prod", "Production", "_ep_prod", 0),
+        ):
+            with self.subTest(arguments=arguments):
+                with self.assertRaises(ValueError):
+                    EPSystemInstanceTarget(*arguments)
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            EngineeringPlatformSystemProvisionerAdapter(
+                provisioner_executable=Path("relative-provisioner"),
+                product_root=Path("relative-product-root"),
+                target=self.adapter.target,
+                staged_artifacts={},
+                runner=self.runner,
+            )
+        with self.assertRaisesRegex(EngineeringPlatformAdapterError, "component operation request"):
+            self.adapter.execute(object())
+        wrong_role = ComponentOperationRequest(
+            "operation-0004", "engineering-platform-server", "repair", ARTIFACT,
+            "ep-prod", "client", {},
+        )
+        with self.assertRaisesRegex(EngineeringPlatformAdapterError, "EP Server role"):
+            self.adapter.execute(wrong_role)
+
+    def test_subprocess_runner_and_invalid_product_evidence_fail_closed(self) -> None:
+        command_runner = SubprocessProductCommandRunner()
+        for argv in ((), ("relative-provisioner",)):
+            with self.subTest(argv=argv):
+                with self.assertRaisesRegex(EngineeringPlatformAdapterError, "absolute"):
+                    command_runner.run(argv)
+
+        class InvalidEvidenceRunner:
+            def __init__(self, result: ProductCommandResult) -> None:
+                self.result = result
+
+            def run(self, _argv):
+                return self.result
+
+        for result, message in (
+            (ProductCommandResult(0, "not-json", ""), "non-JSON"),
+            (ProductCommandResult(0, "{}", ""), "contract mismatch"),
+            (ProductCommandResult(1, "", '{"contract":"engineering-platform.system-provisioner/v1"}'), "rejected"),
+        ):
+            with self.subTest(message=message):
+                adapter = EngineeringPlatformSystemProvisionerAdapter(
+                    provisioner_executable=self.adapter.provisioner_executable,
+                    product_root=self.adapter.product_root,
+                    target=self.adapter.target,
+                    staged_artifacts=self.adapter.staged_artifacts,
+                    runner=InvalidEvidenceRunner(result),
+                )
+                with self.assertRaisesRegex(EngineeringPlatformAdapterError, message):
+                    adapter.execute(request("repair"))
 
 
 if __name__ == "__main__":
