@@ -1,8 +1,11 @@
 # Managed Python runtime execution contract
 
-**Status:** source-level executor kernel implemented. No production runtime
-artifact, native privileged helper, released installer wiring, or live machine
-installation is approved by this increment.
+**Status:** source-level executor kernel and native immutable session projection
+implemented. The native projection recomputes the complete runtime identity,
+binds it to the signed outer-catalog approval, and retains one exact venv
+identity per selected component. No production runtime artifact, native
+transport/archive inspector, privileged helper, released mutation wiring, or
+live machine installation is approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -109,6 +112,8 @@ fingerprint.
 
 The executor does not verify an outer catalog, select a composition, install a
 product, modify product data or services, publish artifacts, store credentials,
-or authorize cleanup. Native transport, archive inspection, privileged
-mutation wiring and an actual protected arm64 runtime publication remain
-required before operational installation can be claimed.
+or authorize cleanup. The native session layer verifies the exact nested
+runtime commitment and venv bindings after catalog and manifest admission, but
+does not download or execute them. Native transport, archive inspection,
+privileged mutation wiring and an actual protected arm64 runtime publication
+remain required before operational installation can be claimed.

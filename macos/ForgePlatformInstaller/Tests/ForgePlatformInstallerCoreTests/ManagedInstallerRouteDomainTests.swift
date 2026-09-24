@@ -262,6 +262,8 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
                 sha256: "sha256:" + String(repeating: "d", count: 64)
             ),
             componentSelectionSequence: 4,
+            managedPythonRuntime: managedPythonTestRuntime,
+            productVirtualEnvironments: managedPythonTestVenvs,
             providerRequirements: []
         )
     }

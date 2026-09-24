@@ -395,6 +395,7 @@ public enum VerifiedCompositionSessionPlanError: Error, Equatable, Sendable {
     case invalidComponentSelectionSequence
     case conflatedCatalogIdentities
     case duplicateProviderRequirement
+    case invalidProductVirtualEnvironments
 }
 
 /// The result of a trusted composition/session selector.  A future selector
@@ -439,6 +440,8 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
     /// The exact selected-entry sequence from the component-combination index.
     /// It is not a product version or a wheel timestamp.
     public let componentSelectionSequence: UInt64
+    public let managedPythonRuntime: ManagedPythonRuntimeIdentity
+    public let productVirtualEnvironments: [ManagedProductVirtualEnvironmentIdentity]
     public let providerRequirements: [ProviderRequirement]
 
     /// Compatibility projections used only by the current display shell. They
@@ -458,6 +461,8 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         compositionCatalog: VerifiedCompositionCatalogIdentity,
         componentCombinationCatalog: VerifiedCompositionCatalogIdentity,
         componentSelectionSequence: UInt64,
+        managedPythonRuntime: ManagedPythonRuntimeIdentity,
+        productVirtualEnvironments: [ManagedProductVirtualEnvironmentIdentity],
         providerRequirements: [ProviderRequirement]
     ) throws {
         guard Self.isSafeSessionID(sessionID) else {
@@ -487,6 +492,16 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         guard Set(providerRequirements.map(\.id)).count == providerRequirements.count else {
             throw VerifiedCompositionSessionPlanError.duplicateProviderRequirement
         }
+        guard !productVirtualEnvironments.isEmpty,
+              Set(productVirtualEnvironments.map(\.componentIdentity)).count
+                == productVirtualEnvironments.count,
+              Set(productVirtualEnvironments.map(\.venvIdentity)).count
+                == productVirtualEnvironments.count,
+              productVirtualEnvironments.allSatisfy({
+                $0.pythonRuntimeIdentitySHA256 == managedPythonRuntime.identitySHA256
+              }) else {
+            throw VerifiedCompositionSessionPlanError.invalidProductVirtualEnvironments
+        }
         self.sessionID = sessionID
         self.compositionIdentity = compositionIdentity
         self.manifestSHA256 = manifestSHA256
@@ -497,6 +512,10 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         self.compositionCatalog = compositionCatalog
         self.componentCombinationCatalog = componentCombinationCatalog
         self.componentSelectionSequence = componentSelectionSequence
+        self.managedPythonRuntime = managedPythonRuntime
+        self.productVirtualEnvironments = productVirtualEnvironments.sorted {
+            $0.componentIdentity < $1.componentIdentity
+        }
         self.providerRequirements = providerRequirements
     }
 

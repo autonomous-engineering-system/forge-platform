@@ -23,6 +23,7 @@ struct ManagedCompositionSessionPlanBuilder {
         selectedEntry: VerifiedComponentCombinationCatalogEntry,
         compositionCatalogIdentity: VerifiedCompositionCatalogIdentity,
         componentCombinationCatalogIdentity: VerifiedCompositionCatalogIdentity,
+        approvedPythonRuntimeIdentity: String,
         currentInstaller: CurrentVerifiedInstallerCompositionContext,
         selectedDeployment: ManagedDeploymentTarget
     ) -> Result<VerifiedCompositionSessionPlan, ManagedCompositionSessionPlanFailure> {
@@ -56,6 +57,15 @@ struct ManagedCompositionSessionPlanBuilder {
             guard componentIdentities == selectedEntry.componentIdentities else {
                 throw ManagedCompositionSessionPlanFailure.rejected
             }
+            let managedPythonRuntime = try Self.managedPythonRuntime(fields["python_runtime"])
+            guard managedPythonRuntime.identitySHA256 == approvedPythonRuntimeIdentity else {
+                throw ManagedCompositionSessionPlanFailure.rejected
+            }
+            let productVirtualEnvironments = try Self.productVirtualEnvironments(
+                fields["product_venvs"],
+                componentIdentities: componentIdentities,
+                runtimeIdentity: managedPythonRuntime.identitySHA256
+            )
             let requirements = try providerValues.map {
                 try Self.providerRequirement($0, schema: schema)
             }
@@ -76,6 +86,8 @@ struct ManagedCompositionSessionPlanBuilder {
                 compositionCatalog: compositionCatalogIdentity,
                 componentCombinationCatalog: componentCombinationCatalogIdentity,
                 componentSelectionSequence: selectedEntry.selectionSequence,
+                managedPythonRuntime: managedPythonRuntime,
+                productVirtualEnvironments: productVirtualEnvironments,
                 providerRequirements: requirements
             )
             guard currentInstaller.accepts(plan) else {
@@ -85,6 +97,94 @@ struct ManagedCompositionSessionPlanBuilder {
         } catch {
             return .failure(.rejected)
         }
+    }
+
+    private static func managedPythonRuntime(
+        _ value: StrictJSONResourceValue?
+    ) throws -> ManagedPythonRuntimeIdentity {
+        let names: Set<String> = [
+            "schema", "implementation", "version", "operating_system", "architecture",
+            "minimum_macos_version", "build_variant", "python_tag", "abi_tag",
+            "platform_tag", "artifact_kind", "managed_root_identity", "artifact", "source",
+            "source_provenance", "build_provenance", "policy_revision", "identity_digest",
+        ]
+        guard let fields = value?.objectValue,
+              Set(fields.keys) == names,
+              fields["schema"]?.stringValue == ManagedPythonRuntimeIdentity.schema,
+              fields["implementation"]?.stringValue == ManagedPythonRuntimeIdentity.implementation,
+              fields["operating_system"]?.stringValue == ManagedPythonRuntimeIdentity.operatingSystem,
+              fields["architecture"]?.stringValue == ManagedPythonRuntimeIdentity.architecture,
+              fields["build_variant"]?.stringValue == ManagedPythonRuntimeIdentity.buildVariant,
+              fields["platform_tag"]?.stringValue == ManagedPythonRuntimeIdentity.platformTag,
+              fields["artifact_kind"]?.stringValue == ManagedPythonRuntimeIdentity.artifactKind,
+              fields["managed_root_identity"]?.stringValue == ManagedPythonRuntimeIdentity.managedRootIdentity,
+              let versionRaw = fields["version"]?.stringValue,
+              let version = try? InstallerVersion(versionRaw),
+              let minimumRaw = fields["minimum_macos_version"]?.stringValue,
+              let minimumVersion = try? InstallerVersion(minimumRaw),
+              let pythonTag = fields["python_tag"]?.stringValue,
+              let abiTag = fields["abi_tag"]?.stringValue,
+              let policyRevision = fields["policy_revision"]?.stringValue,
+              let identitySHA256 = fields["identity_digest"]?.stringValue else {
+            throw ManagedCompositionSessionPlanFailure.rejected
+        }
+        return try ManagedPythonRuntimeIdentity(
+            version: version,
+            minimumMacOSVersion: minimumVersion,
+            pythonTag: pythonTag,
+            abiTag: abiTag,
+            artifact: try downloadIdentity(fields["artifact"]),
+            source: try downloadIdentity(fields["source"]),
+            sourceProvenance: try downloadIdentity(fields["source_provenance"]),
+            buildProvenance: try downloadIdentity(fields["build_provenance"]),
+            policyRevision: policyRevision,
+            identitySHA256: identitySHA256
+        )
+    }
+
+    private static func downloadIdentity(
+        _ value: StrictJSONResourceValue?
+    ) throws -> ManagedPythonDownloadIdentity {
+        guard let fields = value?.objectValue,
+              Set(fields.keys) == Set(["url", "digest"]),
+              let url = fields["url"]?.stringValue,
+              let digest = fields["digest"]?.stringValue else {
+            throw ManagedCompositionSessionPlanFailure.rejected
+        }
+        return try ManagedPythonDownloadIdentity(url: url, sha256: digest)
+    }
+
+    private static func productVirtualEnvironments(
+        _ value: StrictJSONResourceValue?,
+        componentIdentities: Set<String>,
+        runtimeIdentity: String
+    ) throws -> [ManagedProductVirtualEnvironmentIdentity] {
+        guard let values = value?.arrayValue, !values.isEmpty else {
+            throw ManagedCompositionSessionPlanFailure.rejected
+        }
+        let identities = try values.map { item -> ManagedProductVirtualEnvironmentIdentity in
+            guard let fields = item.objectValue,
+                  Set(fields.keys) == Set([
+                    "component_identity", "venv_identity", "python_runtime_identity",
+                  ]),
+                  let component = fields["component_identity"]?.stringValue,
+                  let venv = fields["venv_identity"]?.stringValue,
+                  let runtime = fields["python_runtime_identity"]?.stringValue else {
+                throw ManagedCompositionSessionPlanFailure.rejected
+            }
+            return try ManagedProductVirtualEnvironmentIdentity(
+                componentIdentity: component,
+                venvIdentity: venv,
+                pythonRuntimeIdentitySHA256: runtime
+            )
+        }
+        guard Set(identities.map(\.componentIdentity)) == componentIdentities,
+              Set(identities.map(\.componentIdentity)).count == identities.count,
+              Set(identities.map(\.venvIdentity)).count == identities.count,
+              identities.allSatisfy({ $0.pythonRuntimeIdentitySHA256 == runtimeIdentity }) else {
+            throw ManagedCompositionSessionPlanFailure.rejected
+        }
+        return identities
     }
 
     private static func matchesInstallerRequirement(

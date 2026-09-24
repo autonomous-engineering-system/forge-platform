@@ -22,6 +22,8 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
         XCTAssertEqual(plan.compositionCatalog, fixture.outerCatalog.identity)
         XCTAssertEqual(plan.componentCombinationCatalog.sequence, 20)
         XCTAssertEqual(plan.componentSelectionSequence, 7)
+        XCTAssertEqual(plan.managedPythonRuntime, managedPythonTestRuntime)
+        XCTAssertEqual(plan.productVirtualEnvironments, managedPythonTestVenvs)
         XCTAssertTrue(plan.providerRequirements.isEmpty)
         XCTAssertTrue(plan.sessionID.hasPrefix("session-"))
         XCTAssertEqual(plan.sessionID.count, 72)
@@ -210,7 +212,7 @@ private final class Fixture: @unchecked Sendable {
             channel: .stable,
             publishedAt: verifiedAt.addingTimeInterval(-60),
             expiresAt: verifiedAt.addingTimeInterval(3600),
-            approvedPythonRuntimeIdentity: "sha256:" + String(repeating: "9", count: 64),
+            approvedPythonRuntimeIdentity: managedPythonTestRuntime.identitySHA256,
             entries: [],
             componentCombinationCatalog: indexLocation,
             candidateAcceptance: catalogAcceptance
@@ -332,8 +334,50 @@ private final class Fixture: @unchecked Sendable {
                 ],
                 "host_requirements": [:],
                 "managed_tools": [],
-                "python_runtime": [:],
-                "product_venvs": [],
+                "python_runtime": [
+                    "schema": ManagedPythonRuntimeIdentity.schema,
+                    "implementation": ManagedPythonRuntimeIdentity.implementation,
+                    "version": "3.14.7",
+                    "operating_system": ManagedPythonRuntimeIdentity.operatingSystem,
+                    "architecture": ManagedPythonRuntimeIdentity.architecture,
+                    "minimum_macos_version": "26.0.0",
+                    "build_variant": ManagedPythonRuntimeIdentity.buildVariant,
+                    "python_tag": "cp314",
+                    "abi_tag": "cp314",
+                    "platform_tag": ManagedPythonRuntimeIdentity.platformTag,
+                    "artifact_kind": ManagedPythonRuntimeIdentity.artifactKind,
+                    "managed_root_identity": ManagedPythonRuntimeIdentity.managedRootIdentity,
+                    "artifact": [
+                        "url": managedPythonTestRuntime.artifact.url,
+                        "digest": managedPythonTestRuntime.artifact.sha256,
+                    ],
+                    "source": [
+                        "url": managedPythonTestRuntime.source.url,
+                        "digest": managedPythonTestRuntime.source.sha256,
+                    ],
+                    "source_provenance": [
+                        "url": managedPythonTestRuntime.sourceProvenance.url,
+                        "digest": managedPythonTestRuntime.sourceProvenance.sha256,
+                    ],
+                    "build_provenance": [
+                        "url": managedPythonTestRuntime.buildProvenance.url,
+                        "digest": managedPythonTestRuntime.buildProvenance.sha256,
+                    ],
+                    "policy_revision": managedPythonTestRuntime.policyRevision,
+                    "identity_digest": managedPythonTestRuntime.identitySHA256,
+                ],
+                "product_venvs": [
+                    [
+                        "component_identity": "forge-runtime",
+                        "venv_identity": "forge-test-v1",
+                        "python_runtime_identity": managedPythonTestRuntime.identitySHA256,
+                    ],
+                    [
+                        "component_identity": "engineering-platform-server",
+                        "venv_identity": "ep-test-v1",
+                        "python_runtime_identity": managedPythonTestRuntime.identitySHA256,
+                    ],
+                ],
                 "providers": [],
                 "components": components,
                 "upgrade_from": [],
