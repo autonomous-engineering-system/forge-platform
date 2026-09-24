@@ -90,7 +90,8 @@ jobs:
         working-directory: macos/ForgePlatformInstaller
         run: |
           set -euo pipefail
-          coverage_path="$(swift test --show-codecov-path)"
+          coverage_path="$RUNNER_TEMP/forge-platform-macmini-swift-coverage.json"
+          ../../scripts/export_managed_installer_swift_coverage.sh "$coverage_path"
           python3 ../../scripts/check_managed_installer_swift_coverage.py "$coverage_path" --minimum 80.2 --base-ref "$COVERAGE_BASE_SHA"
       - name: Build unsigned GUI and CLI candidates
         working-directory: macos/ForgePlatformInstaller
@@ -108,6 +109,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: forge-platform-macmini-ui-${{ github.sha }}
-          path: ${{ runner.temp }}/forge-platform-ui-screenshots
+          path: |
+            ${{ runner.temp }}/forge-platform-ui-screenshots
+            ${{ runner.temp }}/forge-platform-macmini-swift-coverage.json
           if-no-files-found: error
           retention-days: 14

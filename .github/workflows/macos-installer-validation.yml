@@ -67,9 +67,8 @@ jobs:
         working-directory: macos/ForgePlatformInstaller
         run: |
           set -euo pipefail
-          coverage_path="$(swift test --show-codecov-path)"
-          test -n "$coverage_path"
-          cp "$coverage_path" "$RUNNER_TEMP/forge-platform-native-evidence/swift-coverage.json"
+          coverage_path="$RUNNER_TEMP/forge-platform-native-evidence/swift-coverage.json"
+          ../../scripts/export_managed_installer_swift_coverage.sh "$coverage_path"
           python3 ../../scripts/check_managed_installer_swift_coverage.py "$coverage_path" \
             --minimum 80.2 --base-ref "$COVERAGE_BASE_SHA"
       - name: Upload exact source and measured coverage evidence
