@@ -24,6 +24,31 @@ public struct ManagedPythonRuntimeParentJournalRecord: Codable, Equatable, Senda
     public let managedToolsEvidence: ManagedPythonInstallerJournalEvidence?
 
     public init(
+        plan: ManagedPythonRuntimeActivationPlan,
+        stablePlanFingerprint: String,
+        requiresManagedToolReconciliation: Bool
+    ) throws {
+        guard plan.action == .noChange || requiresManagedToolReconciliation else {
+            throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+        }
+        try self.init(
+            operationID: plan.operationID,
+            sessionID: plan.sessionID,
+            deploymentID: plan.deploymentID,
+            stablePlanFingerprint: stablePlanFingerprint,
+            requestFingerprint: plan.executionRequestFingerprint,
+            requiresManagedToolReconciliation: requiresManagedToolReconciliation,
+            compositionIdentity: plan.compositionIdentity,
+            manifestSHA256: plan.manifestSHA256,
+            runtimeIdentitySHA256: plan.runtimeIdentitySHA256,
+            rollbackRuntimeIdentitySHA256: plan.rollbackRuntimeIdentitySHA256,
+            productVirtualEnvironments: plan.productVirtualEnvironments,
+            state: .planned,
+            managedToolsEvidence: nil
+        )
+    }
+
+    public init(
         request: ManagedPythonRuntimeActivationRequest,
         stablePlanFingerprint: String,
         requiresManagedToolReconciliation: Bool

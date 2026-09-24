@@ -1,6 +1,6 @@
 # Universal macOS Installer contract
 
-**Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a durable platform-neutral managed-Python executor kernel with an atomic terminal-receipt-to-installer-journal bridge, a native wizard shell, an internal read-only C-3a catalog-admission coordinator that composes sealed trust, exact transport, independently injected time evidence and a read-only anti-replay anchor, a native source-level exact component-combination selector for the digest-pinned index, credential-free native transport plus private no-follow staging/readback for the four exact managed-Python identity assets, a read-only native archive/Mach-O inspector, a closed source-level runtime-slot mutation coordinator behind an injected privilege seam, a cleanup-enforcing preparation coordinator with a host-wide nonblocking operation lease, private atomic pending-record, cleanup-only restart integration and descriptor-safe acquisition-orphan reconciliation, separately locked native coordination for exact product-venv readiness, activation, rollback retention, final readback, durable private `READY`-receipt recovery, platform-neutral `COMPLETE`-receipt handoff and exact typed `TOOLS_VERIFIED` evidence projection, and a private atomic/idempotent active parent-journal store behind the admission bridge. No independently reviewed production time-evidence adapter, concrete privileged helper, production post-tool readback adapters, released parent-journal seeding, released executor-journal wiring, composition-session producer, product provisioner adapter, published production runtime, released mutation wiring, or production deployment is certified.
+**Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a durable platform-neutral managed-Python executor kernel with an atomic terminal-receipt-to-installer-journal bridge, a native wizard shell, an internal read-only C-3a catalog-admission coordinator that composes sealed trust, exact transport, independently injected time evidence and a read-only anti-replay anchor, a native source-level exact component-combination selector for the digest-pinned index, credential-free native transport plus private no-follow staging/readback for the four exact managed-Python identity assets, a read-only native archive/Mach-O inspector, a closed source-level runtime-slot mutation coordinator behind an injected privilege seam, a cleanup-enforcing preparation coordinator with a host-wide nonblocking operation lease, private atomic pending-record, cleanup-only restart integration and descriptor-safe acquisition-orphan reconciliation, separately locked native coordination for exact product-venv readiness, activation, rollback retention, final readback, durable private `READY`-receipt recovery, platform-neutral `COMPLETE`-receipt handoff and exact typed `TOOLS_VERIFIED` evidence projection, a private atomic/idempotent active parent-journal store behind the admission bridge, and a source-level exact `PLANNED` journal seeder with durable readback. No independently reviewed production time-evidence adapter, concrete privileged helper, production post-tool readback adapters, released executor-journal wiring, composition-session producer, product provisioner adapter, published production runtime, released mutation wiring, or production deployment is certified.
 
 This contract implements [ADR-0004](adr/ADR-0004-universal-installer-artifact-composition.md) and [ADR-0006](adr/ADR-0006-server-deployment-and-discovery.md). It is not a second EP, Forge, or Workspace installation engine.
 
@@ -706,8 +706,12 @@ under the host-wide lease and an injected idempotent bridge durably accepts that
 terminal receipt. A native file-backed store now persists one exact active
 `PLANNED` record and atomically/idempotently advances it to `MANAGED_TOOLS`
 under a private validated lock. The concrete source-level fresh replanner is
-implemented; production readback adapters, released journal seeding and
-released wiring remain unimplemented.
+implemented. The parent-journal seeder rebinds the exact session, deployment,
+pre-mutation activation plan and original managed-tool actions, derives
+reconciliation, and requires an identical durable `PLANNED` readback before
+runtime preparation. The later activation request binds that plan to the exact
+`READY` preparation receipt. Production readback adapters
+and released wiring remain unimplemented.
 
 The native parent-journal admission adapter now requires a fresh qualification
 bound to the original stable-plan fingerprint, exact runtime, rollback and
@@ -715,8 +719,7 @@ ordered venv identities, all-`NO_CHANGE` managed-tool state and explicit
 product-dispatch readiness before it projects evidence to the atomic journal
 seam. The session parser retains the exact managed Git requirement and the
 concrete replanner derives the fresh action and fingerprint itself. Production
-readback adapters, released journal seeding and released wiring remain
-unimplemented.
+readback adapters and released wiring remain unimplemented.
 
 The structural verifier reads V2 trust and V1 provenance resources directly
 from every supplied archive and binds their semantic identities to the durable

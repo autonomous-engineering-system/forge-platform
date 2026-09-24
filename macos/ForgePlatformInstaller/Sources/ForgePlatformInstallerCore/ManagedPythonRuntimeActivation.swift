@@ -78,7 +78,9 @@ public struct ManagedPythonRuntimeInstalledReadback: Equatable, Sendable {
     }
 }
 
-public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
+/// Immutable managed-Python execution intent that can be derived and durably
+/// journaled before acquisition, inspection or runtime-slot mutation begins.
+public struct ManagedPythonRuntimeActivationPlan: Equatable, Sendable {
     public enum Action: String, Equatable, Sendable {
         case install = "INSTALL"
         case upgrade = "UPGRADE"
@@ -91,19 +93,18 @@ public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
     public let compositionIdentity: String
     public let manifestSHA256: String
     public let runtimeIdentitySHA256: String
+    public let runtimeArchiveSHA256: String
     public let runtimeSlotIdentity: String
     public let action: Action
     public let rollbackRuntimeIdentitySHA256: String?
     public let requiredRetainedRuntimeIdentitySHA256s: [String]
     public let productVirtualEnvironments: [ManagedProductVirtualEnvironmentIdentity]
-    public let preparationReceipt: ManagedPythonRuntimePreparationReceipt
     public let initialReadback: ManagedPythonRuntimeInstalledReadback
     public let executionRequestFingerprint: String
 
     public init(
         session: VerifiedCompositionSessionPlan,
         deployment: ManagedDeploymentTarget,
-        preparationReceipt: ManagedPythonRuntimePreparationReceipt,
         initialReadback: ManagedPythonRuntimeInstalledReadback
     ) throws {
         let runtime = session.managedPythonRuntime
@@ -111,17 +112,7 @@ public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
             session: session,
             deployment: deployment
         )
-        guard preparationReceipt.sessionID == session.sessionID,
-              preparationReceipt.deploymentID == deployment.id,
-              preparationReceipt.operationID == operationID,
-              preparationReceipt.runtimeIdentitySHA256 == runtime.identitySHA256,
-              preparationReceipt.runtimeSlotIdentity
-                == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
-                    for: runtime.identitySHA256
-                ),
-              preparationReceipt.archiveSHA256 == runtime.artifact.sha256,
-              preparationReceipt.state == .ready,
-              !session.productVirtualEnvironments.isEmpty,
+        guard !session.productVirtualEnvironments.isEmpty,
               session.productVirtualEnvironments.allSatisfy({
                   $0.pythonRuntimeIdentitySHA256 == runtime.identitySHA256
               }) else {
@@ -150,14 +141,16 @@ public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
         compositionIdentity = session.compositionIdentity
         manifestSHA256 = session.manifestSHA256
         runtimeIdentitySHA256 = runtime.identitySHA256
-        runtimeSlotIdentity = preparationReceipt.runtimeSlotIdentity
+        runtimeArchiveSHA256 = runtime.artifact.sha256
+        runtimeSlotIdentity = ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+            for: runtime.identitySHA256
+        )
         self.action = action
         rollbackRuntimeIdentitySHA256 = rollback
         requiredRetainedRuntimeIdentitySHA256s = Array(Set(retained)).sorted()
         productVirtualEnvironments = session.productVirtualEnvironments.sorted {
             $0.componentIdentity < $1.componentIdentity
         }
-        self.preparationReceipt = preparationReceipt
         self.initialReadback = initialReadback
         executionRequestFingerprint = Self.fingerprint(
             operationID: operationID,
@@ -216,6 +209,70 @@ public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
         return SHA256.hash(data: StrictSignedJSON.canonicalPayload(from: material))
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+}
+
+public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
+    public typealias Action = ManagedPythonRuntimeActivationPlan.Action
+
+    public let sessionID: String
+    public let deploymentID: String
+    public let operationID: String
+    public let compositionIdentity: String
+    public let manifestSHA256: String
+    public let runtimeIdentitySHA256: String
+    public let runtimeSlotIdentity: String
+    public let action: Action
+    public let rollbackRuntimeIdentitySHA256: String?
+    public let requiredRetainedRuntimeIdentitySHA256s: [String]
+    public let productVirtualEnvironments: [ManagedProductVirtualEnvironmentIdentity]
+    public let preparationReceipt: ManagedPythonRuntimePreparationReceipt
+    public let initialReadback: ManagedPythonRuntimeInstalledReadback
+    public let executionRequestFingerprint: String
+
+    public init(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget,
+        preparationReceipt: ManagedPythonRuntimePreparationReceipt,
+        initialReadback: ManagedPythonRuntimeInstalledReadback
+    ) throws {
+        try self.init(
+            plan: ManagedPythonRuntimeActivationPlan(
+                session: session,
+                deployment: deployment,
+                initialReadback: initialReadback
+            ),
+            preparationReceipt: preparationReceipt
+        )
+    }
+
+    public init(
+        plan: ManagedPythonRuntimeActivationPlan,
+        preparationReceipt: ManagedPythonRuntimePreparationReceipt
+    ) throws {
+        guard preparationReceipt.sessionID == plan.sessionID,
+              preparationReceipt.deploymentID == plan.deploymentID,
+              preparationReceipt.operationID == plan.operationID,
+              preparationReceipt.runtimeIdentitySHA256 == plan.runtimeIdentitySHA256,
+              preparationReceipt.runtimeSlotIdentity == plan.runtimeSlotIdentity,
+              preparationReceipt.archiveSHA256 == plan.runtimeArchiveSHA256,
+              preparationReceipt.state == .ready else {
+            throw ManagedPythonRuntimeActivationFailure.invalidRequest
+        }
+        sessionID = plan.sessionID
+        deploymentID = plan.deploymentID
+        operationID = plan.operationID
+        compositionIdentity = plan.compositionIdentity
+        manifestSHA256 = plan.manifestSHA256
+        runtimeIdentitySHA256 = plan.runtimeIdentitySHA256
+        runtimeSlotIdentity = plan.runtimeSlotIdentity
+        action = plan.action
+        rollbackRuntimeIdentitySHA256 = plan.rollbackRuntimeIdentitySHA256
+        requiredRetainedRuntimeIdentitySHA256s = plan.requiredRetainedRuntimeIdentitySHA256s
+        productVirtualEnvironments = plan.productVirtualEnvironments
+        self.preparationReceipt = preparationReceipt
+        initialReadback = plan.initialReadback
+        executionRequestFingerprint = plan.executionRequestFingerprint
     }
 }
 
