@@ -73,6 +73,11 @@ identity and re-hashes the bytes against the signed download identity. Cleanup
 removes only the four fixed files and the exact descriptor-matched operation
 directory. The stager does not inspect or extract an archive, persist an
 executor journal receipt, choose a runtime slot, or authorize mutation.
+Cleanup is retry-safe for the same validated staged identity: an already absent
+operation or exact staged file is treated as removed, while changed files,
+symlinks, insecure directories and unknown residual entries still fail closed.
+This closes the crash window between deletion and durable pending-record
+clearance; the durable recovery record itself remains a later increment.
 
 The native archive inspector accepts only the exact staged asset set plus the
 admitted runtime identity. It re-reads all four assets through the staging

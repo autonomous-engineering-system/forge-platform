@@ -48,8 +48,31 @@ final class ManagedPythonRuntimeStagingTests: XCTestCase {
 
         try stagingVoidSuccess(await staging.discardStagedAssets(staged))
         XCTAssertFalse(FileManager.default.fileExists(atPath: operation.path))
+        try stagingVoidSuccess(await staging.discardStagedAssets(staged))
         let postDiscard = await staging.readStagedAsset(staged.assets[0], for: fixture.runtime)
         XCTAssertEqual(stagingFailure(postDiscard), .rejected)
+    }
+
+    func testCleanupResumesAfterOneExactStagedFileWasAlreadyRemoved() async throws {
+        let root = try stagingTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try RuntimeTransportFixture()
+        let staging = MacOSManagedPythonRuntimeAssetStaging(
+            stateRoot: root,
+            fetcher: StagingFetcher(fixture: fixture)
+        )
+        let staged = try stagingSuccess(await staging.stageAssets(
+            operationID: "operation-partial-cleanup",
+            runtime: fixture.runtime
+        ))
+        let operation = try stagingOperationDirectory(root)
+        try FileManager.default.removeItem(
+            at: operation.appendingPathComponent(stagingFileName(.sourceProvenance))
+        )
+
+        try stagingVoidSuccess(await staging.discardStagedAssets(staged))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: operation.path))
     }
 
     func testInvalidOperationAndInsecureRootsFailBeforeFetching() async throws {
