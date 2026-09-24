@@ -1,13 +1,14 @@
-# Installer release trust activation
+# Installer release trust
 
-The public trust resources
+The reviewed public trust resources
 `ForgePlatformInstallerReleaseTrust.json` and
-`ForgePlatformInstallerCompositionCatalogTrust.json` are intentionally absent while
-`../installer-release-identity.json` is `UNCONFIGURED`.
+`ForgePlatformInstallerCompositionCatalogTrust.json` bind the `READY` policy in
+`../installer-release-identity.json`.
 
-Add it only after live local-signer readiness proves the real Developer ID Team,
-bundle identity, and descriptor-signing public keys. The committed release resource must parse as
-`forge-platform.installer-release-trust/v2`; its canonical configuration
+They were activated only after live local-signer readiness proved the Developer
+ID Team, bundle identity, Apple notarization acceptance, stapling, Gatekeeper
+acceptance, and locally held descriptor and catalog public keys. The release
+resource parses as `forge-platform.installer-release-trust/v2`; its canonical configuration
 digest, repository, Team, bundle, key IDs and threshold must exactly match the
-reviewed `READY` identity. The catalog resource must bind that same release
-trust digest. Private keys never belong here.
+reviewed identity. The catalog resource binds that same release-trust digest
+but uses a separate Keychain service and key. Private keys never belong here.

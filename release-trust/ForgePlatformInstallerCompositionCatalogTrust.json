@@ -1,0 +1,12 @@
+{
+  "configuration_sha256": "2f9f2abd977843ca3ac9c1af35df7f1f551b0b702023791db3710d5a9c2e43f3",
+  "ed25519_public_keys": [
+    {
+      "key_id": "forge-platform-composition-catalog-2026-01",
+      "public_key_base64": "wV4z8X8pgHumEbTDQ5hBT6t9/yCKW1/2V9NHlj7NE38="
+    }
+  ],
+  "installer_release_trust_configuration_sha256": "77ac8c339abf6f2bc12144504fe7146ed0d89643bd384538500601bd2c4f207a",
+  "schema_version": 1,
+  "signature_threshold": 1
+}

@@ -1,0 +1,16 @@
+{
+  "configuration_sha256": "77ac8c339abf6f2bc12144504fe7146ed0d89643bd384538500601bd2c4f207a",
+  "ed25519_public_keys": [
+    {
+      "key_id": "forge-platform-installer-release-2026-01",
+      "public_key_base64": "4Rvuru6ZQR/NqW113W40aaIxhekHuBZQS1RbB0stRtY="
+    }
+  ],
+  "expected_bundle_identifier": "com.autonomous-engineering-system.forge-platform-installer",
+  "expected_team_identifier": "ZEML4LPXH4",
+  "release_descriptor_asset_name": "ForgePlatformInstallerReleaseDescriptor.json",
+  "release_descriptor_locator": "github-release-asset-v1",
+  "repository": "autonomous-engineering-system/forge-platform",
+  "schema_version": 2,
+  "signature_threshold": 1
+}

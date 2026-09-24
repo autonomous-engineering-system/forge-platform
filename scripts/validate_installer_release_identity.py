@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Validate the reviewed public identity required for installer publication.
 
-The repository deliberately starts ``UNCONFIGURED``: a source merge must not
+The repository deliberately started ``UNCONFIGURED``: a source merge must not
 silently choose an Apple Team, application bundle identifier, signing keys, or
 GitHub publication namespace.  ``--require-ready`` is used only by the actual
 installer release workflow and fails closed until those non-secret policy facts
-have been reviewed and committed.
+have been reviewed and committed. A ``READY`` identity also fails when either
+committed public trust resource does not match it exactly.
 """
 from __future__ import annotations
 
@@ -27,6 +28,12 @@ from forge_platform.installer_release_operation import (  # noqa: E402
     InstallerReleaseIdentity,
     InstallerReleaseOperationError,
 )
+from forge_platform.installer_release_trust import parse_installer_release_trust_bytes  # noqa: E402
+from forge_platform.composition_catalog_trust import parse_composition_catalog_trust_bytes  # noqa: E402
+
+
+RELEASE_TRUST_PATH = ROOT / "release-trust/ForgePlatformInstallerReleaseTrust.json"
+CATALOG_TRUST_PATH = ROOT / "release-trust/ForgePlatformInstallerCompositionCatalogTrust.json"
 
 
 def _pairs(pairs: list[tuple[object, object]]) -> dict[str, object]:
@@ -117,6 +124,31 @@ def _field(identity: InstallerReleaseIdentity, name: str) -> str:
         raise RuntimeError("requested installer release identity field is unsupported") from error
 
 
+def validate_ready_resources(
+    identity: InstallerReleaseIdentity,
+    *,
+    release_trust_path: Path = RELEASE_TRUST_PATH,
+    catalog_trust_path: Path = CATALOG_TRUST_PATH,
+) -> None:
+    try:
+        release = parse_installer_release_trust_bytes(release_trust_path.read_bytes())
+        catalog = parse_composition_catalog_trust_bytes(catalog_trust_path.read_bytes())
+    except (OSError, ValueError) as error:
+        raise RuntimeError("ready installer public trust resources are invalid") from error
+    if (
+        release.configuration_sha256 != identity.release_trust_configuration_sha256
+        or release.repository != identity.github_repository
+        or release.release_descriptor_asset_name != identity.release_descriptor_asset_name
+        or release.expected_bundle_identifier != identity.bundle_identifier
+        or release.expected_team_identifier != identity.team_identifier
+        or release.signature_key_ids != identity.signature_key_ids
+        or release.signature_threshold != identity.signature_threshold
+    ):
+        raise RuntimeError("ready installer release trust does not bind the reviewed identity")
+    if catalog.installer_release_trust_configuration_sha256 != release.configuration_sha256:
+        raise RuntimeError("ready composition catalog trust does not bind installer release trust")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--require-ready", action="store_true")
@@ -127,10 +159,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.field is not None:
             if identity is None:
                 raise RuntimeError("requested installer release identity field has no configured value")
+            validate_ready_resources(identity)
             print(_field(identity, args.field))
         elif identity is None:
             print("INSTALLER_RELEASE_IDENTITY=UNCONFIGURED publication=BLOCKED")
         else:
+            validate_ready_resources(identity)
             print(
                 "INSTALLER_RELEASE_IDENTITY=READY"
                 f" repository={identity.github_repository}"

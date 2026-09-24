@@ -1,6 +1,20 @@
 {
-  "identity": null,
+  "identity": {
+    "asset_prefix": "ForgePlatformInstaller-macos-",
+    "bundle_identifier": "com.autonomous-engineering-system.forge-platform-installer",
+    "github_repository": "autonomous-engineering-system/forge-platform",
+    "release_descriptor_asset_name": "ForgePlatformInstallerReleaseDescriptor.json",
+    "release_tag_prefix": "forge-platform-installer-v",
+    "release_trust_configuration_sha256": "77ac8c339abf6f2bc12144504fe7146ed0d89643bd384538500601bd2c4f207a",
+    "team_identifier": "ZEML4LPXH4"
+  },
   "schema": "forge-platform.installer-release-identity/v1",
-  "signing_key_policy": null,
-  "status": "UNCONFIGURED"
+  "signing_key_policy": {
+    "algorithm": "ed25519",
+    "key_ids": [
+      "forge-platform-installer-release-2026-01"
+    ],
+    "threshold": 1
+  },
+  "status": "READY"
 }

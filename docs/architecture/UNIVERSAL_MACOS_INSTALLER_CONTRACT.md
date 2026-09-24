@@ -47,19 +47,21 @@ An installer release reserves the distinct GitHub tag configured by its
 reviewed installer-release identity policy (normally a prefix followed by the
 installer version). The signed channel remains immutable descriptor metadata
 rather than a tag suffix, so stable and candidate work can never publish
-different bytes under one installer-version identity. The committed policy is
+different bytes under one installer-version identity. The committed policy was
 deliberately `UNCONFIGURED` until the actual GitHub namespace, application
 bundle identifier, Apple Team identifier and public descriptor-key threshold
-are approved. An unconfigured policy blocks the release workflow; no source
+were approved with live host evidence. An unconfigured policy blocks the release workflow; no source
 literal or test fixture is an implicit production identity.
 
 ## Sealed installer release-trust resource V2
 
-A released native installer may carry exactly one code-signed public resource,
+A released native installer carries exactly one code-signed public resource,
 `ForgePlatformInstallerReleaseTrust.json`, that defines the future GitHub
-Release bootstrap trust policy. This is a format contract only: this repository
-commits no production resource, repository, bundle identity, Team identifier,
-or signing key. A source build without the resource remains fail-closed.
+Release bootstrap trust policy. The repository commits the reviewed public
+resource, repository, bundle identity, Team identifier, and public signing key
+only after live signer and Apple-notarization readiness. A source build without
+the resource remains fail-closed. Private signing keys remain only in the local
+signer account Keychain.
 
 The strict JSON object has exactly these fields:
 
@@ -349,8 +351,10 @@ unknown key IDs, and fewer than the reviewed threshold all fail before a
 cryptographic verifier runs. Key IDs are public routing identities, not public
 key material or credentials. The protected verifier resolves each ID through
 its independently protected trust root and must verify every counted signature
-under that exact policy. The current source identity remains `UNCONFIGURED`,
-so it contains no production key IDs or public keys and cannot publish.
+under that exact policy. The reviewed source identity is `READY` and names one
+descriptor-signing key. Its public key is committed in the sealed V2 trust
+resource; the private key remains in the dedicated local signer Keychain and is
+unavailable to Actions.
 
 The catalog is a deliberately separate signed, expiring, monotonic feed. It contains immutable composition URLs/SHA-256 values and their installer requirements. Before any selection, the installer requires fresh feed-readback and trusted-clock evidence, verifies the catalog signature, channel, validity interval and locally retained highest accepted sequence/digest, then verifies each manifest against the selected catalog-entry digest. A lower sequence, or different bytes under an already accepted sequence, fails closed. This is what lets one compatible installer discover a later Forge/EP/Workspace composition without needlessly replacing its binary; a composition requiring an unavailable capability still requires a newer installer first. An unavailable, expired, unsigned, stale, architecture-incompatible, or unverifiable feed blocks platform mutation. An explicit offline bundle is allowed only when installer and catalog evidence were verified in advance under the same policy and still satisfy freshness/anti-replay rules.
 
