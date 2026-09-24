@@ -74,6 +74,11 @@ def _canonical(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _descriptor_document(value: object) -> tuple[bytes, str]:
+    raw = _canonical(value) + b"\n"
+    return raw, "sha256:" + sha256(raw).hexdigest()
+
+
 def _timestamp(value: str, label: str) -> str:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -282,8 +287,7 @@ def qualify(
     if len(signatures) < identity.signature_threshold:
         raise ValueError("descriptor signature threshold was not met")
     descriptor["signatures"] = signatures
-    descriptor_raw = _canonical(descriptor)
-    descriptor_digest = "sha256:" + sha256(descriptor_raw).hexdigest()
+    descriptor_raw, descriptor_digest = _descriptor_document(descriptor)
 
     qualification = InstallerQualificationEvidence(
         source_revision=preparation.source_revision,
@@ -326,7 +330,7 @@ def qualify(
     descriptor_path = output_directory / identity.release_descriptor_asset_name
     operation_path = output_directory / "installer-release-operation.json"
     for path, raw in (
-        (descriptor_path, descriptor_raw + b"\n"),
+        (descriptor_path, descriptor_raw),
         (operation_path, _canonical(asdict(stored)) + b"\n"),
     ):
         if path.exists() and path.read_bytes() != raw:
