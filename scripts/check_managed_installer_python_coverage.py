@@ -10,6 +10,7 @@ line events while the canonical relevant unittest modules execute.
 from __future__ import annotations
 
 import argparse
+import ast
 import dis
 import importlib.util
 from pathlib import Path
@@ -49,7 +50,8 @@ TESTS = (
 
 
 def _executable_lines(path: Path) -> set[int]:
-    code = compile(path.read_text(encoding="utf-8"), str(path), "exec")
+    source = path.read_text(encoding="utf-8")
+    code = compile(source, str(path), "exec")
     lines: set[int] = set()
 
     def walk(current: types.CodeType) -> None:
@@ -65,7 +67,18 @@ def _executable_lines(path: Path) -> set[int]:
                 walk(constant)
 
     walk(code)
-    return lines
+
+    # Python 3.14 can associate RESUME/annotation bytecode with continuation
+    # lines in a multiline definition header. Those lines cannot emit trace
+    # line events when the function body executes, so counting them makes the
+    # same source and tests report lower coverage only on newer interpreters.
+    tree = ast.parse(source, filename=str(path))
+    definition_continuations: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
+            first_body_line = min(statement.lineno for statement in node.body)
+            definition_continuations.update(range(node.lineno + 1, first_body_line))
+    return lines - definition_continuations
 
 
 def _load_test_module(path: Path, index: int):

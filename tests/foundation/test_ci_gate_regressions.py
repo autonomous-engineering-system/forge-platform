@@ -211,6 +211,15 @@ class PythonCoverageLineTableTests(unittest.TestCase):
         ):
             self.assertEqual(python_gate._executable_lines(Path(__file__)), {4})
 
+    def test_multiline_definition_continuations_are_not_executable_lines(self) -> None:
+        source = """def fixture(\n    first: str,\n    second: int,\n) -> None:\n    value = first * second\n    return value\n"""
+        with tempfile.TemporaryDirectory(prefix="forge-python-lines-") as tmp:
+            path = Path(tmp) / "fixture.py"
+            path.write_text(source, encoding="utf-8")
+            executable = python_gate._executable_lines(path)
+        self.assertTrue({1, 5, 6}.issubset(executable))
+        self.assertTrue({2, 3, 4}.isdisjoint(executable))
+
 
 STUB = r'''#!SHEBANG
 import json, os, sys
