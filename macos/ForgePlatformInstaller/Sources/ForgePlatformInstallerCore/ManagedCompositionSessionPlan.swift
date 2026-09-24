@@ -66,6 +66,7 @@ struct ManagedCompositionSessionPlanBuilder {
                 componentIdentities: componentIdentities,
                 runtimeIdentity: managedPythonRuntime.identitySHA256
             )
+            let managedTools = try Self.managedTools(fields["managed_tools"])
             let requirements = try providerValues.map {
                 try Self.providerRequirement($0, schema: schema)
             }
@@ -88,7 +89,8 @@ struct ManagedCompositionSessionPlanBuilder {
                 componentSelectionSequence: selectedEntry.selectionSequence,
                 managedPythonRuntime: managedPythonRuntime,
                 productVirtualEnvironments: productVirtualEnvironments,
-                providerRequirements: requirements
+                providerRequirements: requirements,
+                managedTools: managedTools
             )
             guard currentInstaller.accepts(plan) else {
                 throw ManagedCompositionSessionPlanFailure.rejected
@@ -97,6 +99,35 @@ struct ManagedCompositionSessionPlanBuilder {
         } catch {
             return .failure(.rejected)
         }
+    }
+
+    private static func managedTools(
+        _ value: StrictJSONResourceValue?
+    ) throws -> [ManagedToolRequirement] {
+        guard let values = value?.arrayValue else {
+            throw ManagedCompositionSessionPlanFailure.rejected
+        }
+        let requirements = try values.map { item -> ManagedToolRequirement in
+            guard let fields = item.objectValue,
+                  Set(fields.keys) == Set(["identity", "version", "url", "digest"]),
+                  let identityRaw = fields["identity"]?.stringValue,
+                  let identity = ManagedToolRequirement.Identity(rawValue: identityRaw),
+                  let versionRaw = fields["version"]?.stringValue,
+                  let version = try? InstallerVersion(versionRaw),
+                  let url = fields["url"]?.stringValue,
+                  let digest = fields["digest"]?.stringValue else {
+                throw ManagedCompositionSessionPlanFailure.rejected
+            }
+            return ManagedToolRequirement(
+                identity: identity,
+                version: version,
+                artifact: try ManagedPythonDownloadIdentity(url: url, sha256: digest)
+            )
+        }
+        guard Set(requirements.map(\.identity)).count == requirements.count else {
+            throw ManagedCompositionSessionPlanFailure.rejected
+        }
+        return requirements
     }
 
     private static func managedPythonRuntime(

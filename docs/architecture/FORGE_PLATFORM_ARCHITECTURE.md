@@ -37,15 +37,18 @@ and clears pending state only after an injected parent-journal
 bridge succeeds. The native file-backed parent journal now persists one exact
 active `PLANNED` record as canonical private JSON, serializes access with its
 own validated lock, and atomically replaces it with the exact idempotent
-`MANAGED_TOOLS` evidence. The concrete fresh replanner is not implemented. No
-production Python artifact, privileged adapter or operational runtime
-installation is claimed.
+`MANAGED_TOOLS` evidence. A concrete native fresh replanner now derives managed
+Git and Python actions, five non-tool gates and the canonical post-tool plan
+fingerprint from independently injected fresh readbacks; it cannot accept a
+precomputed qualification. No production readback adapter, Python artifact,
+privileged adapter or operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
 runtime/rollback/venv identities, all-`NO_CHANGE` tool state and product
-dispatch readiness. The concrete fresh replanner, released journal seeding and
-released wiring remain unimplemented.
+dispatch readiness. The composition parser now also retains the exact managed
+Git requirement used by that replanner. Production readback adapters, released
+journal seeding and released wiring remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 

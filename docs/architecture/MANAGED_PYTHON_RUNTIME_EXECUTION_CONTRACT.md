@@ -203,16 +203,19 @@ lease, freshly re-reads every venv and the active runtime and the bridge then
 accepts the exact terminal receipt. The native file-backed parent-journal store
 now admits one canonical private `PLANNED` record, rejects a second identity,
 and atomically advances only an exact terminal request/evidence set to
-`MANAGED_TOOLS`; identical retries are idempotent. The concrete fresh replanner,
-released journal seeding and released route are not yet implemented.
+`MANAGED_TOOLS`; identical retries are idempotent. The concrete native fresh
+replanner now derives the post-tool decision and fingerprint from fresh managed
+Git, managed-Python and five non-tool gate readbacks. Production implementations
+of those readback seams, released journal seeding and the released route are not
+yet implemented.
 
 The native parent-journal admission adapter now requires a fresh post-tool
 qualification with the original stable-plan fingerprint, the exact runtime,
 rollback and ordered venv identities, no remaining managed-tool or Python
 action, and explicit product-dispatch readiness. Only then does it construct
 the typed `TOOLS_VERIFIED` evidence and call the atomic journal-advance seam.
-The concrete fresh replanner and released journal seeding are not yet
-implemented.
+The concrete source-level fresh replanner is implemented; production readback
+adapters and released journal seeding are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -301,8 +304,9 @@ runtime, rollback, venv or terminal-action drift before calling its atomic
 parent-journal seam. Its durable native store uses one fixed active-record name,
 canonical bounded JSON, a private exclusive lock, no-follow reads, ownership,
 mode and link-count checks, durable atomic replacement and exact idempotent
-retry comparison. The concrete fresh replanner and released journal seeding are
-not implemented, and these coordinators are not wired into the released runtime. A concrete reviewed
+retry comparison. The concrete fresh replanner now owns the native canonical
+post-tool fingerprint. Production readback adapters and released journal
+seeding are not implemented, and these coordinators are not wired into the released runtime. A concrete reviewed
 privileged adapter, released mutation wiring and an actual protected arm64
 runtime publication remain required before operational installation can be
 claimed.

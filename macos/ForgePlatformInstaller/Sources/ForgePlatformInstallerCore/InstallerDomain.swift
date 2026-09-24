@@ -395,7 +395,30 @@ public enum VerifiedCompositionSessionPlanError: Error, Equatable, Sendable {
     case invalidComponentSelectionSequence
     case conflatedCatalogIdentities
     case duplicateProviderRequirement
+    case invalidManagedTools
     case invalidProductVirtualEnvironments
+}
+
+public struct ManagedToolRequirement: Equatable, Sendable {
+    public static let managedRootIdentity = "forge-platform-managed-git/v1"
+
+    public enum Identity: String, Equatable, Sendable {
+        case git
+    }
+
+    public let identity: Identity
+    public let version: InstallerVersion
+    public let artifact: ManagedPythonDownloadIdentity
+
+    public init(
+        identity: Identity,
+        version: InstallerVersion,
+        artifact: ManagedPythonDownloadIdentity
+    ) {
+        self.identity = identity
+        self.version = version
+        self.artifact = artifact
+    }
 }
 
 /// The result of a trusted composition/session selector.  A future selector
@@ -443,6 +466,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
     public let managedPythonRuntime: ManagedPythonRuntimeIdentity
     public let productVirtualEnvironments: [ManagedProductVirtualEnvironmentIdentity]
     public let providerRequirements: [ProviderRequirement]
+    public let managedTools: [ManagedToolRequirement]
 
     /// Compatibility projections used only by the current display shell. They
     /// always refer to the outer signed composition catalog, never to the
@@ -463,7 +487,8 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         componentSelectionSequence: UInt64,
         managedPythonRuntime: ManagedPythonRuntimeIdentity,
         productVirtualEnvironments: [ManagedProductVirtualEnvironmentIdentity],
-        providerRequirements: [ProviderRequirement]
+        providerRequirements: [ProviderRequirement],
+        managedTools: [ManagedToolRequirement] = []
     ) throws {
         guard Self.isSafeSessionID(sessionID) else {
             throw VerifiedCompositionSessionPlanError.invalidSessionID
@@ -492,6 +517,9 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         guard Set(providerRequirements.map(\.id)).count == providerRequirements.count else {
             throw VerifiedCompositionSessionPlanError.duplicateProviderRequirement
         }
+        guard Set(managedTools.map(\.identity)).count == managedTools.count else {
+            throw VerifiedCompositionSessionPlanError.invalidManagedTools
+        }
         guard !productVirtualEnvironments.isEmpty,
               Set(productVirtualEnvironments.map(\.componentIdentity)).count
                 == productVirtualEnvironments.count,
@@ -517,6 +545,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
             $0.componentIdentity < $1.componentIdentity
         }
         self.providerRequirements = providerRequirements
+        self.managedTools = managedTools.sorted { $0.identity.rawValue < $1.identity.rawValue }
     }
 
     private static func isSafeSessionID(_ value: String) -> Bool {
