@@ -34,16 +34,18 @@ readbacks on an exact retry. A separate native terminal coordinator projects it
 into the platform-neutral `COMPLETE` receipt with a cross-implementation request
 fingerprint, projects the exact typed `TOOLS_VERIFIED` parent-journal evidence,
 and clears pending state only after an injected parent-journal
-bridge succeeds. The concrete fresh replanner and atomic parent-journal store
-are not implemented. No
+bridge succeeds. The native file-backed parent journal now persists one exact
+active `PLANNED` record as canonical private JSON, serializes access with its
+own validated lock, and atomically replaces it with the exact idempotent
+`MANAGED_TOOLS` evidence. The concrete fresh replanner is not implemented. No
 production Python artifact, privileged adapter or operational runtime
 installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
 runtime/rollback/venv identities, all-`NO_CHANGE` tool state and product
-dispatch readiness. The concrete fresh replanner, atomic file-backed parent
-journal and released wiring remain unimplemented.
+dispatch readiness. The concrete fresh replanner, released journal seeding and
+released wiring remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
