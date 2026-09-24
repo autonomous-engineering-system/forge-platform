@@ -5,13 +5,16 @@ import XCTest
 final class ManagedPythonRuntimePreparationTests: XCTestCase {
     func testPreparesExactSessionRuntimeAndCleansStagingAfterFreshSlotReadback() async throws {
         let fixture = try PreparationFixture()
-        let staging = PreparationStaging(fixture: fixture)
-        let inspector = PreparationInspector(inspection: fixture.inspection)
-        let slot = PreparationSlotCoordinator(fixture: fixture)
+        let events = PreparationEventLog()
+        let staging = PreparationStaging(fixture: fixture, events: events)
+        let inspector = PreparationInspector(inspection: fixture.inspection, events: events)
+        let slot = PreparationSlotCoordinator(fixture: fixture, events: events)
+        let recovery = PreparationRecoveryStore(events: events)
         let coordinator = ManagedPythonRuntimePreparationCoordinator(
             staging: staging,
             inspector: inspector,
-            slotCoordinator: slot
+            slotCoordinator: slot,
+            recoveryStore: recovery
         )
 
         let receipt = try success(await coordinator.prepareRuntime(
@@ -33,6 +36,247 @@ final class ManagedPythonRuntimePreparationTests: XCTestCase {
         XCTAssertEqual(stagingSnapshot, .init(stages: 1, discards: 1, operationID: receipt.operationID))
         XCTAssertEqual(inspectionCalls, 1)
         XCTAssertEqual(slotCalls, 1)
+        let recoverySnapshot = await recovery.snapshot()
+        XCTAssertEqual(recoverySnapshot, .init(loads: 1, saves: 1, clears: 1, pending: nil))
+        let recordedEvents = await events.values()
+        XCTAssertEqual(recordedEvents, [
+            "recovery.load", "staging.stage", "recovery.save", "inspection.inspect",
+            "slot.ensure", "staging.discard", "recovery.clear",
+        ])
+    }
+
+    func testPendingRestartRecoveryRunsBeforeFreshStaging() async throws {
+        let fixture = try PreparationFixture()
+        let operationID = ManagedPythonRuntimePreparationCoordinator.operationID(
+            session: fixture.session,
+            deployment: fixture.deployment
+        )
+        let pending = try ManagedPythonRuntimeRecoveryRecord(
+            stagedAssets: fixture.stagedAssets(operationID: operationID)
+        )
+        let events = PreparationEventLog()
+        let staging = PreparationStaging(fixture: fixture, events: events)
+        let recovery = PreparationRecoveryStore(pending: pending, events: events)
+        let coordinator = ManagedPythonRuntimePreparationCoordinator(
+            staging: staging,
+            inspector: PreparationInspector(inspection: fixture.inspection, events: events),
+            slotCoordinator: PreparationSlotCoordinator(fixture: fixture, events: events),
+            recoveryStore: recovery
+        )
+
+        _ = try success(await coordinator.prepareRuntime(
+            for: fixture.session,
+            deployment: fixture.deployment
+        ))
+
+        let stagingSnapshot = await staging.snapshot()
+        XCTAssertEqual(stagingSnapshot.stages, 1)
+        XCTAssertEqual(stagingSnapshot.discards, 2)
+        let recoverySnapshot = await recovery.snapshot()
+        XCTAssertEqual(recoverySnapshot, .init(loads: 1, saves: 1, clears: 2, pending: nil))
+        let recordedEvents = await events.values()
+        XCTAssertEqual(Array(recordedEvents.prefix(4)), [
+            "recovery.load", "staging.discard", "recovery.clear", "staging.stage",
+        ])
+    }
+
+    func testExplicitRestartRecoveryIsCleanupOnlyAndIdempotent() async throws {
+        let fixture = try PreparationFixture()
+        let pending = try ManagedPythonRuntimeRecoveryRecord(stagedAssets: fixture.stagedAssets(
+            operationID: ManagedPythonRuntimePreparationCoordinator.operationID(
+                session: fixture.session,
+                deployment: fixture.deployment
+            )
+        ))
+        let staging = PreparationStaging(fixture: fixture)
+        let inspector = PreparationInspector(inspection: fixture.inspection)
+        let slot = PreparationSlotCoordinator(fixture: fixture)
+        let recovery = PreparationRecoveryStore(pending: pending)
+        let coordinator = ManagedPythonRuntimePreparationCoordinator(
+            staging: staging,
+            inspector: inspector,
+            slotCoordinator: slot,
+            recoveryStore: recovery
+        )
+
+        try voidSuccess(await coordinator.recoverInterruptedPreparation())
+        try voidSuccess(await coordinator.recoverInterruptedPreparation())
+
+        let stagingSnapshot = await staging.snapshot()
+        let inspectionCalls = await inspector.calls()
+        let slotCalls = await slot.calls()
+        let recoverySnapshot = await recovery.snapshot()
+        XCTAssertEqual(stagingSnapshot, .init(stages: 0, discards: 1, operationID: nil))
+        XCTAssertEqual(inspectionCalls, 0)
+        XCTAssertEqual(slotCalls, 0)
+        XCTAssertEqual(recoverySnapshot, .init(loads: 2, saves: 0, clears: 1, pending: nil))
+    }
+
+    func testExplicitRestartRecoveryConsumesTheRealDurableFileRecord() async throws {
+        let fixture = try PreparationFixture()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "forge-platform-preparation-recovery-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = try ManagedPythonRuntimeRecoveryRecord(stagedAssets: fixture.stagedAssets(
+            operationID: ManagedPythonRuntimePreparationCoordinator.operationID(
+                session: fixture.session,
+                deployment: fixture.deployment
+            )
+        ))
+        let store = FileManagedPythonRuntimeRecoveryStore(rootDirectory: root)
+        guard case .success = await store.savePendingRuntimePreparation(record) else {
+            return XCTFail("The exact recovery record should persist")
+        }
+        let staging = PreparationStaging(fixture: fixture)
+        let coordinator = ManagedPythonRuntimePreparationCoordinator(
+            staging: staging,
+            inspector: PreparationInspector(inspection: fixture.inspection),
+            slotCoordinator: PreparationSlotCoordinator(fixture: fixture),
+            recoveryStore: store
+        )
+
+        try voidSuccess(await coordinator.recoverInterruptedPreparation())
+
+        let load = await store.loadPendingRuntimePreparation()
+        guard case .success(let pending) = load else {
+            return XCTFail("Recovery storage should remain readable")
+        }
+        XCTAssertNil(pending)
+        let stagingSnapshot = await staging.snapshot()
+        XCTAssertEqual(stagingSnapshot, .init(stages: 0, discards: 1, operationID: nil))
+    }
+
+    func testRecoveryFailureBlocksFreshWorkAndRetainsExactPendingRecord() async throws {
+        let fixture = try PreparationFixture()
+        let pending = try ManagedPythonRuntimeRecoveryRecord(stagedAssets: fixture.stagedAssets(
+            operationID: ManagedPythonRuntimePreparationCoordinator.operationID(
+                session: fixture.session,
+                deployment: fixture.deployment
+            )
+        ))
+
+        for (discardFailure, clearFailures) in [
+            (ManagedPythonRuntimeStagingFailure.unavailable, 0),
+            (nil, 1),
+        ] {
+            let staging = PreparationStaging(
+                fixture: fixture,
+                discardFailure: discardFailure
+            )
+            let inspector = PreparationInspector(inspection: fixture.inspection)
+            let slot = PreparationSlotCoordinator(fixture: fixture)
+            let recovery = PreparationRecoveryStore(
+                pending: pending,
+                remainingClearFailures: clearFailures
+            )
+            let result = await ManagedPythonRuntimePreparationCoordinator(
+                staging: staging,
+                inspector: inspector,
+                slotCoordinator: slot,
+                recoveryStore: recovery
+            ).prepareRuntime(for: fixture.session, deployment: fixture.deployment)
+
+            XCTAssertEqual(result.failure, .cleanupPending)
+            let stagingSnapshot = await staging.snapshot()
+            XCTAssertEqual(stagingSnapshot.stages, 0)
+            XCTAssertEqual(stagingSnapshot.discards, 1)
+            let inspectionCalls = await inspector.calls()
+            let slotCalls = await slot.calls()
+            let recoverySnapshot = await recovery.snapshot()
+            XCTAssertEqual(inspectionCalls, 0)
+            XCTAssertEqual(slotCalls, 0)
+            XCTAssertEqual(recoverySnapshot.pending, pending)
+        }
+    }
+
+    func testRecoveryLoadFailureBlocksBeforeStagingInspectionOrMutation() async throws {
+        let fixture = try PreparationFixture()
+        let staging = PreparationStaging(fixture: fixture)
+        let inspector = PreparationInspector(inspection: fixture.inspection)
+        let slot = PreparationSlotCoordinator(fixture: fixture)
+        let recovery = PreparationRecoveryStore(loadFailure: .rejected)
+
+        let result = await ManagedPythonRuntimePreparationCoordinator(
+            staging: staging,
+            inspector: inspector,
+            slotCoordinator: slot,
+            recoveryStore: recovery
+        ).prepareRuntime(for: fixture.session, deployment: fixture.deployment)
+
+        XCTAssertEqual(result.failure, .cleanupPending)
+        let stagingSnapshot = await staging.snapshot()
+        let inspectionCalls = await inspector.calls()
+        let slotCalls = await slot.calls()
+        let recoverySnapshot = await recovery.snapshot()
+        XCTAssertEqual(stagingSnapshot, .init(stages: 0, discards: 0, operationID: nil))
+        XCTAssertEqual(inspectionCalls, 0)
+        XCTAssertEqual(slotCalls, 0)
+        XCTAssertEqual(recoverySnapshot, .init(loads: 1, saves: 0, clears: 0, pending: nil))
+    }
+
+    func testSaveFailureCleansFreshStagingBeforeBlockingMutation() async throws {
+        let fixture = try PreparationFixture()
+        for discardFailure in [nil, ManagedPythonRuntimeStagingFailure.unavailable] {
+            let staging = PreparationStaging(
+                fixture: fixture,
+                discardFailure: discardFailure
+            )
+            let inspector = PreparationInspector(inspection: fixture.inspection)
+            let slot = PreparationSlotCoordinator(fixture: fixture)
+            let recovery = PreparationRecoveryStore(saveFailure: .rejected)
+            let result = await ManagedPythonRuntimePreparationCoordinator(
+                staging: staging,
+                inspector: inspector,
+                slotCoordinator: slot,
+                recoveryStore: recovery
+            ).prepareRuntime(for: fixture.session, deployment: fixture.deployment)
+
+            XCTAssertEqual(result.failure, .cleanupPending)
+            let stagingSnapshot = await staging.snapshot()
+            let inspectionCalls = await inspector.calls()
+            let slotCalls = await slot.calls()
+            let recoverySnapshot = await recovery.snapshot()
+            XCTAssertEqual(stagingSnapshot, .init(
+                stages: 1,
+                discards: 1,
+                operationID: ManagedPythonRuntimePreparationCoordinator.operationID(
+                    session: fixture.session,
+                    deployment: fixture.deployment
+                )
+            ))
+            XCTAssertEqual(inspectionCalls, 0)
+            XCTAssertEqual(slotCalls, 0)
+            XCTAssertNil(recoverySnapshot.pending)
+        }
+    }
+
+    func testRecordClearFailureAfterCleanupIsRecoveredByRetrySafeDiscard() async throws {
+        let fixture = try PreparationFixture()
+        let staging = PreparationStaging(fixture: fixture)
+        let recovery = PreparationRecoveryStore(remainingClearFailures: 1)
+        let coordinator = ManagedPythonRuntimePreparationCoordinator(
+            staging: staging,
+            inspector: PreparationInspector(inspection: fixture.inspection),
+            slotCoordinator: PreparationSlotCoordinator(fixture: fixture),
+            recoveryStore: recovery
+        )
+
+        let first = await coordinator.prepareRuntime(
+            for: fixture.session,
+            deployment: fixture.deployment
+        )
+        XCTAssertEqual(first.failure, .cleanupPending)
+        let failedRecoverySnapshot = await recovery.snapshot()
+        XCTAssertNotNil(failedRecoverySnapshot.pending)
+
+        try voidSuccess(await coordinator.recoverInterruptedPreparation())
+
+        let stagingSnapshot = await staging.snapshot()
+        let recoveredSnapshot = await recovery.snapshot()
+        XCTAssertEqual(stagingSnapshot.discards, 2)
+        XCTAssertEqual(recoveredSnapshot, .init(loads: 2, saves: 1, clears: 2, pending: nil))
     }
 
     func testOperationIdentityIsDeterministicAndBindsSessionDeploymentRuntimeAndVenvs() throws {
@@ -109,7 +353,8 @@ final class ManagedPythonRuntimePreparationTests: XCTestCase {
             let result = await ManagedPythonRuntimePreparationCoordinator(
                 staging: staging,
                 inspector: inspector,
-                slotCoordinator: slot
+                slotCoordinator: slot,
+                recoveryStore: PreparationRecoveryStore()
             ).prepareRuntime(for: fixture.session, deployment: fixture.deployment)
 
             XCTAssertEqual(result.failure, expected(failure))
@@ -131,7 +376,8 @@ final class ManagedPythonRuntimePreparationTests: XCTestCase {
         let result = await ManagedPythonRuntimePreparationCoordinator(
             staging: staging,
             inspector: inspector,
-            slotCoordinator: slot
+            slotCoordinator: slot,
+            recoveryStore: PreparationRecoveryStore()
         ).prepareRuntime(for: fixture.session, deployment: fixture.deployment)
 
         XCTAssertEqual(result.failure, .rejected)
@@ -152,7 +398,8 @@ final class ManagedPythonRuntimePreparationTests: XCTestCase {
             let result = await ManagedPythonRuntimePreparationCoordinator(
                 staging: staging,
                 inspector: inspector,
-                slotCoordinator: slot
+                slotCoordinator: slot,
+                recoveryStore: PreparationRecoveryStore()
             ).prepareRuntime(for: fixture.session, deployment: fixture.deployment)
 
             XCTAssertEqual(result.failure, expected(failure))
@@ -174,7 +421,8 @@ final class ManagedPythonRuntimePreparationTests: XCTestCase {
             let result = await ManagedPythonRuntimePreparationCoordinator(
                 staging: staging,
                 inspector: inspector,
-                slotCoordinator: slot
+                slotCoordinator: slot,
+                recoveryStore: PreparationRecoveryStore()
             ).prepareRuntime(for: fixture.session, deployment: fixture.deployment)
 
             XCTAssertEqual(result.failure, expected(failure))
@@ -191,18 +439,22 @@ final class ManagedPythonRuntimePreparationTests: XCTestCase {
         let fixture = try PreparationFixture()
         for inspectorFailure in [nil, ManagedPythonRuntimeArchiveInspectionFailure.rejected] {
             let staging = PreparationStaging(fixture: fixture, discardFailure: .unavailable)
+            let recovery = PreparationRecoveryStore()
             let result = await ManagedPythonRuntimePreparationCoordinator(
                 staging: staging,
                 inspector: PreparationInspector(
                     inspection: fixture.inspection,
                     failure: inspectorFailure
                 ),
-                slotCoordinator: PreparationSlotCoordinator(fixture: fixture)
+                slotCoordinator: PreparationSlotCoordinator(fixture: fixture),
+                recoveryStore: recovery
             ).prepareRuntime(for: fixture.session, deployment: fixture.deployment)
 
             XCTAssertEqual(result.failure, .cleanupPending)
             let stagingSnapshot = await staging.snapshot()
+            let recoverySnapshot = await recovery.snapshot()
             XCTAssertEqual(stagingSnapshot.discards, 1)
+            XCTAssertNotNil(recoverySnapshot.pending)
         }
     }
 
@@ -214,7 +466,8 @@ final class ManagedPythonRuntimePreparationTests: XCTestCase {
         let result = await ManagedPythonRuntimePreparationCoordinator(
             staging: staging,
             inspector: PreparationInspector(inspection: fixture.inspection),
-            slotCoordinator: slot
+            slotCoordinator: slot,
+            recoveryStore: PreparationRecoveryStore()
         ).prepareRuntime(for: fixture.session, deployment: fixture.deployment)
 
         XCTAssertEqual(result.failure, .invalidRequest)
@@ -259,6 +512,12 @@ final class ManagedPythonRuntimePreparationTests: XCTestCase {
         case .success(let receipt): receipt
         case .failure(let failure): throw failure
         }
+    }
+
+    private func voidSuccess(
+        _ result: Result<Void, ManagedPythonRuntimePreparationFailure>
+    ) throws {
+        if case .failure(let failure) = result { throw failure }
     }
 }
 
@@ -400,6 +659,80 @@ private struct PreparationFixture: Sendable {
     }
 }
 
+private actor PreparationEventLog {
+    private var recorded: [String] = []
+
+    func append(_ value: String) { recorded.append(value) }
+    func values() -> [String] { recorded }
+}
+
+private actor PreparationRecoveryStore: ManagedPythonRuntimeRecoveryStoring {
+    struct Snapshot: Equatable {
+        let loads: Int
+        let saves: Int
+        let clears: Int
+        let pending: ManagedPythonRuntimeRecoveryRecord?
+    }
+
+    private var pending: ManagedPythonRuntimeRecoveryRecord?
+    private let loadFailure: ManagedPythonRuntimeRecoveryFailure?
+    private let saveFailure: ManagedPythonRuntimeRecoveryFailure?
+    private var remainingClearFailures: Int
+    private let events: PreparationEventLog?
+    private var loads = 0
+    private var saves = 0
+    private var clears = 0
+
+    init(
+        pending: ManagedPythonRuntimeRecoveryRecord? = nil,
+        loadFailure: ManagedPythonRuntimeRecoveryFailure? = nil,
+        saveFailure: ManagedPythonRuntimeRecoveryFailure? = nil,
+        remainingClearFailures: Int = 0,
+        events: PreparationEventLog? = nil
+    ) {
+        self.pending = pending
+        self.loadFailure = loadFailure
+        self.saveFailure = saveFailure
+        self.remainingClearFailures = remainingClearFailures
+        self.events = events
+    }
+
+    func loadPendingRuntimePreparation()
+        async -> Result<ManagedPythonRuntimeRecoveryRecord?, ManagedPythonRuntimeRecoveryFailure> {
+        loads += 1
+        if let events { await events.append("recovery.load") }
+        if let loadFailure { return .failure(loadFailure) }
+        return .success(pending)
+    }
+
+    func savePendingRuntimePreparation(_ record: ManagedPythonRuntimeRecoveryRecord)
+        async -> Result<Void, ManagedPythonRuntimeRecoveryFailure> {
+        saves += 1
+        if let events { await events.append("recovery.save") }
+        if let saveFailure { return .failure(saveFailure) }
+        guard pending == nil || pending == record else { return .failure(.rejected) }
+        pending = record
+        return .success(())
+    }
+
+    func clearPendingRuntimePreparation(_ record: ManagedPythonRuntimeRecoveryRecord)
+        async -> Result<Void, ManagedPythonRuntimeRecoveryFailure> {
+        clears += 1
+        if let events { await events.append("recovery.clear") }
+        if remainingClearFailures > 0 {
+            remainingClearFailures -= 1
+            return .failure(.rejected)
+        }
+        guard pending == nil || pending == record else { return .failure(.rejected) }
+        pending = nil
+        return .success(())
+    }
+
+    func snapshot() -> Snapshot {
+        Snapshot(loads: loads, saves: saves, clears: clears, pending: pending)
+    }
+}
+
 private actor PreparationStaging: ManagedPythonRuntimeAssetStaging {
     struct Snapshot: Equatable {
         let stages: Int
@@ -411,6 +744,7 @@ private actor PreparationStaging: ManagedPythonRuntimeAssetStaging {
     private let stageFailure: ManagedPythonRuntimeStagingFailure?
     private let discardFailure: ManagedPythonRuntimeStagingFailure?
     private let driftStagedIdentity: Bool
+    private let events: PreparationEventLog?
     private var stages = 0
     private var discards = 0
     private var operationID: String?
@@ -419,12 +753,14 @@ private actor PreparationStaging: ManagedPythonRuntimeAssetStaging {
         fixture: PreparationFixture,
         stageFailure: ManagedPythonRuntimeStagingFailure? = nil,
         discardFailure: ManagedPythonRuntimeStagingFailure? = nil,
-        driftStagedIdentity: Bool = false
+        driftStagedIdentity: Bool = false,
+        events: PreparationEventLog? = nil
     ) {
         self.fixture = fixture
         self.stageFailure = stageFailure
         self.discardFailure = discardFailure
         self.driftStagedIdentity = driftStagedIdentity
+        self.events = events
     }
 
     func stageAssets(
@@ -433,6 +769,7 @@ private actor PreparationStaging: ManagedPythonRuntimeAssetStaging {
     ) async -> Result<ManagedPythonStagedAssetSet, ManagedPythonRuntimeStagingFailure> {
         stages += 1
         self.operationID = operationID
+        if let events { await events.append("staging.stage") }
         if let stageFailure { return .failure(stageFailure) }
         do {
             let identity = driftStagedIdentity
@@ -461,6 +798,7 @@ private actor PreparationStaging: ManagedPythonRuntimeAssetStaging {
     ) async -> Result<Void, ManagedPythonRuntimeStagingFailure> {
         _ = assets
         discards += 1
+        if let events { await events.append("staging.discard") }
         if let discardFailure { return .failure(discardFailure) }
         return .success(())
     }
@@ -473,14 +811,17 @@ private actor PreparationStaging: ManagedPythonRuntimeAssetStaging {
 private actor PreparationInspector: ManagedPythonRuntimeArchiveInspecting {
     private let inspection: ManagedPythonRuntimeArchiveInspection
     private let failure: ManagedPythonRuntimeArchiveInspectionFailure?
+    private let events: PreparationEventLog?
     private var callCount = 0
 
     init(
         inspection: ManagedPythonRuntimeArchiveInspection,
-        failure: ManagedPythonRuntimeArchiveInspectionFailure? = nil
+        failure: ManagedPythonRuntimeArchiveInspectionFailure? = nil,
+        events: PreparationEventLog? = nil
     ) {
         self.inspection = inspection
         self.failure = failure
+        self.events = events
     }
 
     func inspect(
@@ -490,6 +831,7 @@ private actor PreparationInspector: ManagedPythonRuntimeArchiveInspecting {
         _ = stagedAssets
         _ = runtime
         callCount += 1
+        if let events { await events.append("inspection.inspect") }
         if let failure { return .failure(failure) }
         return .success(inspection)
     }
@@ -501,16 +843,19 @@ private actor PreparationSlotCoordinator: ManagedPythonRuntimeSlotEnsuring {
     private let fixture: PreparationFixture
     private let failure: ManagedPythonRuntimeSlotMutationFailure?
     private let changeReceipt: Bool
+    private let events: PreparationEventLog?
     private var callCount = 0
 
     init(
         fixture: PreparationFixture,
         failure: ManagedPythonRuntimeSlotMutationFailure? = nil,
-        changeReceipt: Bool = false
+        changeReceipt: Bool = false,
+        events: PreparationEventLog? = nil
     ) {
         self.fixture = fixture
         self.failure = failure
         self.changeReceipt = changeReceipt
+        self.events = events
     }
 
     func ensureRuntimeSlot(
@@ -521,6 +866,7 @@ private actor PreparationSlotCoordinator: ManagedPythonRuntimeSlotEnsuring {
         _ = runtime
         _ = inspection
         callCount += 1
+        if let events { await events.append("slot.ensure") }
         if let failure { return .failure(failure) }
         do {
             return .success(try fixture.slotReceipt(
