@@ -73,9 +73,28 @@ cat >"$tmp" <<EOF
 </plist>
 EOF
 plutil -lint "$tmp" >/dev/null || fail invalid-launchdaemon-plist
-launchctl bootout "system/$SERVICE_LABEL" >/dev/null 2>&1 || true
+plist_changed=true
+if [[ -f "$PLIST_PATH" ]] && cmp -s "$tmp" "$PLIST_PATH"; then
+  plist_changed=false
+fi
+if launchctl print "system/$SERVICE_LABEL" >/dev/null 2>&1; then
+  launchctl bootout "system/$SERVICE_LABEL" >/dev/null 2>&1 || \
+    launchctl bootout system "$PLIST_PATH" >/dev/null 2>&1 || true
+  for _ in {1..20}; do
+    if ! launchctl print "system/$SERVICE_LABEL" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.25
+  done
+fi
 install -o root -g wheel -m 0644 "$tmp" "$PLIST_PATH"
-launchctl bootstrap system "$PLIST_PATH" || fail launchdaemon-bootstrap-failed
+if launchctl print "system/$SERVICE_LABEL" >/dev/null 2>&1; then
+  [[ "$plist_changed" == false ]] || fail launchdaemon-reload-required
+  service_start=restart-loaded
+else
+  launchctl bootstrap system "$PLIST_PATH" || fail launchdaemon-bootstrap-failed
+  service_start=bootstrap
+fi
 launchctl enable "system/$SERVICE_LABEL" || fail launchdaemon-enable-failed
 launchctl kickstart -k "system/$SERVICE_LABEL" || fail launchdaemon-kickstart-failed
 
@@ -94,5 +113,5 @@ for _ in {1..20}; do
 done
 pgrep -u "$build_uid" -f "$RUNNER_ROOT/bin/Runner.Listener" >/dev/null 2>&1 || fail runner-listener-not-owned-by-build-user
 
-echo "BUILD_RUNNER_SERVICE=PASS label=$SERVICE_LABEL user=$BUILD_USER uid=$build_uid runner=$RUNNER_NAME root=$RUNNER_ROOT automatic_login=disabled path=sanitized"
+echo "BUILD_RUNNER_SERVICE=PASS label=$SERVICE_LABEL user=$BUILD_USER uid=$build_uid runner=$RUNNER_NAME root=$RUNNER_ROOT automatic_login=disabled path=sanitized start=$service_start"
 echo "BUILD_RUNNER_REBOOT_PERSISTENCE=NOT_VERIFIED action=record-reboot-verify"
