@@ -3,7 +3,8 @@
 **Status:** source-level executor kernel, native immutable session projection,
 credential-free native HTTPS asset transport, private operation-scoped native
 asset staging, read-only native archive inspection, and a closed native
-runtime-slot mutation coordinator implemented. The native
+runtime-slot mutation coordinator implemented and composed into one
+unprivileged runtime-preparation coordinator. The native
 projection recomputes the complete runtime identity, binds it to the signed
 outer-catalog approval, and retains one exact venv identity per selected
 component. The transport derives each of the four bounded downloads only from
@@ -130,6 +131,18 @@ returns `READY`. An exact existing slot is idempotent; any existing, returned
 or read-back drift fails closed. The protocol does not itself provide the
 privileged implementation or authorize a live installation.
 
+The native preparation coordinator composes these existing boundaries for one
+already verified composition session and one deployment target. It derives a
+deterministic operation identity from the session, composition, manifest,
+deployment, runtime and sorted per-product venv identities; stages only that
+runtime; requires an exact staged identity; runs archive inspection; obtains a
+fresh runtime-slot receipt; and discards the private staging set before
+returning. Only a receipt that rebinds the exact session, deployment,
+operation, runtime, archive, inspection and slot evidence can become `READY`.
+Any cleanup failure becomes `cleanupPending` and blocks success. This
+coordinator does not persist a journal, provide durable cleanup recovery,
+implement the privilege seam or expose a released-app route.
+
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
 adapter—not the UI or manifest—maps those opaque identities to fixed paths.
@@ -180,8 +193,10 @@ native transport and private stager can acquire, durably capture and re-read
 the identity-bound bytes, and the native inspector can validate the frozen
 archive envelope, layout, manifest and interpreter identity. The native
 runtime-slot coordinator also binds those exact results to a closed injected
-privilege seam and requires fresh post-mutation readback. These pieces are not
-assembled into the released runtime or wired into executor journaling. A
-concrete reviewed privileged adapter, released mutation wiring and an actual
-protected arm64 runtime publication remain required before operational
-installation can be claimed.
+privilege seam and requires fresh post-mutation readback. The native
+preparation coordinator now assembles those pieces into one fail-closed,
+cleanup-enforcing source-level transaction and emits an exact `READY` receipt.
+It is not assembled into the released runtime or wired into executor
+journaling. A concrete reviewed privileged adapter, durable recovery bridge,
+released mutation wiring and an actual protected arm64 runtime publication
+remain required before operational installation can be claimed.
