@@ -187,9 +187,14 @@ runtime before activation, preserves every pre-existing retained runtime plus
 the exact upgrade rollback runtime, and requires a final active-runtime
 readback. The privilege seam receives only operation, component, venv, runtime,
 slot and retained-runtime identities. It accepts no path, executable, command,
-environment value or credential. The resulting native `READY` receipt binds
-the preparation, venv, activation and final-readback evidence, but is not yet a
-durable platform-neutral executor `COMPLETE` receipt or installer-journal event.
+environment value or credential. Before reporting success, the coordinator
+persists the resulting native `READY` receipt as canonical mode-0600 JSON in
+the installer-owned mode-0700 recovery root. An exact retry reloads that
+receipt and freshly verifies every component venv plus the active runtime
+without repeating mutation. A conflicting, malformed or insecure record fails
+closed. This durable native receipt binds the preparation, venv,
+activation and final-readback evidence, but is not yet the platform-neutral
+executor `COMPLETE` receipt or installer-journal event.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -262,9 +267,12 @@ every directory and file by descriptor, and fails closed on ownership, mode,
 link, type, size or name drift. The platform-neutral terminal-receipt bridge is
 implemented. The native activation coordinator now continues from that exact
 preparation receipt through idempotent component-venv readiness, activation,
-rollback retention and final readback. Its `READY` receipt is not yet durably
-assembled into the platform-neutral `COMPLETE` executor receipt or parent
-journal bridge, and neither coordinator is wired into the released runtime. A
+rollback retention and final readback. It atomically preserves its canonical
+`READY` receipt in the same private recovery root and, on an exact retry,
+revalidates every venv and the active runtime before returning the stored
+evidence. That receipt is not yet assembled into the platform-neutral
+`COMPLETE` executor receipt or parent journal bridge, and neither coordinator
+is wired into the released runtime. A
 concrete reviewed privileged adapter, durable native bridge integration,
 released mutation wiring and an actual protected arm64 runtime publication
 remain required before operational installation can be claimed.

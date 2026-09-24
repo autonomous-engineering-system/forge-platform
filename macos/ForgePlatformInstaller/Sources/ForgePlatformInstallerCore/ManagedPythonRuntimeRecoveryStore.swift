@@ -149,6 +149,7 @@ public protocol ManagedPythonRuntimeRecoveryStoring: Sendable {
 /// installer-owned root; no location is accepted from the persisted payload.
 public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecoveryStoring {
     static let pendingRecordFileName = "pending-managed-python-runtime-preparation.json"
+    static let pendingActivationFileName = "pending-managed-python-runtime-activation.json"
     static let maximumRecordBytes = 64 * 1024
 
     private let rootDirectory: URL
@@ -296,8 +297,11 @@ public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecover
         return descriptor
     }
 
-    private func readSecureRegularFileIfPresent(in root: Int32) throws -> Data? {
-        let descriptor = Self.pendingRecordFileName.withCString {
+    private func readSecureRegularFileIfPresent(
+        in root: Int32,
+        fileName: String = Self.pendingRecordFileName
+    ) throws -> Data? {
+        let descriptor = fileName.withCString {
             Darwin.openat(root, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
         }
         guard descriptor >= 0 else {
@@ -312,12 +316,17 @@ public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecover
         return try readBoundedData(from: descriptor, initialDetails: initial)
     }
 
-    private func writeAtomically(_ data: Data, in root: Int32) throws {
+    private func writeAtomically(
+        _ data: Data,
+        in root: Int32,
+        fileName: String = Self.pendingRecordFileName,
+        temporaryPrefix: String = ".managed-python-recovery.tmp-"
+    ) throws {
         guard !data.isEmpty, data.count <= Self.maximumRecordBytes else {
             throw FileManagedPythonRuntimeRecoveryStoreError.insecure
         }
-        try validateExistingRegularFileIfPresent(in: root)
-        let temporaryName = ".managed-python-recovery.tmp-\(UUID().uuidString.lowercased())"
+        try validateExistingRegularFileIfPresent(in: root, fileName: fileName)
+        let temporaryName = "\(temporaryPrefix)\(UUID().uuidString.lowercased())"
         let descriptor = temporaryName.withCString {
             Darwin.openat(
                 root, $0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW_ANY, mode_t(0o600)
@@ -336,9 +345,9 @@ public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecover
         guard Darwin.fsync(descriptor) == 0 else {
             throw FileManagedPythonRuntimeRecoveryStoreError.insecure
         }
-        try validateExistingRegularFileIfPresent(in: root)
+        try validateExistingRegularFileIfPresent(in: root, fileName: fileName)
         let result = temporaryName.withCString { source in
-            Self.pendingRecordFileName.withCString { destination in
+            fileName.withCString { destination in
                 Darwin.renameatx_np(root, source, root, destination, UInt32(RENAME_EXCL))
             }
         }
@@ -346,19 +355,25 @@ public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecover
             throw FileManagedPythonRuntimeRecoveryStoreError.insecure
         }
         renamed = true
-        try validateExistingRegularFileIfPresent(in: root)
+        try validateExistingRegularFileIfPresent(in: root, fileName: fileName)
     }
 
-    private func removeSecureRegularFile(in root: Int32) throws {
-        try validateExistingRegularFileIfPresent(in: root)
-        let result = Self.pendingRecordFileName.withCString { Darwin.unlinkat(root, $0, 0) }
+    private func removeSecureRegularFile(
+        in root: Int32,
+        fileName: String = Self.pendingRecordFileName
+    ) throws {
+        try validateExistingRegularFileIfPresent(in: root, fileName: fileName)
+        let result = fileName.withCString { Darwin.unlinkat(root, $0, 0) }
         guard result == 0, Darwin.fsync(root) == 0 else {
             throw FileManagedPythonRuntimeRecoveryStoreError.insecure
         }
     }
 
-    private func validateExistingRegularFileIfPresent(in root: Int32) throws {
-        let descriptor = Self.pendingRecordFileName.withCString {
+    private func validateExistingRegularFileIfPresent(
+        in root: Int32,
+        fileName: String = Self.pendingRecordFileName
+    ) throws {
+        let descriptor = fileName.withCString {
             Darwin.openat(root, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
         }
         guard descriptor >= 0 else {
@@ -449,6 +464,264 @@ public struct FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeRecover
         guard let resolvedParent else { return standardized }
         return URL(fileURLWithPath: resolvedParent, isDirectory: true)
             .appendingPathComponent(standardized.lastPathComponent, isDirectory: true)
+    }
+}
+
+private struct ManagedPythonRuntimeActivationStoreRecord: Codable, Equatable {
+    static let schema = "forge-platform.managed-python-runtime-activation-receipt/v1"
+
+    let receipt: ManagedPythonRuntimeActivationReceipt
+
+    init(receipt: ManagedPythonRuntimeActivationReceipt) throws {
+        self.receipt = try Self.validatedCopy(receipt)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case operationID = "operation_id"
+        case sessionID = "session_id"
+        case deploymentID = "deployment_id"
+        case runtimeIdentitySHA256 = "runtime_identity_sha256"
+        case runtimeSlotIdentity = "runtime_slot_identity"
+        case rollbackRuntimeIdentitySHA256 = "rollback_runtime_identity_sha256"
+        case preparationEvidenceReferences = "preparation_evidence_references"
+        case productVenvEvidenceReferences = "product_venv_evidence_references"
+        case activationEvidenceReference = "activation_evidence_reference"
+        case finalReadbackEvidenceReference = "final_readback_evidence_reference"
+        case state
+    }
+
+    init(from decoder: Decoder) throws {
+        do {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            guard try container.decode(String.self, forKey: .schema) == Self.schema,
+                  let state = ManagedPythonRuntimeActivationReceipt.State(
+                    rawValue: try container.decode(String.self, forKey: .state)
+                  ) else {
+                throw ManagedPythonRuntimeActivationStoreFailure.rejected
+            }
+            receipt = try ManagedPythonRuntimeActivationReceipt(
+                operationID: container.decode(String.self, forKey: .operationID),
+                sessionID: container.decode(String.self, forKey: .sessionID),
+                deploymentID: container.decode(String.self, forKey: .deploymentID),
+                runtimeIdentitySHA256: container.decode(
+                    String.self,
+                    forKey: .runtimeIdentitySHA256
+                ),
+                runtimeSlotIdentity: container.decode(String.self, forKey: .runtimeSlotIdentity),
+                rollbackRuntimeIdentitySHA256: container.decodeIfPresent(
+                    String.self,
+                    forKey: .rollbackRuntimeIdentitySHA256
+                ),
+                preparationEvidenceReferences: container.decode(
+                    [String].self,
+                    forKey: .preparationEvidenceReferences
+                ),
+                productVenvEvidenceReferences: container.decode(
+                    [String: String].self,
+                    forKey: .productVenvEvidenceReferences
+                ),
+                activationEvidenceReference: container.decode(
+                    String.self,
+                    forKey: .activationEvidenceReference
+                ),
+                finalReadbackEvidenceReference: container.decode(
+                    String.self,
+                    forKey: .finalReadbackEvidenceReference
+                ),
+                state: state
+            )
+        } catch {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Invalid managed-Python activation receipt",
+                underlyingError: error
+            ))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        let validated = try Self.validatedCopy(receipt)
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Self.schema, forKey: .schema)
+        try container.encode(validated.operationID, forKey: .operationID)
+        try container.encode(validated.sessionID, forKey: .sessionID)
+        try container.encode(validated.deploymentID, forKey: .deploymentID)
+        try container.encode(validated.runtimeIdentitySHA256, forKey: .runtimeIdentitySHA256)
+        try container.encode(validated.runtimeSlotIdentity, forKey: .runtimeSlotIdentity)
+        try container.encode(
+            validated.rollbackRuntimeIdentitySHA256,
+            forKey: .rollbackRuntimeIdentitySHA256
+        )
+        try container.encode(
+            validated.preparationEvidenceReferences,
+            forKey: .preparationEvidenceReferences
+        )
+        try container.encode(
+            validated.productVenvEvidenceReferences,
+            forKey: .productVenvEvidenceReferences
+        )
+        try container.encode(
+            validated.activationEvidenceReference,
+            forKey: .activationEvidenceReference
+        )
+        try container.encode(
+            validated.finalReadbackEvidenceReference,
+            forKey: .finalReadbackEvidenceReference
+        )
+        try container.encode(validated.state.rawValue, forKey: .state)
+    }
+
+    private static func validatedCopy(
+        _ receipt: ManagedPythonRuntimeActivationReceipt
+    ) throws -> ManagedPythonRuntimeActivationReceipt {
+        try ManagedPythonRuntimeActivationReceipt(
+            operationID: receipt.operationID,
+            sessionID: receipt.sessionID,
+            deploymentID: receipt.deploymentID,
+            runtimeIdentitySHA256: receipt.runtimeIdentitySHA256,
+            runtimeSlotIdentity: receipt.runtimeSlotIdentity,
+            rollbackRuntimeIdentitySHA256: receipt.rollbackRuntimeIdentitySHA256,
+            preparationEvidenceReferences: receipt.preparationEvidenceReferences,
+            productVenvEvidenceReferences: receipt.productVenvEvidenceReferences,
+            activationEvidenceReference: receipt.activationEvidenceReference,
+            finalReadbackEvidenceReference: receipt.finalReadbackEvidenceReference,
+            state: receipt.state
+        )
+    }
+}
+
+extension FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeActivationStoring {
+    public func loadPendingRuntimeActivation() async
+        -> Result<ManagedPythonRuntimeActivationReceipt?, ManagedPythonRuntimeActivationStoreFailure> {
+        do {
+            guard let root = try openSecureRootDirectory(createIfMissing: false) else {
+                return .success(nil)
+            }
+            defer { _ = Darwin.close(root) }
+            guard let data = try readSecureRegularFileIfPresent(
+                in: root,
+                fileName: Self.pendingActivationFileName
+            ) else {
+                return .success(nil)
+            }
+            return .success(try decodeActivation(data).receipt)
+        } catch {
+            return .failure(.rejected)
+        }
+    }
+
+    public func savePendingRuntimeActivation(_ receipt: ManagedPythonRuntimeActivationReceipt) async
+        -> Result<Void, ManagedPythonRuntimeActivationStoreFailure> {
+        do {
+            let record = try ManagedPythonRuntimeActivationStoreRecord(receipt: receipt)
+            let data = try encodeActivation(record)
+            let root = try requireSecureRootDirectory()
+            defer { _ = Darwin.close(root) }
+            if let currentData = try readSecureRegularFileIfPresent(
+                in: root,
+                fileName: Self.pendingActivationFileName
+            ) {
+                guard try decodeActivation(currentData) == record else {
+                    return .failure(.rejected)
+                }
+                return .success(())
+            }
+            try writeAtomically(
+                data,
+                in: root,
+                fileName: Self.pendingActivationFileName,
+                temporaryPrefix: ".managed-python-activation.tmp-"
+            )
+            return .success(())
+        } catch {
+            return .failure(.rejected)
+        }
+    }
+
+    public func clearPendingRuntimeActivation(_ receipt: ManagedPythonRuntimeActivationReceipt) async
+        -> Result<Void, ManagedPythonRuntimeActivationStoreFailure> {
+        do {
+            let record = try ManagedPythonRuntimeActivationStoreRecord(receipt: receipt)
+            guard let root = try openSecureRootDirectory(createIfMissing: false) else {
+                return .success(())
+            }
+            defer { _ = Darwin.close(root) }
+            guard let currentData = try readSecureRegularFileIfPresent(
+                in: root,
+                fileName: Self.pendingActivationFileName
+            ) else {
+                return .success(())
+            }
+            guard try decodeActivation(currentData) == record else {
+                return .failure(.rejected)
+            }
+            try removeSecureRegularFile(in: root, fileName: Self.pendingActivationFileName)
+            return .success(())
+        } catch {
+            return .failure(.rejected)
+        }
+    }
+
+    private func encodeActivation(_ record: ManagedPythonRuntimeActivationStoreRecord) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(record)
+        guard !data.isEmpty, data.count <= Self.maximumRecordBytes else {
+            throw FileManagedPythonRuntimeRecoveryStoreError.insecure
+        }
+        return data
+    }
+
+    private func decodeActivation(_ data: Data) throws -> ManagedPythonRuntimeActivationStoreRecord {
+        try validateStrictActivationShape(data)
+        let record = try JSONDecoder().decode(
+            ManagedPythonRuntimeActivationStoreRecord.self,
+            from: data
+        )
+        guard try encodeActivation(record) == data else {
+            throw FileManagedPythonRuntimeRecoveryStoreError.insecure
+        }
+        return record
+    }
+
+    private func validateStrictActivationShape(_ data: Data) throws {
+        var reader = try StrictJSONResourceReader(data: data)
+        guard let fields = try reader.parseDocument().objectValue,
+              Set(fields.keys) == Set([
+                "schema", "operation_id", "session_id", "deployment_id",
+                "runtime_identity_sha256", "runtime_slot_identity",
+                "rollback_runtime_identity_sha256", "preparation_evidence_references",
+                "product_venv_evidence_references", "activation_evidence_reference",
+                "final_readback_evidence_reference", "state",
+              ]),
+              fields["schema"]?.stringValue != nil,
+              fields["operation_id"]?.stringValue != nil,
+              fields["session_id"]?.stringValue != nil,
+              fields["deployment_id"]?.stringValue != nil,
+              fields["runtime_identity_sha256"]?.stringValue != nil,
+              fields["runtime_slot_identity"]?.stringValue != nil,
+              fields["rollback_runtime_identity_sha256"] != nil,
+              let preparation = fields["preparation_evidence_references"]?.arrayValue,
+              preparation.count == 2,
+              preparation.allSatisfy({ $0.stringValue != nil }),
+              let venvs = fields["product_venv_evidence_references"]?.objectValue,
+              !venvs.isEmpty,
+              venvs.values.allSatisfy({ $0.stringValue != nil }),
+              fields["activation_evidence_reference"]?.stringValue != nil,
+              fields["final_readback_evidence_reference"]?.stringValue != nil,
+              fields["state"]?.stringValue != nil else {
+            throw FileManagedPythonRuntimeRecoveryStoreError.insecure
+        }
+        guard let rollback = fields["rollback_runtime_identity_sha256"] else {
+            throw FileManagedPythonRuntimeRecoveryStoreError.insecure
+        }
+        switch rollback {
+        case .string, .null:
+            break
+        default:
+            throw FileManagedPythonRuntimeRecoveryStoreError.insecure
+        }
     }
 }
 

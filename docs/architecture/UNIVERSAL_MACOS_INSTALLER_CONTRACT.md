@@ -1,6 +1,6 @@
 # Universal macOS Installer contract
 
-**Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a durable platform-neutral managed-Python executor kernel with an atomic terminal-receipt-to-installer-journal bridge, a native wizard shell, an internal read-only C-3a catalog-admission coordinator that composes sealed trust, exact transport, independently injected time evidence and a read-only anti-replay anchor, a native source-level exact component-combination selector for the digest-pinned index, credential-free native transport plus private no-follow staging/readback for the four exact managed-Python identity assets, a read-only native archive/Mach-O inspector, a closed source-level runtime-slot mutation coordinator behind an injected privilege seam, a cleanup-enforcing preparation coordinator with a host-wide nonblocking operation lease, private atomic pending-record, cleanup-only restart integration and descriptor-safe acquisition-orphan reconciliation, and a separately locked native coordinator for exact product-venv readiness, activation, rollback retention and final readback. No independently reviewed production time-evidence adapter, concrete privileged helper, durable native terminal-receipt bridge, released executor-journal wiring, composition-session producer, product provisioner adapter, published production runtime, released mutation wiring, or production deployment is certified.
+**Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a durable platform-neutral managed-Python executor kernel with an atomic terminal-receipt-to-installer-journal bridge, a native wizard shell, an internal read-only C-3a catalog-admission coordinator that composes sealed trust, exact transport, independently injected time evidence and a read-only anti-replay anchor, a native source-level exact component-combination selector for the digest-pinned index, credential-free native transport plus private no-follow staging/readback for the four exact managed-Python identity assets, a read-only native archive/Mach-O inspector, a closed source-level runtime-slot mutation coordinator behind an injected privilege seam, a cleanup-enforcing preparation coordinator with a host-wide nonblocking operation lease, private atomic pending-record, cleanup-only restart integration and descriptor-safe acquisition-orphan reconciliation, and a separately locked native coordinator for exact product-venv readiness, activation, rollback retention, final readback and durable private `READY`-receipt recovery. No independently reviewed production time-evidence adapter, concrete privileged helper, durable native terminal-receipt bridge, released executor-journal wiring, composition-session producer, product provisioner adapter, published production runtime, released mutation wiring, or production deployment is certified.
 
 This contract implements [ADR-0004](adr/ADR-0004-universal-installer-artifact-composition.md) and [ADR-0006](adr/ADR-0006-server-deployment-and-discovery.md). It is not a second EP, Forge, or Workspace installation engine.
 
@@ -693,8 +693,11 @@ The native activation coordinator continues only from an exact preparation
 receipt. It derives install, upgrade or no-change from trusted active-runtime
 readback, idempotently ensures and re-reads every session-bound product venv,
 preserves the upgrade rollback and every existing retained runtime, and
-requires final active-runtime readback under the host-wide lease. Its `READY`
-receipt is not yet the durable platform-neutral terminal receipt or a parent
+requires final active-runtime readback under the host-wide lease. It then
+atomically stores one canonical private `READY` receipt. An exact retry reloads
+that receipt and freshly verifies all bound venvs and the active runtime before
+returning it; conflicting or insecure state fails closed. This durable native
+receipt is not yet the platform-neutral terminal receipt or a parent
 installer-journal event.
 
 The structural verifier reads V2 trust and V1 provenance resources directly
