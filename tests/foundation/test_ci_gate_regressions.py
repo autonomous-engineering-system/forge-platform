@@ -21,6 +21,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 COVERAGE = ROOT / "scripts/check_managed_installer_swift_coverage.py"
 PYTHON_COVERAGE = ROOT / "scripts/check_managed_installer_python_coverage.py"
+SWIFT_COVERAGE_EXPORT = ROOT / "scripts/export_managed_installer_swift_coverage.sh"
 READINESS = ROOT / "scripts/ci/verify_macos_offline_signing_host.sh"
 spec = importlib.util.spec_from_file_location("swift_coverage_gate", COVERAGE)
 assert spec is not None and spec.loader is not None
@@ -221,6 +222,21 @@ class PythonCoverageLineTableTests(unittest.TestCase):
         self.assertTrue({2, 3, 4}.isdisjoint(executable))
 
 
+class SwiftCoverageExportTests(unittest.TestCase):
+    def test_export_combines_gui_core_and_cli_test_bundles(self) -> None:
+        text = SWIFT_COVERAGE_EXPORT.read_text(encoding="utf-8")
+        self.assertIn("default.profdata", text)
+        self.assertIn("xcrun llvm-cov export", text)
+        for product in (
+            "ForgePlatformInstallerPackageTests",
+            "ForgePlatformInstallerTests",
+            "ForgePlatformInstallerCoreTests",
+            "ForgePlatformInstallerCLITests",
+        ):
+            self.assertIn(product, text)
+        self.assertIn('coverage_objects+=(-object "$binary")', text)
+
+
 STUB = r'''#!SHEBANG
 import json, os, sys
 from pathlib import Path
@@ -412,6 +428,7 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertNotIn("continue-on-error", hosted)
         self.assertIn("persist-credentials: false", hosted)
         self.assertIn(' --base-ref "$COVERAGE_BASE_SHA"', hosted)
+        self.assertIn("export_managed_installer_swift_coverage.sh", hosted)
 
     def test_build_runner_is_exact_main_credentialless_and_group_scoped(self) -> None:
         text = (ROOT / ".github/workflows/macos-installer-native-integration.yml").read_text()
@@ -433,6 +450,7 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn("group: forge-platform-macmini-build", text)
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn(' --base-ref "$COVERAGE_BASE_SHA"', native)
+        self.assertIn("export_managed_installer_swift_coverage.sh", native)
         self.assertNotIn("forge-platform-signer", text)
         self.assertNotIn("FORGE_PLATFORM_CODESIGN_IDENTITY", text)
         self.assertNotIn("continue-on-error", text)
