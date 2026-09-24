@@ -3373,6 +3373,8 @@ class StandaloneInstallerJournal:
     def start(self, record: InstallerOperationRecord) -> InstallerOperationRecord:
         if not isinstance(record, InstallerOperationRecord):
             raise ValueError("installer journal record is invalid")
+        if record.state != "PLANNED" or len(record.events) != 1:
+            raise UniversalInstallerError("installer journal must start from one PLANNED event")
         with self._host_lock():
             with self._lock(record.operation_id):
                 existing = self.load(record.operation_id)
@@ -3389,12 +3391,49 @@ class StandaloneInstallerJournal:
                 return record
 
     def advance(self, operation_id: str, state: str, evidence: Mapping[str, object]) -> InstallerOperationRecord:
+        if state == "MANAGED_TOOLS":
+            raise UniversalInstallerError(
+                "MANAGED_TOOLS requires the managed Python terminal-receipt bridge"
+            )
         with self._host_lock():
             with self._lock(operation_id):
                 existing = self.load(operation_id)
                 if existing is None:
                     raise UniversalInstallerError("installer operation journal is unavailable")
                 updated = existing.transition(state, evidence)
+                self._write(updated)
+                return updated
+
+    def advance_managed_tools(
+        self,
+        operation_id: str,
+        original_plan: CompositionPlan,
+        request: object,
+        receipt: object,
+        post_tool_plan: CompositionPlan,
+        tool_receipts: Mapping[str, str],
+    ) -> InstallerOperationRecord:
+        """Atomically admit an exact managed-Python terminal receipt.
+
+        The local import avoids making the policy module depend on the
+        executor during module initialization.
+        """
+
+        from .managed_python_runtime_executor import ManagedPythonRuntimeJournalBridge
+
+        with self._host_lock():
+            with self._lock(operation_id):
+                existing = self.load(operation_id)
+                if existing is None:
+                    raise UniversalInstallerError("installer operation journal is unavailable")
+                updated = ManagedPythonRuntimeJournalBridge.advance_record(
+                    existing,
+                    original_plan,
+                    request,
+                    receipt,
+                    post_tool_plan,
+                    tool_receipts,
+                )
                 self._write(updated)
                 return updated
 

@@ -29,7 +29,9 @@ from typing import Iterator, Mapping, Protocol
 
 from .universal_installer import (
     MANAGED_PYTHON_ROOT_IDENTITY,
+    CompositionPlan,
     DownloadIdentity,
+    InstallerOperationRecord,
     ManagedPythonRuntimeAction,
     ManagedPythonRuntimeIdentity,
     ManagedPythonRuntimeReadback,
@@ -496,6 +498,8 @@ class ManagedPythonRuntimeExecutionReceipt:
             raise ValueError("post-tool plan fingerprint must be a SHA-256 hex value")
         for reference in tool_receipt_references:
             _receipt(reference, "generic managed-tool receipt reference")
+        if not tool_receipt_references:
+            tool_receipt_references = (self.evidence_reference,)
         return {
             "result": "TOOLS_VERIFIED",
             "tool_receipt_references": list(tool_receipt_references),
@@ -504,6 +508,103 @@ class ManagedPythonRuntimeExecutionReceipt:
             "retained_python_runtime_identity": self.rollback_runtime_identity,
             "post_tool_plan_fingerprint": post_tool_plan_fingerprint,
         }
+
+
+class ManagedPythonRuntimeJournalBridge:
+    """Admit one exact executor receipt into a frozen installer journal.
+
+    The bridge accepts both the original plan that created the journal and a
+    fresh post-tool plan. It permits only tool readbacks/actions to change and
+    requires the fresh plan to be ready for product dispatch. The durable
+    journal owns atomic persistence; this class only validates and constructs
+    the next immutable record.
+    """
+
+    @staticmethod
+    def advance_record(
+        record: InstallerOperationRecord,
+        original_plan: CompositionPlan,
+        request: ManagedPythonRuntimeExecutionRequest,
+        receipt: ManagedPythonRuntimeExecutionReceipt,
+        post_tool_plan: CompositionPlan,
+        tool_receipts: Mapping[str, str],
+    ) -> InstallerOperationRecord:
+        if not isinstance(record, InstallerOperationRecord) or record.state != "PLANNED":
+            raise UniversalInstallerError("managed Python journal bridge requires a PLANNED record")
+        if not isinstance(original_plan, CompositionPlan) or (
+            InstallerOperationRecord.create(record.operation_id, original_plan) != record
+        ):
+            raise UniversalInstallerError("managed Python journal bridge original plan does not match the journal")
+        if not isinstance(request, ManagedPythonRuntimeExecutionRequest) or (
+            request.operation_id != record.operation_id
+            or request.runtime_action != original_plan.python_runtime_action
+            or request.product_venvs != original_plan.product_venvs
+        ):
+            raise UniversalInstallerError("managed Python execution request does not match the frozen plan")
+        if not isinstance(receipt, ManagedPythonRuntimeExecutionReceipt) or (
+            receipt.operation_id != request.operation_id
+            or receipt.request_fingerprint != request.fingerprint()
+            or receipt.runtime_identity != record.python_runtime_identity
+            or receipt.runtime_identity != request.target.identity_digest
+            or receipt.rollback_runtime_identity != record.python_runtime_rollback_identity
+            or receipt.rollback_runtime_identity != request.rollback_runtime_identity
+            or tuple(
+                component for component, _ in receipt.product_venv_evidence_references
+            ) != tuple(requirement.component_identity for requirement in request.product_venvs)
+        ):
+            raise UniversalInstallerError("managed Python terminal receipt does not match the frozen request")
+        if not isinstance(post_tool_plan, CompositionPlan):
+            raise UniversalInstallerError("managed Python journal bridge requires a fresh post-tool plan")
+        if ManagedPythonRuntimeJournalBridge._stable_plan_material(original_plan) != (
+            ManagedPythonRuntimeJournalBridge._stable_plan_material(post_tool_plan)
+        ):
+            raise UniversalInstallerError("post-tool plan changed immutable installer or composition inputs")
+        if (
+            post_tool_plan.requires_managed_tool_reconciliation
+            or not post_tool_plan.permits_product_operation_dispatch
+            or any(action.action != "NO_CHANGE" for action in post_tool_plan.managed_tool_actions)
+            or post_tool_plan.python_runtime_action.action != "NO_CHANGE"
+            or post_tool_plan.python_runtime_action.requirement != request.target
+            or post_tool_plan.python_runtime_action.readback.runtime_identity != receipt.runtime_identity
+        ):
+            raise UniversalInstallerError("post-tool plan does not verify exact managed-tool readback")
+
+        expected_tools = tuple(
+            action.identity
+            for action in original_plan.managed_tool_actions
+            if action.action != "NO_CHANGE"
+        )
+        if not isinstance(tool_receipts, Mapping) or set(tool_receipts) != set(expected_tools):
+            raise UniversalInstallerError("generic managed-tool receipts do not match the frozen actions")
+        references: list[str] = []
+        for identity in expected_tools:
+            reference = tool_receipts[identity]
+            _receipt(reference, f"managed-tool {identity} receipt reference")
+            references.append(reference)
+
+        evidence = receipt.installer_journal_evidence(
+            post_tool_plan.fingerprint(),
+            tuple(references),
+        )
+        return record.transition("MANAGED_TOOLS", evidence)
+
+    @staticmethod
+    def _stable_plan_material(plan: CompositionPlan) -> tuple[object, ...]:
+        return (
+            plan.composition_id,
+            plan.manifest_digest,
+            plan.installer_context,
+            plan.catalog_identity,
+            plan.installed_composition,
+            plan.composition_route_failures,
+            plan.installer_unmet_requirements,
+            plan.host_preflight,
+            plan.provider_gate,
+            tuple(action.requirement for action in plan.managed_tool_actions),
+            plan.python_runtime_action.requirement,
+            plan.product_venvs,
+            plan.component_diffs,
+        )
 
 
 class ExactManagedPythonAssetTransport(Protocol):

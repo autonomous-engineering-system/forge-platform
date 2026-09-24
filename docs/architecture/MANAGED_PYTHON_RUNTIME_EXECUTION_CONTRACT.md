@@ -172,8 +172,9 @@ fresh runtime-slot receipt; and discards the private staging set before
 returning. Only a receipt that rebinds the exact session, deployment,
 operation, runtime, archive, inspection and slot evidence can become `READY`.
 Any cleanup failure becomes `cleanupPending` and blocks success. This
-coordinator does not persist a journal, provide durable cleanup recovery,
-implement the privilege seam or expose a released-app route.
+coordinator uses a private pending-record store for exact staging cleanup but
+does not itself persist the parent installer-operation journal, implement the
+privilege seam or expose a released-app route.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -217,6 +218,17 @@ readback. It can project the exact Python fields into the parent installer
 `MANAGED_TOOLS` journal event only together with a fresh post-tool plan
 fingerprint.
 
+The platform-neutral bridge now makes that projection atomic in the durable
+installer journal. It reconstructs the original `PLANNED` record from the
+original plan, binds the terminal receipt to the exact executor request and
+component-venv set, admits only the frozen runtime and rollback identities,
+and recomputes the fresh post-tool plan fingerprint. The fresh plan must keep
+all installer, catalog, composition, provider and product inputs stable and
+must report every generic managed tool plus the exact Python runtime as
+`NO_CHANGE` before `MANAGED_TOOLS` can be persisted. The generic journal
+advance API rejects that state, and a durable journal cannot be started from
+an already advanced record.
+
 The executor does not verify an outer catalog, select a composition, install a
 product, modify product data or services, publish artifacts, store credentials,
 or authorize cleanup. The native session layer verifies the exact nested
@@ -232,7 +244,8 @@ While holding the host-wide operation lease, it also reconciles unrecorded
 staging directories left by an interrupted acquisition. That reconciliation
 accepts only the fixed operation-name shape and fixed asset names, revalidates
 every directory and file by descriptor, and fails closed on ownership, mode,
-link, type, size or name drift. It is not assembled into the released runtime
-or wired into executor journaling. A concrete reviewed privileged adapter,
+link, type, size or name drift. The platform-neutral terminal-receipt bridge is
+implemented, but this native preparation receipt is not assembled into that
+bridge or the released runtime. A concrete reviewed privileged adapter,
 released mutation wiring and an actual protected arm64 runtime publication
 remain required before operational installation can be claimed.

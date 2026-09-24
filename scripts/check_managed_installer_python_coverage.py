@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGETS = (
     "forge_platform/component_operations.py",
     "forge_platform/universal_installer.py",
+    "forge_platform/managed_python_runtime_executor.py",
     "forge_platform/managed_deployments.py",
     "forge_platform/managed_installer.py",
     "forge_platform/managed_install_flow.py",
@@ -44,6 +45,7 @@ TESTS = (
     "tests/component_operations/test_ep_system_provisioner_adapter.py",
     "tests/component_operations/test_forge_server_adapter.py",
     "tests/installer/test_universal_installer.py",
+    "tests/installer/test_managed_python_runtime_executor.py",
     "tests/installer/test_managed_deployments.py",
     "tests/installer/test_managed_installer.py",
     "tests/installer/test_managed_install_flow.py",
