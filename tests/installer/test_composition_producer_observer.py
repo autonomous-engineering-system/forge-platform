@@ -273,7 +273,7 @@ class CompositionProducerObserverTests(unittest.TestCase):
         path.write_bytes(canonical(config))
         return path
 
-    def test_valid_forge_ep_and_missing_workspace_are_reported_fail_closed(self) -> None:
+    def test_valid_forge_ep_and_missing_optional_workspace_only_report_external_blockers(self) -> None:
         config, documents = self.inputs()
         with tempfile.TemporaryDirectory() as temporary:
             path = self.write_config(Path(temporary), config)
@@ -286,14 +286,40 @@ class CompositionProducerObserverTests(unittest.TestCase):
         self.assertEqual(by_identity["forge-runtime"]["version"], "2.7.34")
         self.assertEqual(by_identity["engineering-platform-server"]["version"], "2.3.102")
         self.assertEqual(by_identity["workspace-server-client"]["status"], "NO_PUBLIC_RELEASE")
+        self.assertFalse(by_identity["workspace-server-client"]["composition_eligible"])
         self.assertEqual(
             report["blockers"],
             [
                 "managed-git:UNCONFIGURED",
                 "managed-python-runtime:UNCONFIGURED",
-                "workspace-server-client:NO_PUBLIC_RELEASE",
             ],
         )
+
+    def test_valid_forge_ep_are_ready_for_review_without_optional_workspace(self) -> None:
+        config, documents = self.inputs()
+        config["external_inputs"] = []
+        with tempfile.TemporaryDirectory() as temporary:
+            report = OBSERVER.observe(
+                config_path=self.write_config(Path(temporary), config),
+                observed_at=self.observed_at,
+                fetch=FakeFetch(documents),
+            )
+        self.assertEqual(report["status"], "READY")
+        self.assertEqual(report["manifest_generation"], "READY_FOR_REVIEW")
+        self.assertEqual(report["blockers"], [])
+
+    def test_missing_required_forge_release_blocks_review(self) -> None:
+        config, documents = self.inputs()
+        config["external_inputs"] = []
+        del documents["https://api.github.com/repos/pcvantol/forge/releases/latest"]
+        with tempfile.TemporaryDirectory() as temporary:
+            report = OBSERVER.observe(
+                config_path=self.write_config(Path(temporary), config),
+                observed_at=self.observed_at,
+                fetch=FakeFetch(documents),
+            )
+        self.assertEqual(report["manifest_generation"], "BLOCKED")
+        self.assertEqual(report["blockers"], ["forge-runtime:NO_PUBLIC_RELEASE"])
 
     def test_workspace_source_bundle_is_observed_but_not_installable(self) -> None:
         config, documents = self.inputs()
@@ -306,8 +332,9 @@ class CompositionProducerObserverTests(unittest.TestCase):
             )
         workspace = report["producer_observations"][2]
         self.assertEqual(workspace["status"], "OBSERVED_NOT_INSTALLABLE")
+        self.assertFalse(workspace["composition_eligible"])
         self.assertEqual(workspace["artifacts"][0]["kind"], "source-bundle")
-        self.assertIn("workspace-server-client:OBSERVED_NOT_INSTALLABLE", report["blockers"])
+        self.assertNotIn("workspace-server-client:OBSERVED_NOT_INSTALLABLE", report["blockers"])
 
     def test_receipt_digest_and_source_drift_are_errors(self) -> None:
         config, documents = self.inputs()
@@ -409,6 +436,8 @@ class CompositionProducerObserverTests(unittest.TestCase):
         self.assertIn("runs-on: ubuntu-24.04", workflow)
         self.assertIn("observe_composition_producer_releases.py", workflow)
         self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", workflow)
+        self.assertIn("retention-days: 2", workflow)
+        self.assertNotIn("retention-days: 14", workflow)
         self.assertNotIn("contents: write", workflow)
         self.assertNotIn("pull-requests: write", workflow)
         self.assertNotIn("forge-platform-build", workflow)
