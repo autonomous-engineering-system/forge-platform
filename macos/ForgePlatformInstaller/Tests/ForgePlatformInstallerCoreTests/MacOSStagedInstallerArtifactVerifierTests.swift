@@ -3,6 +3,46 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class MacOSStagedInstallerArtifactVerifierTests: XCTestCase {
+    func testProductionEvidenceInspectorRejectsInvalidAndUnsealedAppBundles() async throws {
+        let fixture = try makeFixture()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("forge-platform-staged-evidence-tests-\(UUID().uuidString.lowercased())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let contents = root.appendingPathComponent("Unsealed.app/Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        let plist: [String: Any] = [
+            "CFBundleIdentifier": fixture.release.expectedBundleIdentifier,
+            "CFBundleName": "Unsealed",
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": fixture.release.release.version.description,
+        ]
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            .write(to: contents.appendingPathComponent("Info.plist"))
+        let appURL = contents.deletingLastPathComponent()
+
+        let invalidInspector = MacOSStagedInstallerBundleEvidenceInspector(
+            codeSigningInspector: StagedEvidenceSigningInspector(.success(fixture.evidence.codeSigning)),
+            bundleValidator: StagedEvidenceBundleValidator()
+        )
+        let invalid = await invalidInspector.inspectStagedInstallerBundle(
+            at: URL(string: "https://example.invalid/Installer.app")!
+        )
+        let unsealed = await invalidInspector.inspectStagedInstallerBundle(at: appURL)
+        let signingFailure = await MacOSStagedInstallerBundleEvidenceInspector(
+            codeSigningInspector: StagedEvidenceSigningInspector(
+                .failure(InstallerSelfUpdateFailure(.currentBundleUnavailable))
+            ),
+            bundleValidator: StagedEvidenceBundleValidator()
+        ).inspectStagedInstallerBundle(at: appURL)
+
+        XCTAssertEqual(failureCode(invalid), .codeSignatureVerificationFailed)
+        XCTAssertEqual(failureCode(unsealed), .sealedReleaseTrustConfigurationMismatch)
+        XCTAssertEqual(failureCode(signingFailure), .codeSignatureVerificationFailed)
+        let unavailable = await UnavailableMacOSInstallerNotarizationAssessor()
+            .assessNotarization(of: appURL, receiptReference: "receipt:test")
+        XCTAssertEqual(failureCode(unavailable), .notarizationVerificationFailed)
+    }
+
     func testExactStagedEvidenceSatisfiesEveryVerificationLayer() async throws {
         let fixture = try makeFixture()
         let digest = DigestVerifierSpy()
@@ -217,6 +257,28 @@ final class MacOSStagedInstallerArtifactVerifierTests: XCTestCase {
         XCTAssertEqual(failureCode(trustResolverResult), .sealedReleaseTrustConfigurationMismatch)
         XCTAssertEqual(failureCode(provenanceInspectorResult), .sealedReleaseProvenanceMismatch)
         XCTAssertEqual(failureCode(notarizationInspectorResult), .notarizationVerificationFailed)
+    }
+}
+
+private struct StagedEvidenceSigningInspector: MacOSInstallerBundleCodeSigningInspecting {
+    let result: Result<MacOSInstallerBundleCodeSigningEvidence, InstallerSelfUpdateFailure>
+
+    init(_ result: Result<MacOSInstallerBundleCodeSigningEvidence, InstallerSelfUpdateFailure>) {
+        self.result = result
+    }
+
+    func inspectSealedInstallerBundle(
+        at bundleURL: URL
+    ) async -> Result<MacOSInstallerBundleCodeSigningEvidence, InstallerSelfUpdateFailure> {
+        result
+    }
+}
+
+private struct StagedEvidenceBundleValidator: SealedInstallerBundleValidating {
+    func validateSealedInstallerBundle(
+        at bundleURL: URL
+    ) -> Result<Void, InstallerSelfUpdateFailure> {
+        .success(())
     }
 }
 

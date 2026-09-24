@@ -152,6 +152,40 @@ final class MacOSInstallerBundleIdentityInspectorTests: XCTestCase {
         )
     }
 
+    func testProductionCodeSigningPrimitivesInspectAnAdHocThinARM64Bundle() async throws {
+        let bundleURL = try makeAdHocSignedInstallerBundle()
+        defer { try? FileManager.default.removeItem(at: bundleURL.deletingLastPathComponent()) }
+        let inspector = MacOSInstallerBundleCodeSigningInspector()
+
+        let staticCode = try inspector.createAndValidateStaticCode(at: bundleURL)
+        XCTAssertThrowsError(try inspector.copySigningInformation(from: staticCode))
+        let digest = try inspector.fullCodeDirectorySHA256(for: bundleURL)
+        XCTAssertTrue(InstallerSelfUpdateValidation.isSHA256(digest))
+
+        let result = await inspector.inspectSealedInstallerBundle(at: bundleURL)
+        XCTAssertEqual(result, .failure(InstallerSelfUpdateFailure(.currentBundleUnavailable)))
+        let missing = await inspector.inspectSealedInstallerBundle(
+            at: bundleURL.deletingLastPathComponent().appendingPathComponent("Missing.app")
+        )
+        XCTAssertEqual(missing, .failure(InstallerSelfUpdateFailure(.currentBundleUnavailable)))
+    }
+
+    func testBoundedCodeSignOutputCollectorReturnsSmallDataAndRejectsOverflow() throws {
+        let accepted = BoundedProcessOutputCollector(maximumBytes: 8)
+        let acceptedPipe = Pipe()
+        try acceptedPipe.fileHandleForWriting.write(contentsOf: Data("digest".utf8))
+        try acceptedPipe.fileHandleForWriting.close()
+        accepted.consume(acceptedPipe.fileHandleForReading)
+        XCTAssertEqual(accepted.collectedData(), Data("digest".utf8))
+
+        let rejected = BoundedProcessOutputCollector(maximumBytes: 2)
+        let rejectedPipe = Pipe()
+        try rejectedPipe.fileHandleForWriting.write(contentsOf: Data("overflow".utf8))
+        try rejectedPipe.fileHandleForWriting.close()
+        rejected.consume(rejectedPipe.fileHandleForReading)
+        XCTAssertNil(rejected.collectedData())
+    }
+
     private func makeFixture() throws -> Fixture {
         let version = try InstallerVersion("1.2.3")
         let sourceRevision = String(repeating: "a", count: 40)
@@ -212,6 +246,41 @@ final class MacOSInstallerBundleIdentityInspectorTests: XCTestCase {
             )
         )
     }
+}
+
+private func makeAdHocSignedInstallerBundle() throws -> URL {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("forge-platform-code-signing-tests-\(UUID().uuidString.lowercased())")
+    let contents = root.appendingPathComponent("Coverage.app/Contents", isDirectory: true)
+    let executableDirectory = contents.appendingPathComponent("MacOS", isDirectory: true)
+    try FileManager.default.createDirectory(at: executableDirectory, withIntermediateDirectories: true)
+    let executable = executableDirectory.appendingPathComponent("Coverage")
+    try FileManager.default.copyItem(
+        at: try XCTUnwrap(Bundle(for: MacOSInstallerBundleIdentityInspectorTests.self).executableURL),
+        to: executable
+    )
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    let plist: [String: Any] = [
+        "CFBundleExecutable": "Coverage",
+        "CFBundleIdentifier": "com.example.coverage",
+        "CFBundleName": "Coverage",
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": "1.2.3",
+    ]
+    try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        .write(to: contents.appendingPathComponent("Info.plist"))
+    let bundleURL = contents.deletingLastPathComponent()
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+    process.arguments = ["--force", "--sign", "-", "--identifier", "com.example.coverage", bundleURL.path]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw CocoaError(.executableNotLoadable)
+    }
+    return bundleURL
 }
 
 private struct Fixture {

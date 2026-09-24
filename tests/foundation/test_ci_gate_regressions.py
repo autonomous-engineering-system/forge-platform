@@ -31,15 +31,10 @@ python_spec = importlib.util.spec_from_file_location("python_coverage_gate", PYT
 assert python_spec is not None and python_spec.loader is not None
 python_gate = importlib.util.module_from_spec(python_spec)
 python_spec.loader.exec_module(python_gate)
-FILES = (
-    "ForgePlatformInstallerCore/InstallerDomain.swift",
-    "ForgePlatformInstallerCore/ManagedDeploymentDomain.swift",
-    "ForgePlatformInstallerCore/ManagedCompositionSessionPlan.swift",
-    "ForgePlatformInstaller/ForgePlatformInstallerApp.swift",
-    "ForgePlatformInstaller/InstallerApplicationStartup.swift",
-    "ForgePlatformInstallerCore/ReleasedInstallerStartup.swift",
-    "ForgePlatformInstallerCore/SelfUpdateCoordinator.swift",
-)
+FILES = tuple(sorted(
+    path.relative_to(ROOT / gate.SOURCE_PREFIX).as_posix()
+    for path in (ROOT / gate.SOURCE_PREFIX).rglob("*.swift")
+))
 
 
 def record(name: str, covered: int = 1000, count: int = 1000, percent: float = 100.0) -> dict:
@@ -66,7 +61,7 @@ class CoverageContractTests(unittest.TestCase):
         self.assertNotEqual(code, 0, output)
         self.assertNotIn("COVERAGE=PASS", output)
 
-    def test_happy_path_has_all_seven_required_files(self) -> None:
+    def test_happy_path_has_every_production_swift_file(self) -> None:
         code, output = self.invoke(payload())
         self.assertEqual(code, 0, output)
         self.assertEqual(output.count("SWIFT_FILE_COVERAGE"), len(FILES))
@@ -80,13 +75,13 @@ class CoverageContractTests(unittest.TestCase):
         value = {"data": [{"files": [record(name, 80201, 100000, 80.20) for name in FILES]}]}
         self.assertEqual(self.invoke(value)[0], 0)
 
-    def test_changed_startup_and_self_update_files_cannot_be_missing(self) -> None:
-        for name in FILES[-3:]:
+    def test_production_files_cannot_be_missing(self) -> None:
+        for name in FILES:
             with self.subTest(name=name):
                 self.reject({"data": [{"files": [record(other) for other in FILES if other != name]}]})
 
-    def test_changed_startup_and_self_update_files_cannot_have_zero_coverage(self) -> None:
-        for name in FILES[-3:]:
+    def test_production_files_cannot_have_zero_coverage(self) -> None:
+        for name in FILES:
             with self.subTest(name=name):
                 records = [record(other, 0, 1000, 0) if other == name else record(other) for other in FILES]
                 self.reject({"data": [{"files": records}]})
@@ -162,7 +157,7 @@ class CoverageContractTests(unittest.TestCase):
         with mock.patch.object(gate.subprocess, "run", side_effect=subprocess.TimeoutExpired(["git"], 30)):
             self.reject(payload(), "--base-ref", "a" * 40)
 
-    def test_real_git_diff_adds_new_and_renamed_production_files(self) -> None:
+    def test_tracked_inventory_follows_new_and_renamed_production_files(self) -> None:
         with tempfile.TemporaryDirectory(prefix="forge-coverage-git-") as tmp:
             root = Path(tmp)
             def git(*args: str) -> str:

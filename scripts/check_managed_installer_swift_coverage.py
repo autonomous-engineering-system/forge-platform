@@ -12,22 +12,12 @@ import subprocess
 import sys
 
 
-TARGET_SUFFIXES = (
-    "/Sources/ForgePlatformInstallerCore/InstallerDomain.swift",
-    "/Sources/ForgePlatformInstallerCore/ManagedDeploymentDomain.swift",
-    "/Sources/ForgePlatformInstallerCore/ManagedCompositionSessionPlan.swift",
-    "/Sources/ForgePlatformInstaller/ForgePlatformInstallerApp.swift",
-    "/Sources/ForgePlatformInstaller/InstallerApplicationStartup.swift",
-    "/Sources/ForgePlatformInstallerCore/ReleasedInstallerStartup.swift",
-    "/Sources/ForgePlatformInstallerCore/SelfUpdateCoordinator.swift",
-)
 SOURCE_PREFIX = "macos/ForgePlatformInstaller/Sources/"
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def required_targets(base_ref: str | None) -> tuple[str, ...]:
-    """A missing/invalid supplied Git baseline must never narrow the coverage scope."""
-    targets = set(TARGET_SUFFIXES)
+    """Require every tracked production Swift file; a baseline only proves ancestry."""
     if base_ref is not None:
         if re.fullmatch(r"[0-9a-f]{40}", base_ref) is None:
             raise ValueError("coverage base must be an exact 40-character commit SHA")
@@ -35,18 +25,23 @@ def required_targets(base_ref: str | None) -> tuple[str, ...]:
             ["git", "merge-base", "--is-ancestor", base_ref, "HEAD"],
             cwd=ROOT, check=True, capture_output=True, timeout=30,
         )
-        result = subprocess.run(
-            ["git", "diff", "--name-only", "-z", "--no-renames",
-             "--diff-filter=ACMT", base_ref, "HEAD", "--", SOURCE_PREFIX],
-            cwd=ROOT, check=True, capture_output=True, timeout=30,
-        )
-        for path in result.stdout.decode("utf-8").split("\0"):
-            if path.startswith(SOURCE_PREFIX) and path.endswith(".swift"):
-                if any(part in {"", ".", ".."} for part in path.split("/")) or any(
-                    ord(character) < 32 for character in path
-                ):
-                    raise ValueError("unsafe production source path")
-                targets.add("/Sources/" + path.removeprefix(SOURCE_PREFIX))
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--", SOURCE_PREFIX],
+        cwd=ROOT, check=True, capture_output=True, timeout=30,
+    )
+    targets: set[str] = set()
+    for path in result.stdout.decode("utf-8").split("\0"):
+        if not path:
+            continue
+        if not path.startswith(SOURCE_PREFIX) or not path.endswith(".swift"):
+            raise ValueError("unexpected production source path")
+        if any(part in {"", ".", ".."} for part in path.split("/")) or any(
+            ord(character) < 32 for character in path
+        ):
+            raise ValueError("unsafe production source path")
+        targets.add("/Sources/" + path.removeprefix(SOURCE_PREFIX))
+    if not targets:
+        raise ValueError("no tracked production Swift files")
     return tuple(sorted(targets))
 
 

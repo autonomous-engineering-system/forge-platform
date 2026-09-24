@@ -3,6 +3,19 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class MacOSInstallerAtomicHandoffTests: XCTestCase {
+    func testProductionLauncherPassesARealAppDirectoryToLaunchServicesAndFailsClosed() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("forge-platform-launch-services-tests-\(UUID().uuidString.lowercased())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bundle = root.appendingPathComponent("Invalid.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+
+        let result = await MacOSInstallerApplicationLauncher()
+            .launchFreshInstallerApplication(at: bundle)
+
+        XCTAssertEqual(failureCode(result), .atomicHandoffFailed)
+    }
+
     func testExactVerifiedStagedBundleLaunchesFreshInstanceAndReturnsBoundReceipt() async throws {
         let fixture = try makeHandoffFixture()
         let identity = StagedAssetIdentitySpy(results: Array(repeating: .success(fixture.stagedAsset.fileIdentity), count: 4))
