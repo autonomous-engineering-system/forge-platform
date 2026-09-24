@@ -32,6 +32,9 @@ TARGETS = (
     "forge_platform/provider_fanout.py",
     "forge_platform/engineering_platform_system_adapter.py",
     "forge_platform/forge_server_adapter.py",
+    "scripts/prepare_composition_catalog_candidate.py",
+    "scripts/finalize_signed_composition_catalog.py",
+    "scripts/verify_local_catalog_authorization.py",
 )
 
 TESTS = (
@@ -46,6 +49,7 @@ TESTS = (
     "tests/installer/test_managed_pairing.py",
     "tests/installer/test_provider_targets.py",
     "tests/installer/test_provider_fanout.py",
+    "tests/installer/test_composition_catalog_release.py",
 )
 
 

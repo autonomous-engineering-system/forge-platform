@@ -34,6 +34,7 @@ def load_script(name: str):
 
 PREPARE = load_script("prepare_composition_catalog_candidate.py")
 FINALIZE = load_script("finalize_signed_composition_catalog.py")
+VERIFY = load_script("verify_local_catalog_authorization.py")
 
 
 class CompositionCatalogReleaseTests(unittest.TestCase):
@@ -131,6 +132,27 @@ class CompositionCatalogReleaseTests(unittest.TestCase):
         trust_path.write_text(json.dumps(trust, sort_keys=True) + "\n", encoding="utf-8")
         return private_key, raw_public
 
+    def sign_candidate(self, root: Path, candidate_directory: Path) -> tuple[Path, bytes]:
+        private_key, raw_public = self.generate_key_and_trust(root)
+        signature_raw = root / "signature.bin"
+        subprocess.run(
+            [
+                "openssl", "pkeyutl", "-sign", "-inkey", str(private_key), "-rawin",
+                "-in", str(candidate_directory / "composition-catalog-unsigned.json"),
+                "-out", str(signature_raw),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        envelope = {
+            "algorithm": "ed25519",
+            "key_id": self.key_id,
+            "signature": base64.urlsafe_b64encode(signature_raw.read_bytes()).decode("ascii").rstrip("="),
+        }
+        envelope_path = root / "signature.json"
+        envelope_path.write_text(json.dumps(envelope) + "\n", encoding="utf-8")
+        return envelope_path, raw_public
+
     def prepare(self, root: Path) -> tuple[Path, dict[str, object]]:
         manifest_path, index_path = self.write_inputs(root)
         candidate_directory = root / "candidate"
@@ -153,33 +175,17 @@ class CompositionCatalogReleaseTests(unittest.TestCase):
             root = Path(temporary)
             candidate_directory, candidate = self.prepare(root)
             self.assertEqual(candidate["sequence"], 1)
-            private_key, raw_public = self.generate_key_and_trust(root)
-            signature_raw = root / "signature.bin"
-            subprocess.run(
-                [
-                    "openssl", "pkeyutl", "-sign", "-inkey", str(private_key), "-rawin",
-                    "-in", str(candidate_directory / "composition-catalog-unsigned.json"),
-                    "-out", str(signature_raw),
-                ],
-                check=True,
-                capture_output=True,
-            )
-            envelope = {
-                "algorithm": "ed25519",
-                "key_id": self.key_id,
-                "signature": base64.urlsafe_b64encode(signature_raw.read_bytes()).decode("ascii").rstrip("="),
-            }
-            envelope_path = root / "signature.json"
-            envelope_path.write_text(json.dumps(envelope) + "\n", encoding="utf-8")
+            envelope_path, raw_public = self.sign_candidate(root, candidate_directory)
             output = root / "release"
-            operation = FINALIZE.finalize(
-                candidate_directory=candidate_directory,
-                signature_paths=(envelope_path,),
-                catalog_trust_path=root / "catalog-trust.json",
-                output_directory=output,
-                workflow_run_id=123,
-                workflow_run_attempt=1,
-            )
+            self.assertEqual(FINALIZE.main([
+                "--candidate-directory", str(candidate_directory),
+                "--signature", str(envelope_path),
+                "--catalog-trust", str(root / "catalog-trust.json"),
+                "--output-directory", str(output),
+                "--workflow-run-id", "123",
+                "--workflow-run-attempt", "1",
+            ]), 0)
+            operation = json.loads((output / "composition-catalog-operation.json").read_text())
             self.assertEqual(operation["state"], "QUALIFIED")
             catalog = CompositionCatalog.from_signed_bytes(
                 (output / "ForgePlatformInstallerCompositionCatalog.json").read_bytes(),
@@ -190,6 +196,27 @@ class CompositionCatalogReleaseTests(unittest.TestCase):
             )
             self.assertEqual(catalog.sequence, 1)
             self.assertEqual(catalog.entries[0].composition_id, candidate["composition_id"])
+
+    def test_prepare_command_line_covers_exact_success_and_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_path, index_path = self.write_inputs(root)
+            arguments = [
+                "--manifest", str(manifest_path),
+                "--component-index", str(index_path),
+                "--output-directory", str(root / "candidate"),
+                "--source-sha", self.source_sha,
+                "--sequence", "1",
+                "--published-at", self.published_at,
+                "--expires-at", self.expires_at,
+                "--manifest-asset-name", "ForgePlatformComposition-1.json",
+                "--index-asset-name", "ForgePlatformComponentCombinationCatalog-1.json",
+                "--key-id", self.key_id,
+            ]
+            self.assertEqual(PREPARE.main(arguments), 0)
+            arguments[arguments.index(self.source_sha)] = "not-a-sha"
+            arguments[arguments.index(str(root / "candidate"))] = str(root / "rejected")
+            self.assertEqual(PREPARE.main(arguments), 1)
 
     def test_prepare_rejects_index_manifest_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -281,6 +308,103 @@ class CompositionCatalogReleaseTests(unittest.TestCase):
         catalog = LOCAL_RELEASE.read_text(encoding="utf-8")
         self.assertIn('LOCK="$STATE_ROOT/locks/exclusive-offline-signing"', installer)
         self.assertIn('LOCK="$STATE_ROOT/locks/exclusive-offline-signing"', catalog)
+
+    def authorization_fixture(self, root: Path) -> tuple[Path, Path, Path]:
+        root.mkdir(parents=True, exist_ok=True)
+        candidate_directory, candidate = self.prepare(root)
+        candidate_path = candidate_directory / "composition-catalog-candidate.json"
+        candidate_digest = "sha256:" + sha256(candidate_path.read_bytes()).hexdigest()
+        authorization = {
+            "schema": "forge-platform.local-catalog-signing-authorization/v1",
+            "repository": "autonomous-engineering-system/forge-platform",
+            "ref": "refs/heads/main",
+            "source_sha": self.source_sha,
+            "workflow_sha": self.source_sha,
+            "workflow": "Forge Platform composition catalog release framework",
+            "run_id": 123,
+            "run_attempt": 1,
+            "environment": "forge-platform-installer-signing",
+            "candidate_artifact": f"forge-platform-composition-catalog-candidate-1-{self.source_sha}",
+            "candidate_digest": candidate_digest,
+            "unsigned_catalog_digest": candidate["unsigned_catalog_digest"],
+            "catalog_sequence": 1,
+            "requested_by": "pcvantol",
+            "result": "AUTHORIZED_FOR_LOCAL_CATALOG_SIGNER",
+        }
+        authorization_path = root / "authorization.json"
+        authorization_path.write_text(json.dumps(authorization) + "\n", encoding="utf-8")
+        metadata = {
+            "databaseId": 123,
+            "headBranch": "main",
+            "headSha": self.source_sha,
+            "event": "workflow_dispatch",
+            "conclusion": "success",
+            "workflowName": "Forge Platform composition catalog release framework",
+            "url": "https://github.com/autonomous-engineering-system/forge-platform/actions/runs/123",
+            "jobs": [
+                {"name": "Build unsigned composition catalog candidate", "conclusion": "success"},
+                {"name": "Authorize exact local catalog signing handoff", "conclusion": "success"},
+            ],
+        }
+        metadata_path = root / "run.json"
+        metadata_path.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+        return authorization_path, metadata_path, candidate_directory
+
+    def test_local_authorization_exact_success_and_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            authorization, metadata, candidate = self.authorization_fixture(root)
+            result = VERIFY.verify(
+                authorization_path=authorization,
+                run_metadata_path=metadata,
+                candidate_directory=candidate,
+                source_sha=self.source_sha,
+                run_id=123,
+            )
+            self.assertEqual(result["catalog_sequence"], 1)
+            self.assertEqual(VERIFY.main([
+                "--authorization", str(authorization),
+                "--run-metadata", str(metadata),
+                "--candidate-directory", str(candidate),
+                "--source-sha", self.source_sha,
+                "--run-id", "123",
+            ]), 0)
+
+    def test_local_authorization_rejects_job_candidate_and_source_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            authorization, metadata, candidate = self.authorization_fixture(root)
+            changed_metadata = json.loads(metadata.read_text())
+            changed_metadata["jobs"][1]["conclusion"] = "failure"
+            metadata.write_text(json.dumps(changed_metadata))
+            with self.assertRaisesRegex(ValueError, "did not succeed"):
+                VERIFY.verify(
+                    authorization_path=authorization,
+                    run_metadata_path=metadata,
+                    candidate_directory=candidate,
+                    source_sha=self.source_sha,
+                    run_id=123,
+                )
+
+            _, metadata, _ = self.authorization_fixture(root / "second")
+            candidate_file = candidate / "composition-catalog-unsigned.json"
+            candidate_file.write_bytes(candidate_file.read_bytes() + b"\n")
+            with self.assertRaisesRegex(ValueError, "unsigned catalog bytes"):
+                VERIFY.verify(
+                    authorization_path=authorization,
+                    run_metadata_path=metadata,
+                    candidate_directory=candidate,
+                    source_sha=self.source_sha,
+                    run_id=123,
+                )
+            with self.assertRaisesRegex(ValueError, "source SHA"):
+                VERIFY.verify(
+                    authorization_path=authorization,
+                    run_metadata_path=metadata,
+                    candidate_directory=candidate,
+                    source_sha="invalid",
+                    run_id=123,
+                )
 
 
 if __name__ == "__main__":
