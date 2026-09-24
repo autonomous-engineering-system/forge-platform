@@ -153,7 +153,7 @@ bounded "$private/codesign-gui.log" codesign --force --options runtime --timesta
 bounded "$private/codesign-app.log" codesign --force --options runtime --timestamp --sign "$selected_hash" "$app" || fail app-signing-failed
 bounded "$private/codesign-verify.log" codesign --verify --strict --deep "$app" || fail signed-app-verification-failed
 requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"$(python3 scripts/validate_installer_release_identity.py --field bundle_identifier)\""
-bounded "$private/codesign-requirement.log" codesign --verify --strict -R "$requirement" "$app" || fail signed-app-identity-failed
+bounded "$private/codesign-requirement.log" codesign --verify --strict "-R=$requirement" "$app" || fail signed-app-identity-failed
 
 submission="$private/notary-submission.zip"
 /usr/bin/ditto -c -k --keepParent "$app" "$submission" || fail notary-submission-packaging-failed

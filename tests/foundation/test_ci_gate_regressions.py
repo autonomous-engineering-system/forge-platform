@@ -257,7 +257,7 @@ elif name == 'codesign':
         Path(os.environ['FAKE_SIGN_CALLED']).write_text(args[args.index('--sign') + 1])
         if mode == 'interrupted-sign': sys.exit(130)
     if '--verify' in args and mode == 'bad-signature': sys.exit(1)
-    if '-R' in args:
+    if '-R' in args or any(arg.startswith('-R=') for arg in args):
         Path(os.environ['FAKE_ANCHOR_CALLED']).write_text('called')
         if mode == 'bad-anchor': sys.exit(1)
     if '-d' in args or '--display' in args:
