@@ -7,9 +7,11 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         let fixture = try ActivationFixture()
         let request = try fixture.request(initial: fixture.missingReadback())
         let mutation = ActivationMutation(request: request)
+        let store = ActivationReceiptStore()
         let coordinator = ManagedPythonRuntimeActivationCoordinator(
             mutation: mutation,
-            operationLock: ActivationLock()
+            operationLock: ActivationLock(),
+            receiptStore: store
         )
 
         let receipt = try activationSuccess(await coordinator.activate(request))
@@ -34,6 +36,8 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         XCTAssertEqual(observations.venvEnsures, 2)
         XCTAssertEqual(observations.activeReads, 3)
         XCTAssertEqual(observations.activations, 1)
+        let pendingReceipt = await store.pendingReceipt()
+        XCTAssertEqual(pendingReceipt, receipt)
     }
 
     func testExactExistingRuntimeAndVenvsAreIdempotent() async throws {
@@ -51,7 +55,8 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
 
         let receipt = try activationSuccess(await ManagedPythonRuntimeActivationCoordinator(
             mutation: mutation,
-            operationLock: ActivationLock()
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
         ).activate(request))
 
         XCTAssertEqual(request.action, .noChange)
@@ -79,7 +84,8 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
 
         let receipt = try activationSuccess(await ManagedPythonRuntimeActivationCoordinator(
             mutation: ActivationMutation(request: request),
-            operationLock: ActivationLock()
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
         ).activate(request))
 
         XCTAssertEqual(request.action, .upgrade)
@@ -96,7 +102,8 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
 
         let result = await ManagedPythonRuntimeActivationCoordinator(
             mutation: mutation,
-            operationLock: ActivationLock()
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
         ).activate(request)
 
         XCTAssertEqual(result.failure, .rejected)
@@ -116,16 +123,85 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         ] {
             let result = await ManagedPythonRuntimeActivationCoordinator(
                 mutation: ActivationMutation(request: request),
-                operationLock: ActivationLock(acquireFailure: pair.0)
+                operationLock: ActivationLock(acquireFailure: pair.0),
+                receiptStore: ActivationReceiptStore()
             ).activate(request)
             XCTAssertEqual(result.failure, pair.1)
         }
 
         let releaseResult = await ManagedPythonRuntimeActivationCoordinator(
             mutation: ActivationMutation(request: request),
-            operationLock: ActivationLock(releaseFailure: .releaseFailed)
+            operationLock: ActivationLock(releaseFailure: .releaseFailed),
+            receiptStore: ActivationReceiptStore()
         ).activate(request)
         XCTAssertEqual(releaseResult.failure, .operationLockReleaseFailed)
+    }
+
+    func testPendingReceiptPersistenceIsFailClosedAndExactRetryIsIdempotent() async throws {
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: fixture.missingReadback())
+
+        let loadFailure = await ManagedPythonRuntimeActivationCoordinator(
+            mutation: ActivationMutation(request: request),
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore(loadFails: true)
+        ).activate(request)
+        XCTAssertEqual(loadFailure.failure, .receiptPersistenceFailed)
+
+        let saveFailure = await ManagedPythonRuntimeActivationCoordinator(
+            mutation: ActivationMutation(request: request),
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore(saveFails: true)
+        ).activate(request)
+        XCTAssertEqual(saveFailure.failure, .receiptPersistenceFailed)
+
+        let seedStore = ActivationReceiptStore()
+        let seed = try activationSuccess(await ManagedPythonRuntimeActivationCoordinator(
+            mutation: ActivationMutation(request: request),
+            operationLock: ActivationLock(),
+            receiptStore: seedStore
+        ).activate(request))
+        let finalReadback = try fixture.activeReadback(evidence: "receipt:active-retry")
+        let retryMutation = ActivationMutation(
+            request: request,
+            initialVenvs: try Dictionary(uniqueKeysWithValues:
+                request.productVirtualEnvironments.map {
+                    ($0.componentIdentity, try fixture.venvReceipt(for: $0, request: request))
+                }
+            ),
+            currentReadback: finalReadback
+        )
+        let retry = await ManagedPythonRuntimeActivationCoordinator(
+            mutation: retryMutation,
+            operationLock: ActivationLock(),
+            receiptStore: seedStore
+        ).activate(request)
+        XCTAssertEqual(try activationSuccess(retry), seed)
+        let retryObservations = await retryMutation.snapshot()
+        XCTAssertEqual(retryObservations.venvReads, 2)
+        XCTAssertEqual(retryObservations.venvEnsures, 0)
+        XCTAssertEqual(retryObservations.activeReads, 1)
+        XCTAssertEqual(retryObservations.activations, 0)
+
+        let conflict = try ManagedPythonRuntimeActivationReceipt(
+            operationID: "different-operation",
+            sessionID: seed.sessionID,
+            deploymentID: seed.deploymentID,
+            runtimeIdentitySHA256: seed.runtimeIdentitySHA256,
+            runtimeSlotIdentity: seed.runtimeSlotIdentity,
+            rollbackRuntimeIdentitySHA256: seed.rollbackRuntimeIdentitySHA256,
+            preparationEvidenceReferences: seed.preparationEvidenceReferences,
+            productVenvEvidenceReferences: seed.productVenvEvidenceReferences,
+            activationEvidenceReference: seed.activationEvidenceReference,
+            finalReadbackEvidenceReference: seed.finalReadbackEvidenceReference,
+            state: .ready
+        )
+        let conflictResult = await ManagedPythonRuntimeActivationCoordinator(
+            mutation: ActivationMutation(request: request),
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore(pending: conflict)
+        ).activate(request)
+        XCTAssertEqual(conflictResult.failure, .receiptPersistenceFailed)
     }
 
     func testMapsVenvFailuresAndRejectsEveryReceiptDrift() async throws {
@@ -231,7 +307,8 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
     ) async -> Result<ManagedPythonRuntimeActivationReceipt, ManagedPythonRuntimeActivationFailure> {
         await ManagedPythonRuntimeActivationCoordinator(
             mutation: ActivationMutation(request: request, plan: plan),
-            operationLock: ActivationLock()
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
         ).activate(request)
     }
 
@@ -563,6 +640,44 @@ private final class ActivationLease: ManagedPythonRuntimeOperationLock, @uncheck
         if let releaseFailure { return .failure(releaseFailure) }
         return .success(())
     }
+}
+
+private actor ActivationReceiptStore: ManagedPythonRuntimeActivationStoring {
+    private var pending: ManagedPythonRuntimeActivationReceipt?
+    private let loadFails: Bool
+    private let saveFails: Bool
+
+    init(
+        pending: ManagedPythonRuntimeActivationReceipt? = nil,
+        loadFails: Bool = false,
+        saveFails: Bool = false
+    ) {
+        self.pending = pending
+        self.loadFails = loadFails
+        self.saveFails = saveFails
+    }
+
+    func loadPendingRuntimeActivation()
+        async -> Result<ManagedPythonRuntimeActivationReceipt?, ManagedPythonRuntimeActivationStoreFailure> {
+        loadFails ? .failure(.rejected) : .success(pending)
+    }
+
+    func savePendingRuntimeActivation(_ receipt: ManagedPythonRuntimeActivationReceipt)
+        async -> Result<Void, ManagedPythonRuntimeActivationStoreFailure> {
+        if saveFails { return .failure(.rejected) }
+        if let pending, pending != receipt { return .failure(.rejected) }
+        pending = receipt
+        return .success(())
+    }
+
+    func clearPendingRuntimeActivation(_ receipt: ManagedPythonRuntimeActivationReceipt)
+        async -> Result<Void, ManagedPythonRuntimeActivationStoreFailure> {
+        if let pending, pending != receipt { return .failure(.rejected) }
+        pending = nil
+        return .success(())
+    }
+
+    func pendingReceipt() -> ManagedPythonRuntimeActivationReceipt? { pending }
 }
 
 private func taggedActivationDigest(_ scalar: Character) -> String {
