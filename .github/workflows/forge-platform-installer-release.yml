@@ -180,7 +180,8 @@ jobs:
           ARCHITECTURE="arm64"
           cd macos/ForgePlatformInstaller
           swift test --enable-code-coverage
-          COVERAGE_PATH="$(swift test --show-codecov-path)"
+          COVERAGE_PATH="$RUNNER_TEMP/forge-platform-installer-release-swift-coverage.json"
+          ../../scripts/export_managed_installer_swift_coverage.sh "$COVERAGE_PATH"
           python3 ../../scripts/check_managed_installer_swift_coverage.py "$COVERAGE_PATH" --minimum 80.2 --base-ref "$COVERAGE_BASE_SHA"
           swift build -c release --product ForgePlatformInstaller
           swift build -c release --product forge-platform-installer
