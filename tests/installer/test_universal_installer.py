@@ -74,6 +74,10 @@ from forge_platform.universal_installer import (  # noqa: E402
     provider_command,
     select_self_update,
 )
+from forge_platform.managed_python_runtime_executor import (  # noqa: E402
+    ManagedPythonRuntimeExecutionReceipt,
+    ManagedPythonRuntimeExecutionRequest,
+)
 
 
 NOW = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
@@ -490,6 +494,34 @@ def python_runtime_readback(
         "sha256-" + runtime_identity.removeprefix("sha256:"),
         (),
         "evidence:python-active",
+    )
+
+
+def managed_python_execution_receipt(
+    request: ManagedPythonRuntimeExecutionRequest,
+) -> ManagedPythonRuntimeExecutionReceipt:
+    return ManagedPythonRuntimeExecutionReceipt(
+        request.operation_id,
+        request.fingerprint(),
+        request.target.identity_digest,
+        request.runtime_slot_identity,
+        request.rollback_runtime_identity,
+        (
+            "receipt:asset-runtime",
+            "receipt:asset-source",
+            "receipt:asset-source-provenance",
+            "receipt:asset-build-provenance",
+        ),
+        "receipt:archive-inspection",
+        "receipt:runtime-slot",
+        tuple(
+            (requirement.component_identity, f"receipt:venv-{index}")
+            for index, requirement in enumerate(request.product_venvs, start=1)
+        ),
+        "receipt:runtime-activation",
+        "receipt:runtime-final-readback",
+        f"receipt:managed-python-{request.operation_id}",
+        "COMPLETE",
     )
 
 
@@ -1831,7 +1863,7 @@ class UniversalInstallerTests(unittest.TestCase):
                     "READINESS",
                     {"result": "READINESS_VERIFIED", "readiness_receipt_references": ["ghp_must-not-be-recorded"]},
                 )
-            with self.assertRaisesRegex(UniversalInstallerError, "already binds"):
+            with self.assertRaisesRegex(UniversalInstallerError, "must start"):
                 journal.start(running)
             tool_inventory = tool_readbacks()
             tool_inventory["git"] = ManagedToolReadback("git", "ABSENT", None, None, None, "evidence:git-absent")
@@ -1853,17 +1885,89 @@ class UniversalInstallerTests(unittest.TestCase):
                     "PRODUCT_OPERATIONS",
                     {"result": "PRODUCT_OPERATIONS_DISPATCHED", "product_receipt_references": ["receipt:product-tools"]},
                 )
-            journal.advance(
+            execution_request = ManagedPythonRuntimeExecutionRequest(
                 "install-tools",
-                "MANAGED_TOOLS",
-                {
-                    "result": "TOOLS_VERIFIED",
-                    "tool_receipt_references": ["receipt:tool-git"],
-                    "python_runtime_receipt_reference": "receipt:python-runtime",
-                    "python_runtime_identity": PYTHON_RUNTIME_IDENTITY,
-                    "retained_python_runtime_identity": None,
-                    "post_tool_plan_fingerprint": "a" * 64,
-                },
+                tool_plan.python_runtime_action,
+                tool_plan.product_venvs,
+            )
+            execution_receipt = managed_python_execution_receipt(execution_request)
+            with self.assertRaisesRegex(UniversalInstallerError, "terminal-receipt bridge"):
+                journal.advance(
+                    "install-tools",
+                    "MANAGED_TOOLS",
+                    execution_receipt.installer_journal_evidence(plan.fingerprint()),
+                )
+            with self.assertRaisesRegex(UniversalInstallerError, "does not verify exact"):
+                journal.advance_managed_tools(
+                    "install-tools",
+                    tool_plan,
+                    execution_request,
+                    execution_receipt,
+                    tool_plan,
+                    {"git": "receipt:tool-git"},
+                )
+            with self.assertRaisesRegex(UniversalInstallerError, "original plan"):
+                journal.advance_managed_tools(
+                    "install-tools",
+                    plan,
+                    execution_request,
+                    execution_receipt,
+                    plan,
+                    {"git": "receipt:tool-git"},
+                )
+            with self.assertRaisesRegex(UniversalInstallerError, "immutable"):
+                journal.advance_managed_tools(
+                    "install-tools",
+                    tool_plan,
+                    execution_request,
+                    execution_receipt,
+                    replace(plan, composition_id="different-composition"),
+                    {"git": "receipt:tool-git"},
+                )
+            with self.assertRaisesRegex(UniversalInstallerError, "do not match"):
+                journal.advance_managed_tools(
+                    "install-tools",
+                    tool_plan,
+                    execution_request,
+                    execution_receipt,
+                    plan,
+                    {},
+                )
+            with self.assertRaisesRegex(UniversalInstallerError, "terminal receipt"):
+                journal.advance_managed_tools(
+                    "install-tools",
+                    tool_plan,
+                    execution_request,
+                    replace(execution_receipt, request_fingerprint="f" * 64),
+                    plan,
+                    {"git": "receipt:tool-git"},
+                )
+            with self.assertRaisesRegex(UniversalInstallerError, "terminal receipt"):
+                journal.advance_managed_tools(
+                    "install-tools",
+                    tool_plan,
+                    execution_request,
+                    replace(
+                        execution_receipt,
+                        product_venv_evidence_references=(
+                            ("forge-runtime", "receipt:venv-wrong-component"),
+                        ),
+                    ),
+                    plan,
+                    {"git": "receipt:tool-git"},
+                )
+            managed_tools = journal.advance_managed_tools(
+                "install-tools",
+                tool_plan,
+                execution_request,
+                execution_receipt,
+                plan,
+                {"git": "receipt:tool-git"},
+            )
+            self.assertEqual(managed_tools.state, "MANAGED_TOOLS")
+            self.assertEqual(
+                managed_tools.events[-1].evidence["post_tool_plan_fingerprint"],
+                plan.fingerprint(),
             )
             self.assertEqual(
                 journal.advance(
@@ -1887,6 +1991,27 @@ class UniversalInstallerTests(unittest.TestCase):
         )
         upgrade_record = InstallerOperationRecord.create("upgrade-python", upgrade_plan)
         self.assertEqual(upgrade_record.python_runtime_rollback_identity, previous_python)
+        upgrade_request = ManagedPythonRuntimeExecutionRequest(
+            "upgrade-python",
+            upgrade_plan.python_runtime_action,
+            upgrade_plan.product_venvs,
+        )
+        upgrade_receipt = managed_python_execution_receipt(upgrade_request)
+        with tempfile.TemporaryDirectory() as temporary:
+            upgrade_journal = StandaloneInstallerJournal(Path(temporary) / "upgrade-journal")
+            upgrade_journal.start(upgrade_record)
+            bridged_upgrade = upgrade_journal.advance_managed_tools(
+                "upgrade-python",
+                upgrade_plan,
+                upgrade_request,
+                upgrade_receipt,
+                plan,
+                {},
+            )
+            self.assertEqual(
+                bridged_upgrade.events[-1].evidence["tool_receipt_references"],
+                [upgrade_receipt.evidence_reference],
+            )
         evidence = {
             "result": "TOOLS_VERIFIED",
             "tool_receipt_references": ["receipt:python-runtime"],
@@ -1902,6 +2027,9 @@ class UniversalInstallerTests(unittest.TestCase):
             )
         managed_record = upgrade_record.transition("MANAGED_TOOLS", evidence)
         self.assertEqual(managed_record.state, "MANAGED_TOOLS")
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(UniversalInstallerError, "must start"):
+                StandaloneInstallerJournal(Path(temporary)).start(managed_record)
         recovery_evidence = {
             "result": "RECOVERY_PENDING",
             "recovery_receipt_references": ["receipt:python-recovery"],
