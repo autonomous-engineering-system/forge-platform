@@ -47,7 +47,7 @@ if [[ ! -x ./config.sh ]]; then
 fi
 
 if [[ -f .runner ]]; then
-  existing_name="$(python3 -c 'import json; print(json.load(open(".runner")).get("agentName", ""))')"
+  existing_name="$(python3 -c 'import json; print(json.load(open(".runner", encoding="utf-8-sig")).get("agentName", ""))')"
   [[ "$existing_name" == "$RUNNER_NAME" ]] || fail existing-runner-name-mismatch
   echo "RUNNER_BOOTSTRAP=EXISTING mode=credentialless-build root=$RUNNER_ROOT name=$RUNNER_NAME"
 else

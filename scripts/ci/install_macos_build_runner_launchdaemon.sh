@@ -28,7 +28,7 @@ RUNNER_ROOT="${FORGE_PLATFORM_RUNNER_ROOT:-$build_home/actions-runner-forge-plat
 [[ "$RUNNER_ROOT" == "$build_home/actions-runner-forge-platform-build" ]] || fail runner-root-mismatch
 [[ -f "$RUNNER_ROOT/.runner" && -x "$RUNNER_ROOT/runsvc.sh" ]] || fail configured-runner-unavailable
 [[ "$(stat -f '%Su' "$RUNNER_ROOT")" == "$BUILD_USER" ]] || fail runner-root-owner-mismatch
-runner_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("agentName", ""))' "$RUNNER_ROOT/.runner")"
+runner_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("agentName", ""))' "$RUNNER_ROOT/.runner")"
 [[ "$runner_name" == "$RUNNER_NAME" ]] || fail runner-name-mismatch
 [[ ! -f "$RUNNER_ROOT/.service" ]] || fail per-user-service-must-not-be-installed
 if [[ -d "$build_home/Library/LaunchAgents" ]] && find "$build_home/Library/LaunchAgents" -maxdepth 1 -name 'actions.runner.*.plist' -print -quit | grep -q .; then

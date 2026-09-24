@@ -27,7 +27,7 @@ auto_login="$(defaults read /Library/Preferences/com.apple.loginwindow autoLogin
 launchctl print "system/$SERVICE_LABEL" 2>/dev/null | grep -Eq 'state = (running|waiting)' || fail runner-launchdaemon-not-active
 pgrep -u "$BUILD_UID" -f "$ROOT/bin/Runner.Listener" >/dev/null 2>&1 || fail runner-listener-not-owned-by-build-user
 boot="$(sysctl -n kern.boottime)"
-name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("agentName",""))' "$ROOT/.runner")"
+name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("agentName",""))' "$ROOT/.runner")"
 [[ "$name" == "${FORGE_PLATFORM_RUNNER_NAME:-forge-platform-macmini-build}" ]] || fail runner-name-mismatch
 
 if [[ "$1" == "record" ]]; then
