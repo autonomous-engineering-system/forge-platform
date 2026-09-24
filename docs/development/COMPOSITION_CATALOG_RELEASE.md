@@ -61,20 +61,22 @@ not create a branch, PR, manifest, signing authorization or release.
 
 `composition-producer-sources.json` is the reviewed binding from product roles
 to their public producer repositories and release contracts. Forge 2.7.34 and
-Engineering Platform 2.3.102 currently satisfy their producer observation
-contracts. Workspace has no public production release; its current release
-contract would publish only a source bundle, which is explicitly observed as
-not installable even after such a release exists. Managed Git and managed
-Python inputs remain `UNCONFIGURED`. Those conditions keep
+Engineering Platform 2.3.102 currently satisfy the two required producer
+observation contracts. Workspace is an optional observation: it has no public
+production release and its current release contract would publish only a source
+bundle, so its absence or `OBSERVED_NOT_INSTALLABLE` status does not block a
+Forge plus Engineering Platform composition. Managed Git and managed Python
+inputs remain `UNCONFIGURED`; those required platform inputs keep
 `manifest_generation` at `BLOCKED`.
 
-A Forge, Engineering Platform or Workspace release is not automatically a safe
+A Forge or Engineering Platform release is not automatically a safe
 composition. Promotion also needs immutable managed Git and managed Python
 runtime artifacts, their provenance, product build/test evidence, compatibility
 approval, service contracts, provider runtime identities and an explicit
 upgrade route. The current Forge and EP release receipts prove their wheel and
-source identities; Workspace has no published production release, and the
-required platform-owned runtime artifact set is not published.
+source identities; the required platform-owned runtime artifact set is not
+published. A future Workspace release remains outside this composition until it
+has an installable, explicitly reviewed contract.
 
 Therefore no sequence-1 production manifest is committed and no stable catalog
 asset is claimed live. A later producer increment may poll peer releases and

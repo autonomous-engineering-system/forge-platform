@@ -392,6 +392,7 @@ def _observe_producer(producer: Mapping[str, object], fetch: Fetcher) -> Mapping
     return {
         "identity": producer["identity"],
         "repository": repository,
+        "composition_eligible": eligible,
         "release_tag": release["tag_name"],
         "release_url": release_url,
         "version": version,
@@ -434,10 +435,11 @@ def observe(*, config_path: Path, observed_at: str, fetch: Fetcher = _network_fe
             observation = {
                 "identity": producer["identity"],
                 "repository": producer["repository"],
+                "composition_eligible": producer["composition_eligible"],
                 "status": "NO_PUBLIC_RELEASE",
             }
         observations.append(observation)
-        if observation["status"] != "READY":
+        if producer["composition_eligible"] and observation["status"] != "READY":
             blockers.append(f'{producer["identity"]}:{observation["status"]}')
     external_observations = [_observe_external(item, fetch) for item in external]
     for item in external_observations:

@@ -38,4 +38,4 @@ jobs:
           name: composition-producer-observation-${{ github.run_id }}-${{ github.run_attempt }}
           path: producer-observation/composition-producer-observation.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 2
