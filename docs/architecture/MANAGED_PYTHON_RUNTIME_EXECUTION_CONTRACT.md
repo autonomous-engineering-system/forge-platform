@@ -196,7 +196,8 @@ closed. This durable native receipt binds the preparation, venv,
 activation and final-readback evidence. The native terminal coordinator
 projects it into the exact platform-neutral executor `COMPLETE` shape,
 including the same canonical request fingerprint used by the Python contract,
-and offers it to an injected durable parent-journal bridge. The pending native
+projects that receipt into the same typed `MANAGED_TOOLS` journal evidence as
+the Python contract, and offers it to an injected durable parent-journal bridge. The pending native
 receipt is cleared only after the terminal coordinator, under the host-wide
 lease, freshly re-reads every venv and the active runtime and the bridge then
 accepts the exact terminal receipt. A concrete parent-journal adapter and
@@ -279,7 +280,9 @@ revalidates every venv and the active runtime before returning the stored
 evidence. The native terminal coordinator then assembles the same ordered
 asset, inspection, slot, venv, activation and final-readback references used by
 the platform-neutral `COMPLETE` receipt. Its request fingerprint is tested
-against the Python implementation. An injected bridge must durably and
+against the Python implementation. It also exposes the exact `TOOLS_VERIFIED`
+evidence projection, including the platform-neutral default that uses the
+Python runtime receipt when no generic tool receipts are present. An injected bridge must durably and
 idempotently admit that exact receipt before native pending state is cleared;
 the coordinator first repeats all venv and active-runtime readbacks under its
 host-wide lease. Neither the concrete parent-journal adapter nor these

@@ -26,6 +26,43 @@ public struct ManagedPythonProductVenvEvidenceReference: Equatable, Sendable {
     }
 }
 
+public struct ManagedPythonInstallerJournalEvidence: Equatable, Sendable {
+    public enum Result: String, Equatable, Sendable { case toolsVerified = "TOOLS_VERIFIED" }
+
+    public let result: Result
+    public let toolReceiptReferences: [String]
+    public let pythonRuntimeReceiptReference: String
+    public let pythonRuntimeIdentity: String
+    public let retainedPythonRuntimeIdentity: String?
+    public let postToolPlanFingerprint: String
+
+    fileprivate init(
+        receipt: ManagedPythonRuntimeExecutionReceipt,
+        postToolPlanFingerprint: String,
+        toolReceiptReferences: [String]
+    ) throws {
+        guard Self.isFingerprint(postToolPlanFingerprint),
+              toolReceiptReferences.allSatisfy(
+                  ManagedPythonRuntimeInstalledReadback.isEvidenceReference
+              ) else {
+            throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+        }
+        result = .toolsVerified
+        self.toolReceiptReferences = toolReceiptReferences.isEmpty
+            ? [receipt.evidenceReference] : toolReceiptReferences
+        pythonRuntimeReceiptReference = receipt.evidenceReference
+        pythonRuntimeIdentity = receipt.runtimeIdentitySHA256
+        retainedPythonRuntimeIdentity = receipt.rollbackRuntimeIdentitySHA256
+        self.postToolPlanFingerprint = postToolPlanFingerprint
+    }
+
+    private static func isFingerprint(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.unicodeScalars.allSatisfy {
+            (48...57).contains($0.value) || (97...102).contains($0.value)
+        }
+    }
+}
+
 /// Exact native projection of the platform-neutral
 /// `ManagedPythonRuntimeExecutionReceipt` contract. It contains only immutable
 /// identities and opaque evidence references, never paths or credentials.
@@ -86,6 +123,21 @@ public struct ManagedPythonRuntimeExecutionReceipt: Equatable, Sendable {
         finalReadbackEvidenceReference = activationReceipt.finalReadbackEvidenceReference
         self.evidenceReference = evidenceReference
         state = .complete
+    }
+
+    /// Exact native equivalent of the platform-neutral
+    /// `installer_journal_evidence` projection. The later durable journal
+    /// adapter must still bind this evidence to the original frozen plan and
+    /// a freshly qualified all-NO_CHANGE post-tool plan.
+    public func installerJournalEvidence(
+        postToolPlanFingerprint: String,
+        toolReceiptReferences: [String] = []
+    ) throws -> ManagedPythonInstallerJournalEvidence {
+        try ManagedPythonInstallerJournalEvidence(
+            receipt: self,
+            postToolPlanFingerprint: postToolPlanFingerprint,
+            toolReceiptReferences: toolReceiptReferences
+        )
     }
 }
 

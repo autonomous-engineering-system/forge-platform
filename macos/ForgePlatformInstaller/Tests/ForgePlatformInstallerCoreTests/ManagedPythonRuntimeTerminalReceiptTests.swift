@@ -74,6 +74,56 @@ final class ManagedPythonRuntimeTerminalReceiptTests: XCTestCase {
         )
     }
 
+    func testInstallerJournalEvidenceMatchesPlatformNeutralProjection() throws {
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: fixture.missingReadback())
+        let receipt = try ManagedPythonRuntimeExecutionReceipt(
+            request: request,
+            activationReceipt: terminalActivationReceipt(request: request)
+        )
+        let fingerprint = String(repeating: "a", count: 64)
+
+        let pythonOnly = try receipt.installerJournalEvidence(
+            postToolPlanFingerprint: fingerprint
+        )
+        XCTAssertEqual(pythonOnly.result, .toolsVerified)
+        XCTAssertEqual(pythonOnly.toolReceiptReferences, [receipt.evidenceReference])
+        XCTAssertEqual(pythonOnly.pythonRuntimeReceiptReference, receipt.evidenceReference)
+        XCTAssertEqual(pythonOnly.pythonRuntimeIdentity, request.runtimeIdentitySHA256)
+        XCTAssertNil(pythonOnly.retainedPythonRuntimeIdentity)
+        XCTAssertEqual(pythonOnly.postToolPlanFingerprint, fingerprint)
+
+        let genericTools = try receipt.installerJournalEvidence(
+            postToolPlanFingerprint: fingerprint,
+            toolReceiptReferences: ["receipt:git", "receipt:other-tool"]
+        )
+        XCTAssertEqual(
+            genericTools.toolReceiptReferences,
+            ["receipt:git", "receipt:other-tool"]
+        )
+    }
+
+    func testInstallerJournalEvidenceRejectsInvalidFingerprintAndReferences() throws {
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: fixture.missingReadback())
+        let receipt = try ManagedPythonRuntimeExecutionReceipt(
+            request: request,
+            activationReceipt: terminalActivationReceipt(request: request)
+        )
+
+        XCTAssertThrowsError(try receipt.installerJournalEvidence(
+            postToolPlanFingerprint: String(repeating: "A", count: 64)
+        )) { error in
+            XCTAssertEqual(error as? ManagedPythonRuntimeTerminalReceiptFailure, .invalidRequest)
+        }
+        XCTAssertThrowsError(try receipt.installerJournalEvidence(
+            postToolPlanFingerprint: String(repeating: "b", count: 64),
+            toolReceiptReferences: [""]
+        )) { error in
+            XCTAssertEqual(error as? ManagedPythonRuntimeTerminalReceiptFailure, .invalidRequest)
+        }
+    }
+
     func testCoordinatorCommitsThenClearsExactPendingReceipt() async throws {
         let fixture = try ActivationFixture()
         let request = try fixture.request(initial: fixture.missingReadback())
