@@ -185,7 +185,8 @@ Source qualification must include Python, Swift and hosted macOS validation for:
 - independent target verification;
 - Project Agent user scope;
 - v2 manifest/session projection;
-- exact credential-free managed-Python asset transport and digest rejection;
+- exact credential-free managed-Python asset transport, private staging,
+  no-follow readback and digest rejection;
 - EP 2.3.102 provisioner command correlation;
 - Forge product-init identity binding;
 - Forge system-service target isolation;

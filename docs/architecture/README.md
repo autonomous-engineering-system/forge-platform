@@ -49,7 +49,8 @@ remain user-owned and may coexist once per Host/OS-user context. See
 Forge Platform has a separately versioned native macOS Universal Installer and immutable qualified composition manifests; it does not build a combinatorial installer package for every Forge/Workspace/EP version combination. At every launch, an older installer must verify and hand off to a newer signed/notarized installer release before platform mutation. The signed composition catalog then selects only an installer-capable exact component set. See the [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
 
 The source foundation, native SwiftUI shell, platform-neutral managed-Python
-executor kernel and credential-free exact-runtime asset transport are present.
+executor kernel, credential-free exact-runtime asset transport and private
+no-follow asset staging/readback boundary are present.
 The active Managed Installer V1 implementation adds
 a durable multi-instance deployment registry/saga, target-aware provider
 requirements and fan-out coordination, a native deployment-selection gate,
