@@ -1,0 +1,41 @@
+name: Forge Platform composition producer observer
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-platform-composition-producer-observer
+  cancel-in-progress: false
+
+jobs:
+  observe-producer-releases:
+    name: Observe immutable producer release evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build read-only composition input readiness report
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p producer-observation
+          python3 scripts/observe_composition_producer_releases.py \
+            --config composition-producer-sources.json \
+            --observed-at "$OBSERVED_AT" \
+            --output producer-observation/composition-producer-observation.json
+          python3 -m json.tool producer-observation/composition-producer-observation.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: composition-producer-observation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: producer-observation/composition-producer-observation.json
+          if-no-files-found: error
+          retention-days: 14

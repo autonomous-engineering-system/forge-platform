@@ -40,6 +40,7 @@ python3 tests/installer/test_package_macos_installer_archive.py
 python3 tests/installer/test_verify_installer_release_evidence.py
 python3 tests/installer/test_installer_release_workflow.py
 python3 tests/installer/test_composition_catalog_release.py
+python3 tests/installer/test_composition_producer_observer.py
 python3 tests/installer/test_local_signing_authorization.py
 python3 tests/installer/test_qualify_local_installer_release.py
 python3 scripts/validate_installer_version.py

@@ -35,6 +35,7 @@ TARGETS = (
     "scripts/prepare_composition_catalog_candidate.py",
     "scripts/finalize_signed_composition_catalog.py",
     "scripts/verify_local_catalog_authorization.py",
+    "scripts/observe_composition_producer_releases.py",
 )
 
 TESTS = (
@@ -50,6 +51,7 @@ TESTS = (
     "tests/installer/test_provider_targets.py",
     "tests/installer/test_provider_fanout.py",
     "tests/installer/test_composition_catalog_release.py",
+    "tests/installer/test_composition_producer_observer.py",
 )
 
 
