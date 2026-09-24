@@ -10,6 +10,8 @@ HOSTED = ROOT / ".github/workflows/macos-installer-validation.yml"
 NATIVE = ROOT / ".github/workflows/macos-installer-native-integration.yml"
 RELEASE = ROOT / ".github/workflows/forge-platform-installer-release.yml"
 BUILD_BOOTSTRAP = ROOT / "scripts/ci/bootstrap_macos_build_runner.sh"
+BUILD_SERVICE = ROOT / "scripts/ci/install_macos_build_runner_launchdaemon.sh"
+BUILD_REBOOT = ROOT / "scripts/ci/verify_macos_build_runner_reboot.sh"
 OLD_BOOTSTRAP = ROOT / "scripts/ci/bootstrap_macos_signing_runner.sh"
 READINESS = ROOT / "scripts/ci/verify_macos_offline_signing_host.sh"
 OLD_READINESS = ROOT / "scripts/ci/verify_macos_signing_runner.sh"
@@ -78,6 +80,23 @@ class NativeMacRunnerPolicyTests(unittest.TestCase):
         self.assertIn("notary-profile-must-not-enter-build-account", text)
         self.assertNotIn("forge-platform-signer", text)
         self.assertNotIn("/releases/latest/", text)
+        self.assertIn("per-user-launchagent-must-not-be-installed", text)
+        self.assertNotIn("./svc.sh install", text)
+
+    def test_build_runner_uses_a_no_login_system_launchdaemon(self) -> None:
+        service = BUILD_SERVICE.read_text(encoding="utf-8")
+        reboot = BUILD_REBOOT.read_text(encoding="utf-8")
+        for text in (service, reboot):
+            self.assertIn("org.autonomous-engineering-system.forge-platform.build-runner", text)
+            self.assertIn("automatic-login-must-be-disabled", text)
+            self.assertIn("build-user-must-not-be-admin", text)
+            self.assertIn("developer-id-visible-in-build-account", text)
+            self.assertIn('launchctl print "system/$SERVICE_LABEL"', text)
+            self.assertIn("Runner.Listener", text)
+        self.assertIn('PLIST_PATH="/Library/LaunchDaemons/${SERVICE_LABEL}.plist"', service)
+        self.assertIn("<key>UserName</key><string>$BUILD_USER</string>", service)
+        self.assertIn("<key>RunAtLoad</key><true/>", service)
+        self.assertNotIn("LaunchAgents", reboot)
 
     def test_release_workflow_only_authorizes_the_local_signer(self) -> None:
         text = RELEASE.read_text(encoding="utf-8")

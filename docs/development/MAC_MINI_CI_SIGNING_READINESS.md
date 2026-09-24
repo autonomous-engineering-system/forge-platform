@@ -76,6 +76,12 @@ public key must match the code-signed public release-trust resource.
 
 ## Reboot persistence
 
+`scripts/ci/install_macos_build_runner_launchdaemon.sh` installs the configured
+runner in the system launchd domain while retaining `forgebuild` as its
+non-admin runtime identity. Automatic GUI login must be disabled. The official
+per-user `svc.sh`/LaunchAgent path is rejected because it cannot establish
+pre-login reboot persistence.
+
 `scripts/ci/verify_macos_build_runner_reboot.sh record` captures a private
 pre-reboot baseline. After an actual reboot,
 `scripts/ci/verify_macos_build_runner_reboot.sh verify` requires a changed boot
@@ -95,23 +101,24 @@ Verified in GitHub:
 - protected Environment `forge-platform-installer-signing` exists, requires
   reviewer `pcvantol`, has admin bypass disabled, has no secrets, and allows
   only branch `main`;
-- GitHub rejected creation of `forge-platform-build` while both allowlisted
-  workflow files exist only on PR #75, reporting that the first exact workflow
-  does not exist at `refs/heads/main`. No group or broader temporary workflow
-  access was created. The safe order is protected merge first, then exact-main
-  group creation, then credentialless runner registration.
+- PR #75 was squash-merged as exact protected `main`
+  `e1df97313fe5cb48e215b76a98b198b340ab767d`; its post-merge required checks
+  are green;
+- organization runner group `forge-platform-build` exists as group 3, permits
+  exactly this one public repository, and is restricted to the native build and
+  installer release workflows at `refs/heads/main`; it contains zero runners.
 
 Verified locally:
 
 - Mac mini `macmini-m6` is Apple Silicon and runs macOS 27.0;
+- standard local account `forgebuild` exists and automatic login is disabled;
 - shell and Python syntax checks pass for the new controls;
 - workflow YAML parses successfully;
-- 8 runner policy tests, 31 CI gate regressions, and 4 release workflow tests
+- 9 runner policy tests, 31 CI gate regressions, and 4 release workflow tests
   pass in local simulation.
 
 Still unverified:
 
-- organization runner group creation and its live workflow restriction;
 - credentialless build-account registration and first real workflow run;
 - real post-reboot runner persistence;
 - dedicated signer-account Developer ID/keychain/notary readiness;
