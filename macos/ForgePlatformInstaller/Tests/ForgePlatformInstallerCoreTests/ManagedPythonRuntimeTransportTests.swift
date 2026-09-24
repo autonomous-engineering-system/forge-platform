@@ -99,7 +99,7 @@ private extension Result {
     }
 }
 
-private struct RuntimeTransportFixture {
+struct RuntimeTransportFixture {
     let runtimeBody = Data("runtime-archive".utf8)
     let sourceBody = Data("source-archive".utf8)
     let sourceProvenanceBody = Data("source-provenance".utf8)
@@ -149,7 +149,7 @@ private struct RuntimeTransportFixture {
         )
     }
 
-    var scripts: [String: RuntimeAssetURLProtocolScript] {
+    fileprivate var scripts: [String: RuntimeAssetURLProtocolScript] {
         Dictionary(uniqueKeysWithValues: ManagedPythonRuntimeAssetKind.allCases.map { kind in
             let body = body(for: kind)
             return (
@@ -196,7 +196,7 @@ private struct RuntimeTransportFixture {
     }
 }
 
-private enum RuntimeAssetURLProtocolScript: Sendable {
+fileprivate enum RuntimeAssetURLProtocolScript: Sendable {
     case response(statusCode: Int, headers: [String: String], body: Data, responseURL: String? = nil)
     case redirect(destination: String)
 }

@@ -1,14 +1,16 @@
 # Managed Python runtime execution contract
 
 **Status:** source-level executor kernel, native immutable session projection,
-and credential-free native HTTPS asset transport implemented. The native
+credential-free native HTTPS asset transport, and private operation-scoped
+native asset staging implemented. The native
 projection recomputes the complete runtime identity, binds it to the signed
 outer-catalog approval, and retains one exact venv identity per selected
 component. The transport derives each of the four bounded downloads only from
 that admitted identity, denies redirects and verifies the exact SHA-256 before
-returning bytes. No production runtime artifact, native archive inspector,
-privileged helper, released mutation wiring, or live machine installation is
-approved by this increment.
+returning bytes. Staging writes those exact bytes under fixed internal names,
+returns no caller path, and re-hashes every no-follow readback. No production
+runtime artifact, native archive inspector, privileged helper, released
+mutation wiring, or live machine installation is approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -53,9 +55,20 @@ boundary. Its caller supplies only the already admitted runtime identity and a
 closed asset-kind value. It uses an ephemeral credential-free session, permits
 no redirect or final-URL drift, applies distinct runtime/source/provenance byte
 limits while streaming, rejects empty responses, and validates the tagged
-SHA-256 before returning identity-bound bytes. It does not choose a locator,
-write a staging file, inspect or extract an archive, persist a receipt, or
-authorize mutation.
+SHA-256 before returning identity-bound bytes.
+
+The native stager accepts only that transport seam, one safe opaque operation
+identity and the admitted runtime. It creates an effective-user-owned `0700`
+operation directory beneath its trusted state root and writes the four roles
+under fixed internal names as single-link `0600` regular files. Its public
+result carries only the operation/runtime/asset commitments, an opaque
+reference and descriptor-derived file identities. Readback reopens every
+directory and file without following symlinks, repeats ownership/mode/link and
+size checks, enforces the role-specific byte bound, matches the captured file
+identity and re-hashes the bytes against the signed download identity. Cleanup
+removes only the four fixed files and the exact descriptor-matched operation
+directory. The stager does not inspect or extract an archive, persist an
+executor journal receipt, choose a runtime slot, or authorize mutation.
 
 An independently injected archive inspector must bind the captured inputs to
 the complete runtime identity and prove:
@@ -126,7 +139,9 @@ The executor does not verify an outer catalog, select a composition, install a
 product, modify product data or services, publish artifacts, store credentials,
 or authorize cleanup. The native session layer verifies the exact nested
 runtime commitment and venv bindings after catalog and manifest admission. The
-native transport can acquire the identity-bound bytes but is not wired into a
-staging, inspection, execution, or mutation route. Native archive inspection,
-privileged mutation wiring and an actual protected arm64 runtime publication
-remain required before operational installation can be claimed.
+native transport and private stager can acquire, durably capture and re-read
+the identity-bound bytes, but they are not assembled into the released runtime
+or wired into archive inspection, executor journaling or mutation. Native
+archive inspection, privileged mutation wiring and an actual protected arm64
+runtime publication remain required before operational installation can be
+claimed.
