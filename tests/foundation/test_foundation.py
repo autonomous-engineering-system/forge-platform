@@ -62,6 +62,7 @@ REQUIRED = (
     "release-trust/ForgePlatformInstallerCompositionCatalogTrust.json",
     "scripts/ci/OfflineInstallerDescriptorKeyTool.swift",
     "scripts/ci/OfflineCompositionCatalogKeyTool.swift",
+    "scripts/ci/verify_macos_offline_signer_reboot.sh",
     "scripts/validate_installer_version.py",
     "scripts/validate_installer_release_identity.py",
     "scripts/advance_installer_version.py",

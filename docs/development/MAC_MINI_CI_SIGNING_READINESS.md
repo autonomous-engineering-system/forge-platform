@@ -89,6 +89,14 @@ identity, a running service, the exact runner name, and continued absence of a
 Developer ID identity from the build account. A service status check without a
 real reboot does not satisfy this gate.
 
+The signer account has a separate two-phase verifier,
+`scripts/ci/verify_macos_offline_signer_reboot.sh`. `record` captures the exact
+boot identity, protected-main source, Team, notary profile and public trust
+digests only after live signing/notary/key readiness. After a real reboot,
+`verify` requires a changed boot identity and reruns Developer ID signing,
+notary history, exact-main, descriptor-key and separately scoped catalog-key
+readback before it can report `OFFLINE_SIGNER_REBOOT_READINESS=PASS`.
+
 ## Current live evidence, 2026-09-24
 
 Verified in GitHub:
