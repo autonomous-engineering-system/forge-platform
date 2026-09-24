@@ -1,15 +1,15 @@
 # Managed Python runtime execution contract
 
 **Status:** source-level executor kernel, native immutable session projection,
-credential-free native HTTPS asset transport, and private operation-scoped
-native asset staging implemented. The native
+credential-free native HTTPS asset transport, private operation-scoped native
+asset staging, and read-only native archive inspection implemented. The native
 projection recomputes the complete runtime identity, binds it to the signed
 outer-catalog approval, and retains one exact venv identity per selected
 component. The transport derives each of the four bounded downloads only from
 that admitted identity, denies redirects and verifies the exact SHA-256 before
 returning bytes. Staging writes those exact bytes under fixed internal names,
 returns no caller path, and re-hashes every no-follow readback. No production
-runtime artifact, native archive inspector, privileged helper, released
+runtime artifact, privileged helper, released
 mutation wiring, or live machine installation is approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
@@ -70,8 +70,24 @@ removes only the four fixed files and the exact descriptor-matched operation
 directory. The stager does not inspect or extract an archive, persist an
 executor journal receipt, choose a runtime slot, or authorize mutation.
 
-An independently injected archive inspector must bind the captured inputs to
-the complete runtime identity and prove:
+The native archive inspector accepts only the exact staged asset set plus the
+admitted runtime identity. It re-reads all four assets through the staging
+boundary, then streams the runtime archive without extracting or executing any
+member. The frozen archive profile is one constrained gzip envelope (deflate,
+no optional header fields, zero timestamp) containing a POSIX ustar stream. The
+tar stream permits only safe relative regular-file and directory entries,
+rejects duplicate paths, links, special files, base-256 sizes, invalid checksums,
+nonzero padding and nonzero data after the end marker, and applies entry, path,
+expanded-size, manifest-size and interpreter-size bounds.
+
+The archive root contains `forge-platform-runtime.json` with schema
+`forge-platform.managed-python-runtime-archive-manifest/v1`, an explicit `bin/`
+directory, and executable `bin/python3`. The strict duplicate-key-rejecting
+manifest binds every non-self-referential runtime field, the exact artifact
+URL, and the source and provenance locators needed to reconstruct the signed
+identity. The signed artifact digest supplies the unavoidable outer binding to
+the archive bytes themselves; an archive cannot safely embed its own digest.
+Inspection proves:
 
 - the standard managed-runtime archive layout;
 - the fixed archive-relative interpreter `bin/python3`;
@@ -80,6 +96,11 @@ the complete runtime identity and prove:
 - CPython version, standard-GIL build, Python/ABI/platform tags and policy
   revision; and
 - the exact source, source-provenance and build-provenance digests.
+
+The interpreter is inspected as bytes in the tar stream. It must be a thin
+little-endian arm64 Mach-O executable with exactly one macOS `LC_BUILD_VERSION`
+deployment target equal to the admitted semantic version. No member is written
+to disk by this inspection step.
 
 The executor admits no `x86_64`, universal/fat, macOS-25, PATH, system-Python,
 Homebrew-Python, or network-latest fallback.
@@ -140,8 +161,8 @@ product, modify product data or services, publish artifacts, store credentials,
 or authorize cleanup. The native session layer verifies the exact nested
 runtime commitment and venv bindings after catalog and manifest admission. The
 native transport and private stager can acquire, durably capture and re-read
-the identity-bound bytes, but they are not assembled into the released runtime
-or wired into archive inspection, executor journaling or mutation. Native
-archive inspection, privileged mutation wiring and an actual protected arm64
-runtime publication remain required before operational installation can be
-claimed.
+the identity-bound bytes, and the native inspector can validate the frozen
+archive envelope, layout, manifest and interpreter identity. These pieces are
+not assembled into the released runtime or wired into executor journaling or
+mutation. Privileged mutation wiring and an actual protected arm64 runtime
+publication remain required before operational installation can be claimed.
