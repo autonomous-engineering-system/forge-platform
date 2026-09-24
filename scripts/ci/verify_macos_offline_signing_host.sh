@@ -23,8 +23,12 @@ xcode_version="$(xcodebuild -version)"
 sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
 [[ -n "$xcode_version" && -n "$sdk_version" ]] || fail toolchain-unavailable
 xcrun notarytool --help >/dev/null
-xcrun stapler --help >/dev/null
-codesign --version >/dev/null 2>&1
+# Xcode 27's stapler prints usage and exits 64 for --help. Resolve the exact
+# active-Xcode tool instead so availability is checked without invoking it.
+xcrun --find stapler >/dev/null
+# Xcode 27's codesign returns 2 for --version without printing a version.
+# Existence is checked here; the signed probe below is the functional check.
+command -v codesign >/dev/null
 
 probe="$(mktemp -d)"
 trap 'rm -rf "$probe"' EXIT
@@ -82,7 +86,7 @@ PY
 bounded codesign --force --options runtime --timestamp --sign "$selected_hash" "$probe/SigningProbe.app" || fail noninteractive-signing-failed
 bounded codesign --verify --strict --deep "$probe/SigningProbe.app" || fail signature-verification-failed
 requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"com.forgeplatform.ci.signing-probe\""
-bounded codesign --verify --strict -R "$requirement" "$probe/SigningProbe.app" || fail apple-trust-requirement-failed
+bounded codesign --verify --strict "-R=$requirement" "$probe/SigningProbe.app" || fail apple-trust-requirement-failed
 codesign --display --verbose=4 "$probe/SigningProbe.app" >"$probe/display.txt" 2>&1 || fail signature-readback-failed
 [[ "$(grep -c '^TeamIdentifier=' "$probe/display.txt")" == 1 ]] || fail ambiguous-signed-team
 [[ "$(grep -c '^Identifier=' "$probe/display.txt")" == 1 ]] || fail ambiguous-signed-identifier
