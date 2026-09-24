@@ -96,9 +96,15 @@ only after exact terminal cleanup. A cleanup or clear failure retains the
 record and blocks `READY`. Its public restart entry point performs only record
 load, exact staged cleanup and identity-matched clear; it cannot inspect an
 archive or call the mutation seam. A process interruption inside acquisition,
-before the stager
-can return the complete four-file identity for persistence, still requires a
-separate orphan-reconciliation increment.
+before the stager can return the complete four-file identity for persistence,
+still requires a separate orphan-reconciliation increment. Both fresh
+preparation and cleanup-only recovery first acquire one injected host-wide
+nonblocking lease and retain it through recovery, acquisition, inspection,
+runtime-slot mutation and terminal cleanup. The file-backed lease uses a fixed
+installer-owned `0700` root and a single-link `0600` lock file, opens both
+without following final symlinks, and reports busy, unavailable and release
+failure separately. No state boundary is called when acquisition fails, and a
+release failure cannot return `READY`.
 
 The native archive inspector accepts only the exact staged asset set plus the
 admitted runtime identity. It re-reads all four assets through the staging
@@ -223,7 +229,6 @@ privilege seam and requires fresh post-mutation readback. The native
 preparation coordinator now assembles those pieces into one fail-closed,
 cleanup-enforcing source-level transaction and emits an exact `READY` receipt.
 It is not assembled into the released runtime or wired into executor
-journaling. Acquisition-orphan reconciliation, an external host-wide operation
-lock, a concrete reviewed privileged adapter, released mutation wiring and an
-actual protected arm64 runtime publication remain required before operational
-installation can be claimed.
+journaling. Acquisition-orphan reconciliation, a concrete reviewed privileged
+adapter, released mutation wiring and an actual protected arm64 runtime
+publication remain required before operational installation can be claimed.

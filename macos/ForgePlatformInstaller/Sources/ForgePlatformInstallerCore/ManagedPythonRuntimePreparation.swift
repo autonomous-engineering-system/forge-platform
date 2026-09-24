@@ -6,6 +6,9 @@ public enum ManagedPythonRuntimePreparationFailure: Error, Equatable, Sendable {
     case unavailable
     case rejected
     case cleanupPending
+    case operationInProgress
+    case operationLockUnavailable
+    case operationLockReleaseFailed
 }
 
 public struct ManagedPythonRuntimePreparationReceipt: Equatable, Sendable {
@@ -88,29 +91,51 @@ extension ManagedPythonRuntimeSlotMutationCoordinator: ManagedPythonRuntimeSlotE
 /// The exact staged identities are durably recorded before inspection or slot
 /// mutation. Staged bytes are discarded before that record is cleared after
 /// every terminal result. Cleanup or record-clear failure takes precedence
-/// because restart recovery must retain authority to retry exact cleanup.
+/// because restart recovery must retain authority to retry exact cleanup. One
+/// injected host-wide lease covers recovery, staging, inspection, mutation and
+/// terminal cleanup; a busy or unavailable lease fails before state access.
 public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
     private let staging: any ManagedPythonRuntimeAssetStaging
     private let inspector: any ManagedPythonRuntimeArchiveInspecting
     private let slotCoordinator: any ManagedPythonRuntimeSlotEnsuring
     private let recoveryStore: any ManagedPythonRuntimeRecoveryStoring
+    private let operationLock: any ManagedPythonRuntimeOperationLocking
 
     public init(
         staging: any ManagedPythonRuntimeAssetStaging,
         inspector: any ManagedPythonRuntimeArchiveInspecting,
         slotCoordinator: any ManagedPythonRuntimeSlotEnsuring,
-        recoveryStore: any ManagedPythonRuntimeRecoveryStoring
+        recoveryStore: any ManagedPythonRuntimeRecoveryStoring,
+        operationLock: any ManagedPythonRuntimeOperationLocking
     ) {
         self.staging = staging
         self.inspector = inspector
         self.slotCoordinator = slotCoordinator
         self.recoveryStore = recoveryStore
+        self.operationLock = operationLock
     }
 
     /// Cleanup-only restart entry point. It never inspects an archive or calls
     /// the mutation seam; it can only discard the exact recorded staged set and
     /// clear that same record after successful idempotent cleanup.
     public func recoverInterruptedPreparation()
+        async -> Result<Void, ManagedPythonRuntimePreparationFailure> {
+        let lease: any ManagedPythonRuntimeOperationLock
+        switch operationLock.acquireExclusiveManagedPythonRuntimeOperationLock() {
+        case .success(let acquired):
+            lease = acquired
+        case .failure(let failure):
+            return .failure(Self.map(failure))
+        }
+
+        let result = await recoverInterruptedPreparationWithLeaseHeld()
+        guard case .success = lease.releaseExclusiveManagedPythonRuntimeOperationLock() else {
+            return .failure(.operationLockReleaseFailed)
+        }
+        return result
+    }
+
+    private func recoverInterruptedPreparationWithLeaseHeld()
         async -> Result<Void, ManagedPythonRuntimePreparationFailure> {
         let pending: ManagedPythonRuntimeRecoveryRecord
         switch await recoveryStore.loadPendingRuntimePreparation() {
@@ -144,7 +169,31 @@ public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
             return .failure(.invalidRequest)
         }
 
-        guard case .success = await recoverInterruptedPreparation() else {
+        let lease: any ManagedPythonRuntimeOperationLock
+        switch operationLock.acquireExclusiveManagedPythonRuntimeOperationLock() {
+        case .success(let acquired):
+            lease = acquired
+        case .failure(let failure):
+            return .failure(Self.map(failure))
+        }
+
+        let result = await prepareRuntimeWithLeaseHeld(
+            operationID: operationID,
+            session: session,
+            deployment: deployment
+        )
+        guard case .success = lease.releaseExclusiveManagedPythonRuntimeOperationLock() else {
+            return .failure(.operationLockReleaseFailed)
+        }
+        return result
+    }
+
+    private func prepareRuntimeWithLeaseHeld(
+        operationID: String,
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> Result<ManagedPythonRuntimePreparationReceipt, ManagedPythonRuntimePreparationFailure> {
+        guard case .success = await recoverInterruptedPreparationWithLeaseHeld() else {
             return .failure(.cleanupPending)
         }
 
@@ -269,6 +318,16 @@ public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
             .map { String(format: "%02x", $0) }
             .joined()
         return "managed-python-" + digest
+    }
+
+    private static func map(
+        _ failure: ManagedPythonRuntimeOperationLockFailure
+    ) -> ManagedPythonRuntimePreparationFailure {
+        switch failure {
+        case .operationInProgress: .operationInProgress
+        case .unavailable: .operationLockUnavailable
+        case .releaseFailed: .operationLockReleaseFailed
+        }
     }
 
     private static func map(
