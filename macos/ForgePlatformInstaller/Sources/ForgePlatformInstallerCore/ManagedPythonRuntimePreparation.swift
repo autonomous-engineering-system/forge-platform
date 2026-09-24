@@ -85,23 +85,50 @@ extension ManagedPythonRuntimeSlotMutationCoordinator: ManagedPythonRuntimeSlotE
 /// session. The coordinator never accepts a URL, path, executable, command,
 /// environment value or credential.
 ///
-/// Staged bytes are discarded after every terminal result. A cleanup failure
-/// takes precedence over success or the earlier failure because the same
-/// operation must remain blocked until a future durable recovery layer can
-/// prove that the private staging directory was removed.
+/// The exact staged identities are durably recorded before inspection or slot
+/// mutation. Staged bytes are discarded before that record is cleared after
+/// every terminal result. Cleanup or record-clear failure takes precedence
+/// because restart recovery must retain authority to retry exact cleanup.
 public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
     private let staging: any ManagedPythonRuntimeAssetStaging
     private let inspector: any ManagedPythonRuntimeArchiveInspecting
     private let slotCoordinator: any ManagedPythonRuntimeSlotEnsuring
+    private let recoveryStore: any ManagedPythonRuntimeRecoveryStoring
 
     public init(
         staging: any ManagedPythonRuntimeAssetStaging,
         inspector: any ManagedPythonRuntimeArchiveInspecting,
-        slotCoordinator: any ManagedPythonRuntimeSlotEnsuring
+        slotCoordinator: any ManagedPythonRuntimeSlotEnsuring,
+        recoveryStore: any ManagedPythonRuntimeRecoveryStoring
     ) {
         self.staging = staging
         self.inspector = inspector
         self.slotCoordinator = slotCoordinator
+        self.recoveryStore = recoveryStore
+    }
+
+    /// Cleanup-only restart entry point. It never inspects an archive or calls
+    /// the mutation seam; it can only discard the exact recorded staged set and
+    /// clear that same record after successful idempotent cleanup.
+    public func recoverInterruptedPreparation()
+        async -> Result<Void, ManagedPythonRuntimePreparationFailure> {
+        let pending: ManagedPythonRuntimeRecoveryRecord
+        switch await recoveryStore.loadPendingRuntimePreparation() {
+        case .success(nil):
+            return .success(())
+        case .success(let record?):
+            pending = record
+        case .failure:
+            return .failure(.cleanupPending)
+        }
+
+        guard case .success = await staging.discardStagedAssets(pending.stagedAssets) else {
+            return .failure(.cleanupPending)
+        }
+        guard case .success = await recoveryStore.clearPendingRuntimePreparation(pending) else {
+            return .failure(.cleanupPending)
+        }
+        return .success(())
     }
 
     public func prepareRuntime(
@@ -117,6 +144,10 @@ public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
             return .failure(.invalidRequest)
         }
 
+        guard case .success = await recoverInterruptedPreparation() else {
+            return .failure(.cleanupPending)
+        }
+
         let stagedAssets: ManagedPythonStagedAssetSet
         switch await staging.stageAssets(
             operationID: operationID,
@@ -128,6 +159,22 @@ public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
             return .failure(Self.map(failure))
         }
 
+        let runtime = session.managedPythonRuntime
+        guard stagedAssets.operationID == operationID,
+              stagedAssets.runtimeIdentitySHA256 == runtime.identitySHA256 else {
+            return await discardUnrecorded(stagedAssets, because: .rejected)
+        }
+
+        let recoveryRecord: ManagedPythonRuntimeRecoveryRecord
+        do {
+            recoveryRecord = try ManagedPythonRuntimeRecoveryRecord(stagedAssets: stagedAssets)
+        } catch {
+            return await discardUnrecorded(stagedAssets, because: .invalidRequest)
+        }
+        guard case .success = await recoveryStore.savePendingRuntimePreparation(recoveryRecord) else {
+            return await discardUnrecorded(stagedAssets, because: .cleanupPending)
+        }
+
         let terminal = await prepareStagedRuntime(
             stagedAssets,
             operationID: operationID,
@@ -136,6 +183,9 @@ public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
         )
         switch await staging.discardStagedAssets(stagedAssets) {
         case .success:
+            guard case .success = await recoveryStore.clearPendingRuntimePreparation(recoveryRecord) else {
+                return .failure(.cleanupPending)
+            }
             return terminal
         case .failure:
             return .failure(.cleanupPending)
@@ -149,10 +199,6 @@ public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
         deployment: ManagedDeploymentTarget
     ) async -> Result<ManagedPythonRuntimePreparationReceipt, ManagedPythonRuntimePreparationFailure> {
         let runtime = session.managedPythonRuntime
-        guard stagedAssets.operationID == operationID,
-              stagedAssets.runtimeIdentitySHA256 == runtime.identitySHA256 else {
-            return .failure(.rejected)
-        }
 
         let inspection: ManagedPythonRuntimeArchiveInspection
         switch await inspector.inspect(stagedAssets, for: runtime) {
@@ -187,6 +233,16 @@ public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
         } catch {
             return .failure(.rejected)
         }
+    }
+
+    private func discardUnrecorded(
+        _ stagedAssets: ManagedPythonStagedAssetSet,
+        because failure: ManagedPythonRuntimePreparationFailure
+    ) async -> Result<ManagedPythonRuntimePreparationReceipt, ManagedPythonRuntimePreparationFailure> {
+        guard case .success = await staging.discardStagedAssets(stagedAssets) else {
+            return .failure(.cleanupPending)
+        }
+        return .failure(failure)
     }
 
     static func operationID(
