@@ -67,6 +67,34 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(events.snapshot(), [])
     }
 
+    func testExactManagedToolReceiptReferencesReachTerminalCommit() async throws {
+        let fixture = try RuntimeCompletionFixture(managedGitAction: .install)
+        let reconciliation = try fixture.managedToolReconciliationReceipt()
+        let events = RuntimeCompletionEvents()
+
+        let receipt = try runtimeCompletionSuccess(
+            await ManagedInstallerRuntimeCompletionCoordinator(
+                activation: RuntimeCompletionActivation(
+                    result: .success(fixture.activationReceipt),
+                    events: events
+                ),
+                terminal: RuntimeCompletionBindingTerminal(
+                    expectedReferences: [.git: "receipt:git-mutation"],
+                    result: .success(fixture.terminalReceipt),
+                    events: events
+                )
+            ).completeRuntimes(
+                stablePlan: fixture.stablePlan,
+                runtimeAdmissionReceipt: fixture.admissionReceipt,
+                managedToolReconciliationReceipt: reconciliation
+            )
+        )
+
+        XCTAssertEqual(events.snapshot(), ["activation", "terminal"])
+        XCTAssertEqual(receipt.managedToolReconciliationReceipt, reconciliation)
+        XCTAssertEqual(receipt.state, .managedTools)
+    }
+
     func testActivationFailureStopsBeforeTerminalCommit() async throws {
         let fixture = try RuntimeCompletionFixture()
         let events = RuntimeCompletionEvents()
@@ -276,6 +304,27 @@ private struct RuntimeCompletionFixture {
         )
     }
 
+    func managedToolReconciliationReceipt()
+        throws -> ManagedInstallerManagedToolReconciliationReceipt {
+        let receipts = try stablePlan.originalManagedToolActions.compactMap { action
+            -> ManagedInstallerManagedToolMutationReceipt? in
+            guard action.action != .noChange else { return nil }
+            let request = try ManagedInstallerManagedToolMutationRequest(
+                stablePlan: stablePlan,
+                plannedAction: action
+            )
+            return try ManagedInstallerManagedToolMutationReceipt(
+                request: request,
+                mutationEvidenceReference: "receipt:git-mutation",
+                finalReadbackEvidenceReference: "receipt:git-final"
+            )
+        }
+        return try ManagedInstallerManagedToolReconciliationReceipt(
+            stablePlan: stablePlan,
+            mutationReceipts: receipts
+        )
+    }
+
     private static func preparation(
         fixture: ActivationFixture,
         deployment: ManagedDeploymentTarget
@@ -425,11 +474,33 @@ private struct RuntimeCompletionTerminal: ManagedPythonRuntimeTerminalCompleting
 
     func complete(
         request: ManagedPythonRuntimeActivationRequest,
-        verifiedActivationReceipt: ManagedPythonRuntimeActivationReceipt
+        verifiedActivationReceipt: ManagedPythonRuntimeActivationReceipt,
+        managedToolReceiptReferences: [ManagedToolRequirement.Identity: String]
+    ) async -> Result<ManagedPythonRuntimeExecutionReceipt, ManagedPythonRuntimeTerminalReceiptFailure> {
+        _ = request
+        _ = verifiedActivationReceipt
+        _ = managedToolReceiptReferences
+        events.append("terminal")
+        return result
+    }
+}
+
+private struct RuntimeCompletionBindingTerminal: ManagedPythonRuntimeTerminalCompleting {
+    let expectedReferences: [ManagedToolRequirement.Identity: String]
+    let result: Result<ManagedPythonRuntimeExecutionReceipt, ManagedPythonRuntimeTerminalReceiptFailure>
+    let events: RuntimeCompletionEvents
+
+    func complete(
+        request: ManagedPythonRuntimeActivationRequest,
+        verifiedActivationReceipt: ManagedPythonRuntimeActivationReceipt,
+        managedToolReceiptReferences: [ManagedToolRequirement.Identity: String]
     ) async -> Result<ManagedPythonRuntimeExecutionReceipt, ManagedPythonRuntimeTerminalReceiptFailure> {
         _ = request
         _ = verifiedActivationReceipt
         events.append("terminal")
+        guard managedToolReceiptReferences == expectedReferences else {
+            return .failure(.rejected)
+        }
         return result
     }
 }

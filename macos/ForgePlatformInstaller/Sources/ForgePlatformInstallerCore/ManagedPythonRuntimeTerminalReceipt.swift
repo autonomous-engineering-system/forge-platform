@@ -175,7 +175,8 @@ public struct ManagedPythonRuntimeExecutionReceipt: Equatable, Sendable {
 public protocol ManagedPythonRuntimeTerminalReceiptBridging: Sendable {
     func commitManagedPythonRuntimeTerminalReceipt(
         _ receipt: ManagedPythonRuntimeExecutionReceipt,
-        for request: ManagedPythonRuntimeActivationRequest
+        for request: ManagedPythonRuntimeActivationRequest,
+        managedToolReceiptReferences: [ManagedToolRequirement.Identity: String]
     ) async -> Result<Void, ManagedPythonRuntimeTerminalReceiptFailure>
 }
 
@@ -202,7 +203,8 @@ public struct ManagedPythonRuntimeTerminalReceiptCoordinator: Sendable {
 
     public func complete(
         request: ManagedPythonRuntimeActivationRequest,
-        verifiedActivationReceipt: ManagedPythonRuntimeActivationReceipt
+        verifiedActivationReceipt: ManagedPythonRuntimeActivationReceipt,
+        managedToolReceiptReferences: [ManagedToolRequirement.Identity: String] = [:]
     ) async -> Result<ManagedPythonRuntimeExecutionReceipt, ManagedPythonRuntimeTerminalReceiptFailure> {
         let lease: any ManagedPythonRuntimeOperationLock
         switch operationLock.acquireExclusiveManagedPythonRuntimeOperationLock() {
@@ -214,7 +216,8 @@ public struct ManagedPythonRuntimeTerminalReceiptCoordinator: Sendable {
 
         let result = await completeWithLeaseHeld(
             request: request,
-            verifiedActivationReceipt: verifiedActivationReceipt
+            verifiedActivationReceipt: verifiedActivationReceipt,
+            managedToolReceiptReferences: managedToolReceiptReferences
         )
         guard case .success = lease.releaseExclusiveManagedPythonRuntimeOperationLock() else {
             return .failure(.operationLockReleaseFailed)
@@ -224,7 +227,8 @@ public struct ManagedPythonRuntimeTerminalReceiptCoordinator: Sendable {
 
     private func completeWithLeaseHeld(
         request: ManagedPythonRuntimeActivationRequest,
-        verifiedActivationReceipt: ManagedPythonRuntimeActivationReceipt
+        verifiedActivationReceipt: ManagedPythonRuntimeActivationReceipt,
+        managedToolReceiptReferences: [ManagedToolRequirement.Identity: String]
     ) async -> Result<ManagedPythonRuntimeExecutionReceipt, ManagedPythonRuntimeTerminalReceiptFailure> {
         let pending: ManagedPythonRuntimeActivationReceipt
         switch await receiptStore.loadPendingRuntimeActivation() {
@@ -259,7 +263,8 @@ public struct ManagedPythonRuntimeTerminalReceiptCoordinator: Sendable {
 
         switch await journalBridge.commitManagedPythonRuntimeTerminalReceipt(
             terminalReceipt,
-            for: request
+            for: request,
+            managedToolReceiptReferences: managedToolReceiptReferences
         ) {
         case .success:
             break

@@ -9,7 +9,8 @@ final class ManagedPythonRuntimeParentJournalAdapterTests: XCTestCase {
 
         let result = await adapter.commitManagedPythonRuntimeTerminalReceipt(
             fixture.receipt,
-            for: fixture.request
+            for: fixture.request,
+            managedToolReceiptReferences: [.git: "receipt:git"]
         )
         let calls = await journal.recordedCalls()
 
@@ -33,7 +34,11 @@ final class ManagedPythonRuntimeParentJournalAdapterTests: XCTestCase {
         ] {
             let journal = ParentJournalSpy()
             let result = try await fixture.adapter(plan: plan, journal: journal)
-                .commitManagedPythonRuntimeTerminalReceipt(fixture.receipt, for: fixture.request)
+                .commitManagedPythonRuntimeTerminalReceipt(
+                    fixture.receipt,
+                    for: fixture.request,
+                    managedToolReceiptReferences: [.git: "receipt:git"]
+                )
             XCTAssertEqual(result.failure, .rejected)
             let callCount = await journal.recordedCalls().count
             XCTAssertEqual(callCount, 0)
@@ -50,7 +55,31 @@ final class ManagedPythonRuntimeParentJournalAdapterTests: XCTestCase {
         ] {
             let journal = ParentJournalSpy()
             let result = try await fixture.adapter(plan: plan, journal: journal)
-                .commitManagedPythonRuntimeTerminalReceipt(fixture.receipt, for: fixture.request)
+                .commitManagedPythonRuntimeTerminalReceipt(
+                    fixture.receipt,
+                    for: fixture.request,
+                    managedToolReceiptReferences: [.git: "receipt:git"]
+                )
+            XCTAssertEqual(result.failure, .rejected)
+            let callCount = await journal.recordedCalls().count
+            XCTAssertEqual(callCount, 0)
+        }
+    }
+
+    func testRejectsMissingDriftedAndInvalidManagedToolReceiptReferences() async throws {
+        let fixture = try ParentJournalFixture()
+        for references in [
+            [ManagedToolRequirement.Identity: String](),
+            [.git: "receipt:other-git"],
+            [.git: "invalid reference"],
+        ] {
+            let journal = ParentJournalSpy()
+            let result = try await fixture.adapter(journal: journal)
+                .commitManagedPythonRuntimeTerminalReceipt(
+                    fixture.receipt,
+                    for: fixture.request,
+                    managedToolReceiptReferences: references
+                )
             XCTAssertEqual(result.failure, .rejected)
             let callCount = await journal.recordedCalls().count
             XCTAssertEqual(callCount, 0)
@@ -60,12 +89,20 @@ final class ManagedPythonRuntimeParentJournalAdapterTests: XCTestCase {
     func testRequalificationAndAtomicJournalFailuresRemainRetryable() async throws {
         let fixture = try ParentJournalFixture()
         let requalificationFailure = try await fixture.adapter(plan: .requalifyFailure)
-            .commitManagedPythonRuntimeTerminalReceipt(fixture.receipt, for: fixture.request)
+            .commitManagedPythonRuntimeTerminalReceipt(
+                fixture.receipt,
+                for: fixture.request,
+                managedToolReceiptReferences: [.git: "receipt:git"]
+            )
         XCTAssertEqual(requalificationFailure.failure, .journalBridgeFailed)
 
         let journalFailure = try await fixture.adapter(
             journal: ParentJournalSpy(fails: true)
-        ).commitManagedPythonRuntimeTerminalReceipt(fixture.receipt, for: fixture.request)
+        ).commitManagedPythonRuntimeTerminalReceipt(
+            fixture.receipt,
+            for: fixture.request,
+            managedToolReceiptReferences: [.git: "receipt:git"]
+        )
         XCTAssertEqual(journalFailure.failure, .journalBridgeFailed)
     }
 
