@@ -178,8 +178,12 @@ nonempty readiness summary items.
 The native core now also defines a canonical product-operation bridge for the
 exact Forge+EP pair. Its request is rebuilt from that stable plan and terminal
 runtime receipt and contains only reviewed identities, actions and evidence
-references. Paths, commands, environment variables and credentials are not
-accepted. A terminal response must canonically bind the request fingerprint,
+references. It also carries the reviewed current Forge/EP instance and
+installed-composition identities plus each selected candidate version and
+digest, so the helper can compare them with its exact registry and
+digest-pinned manifest. Artifact locators, paths, commands, environment
+variables and credentials are not accepted. A terminal response must
+canonically bind the request fingerprint,
 stable-plan fingerprint and operation ID, include product, pairing and both
 readiness receipts, and report the expected terminal state for both exact
 components. Substituted, partial, malformed or noncanonical responses fail

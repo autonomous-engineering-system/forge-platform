@@ -514,7 +514,12 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
     }
 
     func testProductBridgeRequestIsCanonicalAndBindsTerminalRuntimeEvidence() throws {
-        let fixture = try RuntimeCompletionFixture(managedGitAction: .install)
+        let fixture = try RuntimeCompletionFixture(
+            managedGitAction: .install,
+            installedCompositionID: "forge-ep-previous",
+            installedCompositionManifestSHA256:
+                "sha256:" + String(repeating: "6", count: 64)
+        )
         let request = try ManagedInstallerProductOperationRequest(
             stablePlan: fixture.stablePlan,
             runtimeTransactionReceipt: fixture.transactionReceipt()
@@ -530,6 +535,22 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             ["engineering-platform-server", "forge-runtime"]
         )
         XCTAssertEqual(decoded.components.map(\.change), [.retain, .update])
+        XCTAssertEqual(decoded.forgeInstanceID, "forge-one")
+        XCTAssertEqual(decoded.engineeringPlatformInstanceID, "ep-one")
+        XCTAssertEqual(decoded.installedCompositionIdentity, "forge-ep-previous")
+        XCTAssertEqual(
+            decoded.installedCompositionManifestSHA256,
+            "sha256:" + String(repeating: "6", count: 64)
+        )
+        XCTAssertEqual(decoded.components.map(\.installedVersion), ["2.0.0", "1.0.0"])
+        XCTAssertEqual(decoded.components.map(\.candidateVersion), ["2.0.0", "1.1.0"])
+        XCTAssertEqual(
+            decoded.components.map(\.artifactSHA256),
+            [
+                "sha256:" + String(repeating: "7", count: 64),
+                "sha256:" + String(repeating: "8", count: 64),
+            ]
+        )
         XCTAssertEqual(decoded.providerTargetIDs, [])
         XCTAssertEqual(
             decoded.runtimeEvidenceReferences,
@@ -543,7 +564,31 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(decoded.canonicalJSONData(), bytes)
         XCTAssertThrowsError(try ManagedInstallerProductComponentOperation(
             componentID: "forge-runtime",
-            change: .remove
+            change: .remove,
+            installedVersion: "1.0.0",
+            candidateVersion: "1.0.0",
+            artifactSHA256: "sha256:" + String(repeating: "8", count: 64)
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductComponentOperation(
+            componentID: "forge-runtime",
+            change: .install,
+            installedVersion: "1.0.0",
+            candidateVersion: "1.1.0",
+            artifactSHA256: "sha256:" + String(repeating: "8", count: 64)
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductComponentOperation(
+            componentID: "forge-runtime",
+            change: .update,
+            installedVersion: "1.0.0",
+            candidateVersion: nil,
+            artifactSHA256: "sha256:" + String(repeating: "8", count: 64)
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductComponentOperation(
+            componentID: "forge-runtime",
+            change: .update,
+            installedVersion: "1.0.0",
+            candidateVersion: "1.1.0",
+            artifactSHA256: "unqualified"
         ))
     }
 
@@ -851,7 +896,9 @@ private struct RuntimeCompletionFixture {
 
     init(
         deploymentID: String = "activation-deployment",
-        managedGitAction: ManagedToolOriginalPlanAction.Action? = nil
+        managedGitAction: ManagedToolOriginalPlanAction.Action? = nil,
+        installedCompositionID: String? = nil,
+        installedCompositionManifestSHA256: String? = nil
     ) throws {
         let git = try ManagedToolRequirement(
             identity: .git,
@@ -868,7 +915,9 @@ private struct RuntimeCompletionFixture {
             id: deploymentID,
             exists: true,
             forgeInstanceID: "forge-one",
-            engineeringPlatformInstanceID: "ep-one"
+            engineeringPlatformInstanceID: "ep-one",
+            installedCompositionID: installedCompositionID,
+            installedCompositionManifestSHA256: installedCompositionManifestSHA256
         )
         let plan = try ManagedPythonRuntimeActivationPlan(
             session: activationFixture.session,

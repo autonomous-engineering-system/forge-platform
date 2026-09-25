@@ -60,6 +60,7 @@ func managedInstallerTestStablePlan(
             change: .retain,
             installedVersion: "2.0.0",
             candidateVersion: "2.0.0",
+            artifactDigest: "sha256:" + String(repeating: "7", count: 64),
             detail: "Exact reviewed EP retention"
         ),
     ]
