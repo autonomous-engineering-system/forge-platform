@@ -191,9 +191,9 @@ closed before the GUI or CLI can show completion.
 
 This is source-level composition only. The released runtime continues to inject
 the unavailable route until concrete catalog, host, managed-tool and product
-adapters plus an authorized product-bridge transport are qualified and
-explicitly wired. It does not establish live install, signing, notarization or
-product-readiness evidence.
+adapters plus the released privileged-helper wiring are qualified and
+explicitly installed. It does not establish live install, signing,
+notarization or product-readiness evidence.
 
 The platform-neutral helper boundary now independently admits request v2 before
 any product dispatcher can be selected. It accepts only bounded strict canonical
@@ -203,7 +203,7 @@ and digests, required/enabled provider targets, durable deployment topology,
 installed composition provenance, installed manifest versions and explicit
 `upgrade_from` route. Its admitted result contains correlation objects only; it
 does not contain or resolve an adapter, path, command, environment value or
-credential. Concrete privileged transport, resolver implementation and
+credential. The concrete helper executor, resolver implementation and
 released-installer wiring remain unimplemented and therefore fail closed.
 
 After that admission boundary, a separate helper-owned resolver may now bind
@@ -214,7 +214,17 @@ request fingerprint, runs only the existing durable Forge+EP saga, and emits a
 canonical native completion receipt only after both product receipts, pairing
 and both readiness receipts exist. Fresh product identities therefore come
 from the helper resolver rather than native request data. No concrete resolver,
-privileged transport or released-installer wiring is supplied yet.
+helper process registration or released-installer wiring is supplied yet.
+
+The native source now provides the authorized product-operation XPC boundary.
+It uses a fixed privileged Mach service, requires the exact Developer ID
+Application helper identity and Team ID on the client, and requires the exact
+released installer bundle identity and Team ID on the listener. The transport
+accepts only the bounded canonical request bytes above; the handler decodes
+those bytes into the closed helper execution seam and returns only a canonical
+receipt that rebinds the same request. Nil, malformed, noncanonical or
+cross-request replies fail closed. This supplies no launchd registration,
+concrete helper executor, product resolver or live helper evidence by itself.
 
 The managed-deployment operation coordinator reuses
 `DurableComponentOperationCoordinator`. Each product mutation therefore keeps
