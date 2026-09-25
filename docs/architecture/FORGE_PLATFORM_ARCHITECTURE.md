@@ -59,13 +59,15 @@ A closed privileged-boundary adapter now derives one pathless helper request
 from the stable plan and activation request, accepts exactly one canonical
 snapshot response and rejects malformed, noncanonical or context-drifted
 responses. A native client sends those canonical bytes only through one fixed
-NSXPC interface to one fixed privileged Mach service. A paired service handler
+NSXPC interface to one fixed privileged Mach service and requires that remote
+service to satisfy the exact fixed helper signing identifier and configured
+Team identity on a Developer ID Application chain. A paired service handler
 rejects invalid or noncanonical requests before capture and emits only a
-canonical context-matched snapshot. Its named listener admits peers only when
-Foundation verifies the exact configured installer bundle and Team identities on a
-Developer ID Application chain. Concrete host reads, signed service
-registration and released wiring are not implemented. No Python artifact,
-privileged helper or operational runtime installation is claimed.
+canonical context-matched snapshot. Its named listener applies the reciprocal
+requirement to the configured installer bundle and Team identities. Concrete
+host reads, signed service registration and released wiring are not
+implemented. No Python artifact, privileged helper or operational runtime
+installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
@@ -82,8 +84,9 @@ only exact idempotent retries and rejects conflicting evidence. A producer
 coordinator then binds exactly one host observation to that store and
 reader. The strict host-observation adapter, fixed privileged NSXPC client
 transport, fail-closed service handler and exact signed-caller listener are
-implemented; concrete host-read capture, signed service registration, released
-route wiring and mutation dispatch remain unimplemented.
+implemented together with exact signed-helper authentication on the client;
+concrete host-read capture, signed service registration, released route wiring
+and mutation dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 

@@ -19,10 +19,11 @@ slot readback around its injected privilege seam. A separate native activation
 coordinator now binds exact component venvs, activation, rollback retention and
 final runtime readback under the host-wide lock contract. A native client now
 uses one fixed privileged Mach service and one fixed NSXPC interface to exchange
-only canonical, bounded request and response bytes. No production runtime
-artifact, concrete host-read implementation, signed helper registration,
-released mutation wiring, or live machine installation is approved by this
-increment.
+only canonical, bounded request and response bytes and authenticates the exact
+fixed helper signing identifier and configured Team identity before accepting
+remote messages. No production runtime artifact, concrete host-read
+implementation, signed helper registration, released mutation wiring, or live
+machine installation is approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -219,11 +220,13 @@ host-observation adapter derives one closed request containing only frozen
 identities, accepts one canonical serialized helper response and rejects
 malformed, noncanonical or context-drifted evidence. Its native NSXPC client
 uses one fixed privileged Mach service, one fixed interface and canonical
-request bytes. A paired service handler rejects noncanonical requests before
-capture and returns only a canonical context-bound snapshot. Its named listener
-uses Foundation's pre-delegate code-signing gate to admit only the exact
-configured installer bundle and Team identities on a Developer ID Application
-chain; that identity can be constructed from sealed release trust.
+request bytes. Before resuming the connection it requires the exact fixed
+helper signing identifier and configured Team identity on a Developer ID
+Application chain. A paired service handler rejects noncanonical requests
+before capture and returns only a canonical context-bound snapshot. Its named
+listener uses Foundation's reciprocal pre-delegate code-signing gate to admit
+only the exact configured installer bundle and Team identities; both Team
+bindings can be constructed from sealed release trust.
 Concrete host-read capture, signed service registration and the released route
 are not yet implemented. The
 native seeding coordinator now validates the exact session/deployment and
@@ -241,9 +244,9 @@ The concrete source-level fresh replanner, its read-only snapshot adapter,
 durable helper-facing snapshot store and capture/persist/readback producer
 coordinator plus the strict host-observation request/response adapter, fixed
 native NSXPC client transport and fail-closed helper service handler are
-implemented together with exact signed-caller admission; concrete host-read
-capture, signed service registration and released route wiring are not yet
-implemented.
+implemented together with mutual exact signed-peer authentication; concrete
+host-read capture, signed service registration and released route wiring are not
+yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -342,10 +345,10 @@ provider requirements, component diff, managed Git actions and complete
 pre-mutation Python/rollback/venv intent. No caller may inject an unrelated
 stable-plan digest. The concrete read-only snapshot adapter, durable
 single-assignment store, producer coordinator, closed canonical-response host
-adapter, fixed privileged NSXPC client transport and canonical helper service
-handler plus exact Developer ID caller admission are implemented, but concrete
-host-read capture, signed service registration and these coordinators are not
-wired into the released runtime. A concrete reviewed authorized helper process,
+adapter, fixed privileged NSXPC client transport, canonical helper service
+handler and mutual exact Developer ID peer authentication are implemented.
+Concrete host-read capture, signed service registration and these coordinators
+are not wired into the released runtime. A concrete reviewed authorized helper process,
 released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
 installation can be claimed.

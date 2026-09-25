@@ -271,20 +271,53 @@ public struct ManagedInstallerPostToolHostObservationAdapter:
     )
 }
 
+public enum ManagedInstallerPostToolXPCHelperIdentityError: Error, Equatable {
+    case invalidIdentity
+}
+
+/// Exact signed helper identity required by the installer-side connection.
+/// The signing identifier is the fixed privileged Mach service name and cannot
+/// be supplied by a caller.
+public struct ManagedInstallerPostToolXPCHelperIdentity: Equatable, Sendable {
+    public static let signingIdentifier =
+        "com.autonomous-engineering-system.forge-platform-installer.helper"
+
+    public let teamIdentifier: String
+    public let codeSigningRequirement: String
+
+    public init(teamIdentifier: String) throws {
+        guard InstallerSelfUpdateValidation.isTeamIdentifier(teamIdentifier) else {
+            throw ManagedInstallerPostToolXPCHelperIdentityError.invalidIdentity
+        }
+        self.teamIdentifier = teamIdentifier
+        codeSigningRequirement = [
+            "anchor apple generic",
+            "identifier \"\(Self.signingIdentifier)\"",
+            "certificate 1[field.1.2.840.113635.100.6.2.6] exists",
+            "certificate leaf[field.1.2.840.113635.100.6.1.13] exists",
+            "certificate leaf[subject.OU] = \"\(teamIdentifier)\"",
+        ].joined(separator: " and ")
+    }
+
+    public init(releaseTrust: SealedInstallerReleaseTrustConfiguration) throws {
+        try self.init(teamIdentifier: releaseTrust.expectedTeamIdentifier)
+    }
+}
+
 /// macOS client transport for the fixed privileged helper Mach service. The
 /// caller cannot select another service, XPC interface, request bytes or path.
 public actor MacOSManagedInstallerPostToolXPCTransport:
     ManagedInstallerPostToolHostObservationTransporting {
-    public static let machServiceName =
-        "com.autonomous-engineering-system.forge-platform-installer.helper"
+    public static let machServiceName = ManagedInstallerPostToolXPCHelperIdentity.signingIdentifier
 
     private let connection: NSXPCConnection
 
-    public init() {
+    public init(helperIdentity: ManagedInstallerPostToolXPCHelperIdentity) {
         connection = NSXPCConnection(
             machServiceName: Self.machServiceName,
             options: .privileged
         )
+        connection.setCodeSigningRequirement(helperIdentity.codeSigningRequirement)
         connection.remoteObjectInterface = NSXPCInterface(
             with: ManagedInstallerPostToolObservationXPCService.self
         )
@@ -297,6 +330,10 @@ public actor MacOSManagedInstallerPostToolXPCTransport:
             with: ManagedInstallerPostToolObservationXPCService.self
         )
         connection.resume()
+    }
+
+    public func invalidate() {
+        connection.invalidate()
     }
 
     public func capturePostToolObservation(
