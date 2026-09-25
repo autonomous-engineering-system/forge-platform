@@ -50,6 +50,172 @@ final class ManagedInstallerProviderRuntimeStagingTests: XCTestCase {
         }
     }
 
+    func testReconcilesCompleteAndEmptyUnrecordedOperationsIdempotently() async throws {
+        let fixture = try ProviderStagingFixture()
+        for retainArchive in [true, false] {
+            let root = try providerStagingRoot()
+            defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+            let staging = MacOSManagedInstallerProviderRuntimeArchiveStaging(
+                stateRoot: root,
+                fetcher: ProviderStagingFetcher(fixture: fixture)
+            )
+            _ = try providerStagingSuccess(await staging.stageRuntimeArchive(
+                operationID: "provider-orphan-\(retainArchive)",
+                requirement: fixture.requirement
+            ))
+            if !retainArchive {
+                try FileManager.default.removeItem(at: providerArchivePath(root))
+            }
+
+            try providerVoidSuccess(await staging.reconcileUnrecordedStagingOperations())
+            try providerVoidSuccess(await staging.reconcileUnrecordedStagingOperations())
+
+            XCTAssertTrue(try providerOperationDirectories(root).isEmpty)
+        }
+    }
+
+    func testReconciliationWithoutStateIsNoOpAndInsecureStateFailsClosed() async throws {
+        let fixture = try ProviderStagingFixture()
+        let absentRoot = try providerStagingRoot()
+        defer { try? FileManager.default.removeItem(at: absentRoot.deletingLastPathComponent()) }
+        let absent = MacOSManagedInstallerProviderRuntimeArchiveStaging(
+            stateRoot: absentRoot,
+            fetcher: ProviderStagingFetcher(fixture: fixture)
+        )
+        try providerVoidSuccess(await absent.reconcileUnrecordedStagingOperations())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: absentRoot.path))
+
+        for symlink in [false, true] {
+            let root = try providerStagingRoot()
+            defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+            if symlink {
+                let target = root.deletingLastPathComponent().appendingPathComponent("target")
+                try FileManager.default.createDirectory(
+                    at: target,
+                    withIntermediateDirectories: false
+                )
+                XCTAssertEqual(Darwin.chmod(target.path, mode_t(0o700)), 0)
+                try FileManager.default.createSymbolicLink(at: root, withDestinationURL: target)
+            } else {
+                try FileManager.default.createDirectory(
+                    at: root,
+                    withIntermediateDirectories: false
+                )
+                XCTAssertEqual(Darwin.chmod(root.path, mode_t(0o755)), 0)
+            }
+            let staging = MacOSManagedInstallerProviderRuntimeArchiveStaging(
+                stateRoot: root,
+                fetcher: ProviderStagingFetcher(fixture: fixture)
+            )
+
+            let result = await staging.reconcileUnrecordedStagingOperations()
+            XCTAssertEqual(result.failure, .rejected)
+        }
+    }
+
+    func testReconciliationRejectsUnknownEntriesAndDirectoryNames() async throws {
+        let fixture = try ProviderStagingFixture()
+        let root = try providerStagingRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let staging = MacOSManagedInstallerProviderRuntimeArchiveStaging(
+            stateRoot: root,
+            fetcher: ProviderStagingFetcher(fixture: fixture)
+        )
+        _ = try providerStagingSuccess(await staging.stageRuntimeArchive(
+            operationID: "provider-orphan-unknown-entry",
+            requirement: fixture.requirement
+        ))
+        let operation = try providerOperationDirectory(root)
+        let unexpected = operation.appendingPathComponent("unexpected")
+        try Data("unexpected".utf8).write(to: unexpected)
+        XCTAssertEqual(Darwin.chmod(unexpected.path, mode_t(0o600)), 0)
+
+        let unknownEntry = await staging.reconcileUnrecordedStagingOperations()
+        XCTAssertEqual(unknownEntry.failure, .rejected)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: operation.path))
+
+        try FileManager.default.removeItem(at: root)
+        let secondRoot = try providerStagingRoot()
+        defer { try? FileManager.default.removeItem(at: secondRoot.deletingLastPathComponent()) }
+        let second = MacOSManagedInstallerProviderRuntimeArchiveStaging(
+            stateRoot: secondRoot,
+            fetcher: ProviderStagingFetcher(fixture: fixture)
+        )
+        _ = try providerStagingSuccess(await second.stageRuntimeArchive(
+            operationID: "provider-orphan-unknown-name",
+            requirement: fixture.requirement
+        ))
+        let stagingRoot = secondRoot.appendingPathComponent(
+            MacOSManagedInstallerProviderRuntimeArchiveStaging.stagingDirectoryName,
+            isDirectory: true
+        )
+        let unknownDirectory = stagingRoot.appendingPathComponent(
+            "unknown-operation",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: unknownDirectory,
+            withIntermediateDirectories: false
+        )
+        XCTAssertEqual(Darwin.chmod(unknownDirectory.path, mode_t(0o700)), 0)
+
+        let unknownName = await second.reconcileUnrecordedStagingOperations()
+        XCTAssertEqual(unknownName.failure, .rejected)
+    }
+
+    func testReconciliationRejectsPermissionLinkAndSizeDrift() async throws {
+        let fixture = try ProviderStagingFixture()
+        for drift in ["permission", "symlink", "hardlink", "oversized"] {
+            let root = try providerStagingRoot()
+            defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+            let staging = MacOSManagedInstallerProviderRuntimeArchiveStaging(
+                stateRoot: root,
+                fetcher: ProviderStagingFetcher(fixture: fixture)
+            )
+            _ = try providerStagingSuccess(await staging.stageRuntimeArchive(
+                operationID: "provider-orphan-\(drift)",
+                requirement: fixture.requirement
+            ))
+            let operation = try providerOperationDirectory(root)
+            let archive = try providerArchivePath(root)
+            let sentinel = root.deletingLastPathComponent().appendingPathComponent("sentinel")
+            switch drift {
+            case "permission":
+                XCTAssertEqual(Darwin.chmod(archive.path, mode_t(0o644)), 0)
+            case "symlink":
+                try FileManager.default.removeItem(at: archive)
+                try fixture.body.write(to: sentinel)
+                XCTAssertEqual(Darwin.chmod(sentinel.path, mode_t(0o600)), 0)
+                try FileManager.default.createSymbolicLink(
+                    at: archive,
+                    withDestinationURL: sentinel
+                )
+            case "hardlink":
+                try FileManager.default.removeItem(at: archive)
+                try fixture.body.write(to: sentinel)
+                XCTAssertEqual(Darwin.chmod(sentinel.path, mode_t(0o600)), 0)
+                XCTAssertEqual(Darwin.link(sentinel.path, archive.path), 0)
+            default:
+                let descriptor = Darwin.open(archive.path, O_WRONLY | O_CLOEXEC)
+                XCTAssertGreaterThanOrEqual(descriptor, 0)
+                defer { _ = Darwin.close(descriptor) }
+                XCTAssertEqual(
+                    Darwin.ftruncate(
+                        descriptor,
+                        off_t(
+                            HTTPSManagedInstallerProviderRuntimeTransport.maximumArchiveBytes + 1
+                        )
+                    ),
+                    0
+                )
+            }
+
+            let result = await staging.reconcileUnrecordedStagingOperations()
+            XCTAssertEqual(result.failure, .rejected)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: operation.path))
+        }
+    }
+
     func testFetchFailuresMapWithoutCreatingState() async throws {
         let fixture = try ProviderStagingFixture()
         for (transportFailure, stagingFailure) in [

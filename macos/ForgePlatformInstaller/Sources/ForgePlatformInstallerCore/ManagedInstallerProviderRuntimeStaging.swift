@@ -63,6 +63,9 @@ public struct ManagedInstallerProviderStagedArchive: Equatable, Sendable {
 }
 
 public protocol ManagedInstallerProviderRuntimeArchiveStaging: Sendable {
+    func reconcileUnrecordedStagingOperations()
+        async -> Result<Void, ManagedInstallerProviderRuntimeStagingFailure>
+
     func stageRuntimeArchive(
         operationID: String,
         requirement: ProviderRequirement
@@ -107,6 +110,35 @@ public struct MacOSManagedInstallerProviderRuntimeArchiveStaging:
     ) {
         self.stateRoot = Self.canonicalStateRoot(for: stateRoot)
         self.fetcher = fetcher
+    }
+
+    /// Removes operation directories left before `stageRuntimeArchive` could
+    /// return a complete identity. A future coordinator must call this only
+    /// while holding the exclusive provider-runtime operation lease.
+    public func reconcileUnrecordedStagingOperations()
+        async -> Result<Void, ManagedInstallerProviderRuntimeStagingFailure> {
+        do {
+            guard let root = try openSecureStateRootDirectory(createIfMissing: false) else {
+                return .success(())
+            }
+            defer { _ = Darwin.close(root) }
+            guard let staging = try openSecureDirectory(
+                named: Self.stagingDirectoryName,
+                in: root,
+                createIfMissing: false
+            ) else {
+                return .success(())
+            }
+            defer { _ = Darwin.close(staging) }
+            for name in try directoryEntryNames(staging).sorted() {
+                try reconcileUnrecordedOperation(named: name, in: staging)
+            }
+            return .success(())
+        } catch let failure as ManagedInstallerProviderRuntimeStagingFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.rejected)
+        }
     }
 
     public func stageRuntimeArchive(
@@ -450,6 +482,97 @@ public struct MacOSManagedInstallerProviderRuntimeArchiveStaging:
         }
     }
 
+    private func reconcileUnrecordedOperation(
+        named name: String,
+        in staging: Int32
+    ) throws {
+        guard Self.isOperationDirectoryName(name),
+              let operation = try openSecureDirectory(
+                  named: name,
+                  in: staging,
+                  createIfMissing: false
+              ) else {
+            throw ManagedInstallerProviderRuntimeStagingFailure.rejected
+        }
+        defer { _ = Darwin.close(operation) }
+        let operationDetails = try secureDirectoryDetails(operation)
+        for fileName in try directoryEntryNames(operation).sorted() {
+            guard fileName == Self.archiveFileName else {
+                throw ManagedInstallerProviderRuntimeStagingFailure.rejected
+            }
+            let descriptor = fileName.withCString {
+                Darwin.openat(operation, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+            }
+            guard descriptor >= 0 else {
+                throw ManagedInstallerProviderRuntimeStagingFailure.rejected
+            }
+            defer { _ = Darwin.close(descriptor) }
+            let details = try secureRegularFileDetails(descriptor)
+            guard details.st_size >= 0,
+                  details.st_size <= off_t(
+                    HTTPSManagedInstallerProviderRuntimeTransport.maximumArchiveBytes
+                  ) else {
+                throw ManagedInstallerProviderRuntimeStagingFailure.rejected
+            }
+            try verifyRegularFileEntry(
+                named: fileName,
+                in: operation,
+                matches: details
+            )
+            guard fileName.withCString({ Darwin.unlinkat(operation, $0, 0) }) == 0 else {
+                throw ManagedInstallerProviderRuntimeStagingFailure.rejected
+            }
+        }
+        guard Darwin.fsync(operation) == 0 else {
+            throw ManagedInstallerProviderRuntimeStagingFailure.rejected
+        }
+        try verifyDirectoryEntry(
+            named: name,
+            in: staging,
+            matches: operationDetails
+        )
+        guard name.withCString({ Darwin.unlinkat(staging, $0, AT_REMOVEDIR) }) == 0,
+              Darwin.fsync(staging) == 0 else {
+            throw ManagedInstallerProviderRuntimeStagingFailure.rejected
+        }
+    }
+
+    private func directoryEntryNames(_ descriptor: Int32) throws -> [String] {
+        let duplicate = Darwin.dup(descriptor)
+        guard duplicate >= 0 else {
+            throw ManagedInstallerProviderRuntimeStagingFailure.rejected
+        }
+        guard let directory = fdopendir(duplicate) else {
+            _ = Darwin.close(duplicate)
+            throw ManagedInstallerProviderRuntimeStagingFailure.rejected
+        }
+        defer { _ = closedir(directory) }
+        var names: [String] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(directory) else {
+                guard errno == 0 else {
+                    throw ManagedInstallerProviderRuntimeStagingFailure.rejected
+                }
+                break
+            }
+            var storage = entry.pointee.d_name
+            let capacity = MemoryLayout.size(ofValue: storage)
+            let name = withUnsafePointer(to: &storage) {
+                $0.withMemoryRebound(to: CChar.self, capacity: capacity) {
+                    String(cString: $0)
+                }
+            }
+            if name == "." || name == ".." { continue }
+            guard ManagedPythonRuntimeStagingValidation.isInternalName(name),
+                  names.count < 1_024 else {
+                throw ManagedInstallerProviderRuntimeStagingFailure.rejected
+            }
+            names.append(name)
+        }
+        return names
+    }
+
     private func requireSecureStateRootDirectory() throws -> Int32 {
         guard let descriptor = try openSecureStateRootDirectory(createIfMissing: true) else {
             throw ManagedInstallerProviderRuntimeStagingFailure.rejected
@@ -734,6 +857,25 @@ public struct MacOSManagedInstallerProviderRuntimeArchiveStaging:
 
     private static func targetDigest(_ target: ProviderTargetID) -> String {
         GitHubInstallerReleaseDescriptor.sha256(of: Data(target.rawValue.utf8))
+    }
+
+    private static func isOperationDirectoryName(_ name: String) -> Bool {
+        let fields = name.split(separator: "-", omittingEmptySubsequences: false)
+        guard fields.count == 8,
+              fields[0] == "operation",
+              fields[6].count == 64,
+              fields[7].count == 64,
+              fields[6].unicodeScalars.allSatisfy(isLowercaseHexScalar),
+              fields[7].unicodeScalars.allSatisfy(isLowercaseHexScalar) else {
+            return false
+        }
+        let identifier = fields[1...5].joined(separator: "-")
+        guard let uuid = UUID(uuidString: identifier) else { return false }
+        return uuid.uuidString.lowercased() == identifier
+    }
+
+    private static func isLowercaseHexScalar(_ scalar: Unicode.Scalar) -> Bool {
+        (48...57).contains(scalar.value) || (97...102).contains(scalar.value)
     }
 
     private static func taggedSHA256(of bytes: Data) -> String {
