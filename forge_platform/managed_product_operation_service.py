@@ -11,6 +11,8 @@ accepted from the native caller.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Iterable
 from typing import Protocol
 
 from .managed_product_operation_admission import (
@@ -62,6 +64,66 @@ class ManagedProductOperationAuthorityResolving(Protocol):
     def resolve(
         self, request: NativeProductOperationRequest
     ) -> ManagedProductOperationAuthorities: ...
+
+
+class PinnedManagedProductOperationAuthorityResolver:
+    """Immutable helper authority for exact already-verified manifests.
+
+    The builder must supply typed manifests previously verified through the
+    signed catalog boundary and the exact running installer release.  Native
+    request values can select only an exact `(composition_id, digest)` already
+    present in this snapshot; they can never introduce bytes or a locator.
+    """
+
+    def __init__(
+        self,
+        *,
+        current_installer_release: NativeInstallerReleaseBinding,
+        manifests: Iterable[CompositionManifest],
+    ) -> None:
+        if not isinstance(current_installer_release, NativeInstallerReleaseBinding):
+            raise TypeError("current installer release authority is required")
+        values = tuple(manifests)
+        if not values or any(not isinstance(value, CompositionManifest) for value in values):
+            raise TypeError("verified composition manifest authorities are required")
+        identities = [value.composition_id for value in values]
+        digests = [value.manifest_digest for value in values]
+        if len(set(identities)) != len(identities):
+            raise ValueError("composition authority identities are ambiguous")
+        if len(set(digests)) != len(digests):
+            raise ValueError("composition authority digests are ambiguous")
+        self.current_installer_release = current_installer_release
+        self._manifests = MappingProxyType({
+            (value.composition_id, value.manifest_digest): value for value in values
+        })
+
+    def resolve(
+        self, request: NativeProductOperationRequest
+    ) -> ManagedProductOperationAuthorities:
+        if not isinstance(request, NativeProductOperationRequest):
+            raise TypeError("decoded native product request is required")
+        candidate = self._manifests.get(
+            (request.composition_identity, request.manifest_sha256)
+        )
+        if candidate is None:
+            raise ManagedProductOperationServiceError(
+                "candidate composition authority is unavailable"
+            )
+        installed: CompositionManifest | None = None
+        if request.installed_composition_identity is not None:
+            installed = self._manifests.get((
+                request.installed_composition_identity,
+                request.installed_composition_manifest_sha256,
+            ))
+            if installed is None:
+                raise ManagedProductOperationServiceError(
+                    "installed composition authority is unavailable"
+                )
+        return ManagedProductOperationAuthorities(
+            candidate,
+            self.current_installer_release,
+            installed,
+        )
 
 
 class ManagedProductOperationHelperService:
