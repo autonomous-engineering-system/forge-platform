@@ -17,6 +17,7 @@ from forge_platform.managed_product_operation_service import (
     ManagedProductOperationHelperService,
     ManagedProductOperationServiceError,
     PinnedManagedProductOperationAuthorityResolver,
+    ReleasedManagedProductOperationAuthorityLoader,
 )
 from tests.installer.test_managed_product_operation_admission import (
     canonical,
@@ -30,6 +31,7 @@ from tests.installer.test_managed_product_operation_dispatch import (
     manifests,
     route,
 )
+from tests.installer.test_universal_installer import current_context, selection
 
 
 class AuthorityResolver:
@@ -133,6 +135,125 @@ class ManagedProductOperationHelperServiceTests(unittest.TestCase):
                     current_installer_release=release,
                     manifests=values,
                 )
+        with self.assertRaises(TypeError):
+            PinnedManagedProductOperationAuthorityResolver(
+                current_installer_release=release,
+                manifests=(candidate,),
+                installed_manifests=(object(),),
+            )
+
+    def test_released_loader_derives_release_and_exact_candidate_authority(self) -> None:
+        context = current_context()
+        selected = selection(context=context, composition_id="forge-ep-current")
+        resolver = ReleasedManagedProductOperationAuthorityLoader.load(
+            current_installer_context=context,
+            candidate_selections=(selected,),
+        )
+        _installed, request_candidate = manifests()
+        request = replace(
+            decoded(request_payload(request_candidate, installed=None, exists=False)),
+            composition_identity=selected.manifest.composition_id,
+            manifest_sha256=selected.manifest.manifest_digest,
+        )
+
+        authority = resolver.resolve(request)
+
+        self.assertIs(authority.candidate_manifest, selected.manifest)
+        self.assertIsNone(authority.installed_manifest)
+        self.assertEqual(authority.current_installer_release.version, "1.1.0")
+        self.assertEqual(
+            authority.current_installer_release.release_page,
+            "https://github.com/example/forge-platform/releases/tag/"
+            "forge-platform-installer-v1.1.0",
+        )
+        self.assertEqual(
+            authority.current_installer_release.asset_name,
+            "ForgePlatformInstaller-macos-arm64.zip",
+        )
+        self.assertEqual(
+            authority.current_installer_release.sha256,
+            "sha256:" + "2" * 64,
+        )
+        self.assertEqual(
+            authority.current_installer_release.signing_key_id,
+            "fixture-key-001",
+        )
+
+    def test_released_loader_keeps_historical_selection_installed_only(self) -> None:
+        context = current_context()
+        candidate = selection(
+            context=context,
+            composition_id="forge-ep-current",
+            sequence=4,
+        )
+        historical = selection(
+            context=context,
+            composition_id="forge-ep-old",
+            sequence=3,
+        )
+        resolver = ReleasedManagedProductOperationAuthorityLoader.load(
+            current_installer_context=context,
+            candidate_selections=(candidate,),
+            installed_selections=(historical,),
+        )
+        _installed, request_candidate = manifests()
+        request = replace(
+            decoded(request_payload(request_candidate, installed=None, exists=False)),
+            composition_identity=candidate.manifest.composition_id,
+            manifest_sha256=candidate.manifest.manifest_digest,
+            installed_composition_identity=historical.manifest.composition_id,
+            installed_composition_manifest_sha256=historical.manifest.manifest_digest,
+        )
+
+        authority = resolver.resolve(request)
+
+        self.assertIs(authority.candidate_manifest, candidate.manifest)
+        self.assertIs(authority.installed_manifest, historical.manifest)
+        historical_candidate = replace(
+            request,
+            composition_identity=historical.manifest.composition_id,
+            manifest_sha256=historical.manifest.manifest_digest,
+        )
+        with self.assertRaisesRegex(
+            ManagedProductOperationServiceError, "candidate composition authority"
+        ):
+            resolver.resolve(historical_candidate)
+
+    def test_released_loader_rejects_unverified_or_mixed_authority(self) -> None:
+        context = current_context()
+        candidate = selection(context=context, composition_id="forge-ep-current")
+        other_context_selection = selection(composition_id="forge-ep-other-context")
+        other_catalog_selection = selection(
+            context=context,
+            composition_id="forge-ep-other-catalog",
+            sequence=5,
+        )
+        cases = (
+            {"current_installer_context": object(), "candidate_selections": (candidate,)},
+            {"current_installer_context": context, "candidate_selections": ()},
+            {"current_installer_context": context, "candidate_selections": (object(),)},
+            {
+                "current_installer_context": context,
+                "candidate_selections": (other_context_selection,),
+            },
+            {
+                "current_installer_context": context,
+                "candidate_selections": (candidate, other_catalog_selection),
+            },
+            {
+                "current_installer_context": context,
+                "candidate_selections": (candidate,),
+                "installed_selections": (object(),),
+            },
+            {
+                "current_installer_context": context,
+                "candidate_selections": (candidate,),
+                "installed_selections": (other_catalog_selection,),
+            },
+        )
+        for index, arguments in enumerate(cases):
+            with self.subTest(index=index), self.assertRaises((TypeError, ValueError)):
+                ReleasedManagedProductOperationAuthorityLoader.load(**arguments)
 
     def fixture(self, root: Path, *, authorities, resolved=None):
         registry = ManagedDeploymentRegistry(root / "registry")

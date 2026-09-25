@@ -236,8 +236,14 @@ failures become one non-secret rejection and only a bounded canonical terminal
 receipt can return. An immutable authority-snapshot resolver now admits only
 exact `(composition_id, manifest digest)` pairs already supplied as typed,
 catalog-verified manifests and freezes the current installer release for the
-helper call boundary. The released loader that constructs this snapshot, the
-product route resolver and helper-process registration are still absent.
+helper call boundary. A concrete released-authority loader now accepts only
+`VerifiedInstallerContext` and `VerifiedCompositionSelection` values produced
+by the signed release/catalog boundary. It derives the native release binding,
+requires all candidate manifests to share one exact current catalog, and keeps
+historical same-scope selections eligible only for installed-manifest lookup.
+It accepts no path, URL, raw bytes or request value. The product route resolver,
+helper-process registration and released-installer process wiring are still
+absent.
 
 The managed-deployment operation coordinator reuses
 `DurableComponentOperationCoordinator`. Each product mutation therefore keeps
