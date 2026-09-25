@@ -27,9 +27,12 @@ exact tool and gate sets to that request. The helper-owned fixed-file store now
 publishes canonical host state atomically and requires exact durable readback.
 The closed source coordinator reads only the requested Git, Python and gate set
 and rejects an observation when its helper-owned epoch changes across those
-reads. No production runtime artifact, concrete OS-backed Git, Python or gate
-adapter, signed helper registration, released mutation wiring, or live machine
-installation is approved by this increment.
+reads. A concrete managed-Git source now reads one fixed helper-owned canonical
+record through a stable descriptor and fails closed for missing, insecure,
+malformed or noncanonical evidence. Only an explicit canonical `ABSENT` record
+means absent. No managed-Git mutation/observation publisher, production runtime
+artifact, concrete Python or gate adapter, signed helper registration, released
+mutation wiring, or live machine installation is approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -243,9 +246,10 @@ publishes those canonical bytes with private temporary creation, file and
 directory synchronization, atomic replacement and exact durable readback; it
 rejects insecure or noncanonical prior state rather than repairing it. The
 closed source coordinator that supplies the document now enforces the exact
-request set and matching before/after host epochs. Concrete OS-backed Git,
-Python and gate adapters, signed service registration and the released route
-are not yet implemented. The
+request set and matching before/after host epochs. The descriptor-safe
+managed-Git record reader is implemented; its producer and mutation route,
+concrete Python and gate adapters, signed service registration and the released
+route are not yet implemented. The
 native seeding coordinator now validates the exact session/deployment and
 pre-mutation activation plan plus original managed-tool action set, derives reconciliation itself,
 persists `PLANNED`, and accepts success only after an identical durable
@@ -263,10 +267,11 @@ coordinator plus the strict host-observation request/response adapter, fixed
 native NSXPC client transport and fail-closed helper service handler are
 implemented together with mutual exact signed-peer authentication and a locked
 single-read helper capture coordinator plus the descriptor-safe fixed-file
-host-state reader, atomic publisher, source/publish/durable-readback coordinator
-and epoch-bracketed exact source collector; concrete OS-backed Git, Python and
-gate adapters, signed service registration and released route wiring are not
-yet implemented.
+host-state reader, atomic publisher, source/publish/durable-readback coordinator,
+epoch-bracketed exact source collector and descriptor-safe managed-Git record
+reader; the managed-Git producer/mutation route, concrete Python and gate
+adapters, signed service registration and released route wiring are not yet
+implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -372,9 +377,11 @@ also admits one canonical complete helper-owned host-state document with
 descriptor, ownership, mode, link-count and request-set checks. Its atomic
 publisher requires a private root and exact durable readback after publication.
 The exact source collector also requires matching helper-owned epochs around
-all requested tool, Python and gate reads. Concrete OS-backed Git, Python and
-gate adapters, signed service registration and these coordinators are not wired
-into the released runtime. A
+all requested tool, Python and gate reads. The concrete managed-Git source
+admits one fixed canonical helper-owned record with stable no-follow readback;
+only an explicitly recorded `ABSENT` or `UNKNOWN` is preserved. Its producer
+and mutation route, concrete Python and gate adapters, signed service
+registration and these coordinators are not wired into the released runtime. A
 concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
