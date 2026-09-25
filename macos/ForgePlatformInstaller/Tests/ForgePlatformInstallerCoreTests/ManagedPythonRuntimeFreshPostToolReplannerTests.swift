@@ -1666,6 +1666,176 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(wrongSlotResult.failure, .readbackFailed)
     }
 
+    func testManagedPythonHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let absent = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: nil,
+            activeRuntimeSlotIdentity: nil,
+            retainedRuntimeIdentitySHA256s: [],
+            evidenceReference: "receipt:managed-python-absent"
+        )
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerManagedPythonHostStateStore(rootDirectory: root)
+        let reader = FileManagedInstallerManagedPythonHostReader(rootDirectory: root)
+
+        XCTAssertNoThrow(try store.persistManagedPythonHostState(absent).get())
+        XCTAssertNoThrow(try store.persistManagedPythonHostState(absent).get())
+        let absentReadback = try await reader.readPostToolPythonRuntime(for: request).get()
+        XCTAssertEqual(absentReadback, absent)
+
+        XCTAssertNoThrow(
+            try store.persistManagedPythonHostState(fixture.finalReadback).get()
+        )
+        let replacement = try await reader.readPostToolPythonRuntime(for: request).get()
+        XCTAssertEqual(replacement, fixture.finalReadback)
+        let state = root.appendingPathComponent(
+            FileManagedInstallerManagedPythonHostReader.fileName
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: state.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .contains(where: { $0.hasPrefix(".managed-python-host-state.tmp-") }))
+    }
+
+    func testManagedPythonHostStateStoreRefusesToRepairInsecureOrCorruptState() throws {
+        let fixture = try FreshReplannerFixture()
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "missing-managed-python-host-state-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        XCTAssertEqual(
+            FileManagedInstallerManagedPythonHostStateStore(rootDirectory: missing)
+                .persistManagedPythonHostState(fixture.finalReadback).failure,
+            .receiptPersistenceFailed
+        )
+
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerManagedPythonHostStateStore(rootDirectory: root)
+        let state = try writeManagedPythonHostState(Data("{}".utf8), root: root)
+        XCTAssertEqual(
+            store.persistManagedPythonHostState(fixture.finalReadback).failure,
+            .receiptPersistenceFailed
+        )
+
+        try FileManager.default.removeItem(at: state)
+        try writeManagedPythonHostState(
+            fixture.finalReadback.canonicalManagedPythonHostStateJSONData(),
+            root: root
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o644))],
+            ofItemAtPath: state.path
+        )
+        XCTAssertEqual(
+            store.persistManagedPythonHostState(fixture.finalReadback).failure,
+            .receiptPersistenceFailed
+        )
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: state.path
+        )
+        let linked = root.appendingPathComponent("managed-python-store-linked.json")
+        try FileManager.default.linkItem(at: state, to: linked)
+        XCTAssertEqual(
+            store.persistManagedPythonHostState(fixture.finalReadback).failure,
+            .receiptPersistenceFailed
+        )
+        try FileManager.default.removeItem(at: linked)
+
+        try FileManager.default.removeItem(at: state)
+        let target = root.appendingPathComponent("managed-python-store-target.json")
+        try fixture.finalReadback.canonicalManagedPythonHostStateJSONData().write(to: target)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: target.path
+        )
+        try FileManager.default.createSymbolicLink(at: state, withDestinationURL: target)
+        XCTAssertEqual(
+            store.persistManagedPythonHostState(fixture.finalReadback).failure,
+            .receiptPersistenceFailed
+        )
+    }
+
+    func testManagedPythonPublishingHostReaderRequiresExactDurableReadback() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let events = LockedHostObservationEvents()
+        let persister = ManagedPythonHostStatePersisterSpy(events: events)
+        let reader = ManagedInstallerManagedPythonPublishingHostReader(
+            sourceReader: ManagedPythonHostReaderSpy(
+                result: .success(fixture.finalReadback),
+                events: events,
+                eventName: "source"
+            ),
+            persister: persister,
+            durableReader: ManagedPythonHostReaderSpy(
+                result: .success(fixture.finalReadback),
+                events: events,
+                eventName: "durable"
+            )
+        )
+
+        let observed = try await reader.readPostToolPythonRuntime(for: request).get()
+
+        XCTAssertEqual(observed, fixture.finalReadback)
+        XCTAssertEqual(events.values(), ["source", "persist", "durable"])
+        XCTAssertEqual(persister.values(), [fixture.finalReadback])
+    }
+
+    func testManagedPythonPublishingHostReaderStopsAtFailedOrDriftedBoundaries() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let drifted = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: nil,
+            activeRuntimeSlotIdentity: nil,
+            retainedRuntimeIdentitySHA256s: [],
+            evidenceReference: "receipt:managed-python-drifted"
+        )
+
+        let sourceFailure = await ManagedInstallerManagedPythonPublishingHostReader(
+            sourceReader: ManagedPythonHostReaderSpy(result: .failure(.readbackFailed)),
+            persister: ManagedPythonHostStatePersisterSpy(),
+            durableReader: ManagedPythonHostReaderSpy(result: .success(fixture.finalReadback))
+        ).readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(sourceFailure.failure, .readbackFailed)
+
+        let persistFailure = await ManagedInstallerManagedPythonPublishingHostReader(
+            sourceReader: ManagedPythonHostReaderSpy(result: .success(fixture.finalReadback)),
+            persister: ManagedPythonHostStatePersisterSpy(
+                failure: .receiptPersistenceFailed
+            ),
+            durableReader: ManagedPythonHostReaderSpy(result: .success(fixture.finalReadback))
+        ).readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(persistFailure.failure, .receiptPersistenceFailed)
+
+        let durableFailure = await ManagedInstallerManagedPythonPublishingHostReader(
+            sourceReader: ManagedPythonHostReaderSpy(result: .success(fixture.finalReadback)),
+            persister: ManagedPythonHostStatePersisterSpy(),
+            durableReader: ManagedPythonHostReaderSpy(result: .failure(.readbackFailed))
+        ).readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(durableFailure.failure, .readbackFailed)
+
+        let drift = await ManagedInstallerManagedPythonPublishingHostReader(
+            sourceReader: ManagedPythonHostReaderSpy(result: .success(fixture.finalReadback)),
+            persister: ManagedPythonHostStatePersisterSpy(),
+            durableReader: ManagedPythonHostReaderSpy(result: .success(drifted))
+        ).readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(drift.failure, .rejected)
+    }
+
     func testFileAtomicHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
         let fixture = try FreshReplannerFixture()
         let request = try ManagedInstallerPostToolHostObservationRequest(
@@ -2465,6 +2635,72 @@ private final class ManagedGitHostStatePersisterSpy:
     }
 
     func values() -> [ManagedToolInstalledReadback] {
+        lock.lock()
+        defer { lock.unlock() }
+        return readbacks
+    }
+}
+
+private struct ManagedPythonHostReaderSpy: ManagedInstallerPostToolPythonHostReading {
+    let result: Result<
+        ManagedPythonRuntimeInstalledReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >
+    let events: LockedHostObservationEvents?
+    let eventName: String
+
+    init(
+        result: Result<
+            ManagedPythonRuntimeInstalledReadback,
+            ManagedPythonRuntimeTerminalReceiptFailure
+        >,
+        events: LockedHostObservationEvents? = nil,
+        eventName: String = "read"
+    ) {
+        self.result = result
+        self.events = events
+        self.eventName = eventName
+    }
+
+    func readPostToolPythonRuntime(
+        for request: ManagedInstallerPostToolHostObservationRequest
+    ) async -> Result<
+        ManagedPythonRuntimeInstalledReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    > {
+        _ = request
+        events?.record(eventName)
+        return result
+    }
+}
+
+private final class ManagedPythonHostStatePersisterSpy:
+    ManagedInstallerManagedPythonHostStatePersisting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let failure: ManagedPythonRuntimeTerminalReceiptFailure?
+    private let events: LockedHostObservationEvents?
+    private var readbacks: [ManagedPythonRuntimeInstalledReadback] = []
+
+    init(
+        failure: ManagedPythonRuntimeTerminalReceiptFailure? = nil,
+        events: LockedHostObservationEvents? = nil
+    ) {
+        self.failure = failure
+        self.events = events
+    }
+
+    func persistManagedPythonHostState(
+        _ readback: ManagedPythonRuntimeInstalledReadback
+    ) -> Result<Void, ManagedPythonRuntimeTerminalReceiptFailure> {
+        lock.lock()
+        readbacks.append(readback)
+        lock.unlock()
+        events?.record("persist")
+        if let failure { return .failure(failure) }
+        return .success(())
+    }
+
+    func values() -> [ManagedPythonRuntimeInstalledReadback] {
         lock.lock()
         defer { lock.unlock() }
         return readbacks
