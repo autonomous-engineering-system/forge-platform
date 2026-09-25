@@ -3,17 +3,24 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class MacOSInstallerAtomicHandoffTests: XCTestCase {
-    func testProductionLauncherPassesARealAppDirectoryToLaunchServicesAndFailsClosed() async throws {
+    func testProductionLauncherPassesARealAppDirectoryToInjectedOpenBoundaryAndFailsClosed() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("forge-platform-launch-services-tests-\(UUID().uuidString.lowercased())")
         defer { try? FileManager.default.removeItem(at: root) }
         let bundle = root.appendingPathComponent("Invalid.app", isDirectory: true)
         try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        let openBoundary = InstallerApplicationOpenSpy(result: false)
+        let launcher = MacOSInstallerApplicationLauncher { bundleURL, completion in
+            Task {
+                completion(await openBoundary.open(bundleURL))
+            }
+        }
 
-        let result = await MacOSInstallerApplicationLauncher()
-            .launchFreshInstallerApplication(at: bundle)
+        let result = await launcher.launchFreshInstallerApplication(at: bundle)
 
         XCTAssertEqual(failureCode(result), .atomicHandoffFailed)
+        let calls = await openBoundary.calls()
+        XCTAssertEqual(calls, [bundle])
     }
 
     func testExactVerifiedStagedBundleLaunchesFreshInstanceAndReturnsBoundReceipt() async throws {
@@ -583,6 +590,24 @@ private actor HandoffNotarizationSpy: MacOSInstallerNotarizationAssessing {
     }
 
     func calls() -> [HandoffNotarizationCall] {
+        callsStorage
+    }
+}
+
+private actor InstallerApplicationOpenSpy {
+    private let result: Bool
+    private var callsStorage: [URL] = []
+
+    init(result: Bool) {
+        self.result = result
+    }
+
+    func open(_ bundleURL: URL) -> Bool {
+        callsStorage.append(bundleURL)
+        return result
+    }
+
+    func calls() -> [URL] {
         callsStorage
     }
 }
