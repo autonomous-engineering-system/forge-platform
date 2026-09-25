@@ -1552,6 +1552,120 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(drift.failure, .rejected)
     }
 
+    func testManagedPythonHostReaderReturnsCanonicalActiveAndAbsentState() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reader = FileManagedInstallerManagedPythonHostReader(rootDirectory: root)
+
+        try writeManagedPythonHostState(
+            fixture.finalReadback.canonicalManagedPythonHostStateJSONData(),
+            root: root
+        )
+        let active = try await reader.readPostToolPythonRuntime(for: request).get()
+        XCTAssertEqual(active, fixture.finalReadback)
+
+        let absent = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: nil,
+            activeRuntimeSlotIdentity: nil,
+            retainedRuntimeIdentitySHA256s: [],
+            evidenceReference: "receipt:managed-python-absent"
+        )
+        try writeManagedPythonHostState(
+            absent.canonicalManagedPythonHostStateJSONData(),
+            root: root
+        )
+        let absentObserved = try await reader.readPostToolPythonRuntime(for: request).get()
+        XCTAssertEqual(absentObserved, absent)
+    }
+
+    func testManagedPythonHostReaderRejectsMissingAndInsecureFilesystemState() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reader = FileManagedInstallerManagedPythonHostReader(rootDirectory: root)
+
+        let missingResult = await reader.readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(missingResult.failure, .readbackFailed)
+
+        let state = try writeManagedPythonHostState(
+            fixture.finalReadback.canonicalManagedPythonHostStateJSONData(),
+            root: root
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o644))],
+            ofItemAtPath: state.path
+        )
+        let permissiveResult = await reader.readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(permissiveResult.failure, .readbackFailed)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: state.path
+        )
+        let linked = root.appendingPathComponent("managed-python-linked.json")
+        try FileManager.default.linkItem(at: state, to: linked)
+        let hardlinkResult = await reader.readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(hardlinkResult.failure, .readbackFailed)
+        try FileManager.default.removeItem(at: linked)
+
+        try FileManager.default.removeItem(at: state)
+        let target = root.appendingPathComponent("managed-python-target.json")
+        try fixture.finalReadback.canonicalManagedPythonHostStateJSONData().write(to: target)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: target.path
+        )
+        try FileManager.default.createSymbolicLink(at: state, withDestinationURL: target)
+        let symlinkResult = await reader.readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(symlinkResult.failure, .readbackFailed)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o755))],
+            ofItemAtPath: root.path
+        )
+        let rootModeResult = await reader.readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(rootModeResult.failure, .readbackFailed)
+    }
+
+    func testManagedPythonHostReaderRejectsMalformedAndNoncanonicalRecords() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reader = FileManagedInstallerManagedPythonHostReader(rootDirectory: root)
+
+        try writeManagedPythonHostState(Data("{}".utf8), root: root)
+        let malformedResult = await reader.readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(malformedResult.failure, .readbackFailed)
+
+        let canonical = fixture.finalReadback.canonicalManagedPythonHostStateJSONData()
+        let noncanonical = Data(" \(String(decoding: canonical, as: UTF8.self))".utf8)
+        try writeManagedPythonHostState(noncanonical, root: root)
+        let noncanonicalResult = await reader.readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(noncanonicalResult.failure, .readbackFailed)
+
+        let wrongSlot = String(decoding: canonical, as: UTF8.self)
+            .replacingOccurrences(
+                of: fixture.finalReadback.activeRuntimeSlotIdentity!,
+                with: "sha256-wrong-runtime-slot"
+            )
+        try writeManagedPythonHostState(Data(wrongSlot.utf8), root: root)
+        let wrongSlotResult = await reader.readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(wrongSlotResult.failure, .readbackFailed)
+    }
+
     func testFileAtomicHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
         let fixture = try FreshReplannerFixture()
         let request = try ManagedInstallerPostToolHostObservationRequest(
@@ -1920,6 +2034,19 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
     private func writeManagedGitHostState(_ data: Data, root: URL) throws -> URL {
         let state = root.appendingPathComponent(
             FileManagedInstallerManagedGitHostReader.fileName
+        )
+        try data.write(to: state, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: state.path
+        )
+        return state
+    }
+
+    @discardableResult
+    private func writeManagedPythonHostState(_ data: Data, root: URL) throws -> URL {
+        let state = root.appendingPathComponent(
+            FileManagedInstallerManagedPythonHostReader.fileName
         )
         try data.write(to: state, options: .atomic)
         try FileManager.default.setAttributes(
