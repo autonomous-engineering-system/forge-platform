@@ -513,6 +513,259 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         )
     }
 
+    func testProductBridgeRequestIsCanonicalAndBindsTerminalRuntimeEvidence() throws {
+        let fixture = try RuntimeCompletionFixture(managedGitAction: .install)
+        let request = try ManagedInstallerProductOperationRequest(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: fixture.transactionReceipt()
+        )
+        let bytes = request.canonicalJSONData()
+        let decoded = try ManagedInstallerProductOperationRequest.decodeJSON(bytes)
+
+        XCTAssertEqual(decoded, request)
+        XCTAssertEqual(decoded.stablePlanFingerprint, fixture.stablePlan.fingerprint)
+        XCTAssertEqual(decoded.operationID, fixture.stablePlan.activationPlan.operationID)
+        XCTAssertEqual(
+            decoded.components.map(\.componentID),
+            ["engineering-platform-server", "forge-runtime"]
+        )
+        XCTAssertEqual(decoded.components.map(\.change), [.retain, .update])
+        XCTAssertEqual(decoded.providerTargetIDs, [])
+        XCTAssertEqual(
+            decoded.runtimeEvidenceReferences,
+            [
+                "receipt:git-final",
+                "receipt:git-mutation",
+                fixture.terminalReceipt.evidenceReference,
+            ].sorted()
+        )
+        XCTAssertEqual(decoded.requestFingerprint.count, 64)
+        XCTAssertEqual(decoded.canonicalJSONData(), bytes)
+        XCTAssertThrowsError(try ManagedInstallerProductComponentOperation(
+            componentID: "forge-runtime",
+            change: .remove
+        ))
+    }
+
+    func testProductBridgeRequestRejectsSubstitutedRuntimeReceiptAndJSON() throws {
+        let fixture = try RuntimeCompletionFixture()
+        let other = try RuntimeCompletionFixture(deploymentID: "other-deployment")
+
+        XCTAssertThrowsError(try ManagedInstallerProductOperationRequest(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: other.transactionReceipt()
+        ))
+
+        let request = try ManagedInstallerProductOperationRequest(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: fixture.transactionReceipt()
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: request.canonicalJSONData()) as? [String: Any]
+        )
+        object["operation_id"] = "substituted-operation"
+        let changed = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        XCTAssertThrowsError(try ManagedInstallerProductOperationRequest.decodeJSON(changed))
+        XCTAssertThrowsError(try ManagedInstallerProductOperationRequest.decodeJSON(Data()))
+        XCTAssertThrowsError(try ManagedInstallerProductOperationRequest.decodeJSON(
+            Data(repeating: 0x20, count: 128 * 1_024 + 1)
+        ))
+    }
+
+    func testProductBridgeReceiptRoundTripsExactCompletion() throws {
+        let fixture = try RuntimeCompletionFixture()
+        let request = try ManagedInstallerProductOperationRequest(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: fixture.transactionReceipt()
+        )
+        let forgeCompletion = try ManagedInstallerProductCompletion(
+            componentID: "forge-runtime",
+            state: .ready,
+            dashboardURL: VerifiedDashboardURL("https://127.0.0.1:8443/"),
+            serviceScope: .systemLaunchDaemon
+        )
+        let epCompletion = try ManagedInstallerProductCompletion(
+            componentID: "engineering-platform-server",
+            state: .ready,
+            dashboardURL: VerifiedDashboardURL("https://127.0.0.1:9443/"),
+            serviceScope: .systemLaunchDaemon
+        )
+        let receipt = try ManagedInstallerProductOperationReceipt(
+            request: request,
+            productReceiptReferences: ["receipt:forge-product"],
+            pairingReceiptReference: "receipt:forge-ep-pairing",
+            readinessReceiptReferences: ["receipt:ep-readiness", "receipt:forge-readiness"],
+            completions: [forgeCompletion, epCompletion]
+        )
+        let bytes = receipt.canonicalJSONData()
+
+        XCTAssertEqual(
+            try ManagedInstallerProductOperationReceipt.decodeJSON(bytes, request: request),
+            receipt
+        )
+        XCTAssertEqual(receipt.requestFingerprint, request.requestFingerprint)
+        XCTAssertEqual(receipt.stablePlanFingerprint, request.stablePlanFingerprint)
+        XCTAssertEqual(receipt.operationID, request.operationID)
+    }
+
+    func testProductBridgeReceiptRejectsMissingEvidenceAndWrongCompletionState() throws {
+        let fixture = try RuntimeCompletionFixture()
+        let request = try ManagedInstallerProductOperationRequest(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: fixture.transactionReceipt()
+        )
+        let forgeReady = try ManagedInstallerProductCompletion(
+            componentID: "forge-runtime",
+            state: .ready
+        )
+        let epReady = try ManagedInstallerProductCompletion(
+            componentID: "engineering-platform-server",
+            state: .ready
+        )
+        let forgeRemoved = try ManagedInstallerProductCompletion(
+            componentID: "forge-runtime",
+            state: .removed
+        )
+
+        XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+            request: request,
+            productReceiptReferences: [],
+            pairingReceiptReference: "receipt:pairing",
+            readinessReceiptReferences: ["receipt:ep-readiness", "receipt:forge-readiness"],
+            completions: [epReady, forgeReady]
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+            request: request,
+            productReceiptReferences: ["receipt:product"],
+            pairingReceiptReference: "receipt:pairing",
+            readinessReceiptReferences: [],
+            completions: [epReady, forgeReady]
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+            request: request,
+            productReceiptReferences: ["receipt:product"],
+            pairingReceiptReference: "invalid evidence",
+            readinessReceiptReferences: ["receipt:ep-readiness", "receipt:forge-readiness"],
+            completions: [epReady, forgeReady]
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+            request: request,
+            productReceiptReferences: ["receipt:product"],
+            pairingReceiptReference: nil,
+            readinessReceiptReferences: ["receipt:ep-readiness", "receipt:forge-readiness"],
+            completions: [epReady, forgeReady]
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+            request: request,
+            productReceiptReferences: ["receipt:product"],
+            pairingReceiptReference: "receipt:pairing",
+            readinessReceiptReferences: ["receipt:ep-readiness", "receipt:forge-readiness"],
+            completions: [epReady, forgeRemoved]
+        ))
+    }
+
+    func testCanonicalProductExecutorReturnsBoundedPassedStagesAndSummary() async throws {
+        let fixture = try RuntimeCompletionFixture()
+        let runtimeReceipt = try fixture.transactionReceipt()
+        let transport = ProductBridgeTransport { data in
+            do {
+                let request = try ManagedInstallerProductOperationRequest.decodeJSON(data)
+                let receipt = try ManagedInstallerProductOperationReceipt(
+                    request: request,
+                    productReceiptReferences: ["receipt:forge-product"],
+                    pairingReceiptReference: "receipt:forge-ep-pairing",
+                    readinessReceiptReferences: [
+                        "receipt:ep-readiness", "receipt:forge-readiness",
+                    ],
+                    completions: [
+                        try ManagedInstallerProductCompletion(
+                            componentID: "engineering-platform-server",
+                            state: .ready,
+                            dashboardURL: VerifiedDashboardURL("https://127.0.0.1:9443/"),
+                            serviceScope: .systemLaunchDaemon
+                        ),
+                        try ManagedInstallerProductCompletion(
+                            componentID: "forge-runtime",
+                            state: .ready,
+                            dashboardURL: VerifiedDashboardURL("https://127.0.0.1:8443/"),
+                            serviceScope: .systemLaunchDaemon
+                        ),
+                    ]
+                )
+                return .success(receipt.canonicalJSONData())
+            } catch {
+                return .failure(.rejected)
+            }
+        }
+
+        let result = await ManagedInstallerCanonicalProductOperationsExecutor(
+            transport: transport
+        ).executeProductOperations(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: runtimeReceipt
+        )
+
+        guard case .completed(let stages, let summaries) = result else {
+            return XCTFail("Expected a terminal completed result")
+        }
+        XCTAssertEqual(stages.map(\.id), ["product-operations", "pairing", "readiness"])
+        XCTAssertTrue(stages.allSatisfy { $0.state == .passed })
+        XCTAssertEqual(summaries.count, 2)
+        XCTAssertEqual(summaries[0].componentID, "engineering-platform-server")
+        XCTAssertEqual(summaries[0].title, "Engineering Platform")
+        XCTAssertEqual(summaries[0].status, "Gereed")
+        XCTAssertEqual(summaries[0].dashboardURL?.absoluteString, "https://127.0.0.1:9443/")
+        XCTAssertEqual(summaries[0].serviceScope, .systemLaunchDaemon)
+        XCTAssertEqual(summaries[1].componentID, "forge-runtime")
+        XCTAssertEqual(summaries[1].title, "Forge")
+        XCTAssertEqual(summaries[1].status, "Gereed")
+        XCTAssertEqual(summaries[1].dashboardURL?.absoluteString, "https://127.0.0.1:8443/")
+        XCTAssertEqual(summaries[1].serviceScope, .systemLaunchDaemon)
+    }
+
+    func testCanonicalProductExecutorFailsClosedForTransportAndResponseDrift() async throws {
+        let fixture = try RuntimeCompletionFixture()
+        let runtimeReceipt = try fixture.transactionReceipt()
+        let other = try RuntimeCompletionFixture(deploymentID: "other-deployment")
+        let otherRequest = try ManagedInstallerProductOperationRequest(
+            stablePlan: other.stablePlan,
+            runtimeTransactionReceipt: other.transactionReceipt()
+        )
+        let otherReceipt = try ManagedInstallerProductOperationReceipt(
+            request: otherRequest,
+            productReceiptReferences: ["receipt:other-product"],
+            pairingReceiptReference: "receipt:other-pairing",
+            readinessReceiptReferences: [
+                "receipt:other-ep-readiness", "receipt:other-forge-readiness",
+            ],
+            completions: [
+                try ManagedInstallerProductCompletion(
+                    componentID: "engineering-platform-server",
+                    state: .ready
+                ),
+                try ManagedInstallerProductCompletion(
+                    componentID: "forge-runtime",
+                    state: .ready
+                ),
+            ]
+        )
+        let transports = [
+            ProductBridgeTransport { _ in .failure(.unavailable) },
+            ProductBridgeTransport { _ in .success(Data("{}".utf8)) },
+            ProductBridgeTransport { _ in .success(otherReceipt.canonicalJSONData()) },
+        ]
+
+        for transport in transports {
+            let result = await ManagedInstallerCanonicalProductOperationsExecutor(
+                transport: transport
+            ).executeProductOperations(
+                stablePlan: fixture.stablePlan,
+                runtimeTransactionReceipt: runtimeReceipt
+            )
+            XCTAssertEqual(result, .failed(.executionFailed, stages: []))
+        }
+    }
+
     private func reviewedExecutionCoordinator(
         stablePlan: ManagedInstallerStablePlanPreparationResult,
         currency: InstallerCurrencyCheckResult,
@@ -1019,6 +1272,26 @@ private struct ReviewedExecutionProduct: ManagedInstallerProductOperationsExecut
         _ = runtimeTransactionReceipt
         events.append("product")
         return result
+    }
+}
+
+private struct ProductBridgeTransport: ManagedInstallerProductOperationTransporting {
+    let operation: @Sendable (
+        Data
+    ) -> Result<Data, ManagedInstallerProductOperationBridgeFailure>
+
+    init(
+        _ operation: @escaping @Sendable (
+            Data
+        ) -> Result<Data, ManagedInstallerProductOperationBridgeFailure>
+    ) {
+        self.operation = operation
+    }
+
+    func executeProductOperation(
+        _ canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        operation(canonicalRequest)
     }
 }
 
