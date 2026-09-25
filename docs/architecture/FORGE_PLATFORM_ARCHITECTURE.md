@@ -107,10 +107,17 @@ source-level provider-gate observer now evaluates the request's exact enabled
 provider set through an injected helper-owned inspector. It passes only
 verified minimum-version and immutable runtime-identity matches, converts
 absence, authentication requirements and drift into blocking evidence, and
-routes the provider gate separately from the other four gates. The concrete
-OS/provider inspector and the other four live gate observers are not
-implemented. No live provider readiness, Git or Python artifact, privileged
-helper or operational runtime installation is claimed.
+routes the provider gate separately from the other four gates. A concrete
+macOS inspector now derives only an exact V3 component-owned executable and
+provider home beneath its helper-configured root. It admits private no-follow
+directories and a single-link `0500` executable, hashes the bytes before any
+execution, runs only fixed noninteractive Codex or GitHub version/auth-status
+commands with a scrubbed environment, discards auth output, and re-hashes the
+executable after each probe. Legacy user scope without an exact OS-user binding
+fails closed. Provider installation and credential-home provisioning,
+service-account/Keychain integration, the other four live gate observers and
+released wiring are not implemented. No live provider readiness, Git or Python
+artifact, privileged helper or operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
@@ -139,9 +146,10 @@ are implemented; its live OS observer and mutation route remain absent.
 The descriptor-safe complete five-gate record reader, atomic publisher and
 complete-set source/publish/durable-readback decorator are implemented. The
 source-level provider-gate evaluator and separate gate router are implemented
-behind an injected provider inspector; the concrete OS/provider inspector and
-the other four live gate observers remain absent. Signed service registration,
-released route wiring and mutation dispatch remain unimplemented.
+with a fixed-layout macOS component-provider inspector. Provider
+installation/credential provisioning, service-account secure-store integration
+and the other four live gate observers remain absent. Signed service
+registration, released route wiring and mutation dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 

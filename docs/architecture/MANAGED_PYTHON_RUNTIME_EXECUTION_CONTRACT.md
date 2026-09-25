@@ -54,9 +54,16 @@ canonical helper request, using an injected helper-owned inspector. It emits a
 pass only for exact verified minimum-version and immutable runtime-identity
 matches; absent, authentication-required and drifted readbacks remain valid
 blocking evidence. A dedicated router keeps that authority separate from the
-other four gates. The concrete OS/provider inspector and the other four live
-gate observers remain unimplemented, so this is not live provider-readiness
-evidence.
+other four gates. A concrete macOS inspector derives the exact V3
+component-owned executable and provider home only beneath its configured root,
+requires private no-follow layout plus a single-link `0500` executable, verifies
+the immutable digest before execution, invokes only fixed noninteractive
+Codex/GitHub version and auth-status probes with scrubbed environment, discards
+auth output and re-verifies the executable after every probe. Legacy user scope
+without an OS-user authority fails closed. Provider installation,
+credential-home provisioning, service-account secure-store integration and the
+other four live gate observers remain unimplemented, so this is not live
+provider-readiness evidence.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -273,9 +280,10 @@ closed source coordinator that supplies the document now enforces the exact
 request set and matching before/after host epochs. The descriptor-safe
 managed-Git and managed-Python record readers and complete five-gate record
 reader are implemented. The source-level provider-gate evaluator and router
-consume an injected provider inspector. Live Git/Python OS observers and
-mutation routes, the concrete OS/provider inspector, the other four live gate
-observers, signed service registration and the released route are not yet
+consume the fixed-layout macOS component-provider inspector. Live Git/Python OS
+observers and mutation routes, provider installation and credential-home
+provisioning, service-account secure-store integration, the other four live
+gate observers, signed service registration and the released route are not yet
 implemented. The
 native seeding coordinator now validates the exact session/deployment and
 pre-mutation activation plan plus original managed-tool action set, derives reconciliation itself,
@@ -302,9 +310,10 @@ exact durable-readback decorator; the live managed-Git and managed-Python OS
 observer/mutation routes remain unimplemented. The descriptor-safe complete
 five-gate record reader, atomic publisher and complete-set exact durable-readback
 decorator are implemented. The source-level provider-gate evaluator and
-separate gate router are implemented behind an injected provider inspector;
-the concrete OS/provider inspector, the other four live gate observers, signed
-service registration and released route wiring are not yet implemented.
+separate gate router plus fixed-layout macOS component-provider inspector are
+implemented. Provider installation and credential-home provisioning,
+service-account secure-store integration, the other four live gate observers,
+signed service registration and released route wiring are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -426,9 +435,10 @@ signed service registration and these coordinators are not wired into the
 released runtime. A descriptor-safe source now admits one fixed canonical
 complete five-gate record. Its atomic publisher and complete-set exact
 durable-readback decorator are implemented. The source-level provider-gate
-evaluator and separate router consume the exact enabled-provider request behind
-an injected inspector; the concrete OS/provider inspector and other four live
-gate observers are absent. A concrete reviewed authorized helper
+evaluator and separate router consume the exact enabled-provider request through
+the fixed-layout macOS component-provider inspector. Provider installation and
+credential-home provisioning, service-account secure-store integration and the
+other four live gate observers are absent. A concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
 installation can be claimed.
