@@ -104,7 +104,13 @@ exact plan-bound receipt map. The runtime completion path requires that receipt
 before Python activation and forwards the same identity-bound references into
 the terminal parent-journal adapter; a missing or substituted Git receipt can no
 longer reach `MANAGED_TOOLS`. The injected Git mutation implementation remains
-absent. A first
+absent. A source-level runtime transaction coordinator now composes the exact
+durable `PLANNED` seed, provider/Python preparation, generic-tool
+reconciliation, Python activation and terminal `MANAGED_TOOLS` journal advance
+in one fixed sequence. It reconstructs every returned boundary from the same
+stable plan before invoking the next collaborator, so a substituted admission,
+tool or completion receipt cannot advance the transaction. This composition
+does not add product-dispatch authority or released helper wiring. A first
 concrete gate source now reads one fixed canonical record containing exactly
 all five gate identities through the same stable no-follow boundary. Missing,
 insecure, malformed, incomplete, duplicate or noncanonical gate evidence fails
