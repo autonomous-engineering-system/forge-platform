@@ -357,6 +357,157 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(drifted.failure, .rejected)
     }
 
+    func testSnapshotStorePersistsSecureRecordAndExactRetryIsIdempotent() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerPostToolSnapshotStore(rootDirectory: root)
+
+        for _ in 0..<2 {
+            let result = await store.persistPostToolSnapshot(
+                snapshot,
+                stablePlan: fixture.stablePlan,
+                request: fixture.request
+            )
+            XCTAssertNil(result.failure)
+        }
+
+        let record = root.appendingPathComponent(
+            FileManagedInstallerPostToolSnapshotReader.filePrefix
+                + fixture.request.operationID + ".json"
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: record.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertEqual((attributes[.referenceCount] as? NSNumber)?.intValue, 1)
+        let readback = await FileManagedInstallerPostToolSnapshotReader(rootDirectory: root)
+            .readPostToolSnapshot(stablePlan: fixture.stablePlan, request: fixture.request)
+        XCTAssertEqual(try snapshotValue(readback), snapshot)
+    }
+
+    func testSnapshotStoreRejectsConflictAndPreservesOriginalRecord() async throws {
+        let fixture = try FreshReplannerFixture()
+        let original = try fixture.snapshot()
+        let conflicting = try fixture.snapshot(evidenceReference: "receipt:other-snapshot")
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerPostToolSnapshotStore(rootDirectory: root)
+
+        let first = await store.persistPostToolSnapshot(
+            original,
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        XCTAssertNil(first.failure)
+        let second = await store.persistPostToolSnapshot(
+            conflicting,
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        XCTAssertEqual(second.failure, .rejected)
+
+        let readback = await FileManagedInstallerPostToolSnapshotReader(rootDirectory: root)
+            .readPostToolSnapshot(stablePlan: fixture.stablePlan, request: fixture.request)
+        XCTAssertEqual(try snapshotValue(readback), original)
+    }
+
+    func testSnapshotStoreRejectsContextDriftBeforeWriting() async throws {
+        let fixture = try FreshReplannerFixture()
+        let drifted = try fixture.snapshot(deploymentID: "other-deployment")
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerPostToolSnapshotStore(rootDirectory: root)
+
+        let result = await store.persistPostToolSnapshot(
+            drifted,
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        XCTAssertEqual(result.failure, .rejected)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+    }
+
+    func testSnapshotStoreRequiresExistingPrivateRoot() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "post-tool-store-missing-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let missingResult = await FileManagedInstallerPostToolSnapshotStore(
+            rootDirectory: missing
+        ).persistPostToolSnapshot(
+            snapshot,
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        XCTAssertEqual(missingResult.failure, .receiptPersistenceFailed)
+
+        let permissive = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: permissive) }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o755))],
+            ofItemAtPath: permissive.path
+        )
+        let permissiveResult = await FileManagedInstallerPostToolSnapshotStore(
+            rootDirectory: permissive
+        ).persistPostToolSnapshot(
+            snapshot,
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        XCTAssertEqual(permissiveResult.failure, .receiptPersistenceFailed)
+    }
+
+    func testSnapshotStoreRejectsSymlinkAndHardlinkDestinations() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let fileName = FileManagedInstallerPostToolSnapshotReader.filePrefix
+            + fixture.request.operationID + ".json"
+
+        let symlinkRoot = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: symlinkRoot) }
+        let symlinkTarget = symlinkRoot.appendingPathComponent("target.json")
+        try snapshot.canonicalJSONData().write(to: symlinkTarget)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: symlinkTarget.path
+        )
+        try FileManager.default.createSymbolicLink(
+            at: symlinkRoot.appendingPathComponent(fileName),
+            withDestinationURL: symlinkTarget
+        )
+        let symlinkResult = await FileManagedInstallerPostToolSnapshotStore(
+            rootDirectory: symlinkRoot
+        ).persistPostToolSnapshot(
+            snapshot,
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        XCTAssertEqual(symlinkResult.failure, .receiptPersistenceFailed)
+
+        let hardlinkRoot = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: hardlinkRoot) }
+        let hardlinkTarget = hardlinkRoot.appendingPathComponent("target.json")
+        try snapshot.canonicalJSONData().write(to: hardlinkTarget)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: hardlinkTarget.path
+        )
+        try FileManager.default.linkItem(
+            at: hardlinkTarget,
+            to: hardlinkRoot.appendingPathComponent(fileName)
+        )
+        let hardlinkResult = await FileManagedInstallerPostToolSnapshotStore(
+            rootDirectory: hardlinkRoot
+        ).persistPostToolSnapshot(
+            snapshot,
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        XCTAssertEqual(hardlinkResult.failure, .receiptPersistenceFailed)
+    }
+
     private func privateTemporaryDirectory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "post-tool-readback-\(UUID().uuidString)",
