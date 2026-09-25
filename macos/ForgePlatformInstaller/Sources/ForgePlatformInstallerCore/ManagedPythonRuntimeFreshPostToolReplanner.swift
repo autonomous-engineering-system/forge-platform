@@ -127,15 +127,16 @@ public struct ManagedPythonRuntimeFreshPostToolReplanner:
     private let gateReadback: any ManagedInstallerPostToolGateReading
 
     public init(
-        session: VerifiedCompositionSessionPlan,
-        deploymentID: String,
-        stablePlanFingerprint: String,
-        originalManagedToolActions: [ManagedToolOriginalPlanAction],
+        stablePlan: ManagedInstallerStablePlan,
         managedToolReceiptReferences: [ManagedToolRequirement.Identity: String],
         managedToolReadback: any ManagedToolPostMutationReading,
         pythonReadback: any ManagedPythonRuntimeActivationReading,
         gateReadback: any ManagedInstallerPostToolGateReading
     ) throws {
+        let session = stablePlan.session
+        let deploymentID = stablePlan.deployment.id
+        let stablePlanFingerprint = stablePlan.fingerprint
+        let originalManagedToolActions = stablePlan.originalManagedToolActions
         let requirements = Dictionary(uniqueKeysWithValues: session.managedTools.map {
             ($0.identity, $0)
         })

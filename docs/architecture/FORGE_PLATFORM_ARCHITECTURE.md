@@ -44,7 +44,13 @@ precomputed qualification. A native parent-journal seeder now rebinds the
 exact session, deployment, pre-mutation runtime plan and original managed-tool actions,
 derives whether reconciliation is required, writes `PLANNED`, and requires an
 identical durable readback before preparation may begin. The later activation
-request must bind that plan to the exact `READY` preparation receipt. No production readback adapter,
+request must bind that plan to the exact `READY` preparation receipt. The
+seeder and fresh replanner now accept one typed native stable plan rather than
+a caller-supplied digest. That plan canonically binds the reviewed installer
+release, session/catalog identities, exact Forge+EP inventory, provider
+requirements, component diff, managed Git actions, Python readback, rollback
+and venv intent; its derived fingerprint is the only stable-plan identity
+persisted in the parent journal. No production readback adapter,
 Python artifact, privileged adapter or operational runtime installation is
 claimed.
 
