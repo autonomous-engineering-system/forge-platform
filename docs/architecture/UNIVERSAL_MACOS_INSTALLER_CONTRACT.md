@@ -879,7 +879,13 @@ and returns a stable-plan-bound receipt map. Runtime completion accepts a
 non-`NO_CHANGE` Git plan only with that exact receipt and carries its canonical
 identity-bound references through the Python terminal coordinator into the
 fresh replanner and parent-journal bridge. The concrete Git mutation adapter is
-still absent, so this does not claim a live managed-Git installation.
+still absent, so this does not claim a live managed-Git installation. A
+source-level transaction coordinator now fixes the complete runtime sequence
+from durable `PLANNED` seeding through provider/Python preparation, managed Git
+reconciliation, Python activation and the terminal `MANAGED_TOOLS` transition.
+It reconstructs each admission and receipt from the same immutable stable plan
+before the next collaborator runs. It grants no product-operation authority
+and contains no released helper or OS mutation wiring.
 
 The structural verifier reads V2 trust and V1 provenance resources directly
 from every supplied archive and binds their semantic identities to the durable

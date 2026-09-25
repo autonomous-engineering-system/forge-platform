@@ -189,6 +189,148 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         ))
     }
 
+    func testRuntimeTransactionExecutesEveryPlanBoundBoundaryInOrder() async throws {
+        let fixture = try RuntimeCompletionFixture(managedGitAction: .install)
+        let reconciliation = try fixture.managedToolReconciliationReceipt()
+        let completion = try fixture.completionReceipt(reconciliation: reconciliation)
+        let events = RuntimeCompletionEvents()
+
+        let receipt = try runtimeTransactionSuccess(
+            await runtimeTransactionCoordinator(
+                preparation: .success(fixture.admissionReceipt),
+                reconciliation: .success(reconciliation),
+                completion: .success(completion),
+                events: events
+            ).execute(stablePlan: fixture.stablePlan)
+        )
+
+        XCTAssertEqual(events.snapshot(), ["preparation", "reconciliation", "completion"])
+        XCTAssertEqual(receipt.stablePlanFingerprint, fixture.stablePlan.fingerprint)
+        XCTAssertEqual(receipt.operationID, fixture.request.operationID)
+        XCTAssertEqual(receipt.preparationReceipt, fixture.admissionReceipt)
+        XCTAssertEqual(receipt.managedToolReconciliationReceipt, reconciliation)
+        XCTAssertEqual(receipt.completionReceipt, completion)
+        XCTAssertEqual(receipt.state, .managedTools)
+    }
+
+    func testRuntimeTransactionPreparationFailureStopsBeforeMutation() async throws {
+        let fixture = try RuntimeCompletionFixture()
+        let events = RuntimeCompletionEvents()
+
+        let result = await runtimeTransactionCoordinator(
+            preparation: .failure(.rejected),
+            reconciliation: .failure(.unavailable),
+            completion: .failure(.rejected),
+            events: events
+        ).execute(stablePlan: fixture.stablePlan)
+
+        XCTAssertEqual(result.transactionFailure, .preparation(.rejected))
+        XCTAssertEqual(events.snapshot(), ["preparation"])
+    }
+
+    func testRuntimeTransactionRejectsDriftedPreparationBeforeMutation() async throws {
+        let fixture = try RuntimeCompletionFixture()
+        let other = try RuntimeCompletionFixture(deploymentID: "other-deployment")
+        let events = RuntimeCompletionEvents()
+
+        let result = await runtimeTransactionCoordinator(
+            preparation: .success(other.admissionReceipt),
+            reconciliation: .failure(.unavailable),
+            completion: .failure(.rejected),
+            events: events
+        ).execute(stablePlan: fixture.stablePlan)
+
+        XCTAssertEqual(result.transactionFailure, .rejected)
+        XCTAssertEqual(events.snapshot(), ["preparation"])
+    }
+
+    func testRuntimeTransactionPreservesReconciliationFailure() async throws {
+        let fixture = try RuntimeCompletionFixture(managedGitAction: .install)
+        let events = RuntimeCompletionEvents()
+
+        let result = await runtimeTransactionCoordinator(
+            preparation: .success(fixture.admissionReceipt),
+            reconciliation: .failure(.readbackFailed),
+            completion: .failure(.rejected),
+            events: events
+        ).execute(stablePlan: fixture.stablePlan)
+
+        XCTAssertEqual(
+            result.transactionFailure,
+            .managedToolReconciliation(.readbackFailed)
+        )
+        XCTAssertEqual(events.snapshot(), ["preparation", "reconciliation"])
+    }
+
+    func testRuntimeTransactionRejectsCrossPlanReconciliation() async throws {
+        let fixture = try RuntimeCompletionFixture(managedGitAction: .install)
+        let other = try RuntimeCompletionFixture(
+            deploymentID: "other-deployment",
+            managedGitAction: .install
+        )
+        let events = RuntimeCompletionEvents()
+
+        let result = await runtimeTransactionCoordinator(
+            preparation: .success(fixture.admissionReceipt),
+            reconciliation: .success(try other.managedToolReconciliationReceipt()),
+            completion: .failure(.rejected),
+            events: events
+        ).execute(stablePlan: fixture.stablePlan)
+
+        XCTAssertEqual(result.transactionFailure, .rejected)
+        XCTAssertEqual(events.snapshot(), ["preparation", "reconciliation"])
+    }
+
+    func testRuntimeTransactionPreservesCompletionFailure() async throws {
+        let fixture = try RuntimeCompletionFixture(managedGitAction: .install)
+        let reconciliation = try fixture.managedToolReconciliationReceipt()
+        let events = RuntimeCompletionEvents()
+
+        let result = await runtimeTransactionCoordinator(
+            preparation: .success(fixture.admissionReceipt),
+            reconciliation: .success(reconciliation),
+            completion: .failure(.terminalReceipt(.journalBridgeFailed)),
+            events: events
+        ).execute(stablePlan: fixture.stablePlan)
+
+        XCTAssertEqual(
+            result.transactionFailure,
+            .completion(.terminalReceipt(.journalBridgeFailed))
+        )
+        XCTAssertEqual(events.snapshot(), ["preparation", "reconciliation", "completion"])
+    }
+
+    func testRuntimeTransactionRejectsDriftedCompletionAndReceiptSubstitution() async throws {
+        let fixture = try RuntimeCompletionFixture(managedGitAction: .install)
+        let reconciliation = try fixture.managedToolReconciliationReceipt()
+        let other = try RuntimeCompletionFixture(
+            deploymentID: "other-deployment",
+            managedGitAction: .install
+        )
+        let otherReconciliation = try other.managedToolReconciliationReceipt()
+        let events = RuntimeCompletionEvents()
+
+        let result = await runtimeTransactionCoordinator(
+            preparation: .success(fixture.admissionReceipt),
+            reconciliation: .success(reconciliation),
+            completion: .success(try other.completionReceipt(
+                reconciliation: otherReconciliation
+            )),
+            events: events
+        ).execute(stablePlan: fixture.stablePlan)
+
+        XCTAssertEqual(result.transactionFailure, .rejected)
+        XCTAssertEqual(events.snapshot(), ["preparation", "reconciliation", "completion"])
+        XCTAssertThrowsError(try ManagedInstallerRuntimeTransactionReceipt(
+            stablePlan: fixture.stablePlan,
+            preparationReceipt: fixture.admissionReceipt,
+            managedToolReconciliationReceipt: reconciliation,
+            completionReceipt: try other.completionReceipt(
+                reconciliation: otherReconciliation
+            )
+        ))
+    }
+
     private func coordinator(
         fixture: RuntimeCompletionFixture,
         events: RuntimeCompletionEvents,
@@ -208,6 +350,37 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             ),
             terminal: RuntimeCompletionTerminal(
                 result: terminal ?? .success(fixture.terminalReceipt),
+                events: events
+            )
+        )
+    }
+
+    private func runtimeTransactionCoordinator(
+        preparation: Result<
+            ManagedInstallerRuntimePreparationAdmissionReceipt,
+            ManagedInstallerRuntimePreparationAdmissionFailure
+        >,
+        reconciliation: Result<
+            ManagedInstallerManagedToolReconciliationReceipt,
+            ManagedInstallerManagedToolReconciliationFailure
+        >,
+        completion: Result<
+            ManagedInstallerRuntimeCompletionReceipt,
+            ManagedInstallerRuntimeCompletionFailure
+        >,
+        events: RuntimeCompletionEvents
+    ) -> ManagedInstallerRuntimeTransactionCoordinator {
+        ManagedInstallerRuntimeTransactionCoordinator(
+            preparation: RuntimeTransactionPreparation(
+                result: preparation,
+                events: events
+            ),
+            managedTools: RuntimeTransactionReconciliation(
+                result: reconciliation,
+                events: events
+            ),
+            completion: RuntimeTransactionCompletion(
+                result: completion,
                 events: events
             )
         )
@@ -322,6 +495,18 @@ private struct RuntimeCompletionFixture {
         return try ManagedInstallerManagedToolReconciliationReceipt(
             stablePlan: stablePlan,
             mutationReceipts: receipts
+        )
+    }
+
+    func completionReceipt(
+        reconciliation: ManagedInstallerManagedToolReconciliationReceipt
+    ) throws -> ManagedInstallerRuntimeCompletionReceipt {
+        try ManagedInstallerRuntimeCompletionReceipt(
+            stablePlan: stablePlan,
+            runtimeAdmissionReceipt: admissionReceipt,
+            managedToolReconciliationReceipt: reconciliation,
+            activationReceipt: activationReceipt,
+            terminalReceipt: terminalReceipt
         )
     }
 
@@ -505,6 +690,67 @@ private struct RuntimeCompletionBindingTerminal: ManagedPythonRuntimeTerminalCom
     }
 }
 
+private struct RuntimeTransactionPreparation: ManagedInstallerRuntimeAdmissionPreparing {
+    let result: Result<
+        ManagedInstallerRuntimePreparationAdmissionReceipt,
+        ManagedInstallerRuntimePreparationAdmissionFailure
+    >
+    let events: RuntimeCompletionEvents
+
+    func prepareRuntimes(
+        stablePlan: ManagedInstallerStablePlan
+    ) async -> Result<
+        ManagedInstallerRuntimePreparationAdmissionReceipt,
+        ManagedInstallerRuntimePreparationAdmissionFailure
+    > {
+        _ = stablePlan
+        events.append("preparation")
+        return result
+    }
+}
+
+private struct RuntimeTransactionReconciliation: ManagedInstallerManagedToolReconciling {
+    let result: Result<
+        ManagedInstallerManagedToolReconciliationReceipt,
+        ManagedInstallerManagedToolReconciliationFailure
+    >
+    let events: RuntimeCompletionEvents
+
+    func reconcileManagedTools(
+        stablePlan: ManagedInstallerStablePlan
+    ) async -> Result<
+        ManagedInstallerManagedToolReconciliationReceipt,
+        ManagedInstallerManagedToolReconciliationFailure
+    > {
+        _ = stablePlan
+        events.append("reconciliation")
+        return result
+    }
+}
+
+private struct RuntimeTransactionCompletion: ManagedInstallerRuntimeCompleting {
+    let result: Result<
+        ManagedInstallerRuntimeCompletionReceipt,
+        ManagedInstallerRuntimeCompletionFailure
+    >
+    let events: RuntimeCompletionEvents
+
+    func completeRuntimes(
+        stablePlan: ManagedInstallerStablePlan,
+        runtimeAdmissionReceipt: ManagedInstallerRuntimePreparationAdmissionReceipt,
+        managedToolReconciliationReceipt: ManagedInstallerManagedToolReconciliationReceipt
+    ) async -> Result<
+        ManagedInstallerRuntimeCompletionReceipt,
+        ManagedInstallerRuntimeCompletionFailure
+    > {
+        _ = stablePlan
+        _ = runtimeAdmissionReceipt
+        _ = managedToolReconciliationReceipt
+        events.append("completion")
+        return result
+    }
+}
+
 private func runtimeCompletionSuccess(
     _ result: Result<
         ManagedInstallerRuntimeCompletionReceipt,
@@ -517,9 +763,29 @@ private func runtimeCompletionSuccess(
     }
 }
 
+private func runtimeTransactionSuccess(
+    _ result: Result<
+        ManagedInstallerRuntimeTransactionReceipt,
+        ManagedInstallerRuntimeTransactionFailure
+    >
+) throws -> ManagedInstallerRuntimeTransactionReceipt {
+    switch result {
+    case .success(let receipt): receipt
+    case .failure(let failure): throw failure
+    }
+}
+
 private extension Result where Success == ManagedInstallerRuntimeCompletionReceipt,
     Failure == ManagedInstallerRuntimeCompletionFailure {
     var failure: Failure? {
+        guard case .failure(let failure) = self else { return nil }
+        return failure
+    }
+}
+
+private extension Result where Success == ManagedInstallerRuntimeTransactionReceipt,
+    Failure == ManagedInstallerRuntimeTransactionFailure {
+    var transactionFailure: Failure? {
         guard case .failure(let failure) = self else { return nil }
         return failure
     }
