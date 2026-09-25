@@ -17,9 +17,12 @@ returns no caller path, and re-hashes every no-follow readback. The mutation
 coordinator admits only descriptor-derived identities and requires staging and
 slot readback around its injected privilege seam. A separate native activation
 coordinator now binds exact component venvs, activation, rollback retention and
-final runtime readback under the host-wide lock contract. No production runtime
-artifact, concrete privileged helper, released mutation wiring, or live machine
-installation is approved by this increment.
+final runtime readback under the host-wide lock contract. A native client now
+uses one fixed privileged Mach service and one fixed NSXPC interface to exchange
+only canonical, bounded request and response bytes. No production runtime
+artifact, concrete privileged helper backend, signed helper registration,
+released mutation wiring, or live machine installation is approved by this
+increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -214,8 +217,10 @@ coordinator validates one complete host observation, persists it and requires
 an identical durable readback before returning it to the replanner. A concrete
 host-observation adapter derives one closed request containing only frozen
 identities, accepts one canonical serialized helper response and rejects
-malformed, noncanonical or context-drifted evidence. The authorized privileged
-helper transport and released route are not yet implemented. The
+malformed, noncanonical or context-drifted evidence. Its native NSXPC client
+uses one fixed privileged Mach service, one fixed interface and canonical
+request bytes. The authorized helper backend, signed service registration and
+released route are not yet implemented. The
 native seeding coordinator now validates the exact session/deployment and
 pre-mutation activation plan plus original managed-tool action set, derives reconciliation itself,
 persists `PLANNED`, and accepts success only after an identical durable
@@ -229,9 +234,9 @@ action, and explicit product-dispatch readiness. Only then does it construct
 the typed `TOOLS_VERIFIED` evidence and call the atomic journal-advance seam.
 The concrete source-level fresh replanner, its read-only snapshot adapter,
 durable helper-facing snapshot store and capture/persist/readback producer
-coordinator plus the strict host-observation request/response adapter are
-implemented; the authorized privileged helper transport and released route
-wiring are not yet implemented.
+coordinator plus the strict host-observation request/response adapter and fixed
+native NSXPC client transport are implemented; the authorized helper backend,
+signed service registration and released route wiring are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -329,9 +334,10 @@ reviewed release, immutable session/catalogs, exact Forge+EP inventory,
 provider requirements, component diff, managed Git actions and complete
 pre-mutation Python/rollback/venv intent. No caller may inject an unrelated
 stable-plan digest. The concrete read-only snapshot adapter, durable
-single-assignment store, producer coordinator and closed canonical-response
-host adapter are implemented, but the authorized privileged helper transport
-and these coordinators are not wired into the released runtime. A concrete
-reviewed privileged helper transport, released mutation wiring and an actual
+single-assignment store, producer coordinator, closed canonical-response host
+adapter and fixed privileged NSXPC client transport are implemented, but the
+authorized helper backend, signed service registration and these coordinators
+are not wired into the released runtime. A concrete reviewed helper backend,
+released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
 installation can be claimed.

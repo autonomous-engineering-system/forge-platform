@@ -58,7 +58,9 @@ it and requires identical durable readback before the replanner can consume it.
 A closed privileged-boundary adapter now derives one pathless helper request
 from the stable plan and activation request, accepts exactly one canonical
 snapshot response and rejects malformed, noncanonical or context-drifted
-responses. The authorized helper transport that performs the host reads and
+responses. A native client sends those canonical bytes only through one fixed
+NSXPC interface to one fixed privileged Mach service. The authorized helper
+backend that performs the host reads, its signed service registration and
 released wiring are not implemented. No Python artifact, privileged helper or
 operational runtime installation is claimed.
 
@@ -75,9 +77,9 @@ snapshots. Its paired store requires an existing private root, writes one
 context-matched `0600` record with file and directory synchronization, accepts
 only exact idempotent retries and rejects conflicting evidence. A producer
 coordinator then binds exactly one host observation to that store and
-reader. The strict host-observation adapter is implemented; its authorized
-helper transport, released route wiring and mutation dispatch remain
-unimplemented.
+reader. The strict host-observation adapter and fixed privileged NSXPC client
+transport are implemented; the authorized helper backend, signed service
+registration, released route wiring and mutation dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
