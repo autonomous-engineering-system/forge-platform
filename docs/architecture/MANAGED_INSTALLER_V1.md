@@ -175,10 +175,21 @@ stable plan, runtime failure or receipt from another plan stops before product
 dispatch. A product completion is admitted only with nonempty passed stages and
 nonempty readiness summary items.
 
+The native core now also defines a canonical product-operation bridge for the
+exact Forge+EP pair. Its request is rebuilt from that stable plan and terminal
+runtime receipt and contains only reviewed identities, actions and evidence
+references. Paths, commands, environment variables and credentials are not
+accepted. A terminal response must canonically bind the request fingerprint,
+stable-plan fingerprint and operation ID, include product, pairing and both
+readiness receipts, and report the expected terminal state for both exact
+components. Substituted, partial, malformed or noncanonical responses fail
+closed before the GUI or CLI can show completion.
+
 This is source-level composition only. The released runtime continues to inject
 the unavailable route until concrete catalog, host, managed-tool and product
-adapters are qualified and explicitly wired. It does not establish live install,
-signing, notarization or product-readiness evidence.
+adapters plus an authorized product-bridge transport are qualified and
+explicitly wired. It does not establish live install, signing, notarization or
+product-readiness evidence.
 
 The managed-deployment operation coordinator reuses
 `DurableComponentOperationCoordinator`. Each product mutation therefore keeps
