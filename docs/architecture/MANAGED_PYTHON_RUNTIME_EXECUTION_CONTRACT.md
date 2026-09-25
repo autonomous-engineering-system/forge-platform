@@ -25,7 +25,9 @@ remote messages. The helper-side capture coordinator now holds the shared host
 mutation lease across exactly one complete low-level observation and binds its
 exact tool and gate sets to that request. The helper-owned fixed-file store now
 publishes canonical host state atomically and requires exact durable readback.
-No production runtime artifact, live OS-backed Git, Python or gate source
+The closed source coordinator reads only the requested Git, Python and gate set
+and rejects an observation when its helper-owned epoch changes across those
+reads. No production runtime artifact, concrete OS-backed Git, Python or gate
 adapter, signed helper registration, released mutation wiring, or live machine
 installation is approved by this increment.
 
@@ -240,8 +242,10 @@ tool and gate sets exactly match the closed request. A paired fixed-file store
 publishes those canonical bytes with private temporary creation, file and
 directory synchronization, atomic replacement and exact durable readback; it
 rejects insecure or noncanonical prior state rather than repairing it. The
-actual OS-backed Git, Python and gate source adapters that supply the document,
-signed service registration and the released route are not yet implemented. The
+closed source coordinator that supplies the document now enforces the exact
+request set and matching before/after host epochs. Concrete OS-backed Git,
+Python and gate adapters, signed service registration and the released route
+are not yet implemented. The
 native seeding coordinator now validates the exact session/deployment and
 pre-mutation activation plan plus original managed-tool action set, derives reconciliation itself,
 persists `PLANNED`, and accepts success only after an identical durable
@@ -259,9 +263,10 @@ coordinator plus the strict host-observation request/response adapter, fixed
 native NSXPC client transport and fail-closed helper service handler are
 implemented together with mutual exact signed-peer authentication and a locked
 single-read helper capture coordinator plus the descriptor-safe fixed-file
-host-state reader, atomic publisher and source/publish/durable-readback
-coordinator; actual OS-backed Git, Python and gate source adapters, signed
-service registration and released route wiring are not yet implemented.
+host-state reader, atomic publisher, source/publish/durable-readback coordinator
+and epoch-bracketed exact source collector; concrete OS-backed Git, Python and
+gate adapters, signed service registration and released route wiring are not
+yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -366,8 +371,10 @@ single-read helper capture coordinator are implemented. The fixed-file reader
 also admits one canonical complete helper-owned host-state document with
 descriptor, ownership, mode, link-count and request-set checks. Its atomic
 publisher requires a private root and exact durable readback after publication.
-Actual OS-backed Git, Python and gate source adapters, signed service
-registration and these coordinators are not wired into the released runtime. A
+The exact source collector also requires matching helper-owned epochs around
+all requested tool, Python and gate reads. Concrete OS-backed Git, Python and
+gate adapters, signed service registration and these coordinators are not wired
+into the released runtime. A
 concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational

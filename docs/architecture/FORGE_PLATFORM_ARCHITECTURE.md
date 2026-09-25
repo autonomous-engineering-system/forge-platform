@@ -72,10 +72,12 @@ one canonical helper-owned host-state document and rejects insecure filesystem
 objects, unstable bytes and request-set drift. Its paired publisher atomically
 replaces that fixed document, refuses to repair insecure or noncanonical prior
 state, synchronizes file and directory descriptors, and requires exact durable
-readback before returning the observation. The actual OS-backed Git, Python and
-gate source adapters, signed service registration and released wiring are not
-implemented. No Python artifact, privileged helper or operational runtime
-installation is claimed.
+readback before returning the observation. The Git, Python and gate adapter
+seams are now composed through one closed source coordinator that reads only the
+exact request set and requires the same helper-owned epoch before and after all
+reads. Their concrete OS implementations, signed service registration and
+released wiring are not implemented. No Python artifact, privileged helper or
+operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
@@ -94,10 +96,10 @@ reader. The strict host-observation adapter, fixed privileged NSXPC client
 transport, fail-closed service handler and exact signed-caller listener are
 implemented together with exact signed-helper authentication on the client;
 the locked single-read helper capturer is also implemented. The concrete
-fixed-file host-state reader, atomic publisher and source/publish/durable-readback
-coordinator are also implemented. Actual OS-backed Git, Python and gate source
-adapters, signed service registration, released route wiring and mutation
-dispatch remain unimplemented.
+fixed-file host-state reader, atomic publisher, source/publish/durable-readback
+coordinator and epoch-bracketed exact source collector are also implemented.
+Concrete OS-backed Git, Python and gate adapters, signed service registration,
+released route wiring and mutation dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
