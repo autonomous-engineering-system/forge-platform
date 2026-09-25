@@ -887,6 +887,107 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(calls, [request])
     }
 
+    func testLockedHelperCapturerBindsOneAtomicHostReadToExactRequest() async throws {
+        let fixture = try FreshReplannerFixture()
+        let expected = try fixture.snapshot()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let events = LockedHostObservationEvents()
+        let reader = AtomicHostReader(
+            result: .success(try atomicReadback(expected)),
+            events: events
+        )
+        let capturer = ManagedInstallerPostToolLockedHelperSnapshotCapturer(
+            operationLock: LockedHostObservationLock(events: events),
+            hostReader: reader
+        )
+
+        let captured = try snapshotValue(await capturer.capturePostToolSnapshot(for: request))
+
+        XCTAssertEqual(captured, expected)
+        let requests = await reader.requests()
+        XCTAssertEqual(requests, [request])
+        XCTAssertEqual(events.values(), ["acquire", "read", "release"])
+    }
+
+    func testLockedHelperCapturerMapsLockAndReadFailuresAndAlwaysReleases() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+
+        for (lockFailure, expected) in [
+            (ManagedPythonRuntimeOperationLockFailure.operationInProgress,
+             ManagedPythonRuntimeTerminalReceiptFailure.operationInProgress),
+            (.unavailable, .operationLockUnavailable),
+            (.releaseFailed, .operationLockReleaseFailed),
+        ] {
+            let reader = AtomicHostReader(result: .failure(.readbackFailed))
+            let result = await ManagedInstallerPostToolLockedHelperSnapshotCapturer(
+                operationLock: LockedHostObservationLock(acquireFailure: lockFailure),
+                hostReader: reader
+            ).capturePostToolSnapshot(for: request)
+            XCTAssertEqual(result.failure, expected)
+            let requests = await reader.requests()
+            XCTAssertTrue(requests.isEmpty)
+        }
+
+        let readEvents = LockedHostObservationEvents()
+        let readFailure = await ManagedInstallerPostToolLockedHelperSnapshotCapturer(
+            operationLock: LockedHostObservationLock(events: readEvents),
+            hostReader: AtomicHostReader(result: .failure(.readbackFailed), events: readEvents)
+        ).capturePostToolSnapshot(for: request)
+        XCTAssertEqual(readFailure.failure, .readbackFailed)
+        XCTAssertEqual(readEvents.values(), ["acquire", "read", "release"])
+
+        let releaseEvents = LockedHostObservationEvents()
+        let releaseFailure = await ManagedInstallerPostToolLockedHelperSnapshotCapturer(
+            operationLock: LockedHostObservationLock(
+                releaseFailure: .releaseFailed,
+                events: releaseEvents
+            ),
+            hostReader: AtomicHostReader(
+                result: .success(try atomicReadback(fixture.snapshot())),
+                events: releaseEvents
+            )
+        ).capturePostToolSnapshot(for: request)
+        XCTAssertEqual(releaseFailure.failure, .operationLockReleaseFailed)
+        XCTAssertEqual(releaseEvents.values(), ["acquire", "read", "release"])
+    }
+
+    func testAtomicHostReadbackRequiresCompleteUniqueObservation() throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+
+        XCTAssertThrowsError(try ManagedInstallerPostToolAtomicHostReadback(
+            managedTools: [],
+            pythonRuntime: snapshot.pythonRuntime,
+            gates: snapshot.gates,
+            evidenceReference: snapshot.evidenceReference
+        ))
+        XCTAssertThrowsError(try ManagedInstallerPostToolAtomicHostReadback(
+            managedTools: snapshot.managedTools + snapshot.managedTools,
+            pythonRuntime: snapshot.pythonRuntime,
+            gates: snapshot.gates,
+            evidenceReference: snapshot.evidenceReference
+        ))
+        XCTAssertThrowsError(try ManagedInstallerPostToolAtomicHostReadback(
+            managedTools: snapshot.managedTools,
+            pythonRuntime: snapshot.pythonRuntime,
+            gates: Array(snapshot.gates.dropLast()),
+            evidenceReference: snapshot.evidenceReference
+        ))
+        XCTAssertThrowsError(try ManagedInstallerPostToolAtomicHostReadback(
+            managedTools: snapshot.managedTools,
+            pythonRuntime: snapshot.pythonRuntime,
+            gates: snapshot.gates,
+            evidenceReference: "invalid"
+        ))
+    }
+
     func testXPCServiceHandlerRejectsInvalidAndNoncanonicalRequestsBeforeCapture() async throws {
         let fixture = try FreshReplannerFixture()
         let snapshot = try fixture.snapshot()
@@ -1314,6 +1415,117 @@ private struct SnapshotReadback: ManagedInstallerPostToolSnapshotReading {
         _ = stablePlan
         _ = request
         return result
+    }
+}
+
+private func atomicReadback(
+    _ snapshot: ManagedInstallerPostToolReadbackSnapshot
+) throws -> ManagedInstallerPostToolAtomicHostReadback {
+    try ManagedInstallerPostToolAtomicHostReadback(
+        managedTools: snapshot.managedTools,
+        pythonRuntime: snapshot.pythonRuntime,
+        gates: snapshot.gates,
+        evidenceReference: snapshot.evidenceReference
+    )
+}
+
+private final class LockedHostObservationEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [String] = []
+
+    func record(_ event: String) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+
+    func values() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events
+    }
+}
+
+private actor AtomicHostReader: ManagedInstallerPostToolAtomicHostReading {
+    private let result: Result<
+        ManagedInstallerPostToolAtomicHostReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >
+    private let events: LockedHostObservationEvents?
+    private var capturedRequests: [ManagedInstallerPostToolHostObservationRequest] = []
+
+    init(
+        result: Result<
+            ManagedInstallerPostToolAtomicHostReadback,
+            ManagedPythonRuntimeTerminalReceiptFailure
+        >,
+        events: LockedHostObservationEvents? = nil
+    ) {
+        self.result = result
+        self.events = events
+    }
+
+    func readAtomicPostToolHostState(
+        for request: ManagedInstallerPostToolHostObservationRequest
+    ) async -> Result<
+        ManagedInstallerPostToolAtomicHostReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    > {
+        capturedRequests.append(request)
+        events?.record("read")
+        return result
+    }
+
+    func requests() -> [ManagedInstallerPostToolHostObservationRequest] {
+        capturedRequests
+    }
+}
+
+private final class LockedHostObservationLock:
+    ManagedPythonRuntimeOperationLocking, @unchecked Sendable {
+    private let acquireFailure: ManagedPythonRuntimeOperationLockFailure?
+    private let releaseFailure: ManagedPythonRuntimeOperationLockFailure?
+    private let events: LockedHostObservationEvents?
+
+    init(
+        acquireFailure: ManagedPythonRuntimeOperationLockFailure? = nil,
+        releaseFailure: ManagedPythonRuntimeOperationLockFailure? = nil,
+        events: LockedHostObservationEvents? = nil
+    ) {
+        self.acquireFailure = acquireFailure
+        self.releaseFailure = releaseFailure
+        self.events = events
+    }
+
+    func acquireExclusiveManagedPythonRuntimeOperationLock()
+        -> Result<any ManagedPythonRuntimeOperationLock, ManagedPythonRuntimeOperationLockFailure> {
+        events?.record("acquire")
+        if let acquireFailure { return .failure(acquireFailure) }
+        return .success(LockedHostObservationLease(
+            releaseFailure: releaseFailure,
+            events: events
+        ))
+    }
+}
+
+private final class LockedHostObservationLease:
+    ManagedPythonRuntimeOperationLock, @unchecked Sendable {
+    private let releaseFailure: ManagedPythonRuntimeOperationLockFailure?
+    private let events: LockedHostObservationEvents?
+
+    init(
+        releaseFailure: ManagedPythonRuntimeOperationLockFailure?,
+        events: LockedHostObservationEvents?
+    ) {
+        self.releaseFailure = releaseFailure
+        self.events = events
+    }
+
+    func releaseExclusiveManagedPythonRuntimeOperationLock()
+        -> Result<Void, ManagedPythonRuntimeOperationLockFailure> {
+        events?.record("release")
+        if let releaseFailure { return .failure(releaseFailure) }
+        return .success(())
     }
 }
 
