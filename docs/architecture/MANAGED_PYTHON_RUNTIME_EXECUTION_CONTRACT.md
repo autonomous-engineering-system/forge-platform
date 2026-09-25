@@ -72,8 +72,14 @@ operation left before the complete staged identity returns and rejects unknown,
 linked, permissive or oversized entries. One host-wide nonblocking provider
 lease now covers reconciliation, staging, inspection and exact terminal discard.
 The coordinator emits `QUALIFIED` only after cleanup succeeds; busy, cleanup
-and lock-release failures block the receipt. Extraction and installation remain
-unimplemented. A read-only
+and lock-release failures block the receipt. A closed provider-runtime mutation
+coordinator then binds the exact component target, immutable runtime, staged
+file identity and inspection evidence to derived opaque runtime-slot and
+provider-home identities. Its injected privilege interface accepts no path,
+command, environment value or credential. It re-reads staged bytes before and
+after mutation and requires a separate exact installed-runtime readback before
+returning `READY`; an exact existing readback is idempotent. The concrete
+archive extraction and installation adapter remains unimplemented. A read-only
 native provider archive inspector validates the exact staged archive as strict
 bounded `tar.gz`/USTAR or ZIP, requires canonical explicit-parent layout and
 safe permissions, rebinds the executable SHA-256, and accepts only a thin
@@ -335,8 +341,9 @@ descriptor-safe staging/readback/discard are also implemented, including strict
 interrupted-acquisition cleanup. Read-only strict `tar.gz`/ZIP archive
 inspection with exact executable-digest and thin-arm64 Mach-O validation is
 implemented together with a host-wide nonblocking cleanup-enforcing archive
-qualification coordinator. Archive extraction, installation and
-credential-home provisioning,
+qualification coordinator and a closed pathless provider-runtime mutation
+coordinator/protocol with staged-byte and installed-runtime readback. The
+concrete extraction/install adapter and credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed service registration and released route wiring are not yet implemented.
 

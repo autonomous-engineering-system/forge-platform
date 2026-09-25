@@ -2,6 +2,14 @@
 
 **Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a durable platform-neutral managed-Python executor kernel with an atomic terminal-receipt-to-installer-journal bridge, a native wizard shell, an internal read-only C-3a catalog-admission coordinator that composes sealed trust, exact transport, independently injected time evidence and a read-only anti-replay anchor, a native source-level exact component-combination selector for the digest-pinned index, credential-free native transport plus private no-follow staging/readback for the four exact managed-Python identity assets, a read-only native archive/Mach-O inspector, a closed source-level runtime-slot mutation coordinator behind an injected privilege seam, a cleanup-enforcing preparation coordinator with a host-wide nonblocking operation lease, private atomic pending-record, cleanup-only restart integration and descriptor-safe acquisition-orphan reconciliation, separately locked native coordination for exact product-venv readiness, activation, rollback retention, final readback, durable private `READY`-receipt recovery, platform-neutral `COMPLETE`-receipt handoff and exact typed `TOOLS_VERIFIED` evidence projection, a private atomic/idempotent active parent-journal store behind the admission bridge, a source-level exact `PLANNED` journal seeder with durable readback, and a strict context-bound post-tool snapshot reader with a durable single-assignment store, capture/persist/readback producer coordinator, closed canonical host-observation request/response adapter, fixed privileged NSXPC client transport and atomic helper-owned host-state publication with exact durable readback. No independently reviewed production time-evidence adapter, concrete privileged helper backend, signed helper registration, released executor-journal wiring, composition-session producer, product provisioner adapter, published production runtime, released mutation wiring, or production deployment is certified.
 
+Exact V3 provider archives additionally have credential-free transport, private
+staging, strict read-only archive/Mach-O inspection, exclusive cleanup-enforcing
+qualification and a closed pathless mutation coordinator/protocol with exact
+staged-byte readback before and after mutation plus independent exact
+installed-runtime readback. The concrete provider extraction/install adapter,
+credential-home provisioning and released wiring remain unimplemented; this
+source-level seam is not live provider-readiness evidence.
+
 The fixed NSXPC client authenticates the exact helper signing identifier and
 configured Team identity on a Developer ID Application chain before accepting
 remote messages. Its paired fail-closed service handler admits only exact
@@ -766,9 +774,11 @@ are implemented, together with the exact bounded credential-free V3 provider
 archive transport and private descriptor-safe staging/readback/discard. Provider
 interrupted-acquisition cleanup and read-only exact `tar.gz`/ZIP archive
 inspection with executable-digest and thin-arm64 Mach-O validation are included.
-A host-wide nonblocking cleanup-enforcing archive-qualification transaction is
-also included. Archive extraction, installation and
-credential-home provisioning,
+A host-wide nonblocking cleanup-enforcing archive-qualification transaction and
+a closed pathless provider-runtime mutation coordinator/protocol are also
+included. The mutation coordinator re-reads exact staged bytes before and after
+mutation and requires independent exact installed-runtime readback. The
+concrete extraction/install adapter and credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed helper registration and released journal-seeding integration remain
 unimplemented.
@@ -826,8 +836,9 @@ implemented. Exact provider archive transport and private descriptor-safe
 staging/readback/discard are implemented. The live Git and Python OS observers
 and mutation routes remain absent. Strict provider interrupted-acquisition
 cleanup, read-only strict `tar.gz`/ZIP archive inspection and a host-wide
-nonblocking cleanup-enforcing qualification coordinator are implemented.
-Archive extraction, installation and credential-home provisioning, service-account secure-store
+nonblocking cleanup-enforcing qualification coordinator plus the closed
+pathless provider-runtime mutation coordinator/protocol are implemented. The
+concrete extraction/install adapter and credential-home provisioning, service-account secure-store
 integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,
 separate gate router and fixed-layout macOS component-provider inspector are
