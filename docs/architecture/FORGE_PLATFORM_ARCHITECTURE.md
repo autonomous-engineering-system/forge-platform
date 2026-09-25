@@ -51,7 +51,9 @@ release, session/catalog identities, exact Forge+EP inventory, provider
 requirements, component diff, managed Git actions, Python readback, rollback
 and venv intent; its derived fingerprint is the only stable-plan identity
 persisted in the parent journal. The concrete post-tool reader accepts one
-strict private snapshot, but its privileged producer is not implemented. No
+strict private snapshot, and a helper-facing single-assignment store persists
+it with exclusive atomic rename and durable descriptor readback. The privileged
+host observation adapter that supplies that snapshot is not implemented. No
 Python artifact, privileged adapter or operational runtime installation is
 claimed.
 
@@ -64,8 +66,11 @@ now admits one strict, bounded post-tool snapshot that binds the operation,
 session, deployment, stable plan, execution request, all managed-tool and
 Python observations, and all five gates to one evidence epoch. It rejects
 symlinks, hardlinks, permissive ownership/modes, context drift and mixed
-snapshots. The privileged snapshot producer, released route wiring and mutation
-dispatch remain unimplemented.
+snapshots. Its paired store requires an existing private root, writes one
+context-matched `0600` record with file and directory synchronization, accepts
+only exact idempotent retries and rejects conflicting evidence. The privileged
+host observation adapter, released route wiring and mutation dispatch remain
+unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
