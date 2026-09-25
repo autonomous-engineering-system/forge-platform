@@ -89,7 +89,13 @@ dispatch, derives deterministic per-target operations from the stable-plan
 fingerprint, executes exact component-owned V3 targets in canonical order,
 stops at the first failed or drifted receipt and returns only the complete
 plan-bound receipt set. An empty enabled set completes without dispatch;
-legacy and user-scoped targets fail before mutation. A read-only
+legacy and user-scoped targets fail before mutation. A runtime-preparation
+admission coordinator now requires the exact stable-plan parent `PLANNED`
+record to be durably seeded and read back before provider or managed-Python
+preparation. It revalidates the journal, provider and Python receipts before
+crossing each next boundary and returns one stable-plan-bound
+`RUNTIMES_READY` receipt. It is source-only and grants no product dispatch
+authority. A read-only
 native provider archive inspector validates the exact staged archive as strict
 bounded `tar.gz`/USTAR or ZIP, requires canonical explicit-parent layout and
 safe permissions, rebinds the executable SHA-256, and accepts only a thin
@@ -355,7 +361,9 @@ qualification coordinator and a closed pathless provider-runtime mutation
 coordinator/protocol with staged-byte and installed-runtime readback, composed
 by a cleanup-enforcing provider preparation transaction under the same lease.
 The canonical stable-plan fanout and its complete plan-bound receipt are also
-implemented at source level. The concrete extraction/install adapter and credential-home provisioning,
+implemented at source level. Durable `PLANNED` seeding, provider fanout and
+managed-Python preparation are ordered by a separate source-level admission
+coordinator that revalidates every result against the same stable plan. The concrete extraction/install adapter and credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed service registration and released route wiring are not yet implemented.
 

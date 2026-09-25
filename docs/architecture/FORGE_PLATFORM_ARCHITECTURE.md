@@ -144,7 +144,12 @@ derives one operation identity from the stable-plan fingerprint plus exact
 target, runs component-owned V3 targets in canonical order and accepts only a
 complete plan-bound receipt set. Legacy or user-scoped targets fail before the
 first mutation. This source-level fanout is not connected to the released
-installer route. A read-only native
+installer route. A runtime-preparation admission coordinator now durably seeds
+and exactly reads back the stable plan's parent `PLANNED` journal record before
+it can invoke that provider fanout or managed-Python preparation. It rebinds
+each returned boundary before advancing and emits one `RUNTIMES_READY` receipt
+for the same stable plan; it grants no product-operation authority and remains
+disconnected from the released route. A read-only native
 inspector now reopens the exact staged archive, validates strict bounded
 `tar.gz` or ZIP layout, exact executable SHA-256, and one thin arm64 macOS
 Mach-O without extracting or executing content. Provider
@@ -189,7 +194,9 @@ qualification coordinator and the closed pathless provider-runtime mutation
 coordinator/protocol are implemented and composed by one cleanup-enforcing
 provider preparation transaction under the same exclusive lease. A separate
 canonical source-level coordinator binds the exact enabled-provider fanout and
-complete receipt set to the stable plan. The concrete extraction/install adapter,
+complete receipt set to the stable plan. A separate source-level admission
+coordinator enforces durable `PLANNED` seeding before provider and managed-Python
+runtime preparation and revalidates each result before advancing. The concrete extraction/install adapter,
 credential-home provisioning, service-account secure-store integration
 and the other four live gate observers remain absent. Signed service
 registration, released route wiring and mutation dispatch remain unimplemented.
