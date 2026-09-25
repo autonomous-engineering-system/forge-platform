@@ -117,8 +117,14 @@ executable after each probe. Legacy user scope without an exact OS-user binding
 fails closed. A separate native transport accepts only that exact V3
 component-owned requirement, performs one bounded credential-free HTTPS fetch,
 rejects redirects and final-URL drift, and verifies the signed archive SHA-256
-before returning target-bound bytes. It does not stage, extract or install the
-archive. Provider installation and credential-home provisioning,
+before returning target-bound bytes. A private native stager then writes that
+exact archive under one fixed name in an operation-scoped `0700` directory,
+returns only an opaque reference plus descriptor-derived file identity, and
+requires single-link `0600` no-follow readback with the same digest before use.
+Exact discard is retry-safe after the operation directory has disappeared.
+Orphan reconciliation after interruption before the staged identity returns,
+archive inspection/extraction and provider installation remain absent. Provider
+credential-home provisioning,
 service-account/Keychain integration, the other four live gate observers and
 released wiring are not implemented. No live provider readiness, Git or Python
 artifact, privileged helper or operational runtime installation is claimed.
@@ -151,9 +157,9 @@ The descriptor-safe complete five-gate record reader, atomic publisher and
 complete-set source/publish/durable-readback decorator are implemented. The
 source-level provider-gate evaluator and separate gate router are implemented
 with a fixed-layout macOS component-provider inspector. Exact component-provider
-archive acquisition is implemented as a bounded credential-free HTTPS transport
-with redirect, final-URL and digest enforcement. Provider
-installation/credential provisioning, service-account secure-store integration
+archive acquisition and private descriptor-safe staging/readback/discard are
+implemented. Provider archive inspection/extraction, interrupted acquisition
+recovery, installation/credential provisioning, service-account secure-store integration
 and the other four live gate observers remain absent. Signed service
 registration, released route wiring and mutation dispatch remain unimplemented.
 
