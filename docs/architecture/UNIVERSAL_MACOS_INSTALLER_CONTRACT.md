@@ -38,8 +38,10 @@ operation left before identity return and rejects unknown, linked, permissive or
 oversized entries. A read-only native provider archive inspector accepts only
 strict bounded `tar.gz`/USTAR or ZIP layout, verifies the exact executable
 SHA-256 and thin arm64 macOS Mach-O, and never extracts or executes content.
-Exclusive provider-operation lease coordination, archive extraction,
-installation and credential-home provisioning,
+A host-wide nonblocking provider lease and cleanup-enforcing coordinator bind
+interrupted-acquisition reconciliation, staging, inspection and exact terminal
+discard; no busy, cleanup or release failure can yield `QUALIFIED`. Archive
+extraction, installation and credential-home provisioning,
 service-account secure-store
 integration, the other four live gate observers, live Git and Python OS
 observer/mutation routes, signed helper registration and released wiring remain
@@ -764,8 +766,8 @@ are implemented, together with the exact bounded credential-free V3 provider
 archive transport and private descriptor-safe staging/readback/discard. Provider
 interrupted-acquisition cleanup and read-only exact `tar.gz`/ZIP archive
 inspection with executable-digest and thin-arm64 Mach-O validation are included.
-Archive extraction,
-exclusive recovery coordination, installation and
+A host-wide nonblocking cleanup-enforcing archive-qualification transaction is
+also included. Archive extraction, installation and
 credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed helper registration and released journal-seeding integration remain
@@ -823,9 +825,9 @@ empty. Its atomic publisher and exact durable-readback decorator are
 implemented. Exact provider archive transport and private descriptor-safe
 staging/readback/discard are implemented. The live Git and Python OS observers
 and mutation routes remain absent. Strict provider interrupted-acquisition
-cleanup and read-only strict `tar.gz`/ZIP archive inspection are implemented.
-Archive extraction, exclusive recovery
-coordination, installation and credential-home provisioning, service-account secure-store
+cleanup, read-only strict `tar.gz`/ZIP archive inspection and a host-wide
+nonblocking cleanup-enforcing qualification coordinator are implemented.
+Archive extraction, installation and credential-home provisioning, service-account secure-store
 integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,
 separate gate router and fixed-layout macOS component-provider inspector are

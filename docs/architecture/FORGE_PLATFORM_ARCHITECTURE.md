@@ -124,8 +124,11 @@ requires single-link `0600` no-follow readback with the same digest before use.
 Exact discard is retry-safe after the operation directory has disappeared.
 The stager also reconciles an operation left before the staged identity returns,
 but only through strict fixed-name, no-follow descriptor validation; any unknown,
-linked, permissive or oversized entry fails closed. Exclusive lease coordination,
-archive extraction and provider installation remain absent. A read-only native
+linked, permissive or oversized entry fails closed. A host-wide nonblocking
+provider lease now closes reconciliation, staging, read-only inspection and
+exact terminal discard into one cleanup-enforcing qualification transaction.
+Busy, cleanup and release failures cannot return `QUALIFIED`. Archive extraction
+and provider installation remain absent. A read-only native
 inspector now reopens the exact staged archive, validates strict bounded
 `tar.gz` or ZIP layout, exact executable SHA-256, and one thin arm64 macOS
 Mach-O without extracting or executing content. Provider
@@ -165,7 +168,8 @@ with a fixed-layout macOS component-provider inspector. Exact component-provider
 archive acquisition and private descriptor-safe staging/readback/discard are
 implemented, including strict cleanup of an unrecorded interrupted acquisition.
 Read-only exact `tar.gz`/ZIP provider archive inspection with executable-digest
-and thin-arm64 Mach-O validation is implemented. Archive extraction, exclusive recovery coordination,
+and thin-arm64 Mach-O validation plus the exclusive cleanup-enforcing archive
+qualification coordinator are implemented. Archive extraction,
 installation/credential provisioning, service-account secure-store integration
 and the other four live gate observers remain absent. Signed service
 registration, released route wiring and mutation dispatch remain unimplemented.
