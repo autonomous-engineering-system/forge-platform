@@ -195,6 +195,17 @@ adapters plus an authorized product-bridge transport are qualified and
 explicitly wired. It does not establish live install, signing, notarization or
 product-readiness evidence.
 
+The platform-neutral helper boundary now independently admits request v2 before
+any product dispatcher can be selected. It accepts only bounded strict canonical
+JSON with unique keys and the exact native fingerprint, then compares the full
+installer-release identity, digest-bound Forge+EP manifest, candidate versions
+and digests, required/enabled provider targets, durable deployment topology,
+installed composition provenance, installed manifest versions and explicit
+`upgrade_from` route. Its admitted result contains correlation objects only; it
+does not contain or resolve an adapter, path, command, environment value or
+credential. Concrete privileged transport, product target resolution and saga
+dispatch remain unimplemented and therefore fail closed.
+
 The managed-deployment operation coordinator reuses
 `DurableComponentOperationCoordinator`. Each product mutation therefore keeps
 its own product operation identity and resume semantics.
