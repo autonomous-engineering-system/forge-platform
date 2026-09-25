@@ -644,6 +644,87 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(counts, .init(host: 1, persistence: 1, reader: 1))
     }
 
+    func testHostObservationAdapterSendsOneClosedRequestAndAcceptsCanonicalSnapshot() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let transport = HostObservationTransport(
+            result: .success(snapshot.canonicalJSONData())
+        )
+        let adapter = ManagedInstallerPostToolHostObservationAdapter(transport: transport)
+
+        let result = await adapter.capturePostToolSnapshot(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+
+        XCTAssertEqual(try snapshotValue(result), snapshot)
+        let requests = await transport.capturedRequests()
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(request.operationID, fixture.request.operationID)
+        XCTAssertEqual(request.sessionID, fixture.request.sessionID)
+        XCTAssertEqual(request.deploymentID, fixture.request.deploymentID)
+        XCTAssertEqual(request.stablePlanFingerprint, fixture.stablePlan.fingerprint)
+        XCTAssertEqual(request.requestFingerprint, fixture.request.executionRequestFingerprint)
+        XCTAssertEqual(request.managedTools, fixture.stablePlan.session.managedTools)
+        XCTAssertEqual(request.runtimeIdentitySHA256, fixture.request.runtimeIdentitySHA256)
+        XCTAssertEqual(request.runtimeSlotIdentity, fixture.request.runtimeSlotIdentity)
+        XCTAssertEqual(
+            request.retainedRuntimeIdentitySHA256s,
+            fixture.request.requiredRetainedRuntimeIdentitySHA256s
+        )
+        XCTAssertEqual(Set(request.gates), Set(ManagedInstallerPostToolGate.allCases))
+    }
+
+    func testHostObservationAdapterRejectsInvalidHelperResponses() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let canonical = snapshot.canonicalJSONData()
+        let noncanonical = Data([0x0A]) + canonical
+        let drifted = try fixture.snapshot(deploymentID: "other-deployment")
+
+        let cases: [(
+            Result<Data, ManagedPythonRuntimeTerminalReceiptFailure>,
+            ManagedPythonRuntimeTerminalReceiptFailure
+        )] = [
+            (.failure(.receiptUnavailable), .receiptUnavailable),
+            (.success(Data("{".utf8)), .readbackFailed),
+            (.success(noncanonical), .rejected),
+            (.success(drifted.canonicalJSONData()), .rejected),
+        ]
+        for (response, expected) in cases {
+            let transport = HostObservationTransport(result: response)
+            let result = await ManagedInstallerPostToolHostObservationAdapter(
+                transport: transport
+            ).capturePostToolSnapshot(
+                stablePlan: fixture.stablePlan,
+                request: fixture.request
+            )
+            XCTAssertEqual(result.failure, expected)
+            let captured = await transport.capturedRequests()
+            XCTAssertEqual(captured.count, 1)
+        }
+    }
+
+    func testHostObservationAdapterRejectsContextDriftBeforeCallingHelper() async throws {
+        let fixture = try FreshReplannerFixture()
+        let other = try FreshReplannerFixture(deploymentID: "other-deployment")
+        let transport = HostObservationTransport(
+            result: .success(try fixture.snapshot().canonicalJSONData())
+        )
+
+        let result = await ManagedInstallerPostToolHostObservationAdapter(
+            transport: transport
+        ).capturePostToolSnapshot(
+            stablePlan: fixture.stablePlan,
+            request: other.request
+        )
+
+        XCTAssertEqual(result.failure, .rejected)
+        let captured = await transport.capturedRequests()
+        XCTAssertTrue(captured.isEmpty)
+    }
+
     private func privateTemporaryDirectory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "post-tool-readback-\(UUID().uuidString)",
@@ -901,6 +982,26 @@ private struct SnapshotReadback: ManagedInstallerPostToolSnapshotReading {
         _ = stablePlan
         _ = request
         return result
+    }
+}
+
+private actor HostObservationTransport: ManagedInstallerPostToolHostObservationTransporting {
+    private let result: Result<Data, ManagedPythonRuntimeTerminalReceiptFailure>
+    private var requests: [ManagedInstallerPostToolHostObservationRequest] = []
+
+    init(result: Result<Data, ManagedPythonRuntimeTerminalReceiptFailure>) {
+        self.result = result
+    }
+
+    func capturePostToolObservation(
+        _ request: ManagedInstallerPostToolHostObservationRequest
+    ) async -> Result<Data, ManagedPythonRuntimeTerminalReceiptFailure> {
+        requests.append(request)
+        return result
+    }
+
+    func capturedRequests() -> [ManagedInstallerPostToolHostObservationRequest] {
+        requests
     }
 }
 

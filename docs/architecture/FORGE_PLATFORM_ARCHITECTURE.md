@@ -55,9 +55,12 @@ strict private snapshot, and a helper-facing single-assignment store persists
 it with exclusive atomic rename and durable descriptor readback. A producer
 coordinator accepts one host observation, validates its frozen context, persists
 it and requires identical durable readback before the replanner can consume it.
-The privileged host observation adapter that supplies that snapshot is not implemented. No
-Python artifact, privileged adapter or operational runtime installation is
-claimed.
+A closed privileged-boundary adapter now derives one pathless helper request
+from the stable plan and activation request, accepts exactly one canonical
+snapshot response and rejects malformed, noncanonical or context-drifted
+responses. The authorized helper transport that performs the host reads and
+released wiring are not implemented. No Python artifact, privileged helper or
+operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
@@ -72,8 +75,9 @@ snapshots. Its paired store requires an existing private root, writes one
 context-matched `0600` record with file and directory synchronization, accepts
 only exact idempotent retries and rejects conflicting evidence. A producer
 coordinator then binds exactly one host observation to that store and
-reader. The concrete host observation adapter, released route wiring and
-mutation dispatch remain unimplemented.
+reader. The strict host-observation adapter is implemented; its authorized
+helper transport, released route wiring and mutation dispatch remain
+unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
