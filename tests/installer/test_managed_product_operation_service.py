@@ -16,6 +16,7 @@ from forge_platform.managed_product_operation_service import (
     ManagedProductOperationAuthorities,
     ManagedProductOperationHelperService,
     ManagedProductOperationServiceError,
+    PinnedManagedProductOperationAuthorityResolver,
 )
 from tests.installer.test_managed_product_operation_admission import (
     canonical,
@@ -55,6 +56,84 @@ class RouteResolver:
 
 
 class ManagedProductOperationHelperServiceTests(unittest.TestCase):
+    def test_pinned_authority_resolver_selects_only_exact_verified_manifests(self) -> None:
+        installed, candidate = manifests()
+        values = [installed, candidate]
+        resolver = PinnedManagedProductOperationAuthorityResolver(
+            current_installer_release=installer_release(),
+            manifests=values,
+        )
+        values.clear()
+        fresh = decoded(request_payload(candidate, installed=None, exists=False))
+        existing = decoded(request_payload(candidate, installed=installed))
+
+        fresh_authority = resolver.resolve(fresh)
+        existing_authority = resolver.resolve(existing)
+
+        self.assertIs(fresh_authority.candidate_manifest, candidate)
+        self.assertIsNone(fresh_authority.installed_manifest)
+        self.assertIs(existing_authority.candidate_manifest, candidate)
+        self.assertIs(existing_authority.installed_manifest, installed)
+        self.assertEqual(
+            existing_authority.current_installer_release,
+            installer_release(),
+        )
+
+    def test_pinned_authority_resolver_rejects_unknown_or_cross_bound_identity(self) -> None:
+        installed, candidate = manifests()
+        resolver = PinnedManagedProductOperationAuthorityResolver(
+            current_installer_release=installer_release(),
+            manifests=(installed, candidate),
+        )
+        request = decoded(request_payload(candidate, installed=installed))
+
+        for changed in (
+            replace(request, manifest_sha256="sha256:" + "0" * 64),
+            replace(
+                request,
+                installed_composition_manifest_sha256="sha256:" + "0" * 64,
+            ),
+        ):
+            with self.subTest(changed=changed), self.assertRaises(
+                ManagedProductOperationServiceError
+            ):
+                resolver.resolve(changed)
+        with self.assertRaises(TypeError):
+            resolver.resolve(object())
+
+    def test_pinned_authority_snapshot_rejects_invalid_or_ambiguous_inputs(self) -> None:
+        installed, candidate = manifests()
+        release = installer_release()
+        with self.assertRaises(TypeError):
+            PinnedManagedProductOperationAuthorityResolver(
+                current_installer_release=object(), manifests=(candidate,)
+            )
+        for values in ((), (object(),)):
+            with self.subTest(values=values), self.assertRaises(TypeError):
+                PinnedManagedProductOperationAuthorityResolver(
+                    current_installer_release=release,
+                    manifests=values,
+                )
+        same_identity = replace(
+            candidate,
+            manifest_digest="sha256:" + "0" * 64,
+        )
+        same_digest = replace(
+            installed,
+            manifest_digest=candidate.manifest_digest,
+        )
+        for values, message in (
+            ((candidate, same_identity), "identities"),
+            ((candidate, same_digest), "digests"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(
+                ValueError, message
+            ):
+                PinnedManagedProductOperationAuthorityResolver(
+                    current_installer_release=release,
+                    manifests=values,
+                )
+
     def fixture(self, root: Path, *, authorities, resolved=None):
         registry = ManagedDeploymentRegistry(root / "registry")
         route_resolver = RouteResolver(resolved or route())

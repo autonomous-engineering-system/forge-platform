@@ -233,8 +233,11 @@ current installer release come only from the injected helper authority. The
 admission check uses the dispatcher's exact durable registry, and dispatch
 rechecks that registry after route resolution before mutation. All boundary
 failures become one non-secret rejection and only a bounded canonical terminal
-receipt can return. A concrete authority resolver, product route resolver and
-released helper-process registration are still absent.
+receipt can return. An immutable authority-snapshot resolver now admits only
+exact `(composition_id, manifest digest)` pairs already supplied as typed,
+catalog-verified manifests and freezes the current installer release for the
+helper call boundary. The released loader that constructs this snapshot, the
+product route resolver and helper-process registration are still absent.
 
 The managed-deployment operation coordinator reuses
 `DurableComponentOperationCoordinator`. Each product mutation therefore keeps
