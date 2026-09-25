@@ -331,6 +331,207 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         ))
     }
 
+    func testReviewedExecutionRunsExactPlanCurrencyRuntimeAndProductInOrder() async throws {
+        let fixture = try RuntimeCompletionFixture(managedGitAction: .install)
+        let receipt = try fixture.transactionReceipt()
+        let events = RuntimeCompletionEvents()
+        let completed: ManagedDeploymentExecutionResult = .completed(
+            stages: [
+                ExecutionStage(
+                    id: "readiness",
+                    title: "Readiness",
+                    detail: "Forge en EP",
+                    state: .passed
+                ),
+            ],
+            summaryItems: [
+                InstallationSummaryItem(
+                    componentID: "forge-runtime",
+                    title: "Forge",
+                    status: "Gereed"
+                ),
+            ]
+        )
+
+        let result = await reviewedExecutionCoordinator(
+            stablePlan: .prepared(fixture.stablePlan),
+            currency: .current(fixture.stablePlan.reviewedOperation.currentInstallerRelease),
+            runtime: .success(receipt),
+            product: completed,
+            events: events
+        ).executeReviewedManagedDeployment(fixture.stablePlan.reviewedOperation)
+
+        XCTAssertEqual(result, completed)
+        XCTAssertEqual(events.snapshot(), ["plan", "currency", "runtime", "product"])
+    }
+
+    func testReviewedExecutionForwardsReadOnlyRoutePreparation() async throws {
+        let fixture = try RuntimeCompletionFixture()
+        let coordinator = reviewedExecutionCoordinator(
+            stablePlan: .prepared(fixture.stablePlan),
+            currency: .current(fixture.stablePlan.reviewedOperation.currentInstallerRelease),
+            runtime: .success(try fixture.transactionReceipt()),
+            product: .failed(.executionFailed, stages: []),
+            events: RuntimeCompletionEvents()
+        )
+
+        let inventory = await coordinator.prepareManagedDeploymentInventory()
+        let preflight = await coordinator.prepareHostPreflight(
+            session: fixture.stablePlan.session,
+            deployment: fixture.stablePlan.deployment
+        )
+        let review = await coordinator.prepareCompositionReview(
+            session: fixture.stablePlan.session,
+            deployment: fixture.stablePlan.deployment
+        )
+
+        XCTAssertEqual(inventory, .unavailable(.coordinatorUnavailable))
+        XCTAssertEqual(preflight, .unavailable(.coordinatorUnavailable))
+        XCTAssertEqual(review, .unavailable(.coordinatorUnavailable))
+    }
+
+    func testReviewedExecutionRejectsUnavailableOrSubstitutedPlanBeforeCurrency() async throws {
+        let fixture = try RuntimeCompletionFixture()
+        let changed = try fixture.stablePlan(componentDetail: "substituted")
+        let events = RuntimeCompletionEvents()
+        let unavailable = await reviewedExecutionCoordinator(
+            stablePlan: .unavailable(.reviewUnavailable),
+            currency: .current(fixture.stablePlan.reviewedOperation.currentInstallerRelease),
+            runtime: .success(try fixture.transactionReceipt()),
+            product: .failed(.executionFailed, stages: []),
+            events: events
+        ).executeReviewedManagedDeployment(fixture.stablePlan.reviewedOperation)
+
+        XCTAssertEqual(unavailable, .failed(.reviewUnavailable, stages: []))
+        XCTAssertEqual(events.snapshot(), ["plan"])
+
+        let substituted = await reviewedExecutionCoordinator(
+            stablePlan: .prepared(changed),
+            currency: .current(fixture.stablePlan.reviewedOperation.currentInstallerRelease),
+            runtime: .success(try fixture.transactionReceipt()),
+            product: .failed(.executionFailed, stages: []),
+            events: events
+        ).executeReviewedManagedDeployment(fixture.stablePlan.reviewedOperation)
+
+        XCTAssertEqual(substituted, .failed(.staleSession, stages: []))
+        XCTAssertEqual(events.snapshot(), ["plan", "plan"])
+    }
+
+    func testReviewedExecutionStopsForChangedFailedOrNewerCurrency() async throws {
+        let fixture = try RuntimeCompletionFixture()
+        let newer = try VerifiedInstallerRelease(
+            version: InstallerVersion("9.9.9"),
+            releasePage: "https://github.com/example/release/9.9.9",
+            assetName: "ForgePlatformInstaller.zip",
+            sha256: "sha256:" + String(repeating: "d", count: 64),
+            signingKeyID: "developer-id:newer"
+        )
+        let changed = VerifiedInstallerRelease(
+            version: fixture.stablePlan.reviewedOperation.currentInstallerRelease.version,
+            releasePage: "https://github.com/example/release/changed",
+            assetName: "ForgePlatformInstaller.zip",
+            sha256: "sha256:" + String(repeating: "e", count: 64),
+            signingKeyID: "developer-id:changed"
+        )
+
+        for (currency, expected) in [
+            (InstallerCurrencyCheckResult.current(changed),
+             ManagedDeploymentExecutionResult.failed(.staleSession, stages: [])),
+            (.failed("offline"), .failed(.executionFailed, stages: [])),
+            (.updateRequired(newer), .updateRequired(newer)),
+        ] {
+            let events = RuntimeCompletionEvents()
+            let result = await reviewedExecutionCoordinator(
+                stablePlan: .prepared(fixture.stablePlan),
+                currency: currency,
+                runtime: .success(try fixture.transactionReceipt()),
+                product: .failed(.executionFailed, stages: []),
+                events: events
+            ).executeReviewedManagedDeployment(fixture.stablePlan.reviewedOperation)
+
+            XCTAssertEqual(result, expected)
+            XCTAssertEqual(events.snapshot(), ["plan", "currency"])
+        }
+    }
+
+    func testReviewedExecutionRejectsRuntimeFailureAndSubstitutedReceipt() async throws {
+        let fixture = try RuntimeCompletionFixture()
+        let other = try RuntimeCompletionFixture(deploymentID: "other-deployment")
+        let release = fixture.stablePlan.reviewedOperation.currentInstallerRelease
+
+        for runtime in [
+            Result<ManagedInstallerRuntimeTransactionReceipt,
+                ManagedInstallerRuntimeTransactionFailure>.failure(.rejected),
+            .success(try other.transactionReceipt()),
+        ] {
+            let events = RuntimeCompletionEvents()
+            let result = await reviewedExecutionCoordinator(
+                stablePlan: .prepared(fixture.stablePlan),
+                currency: .current(release),
+                runtime: runtime,
+                product: .failed(.executionFailed, stages: []),
+                events: events
+            ).executeReviewedManagedDeployment(fixture.stablePlan.reviewedOperation)
+
+            XCTAssertEqual(result, .failed(.executionFailed, stages: []))
+            XCTAssertEqual(events.snapshot(), ["plan", "currency", "runtime"])
+        }
+    }
+
+    func testReviewedExecutionPreservesProductFailureAndRejectsIncompleteReadiness() async throws {
+        let fixture = try RuntimeCompletionFixture()
+        let release = fixture.stablePlan.reviewedOperation.currentInstallerRelease
+        let receipt = try fixture.transactionReceipt()
+        let productFailure: ManagedDeploymentExecutionResult = .failed(
+            .executionFailed,
+            stages: [ExecutionStage(id: "forge", title: "Forge", detail: "failed")]
+        )
+        let events = RuntimeCompletionEvents()
+        let failed = await reviewedExecutionCoordinator(
+            stablePlan: .prepared(fixture.stablePlan),
+            currency: .current(release),
+            runtime: .success(receipt),
+            product: productFailure,
+            events: events
+        ).executeReviewedManagedDeployment(fixture.stablePlan.reviewedOperation)
+
+        XCTAssertEqual(failed, productFailure)
+        XCTAssertEqual(events.snapshot(), ["plan", "currency", "runtime", "product"])
+
+        let incomplete = await reviewedExecutionCoordinator(
+            stablePlan: .prepared(fixture.stablePlan),
+            currency: .current(release),
+            runtime: .success(receipt),
+            product: .completed(stages: [], summaryItems: []),
+            events: events
+        ).executeReviewedManagedDeployment(fixture.stablePlan.reviewedOperation)
+
+        XCTAssertEqual(incomplete, .failed(.readinessFailed, stages: []))
+        XCTAssertEqual(
+            events.snapshot(),
+            ["plan", "currency", "runtime", "product", "plan", "currency", "runtime", "product"]
+        )
+    }
+
+    private func reviewedExecutionCoordinator(
+        stablePlan: ManagedInstallerStablePlanPreparationResult,
+        currency: InstallerCurrencyCheckResult,
+        runtime: Result<
+            ManagedInstallerRuntimeTransactionReceipt,
+            ManagedInstallerRuntimeTransactionFailure
+        >,
+        product: ManagedDeploymentExecutionResult,
+        events: RuntimeCompletionEvents
+    ) -> ManagedInstallerReviewedOperationExecutionCoordinator {
+        ManagedInstallerReviewedOperationExecutionCoordinator(
+            routePreparation: UnavailableManagedDeploymentRouteCoordinator(),
+            stablePlan: ReviewedExecutionStablePlan(result: stablePlan, events: events),
+            currency: ReviewedExecutionCurrency(result: currency, events: events),
+            runtimeTransaction: ReviewedExecutionRuntime(result: runtime, events: events),
+            productOperations: ReviewedExecutionProduct(result: product, events: events)
+        )
+    }
+
     private func coordinator(
         fixture: RuntimeCompletionFixture,
         events: RuntimeCompletionEvents,
@@ -507,6 +708,16 @@ private struct RuntimeCompletionFixture {
             managedToolReconciliationReceipt: reconciliation,
             activationReceipt: activationReceipt,
             terminalReceipt: terminalReceipt
+        )
+    }
+
+    func transactionReceipt() throws -> ManagedInstallerRuntimeTransactionReceipt {
+        let reconciliation = try managedToolReconciliationReceipt()
+        return try ManagedInstallerRuntimeTransactionReceipt(
+            stablePlan: stablePlan,
+            preparationReceipt: admissionReceipt,
+            managedToolReconciliationReceipt: reconciliation,
+            completionReceipt: try completionReceipt(reconciliation: reconciliation)
         )
     }
 
@@ -747,6 +958,66 @@ private struct RuntimeTransactionCompletion: ManagedInstallerRuntimeCompleting {
         _ = runtimeAdmissionReceipt
         _ = managedToolReconciliationReceipt
         events.append("completion")
+        return result
+    }
+}
+
+private struct ReviewedExecutionStablePlan: ManagedInstallerStablePlanPreparing {
+    let result: ManagedInstallerStablePlanPreparationResult
+    let events: RuntimeCompletionEvents
+
+    func prepareStablePlan(
+        for operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerStablePlanPreparationResult {
+        _ = operation
+        events.append("plan")
+        return result
+    }
+}
+
+private struct ReviewedExecutionCurrency: ManagedInstallerMutationCurrencyChecking {
+    let result: InstallerCurrencyCheckResult
+    let events: RuntimeCompletionEvents
+
+    func recheckInstallerBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> InstallerCurrencyCheckResult {
+        _ = currentVersion
+        events.append("currency")
+        return result
+    }
+}
+
+private struct ReviewedExecutionRuntime: ManagedInstallerRuntimeTransactionExecuting {
+    let result: Result<
+        ManagedInstallerRuntimeTransactionReceipt,
+        ManagedInstallerRuntimeTransactionFailure
+    >
+    let events: RuntimeCompletionEvents
+
+    func execute(
+        stablePlan: ManagedInstallerStablePlan
+    ) async -> Result<
+        ManagedInstallerRuntimeTransactionReceipt,
+        ManagedInstallerRuntimeTransactionFailure
+    > {
+        _ = stablePlan
+        events.append("runtime")
+        return result
+    }
+}
+
+private struct ReviewedExecutionProduct: ManagedInstallerProductOperationsExecuting {
+    let result: ManagedDeploymentExecutionResult
+    let events: RuntimeCompletionEvents
+
+    func executeProductOperations(
+        stablePlan: ManagedInstallerStablePlan,
+        runtimeTransactionReceipt: ManagedInstallerRuntimeTransactionReceipt
+    ) async -> ManagedDeploymentExecutionResult {
+        _ = stablePlan
+        _ = runtimeTransactionReceipt
+        events.append("product")
         return result
     }
 }

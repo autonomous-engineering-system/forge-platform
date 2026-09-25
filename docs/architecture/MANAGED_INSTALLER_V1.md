@@ -156,6 +156,30 @@ duplicate Forge lifecycle logic.
 
 ## Durable execution
 
+Before product dispatch, the native reviewed-operation coordinator preserves
+one exact authority chain:
+
+```text
+reviewed wizard operation
+→ read-only immutable stable plan
+→ fresh signed installer-release currency check
+→ provider/Python preparation and managed-tool reconciliation
+→ reconstructed terminal MANAGED_TOOLS receipt
+→ product-owned operations
+```
+
+The currency result must equal the complete installer release identity retained
+by the reviewed operation; matching only the version is insufficient. A newer
+release returns to the mandatory update route. A changed identity, substituted
+stable plan, runtime failure or receipt from another plan stops before product
+dispatch. A product completion is admitted only with nonempty passed stages and
+nonempty readiness summary items.
+
+This is source-level composition only. The released runtime continues to inject
+the unavailable route until concrete catalog, host, managed-tool and product
+adapters are qualified and explicitly wired. It does not establish live install,
+signing, notarization or product-readiness evidence.
+
 The managed-deployment operation coordinator reuses
 `DurableComponentOperationCoordinator`. Each product mutation therefore keeps
 its own product operation identity and resume semantics.
