@@ -41,8 +41,13 @@ closed. Its paired atomic publisher refuses to repair insecure or noncanonical
 prior state, synchronizes file and directory descriptors and requires exact
 durable readback through a closed decorator. No live managed-Git or
 managed-Python OS observer or mutation adapter, production runtime artifact,
-concrete gate adapter, signed helper registration, released mutation wiring, or
-live machine installation is approved by this increment.
+signed helper registration, released mutation wiring, or live machine
+installation is approved by this increment. A concrete gate source reads one
+fixed canonical record containing exactly all five requested gates through a
+stable no-follow descriptor. Missing, insecure, malformed, incomplete,
+duplicate or noncanonical evidence fails closed; an explicit failed gate is
+preserved as blocking evidence. Its publisher and live gate observers remain
+unimplemented.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -282,8 +287,10 @@ epoch-bracketed exact source collector and descriptor-safe managed-Git record
 reader plus its atomic publisher and exact durable-readback decorator, and the
 descriptor-safe managed-Python record reader plus its atomic publisher and
 exact durable-readback decorator; the live managed-Git and managed-Python OS
-observer/mutation routes, concrete gate adapters, signed service registration
-and released route wiring are not yet implemented.
+observer/mutation routes remain unimplemented. The descriptor-safe complete
+five-gate record reader is implemented; its atomic publisher and live gate
+observers, signed service registration and released route wiring are not yet
+implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -397,8 +404,10 @@ managed-Python source admits one fixed canonical record through the same stable
 no-follow checks and accepts absence only when runtime, slot and retained set
 are explicitly empty. Its atomic publisher and exact durable-readback decorator
 are implemented. The live Git and Python OS observers and mutation routes,
-concrete gate adapters, signed service registration and these coordinators are
-not wired into the released runtime. A
+signed service registration and these coordinators are not wired into the
+released runtime. A descriptor-safe source now admits one fixed canonical
+complete five-gate record; its publisher and live gate observers are not
+implemented. A
 concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational

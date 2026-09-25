@@ -91,10 +91,14 @@ noncanonical or internally inconsistent evidence fails closed. The live
 managed-Python record store now atomically publishes only over secure canonical
 prior state, synchronizes file and directory descriptors and exposes the source
 observation only after exact durable readback. The live managed-Git and
-managed-Python OS observers and mutation adapters, concrete gate adapters,
-signed service registration and released wiring are not implemented. No Git or
-Python artifact, privileged helper or operational runtime installation is
-claimed.
+managed-Python OS observers and mutation adapters, signed service registration
+and released wiring are not implemented. A first
+concrete gate source now reads one fixed canonical record containing exactly
+all five gate identities through the same stable no-follow boundary. Missing,
+insecure, malformed, incomplete, duplicate or noncanonical gate evidence fails
+closed; an explicit failed gate remains valid blocking evidence. Its atomic
+publisher and live gate observers are not implemented. No Git or Python
+artifact, privileged helper or operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
@@ -120,8 +124,9 @@ source/publish/durable-readback decorator are also implemented. Its live OS
 observer and mutation route remain absent. The descriptor-safe managed-Python
 record reader, atomic publisher and source/publish/durable-readback decorator
 are implemented; its live OS observer and mutation route remain absent.
-Concrete gate adapters, signed service registration, released route wiring and
-mutation dispatch remain unimplemented.
+The descriptor-safe complete five-gate record reader is implemented; its
+atomic publisher and live gate observers remain absent. Signed service
+registration, released route wiring and mutation dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 

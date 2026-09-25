@@ -1836,6 +1836,152 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(drift.failure, .rejected)
     }
 
+    func testPostToolGateHostReaderReturnsCanonicalPassAndBlockedState() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reader = FileManagedInstallerPostToolGateHostReader(rootDirectory: root)
+        let passing = try ManagedInstallerPostToolGateHostState(
+            gates: fixture.snapshot().gates
+        )
+        try writePostToolGateHostState(passing.canonicalJSONData(), root: root)
+
+        for expected in passing.gates {
+            let observed = try await reader.readPostToolHostGate(
+                expected.gate,
+                for: request
+            ).get()
+            XCTAssertEqual(observed, expected)
+        }
+
+        let blockedGates = try passing.gates.map { readback in
+            try ManagedInstallerPostToolGateReadback(
+                gate: readback.gate,
+                passed: readback.gate == .productPlan ? false : readback.passed,
+                evidenceReference: readback.gate == .productPlan
+                    ? "receipt:gate-product-plan-blocked"
+                    : readback.evidenceReference
+            )
+        }
+        let blocked = try ManagedInstallerPostToolGateHostState(gates: blockedGates)
+        try writePostToolGateHostState(blocked.canonicalJSONData(), root: root)
+        let blockedReadback = try await reader.readPostToolHostGate(
+            .productPlan,
+            for: request
+        ).get()
+        XCTAssertFalse(blockedReadback.passed)
+        XCTAssertEqual(blockedReadback.evidenceReference, "receipt:gate-product-plan-blocked")
+    }
+
+    func testPostToolGateHostReaderRejectsMissingAndInsecureFilesystemState() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reader = FileManagedInstallerPostToolGateHostReader(rootDirectory: root)
+
+        let missing = await reader.readPostToolHostGate(.installerCurrency, for: request)
+        XCTAssertEqual(missing.failure, .readbackFailed)
+
+        let stateData = try ManagedInstallerPostToolGateHostState(
+            gates: fixture.snapshot().gates
+        ).canonicalJSONData()
+        let state = try writePostToolGateHostState(stateData, root: root)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o644))],
+            ofItemAtPath: state.path
+        )
+        let permissive = await reader.readPostToolHostGate(.installerCurrency, for: request)
+        XCTAssertEqual(permissive.failure, .readbackFailed)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: state.path
+        )
+        let linked = root.appendingPathComponent("post-tool-gates-linked.json")
+        try FileManager.default.linkItem(at: state, to: linked)
+        let hardlink = await reader.readPostToolHostGate(.installerCurrency, for: request)
+        XCTAssertEqual(hardlink.failure, .readbackFailed)
+        try FileManager.default.removeItem(at: linked)
+
+        try FileManager.default.removeItem(at: state)
+        let target = root.appendingPathComponent("post-tool-gates-target.json")
+        try stateData.write(to: target)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: target.path
+        )
+        try FileManager.default.createSymbolicLink(at: state, withDestinationURL: target)
+        let symlink = await reader.readPostToolHostGate(.installerCurrency, for: request)
+        XCTAssertEqual(symlink.failure, .readbackFailed)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o755))],
+            ofItemAtPath: root.path
+        )
+        let rootMode = await reader.readPostToolHostGate(.installerCurrency, for: request)
+        XCTAssertEqual(rootMode.failure, .readbackFailed)
+    }
+
+    func testPostToolGateHostReaderRejectsMalformedIncompleteAndNoncanonicalState() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reader = FileManagedInstallerPostToolGateHostReader(rootDirectory: root)
+        let gates = try fixture.snapshot().gates
+
+        try writePostToolGateHostState(Data("{}".utf8), root: root)
+        let malformed = await reader.readPostToolHostGate(.compositionCurrency, for: request)
+        XCTAssertEqual(malformed.failure, .readbackFailed)
+
+        let canonical = try ManagedInstallerPostToolGateHostState(gates: gates)
+            .canonicalJSONData()
+        let noncanonical = Data(" \(String(decoding: canonical, as: UTF8.self))".utf8)
+        try writePostToolGateHostState(noncanonical, root: root)
+        let noncanonicalResult = await reader.readPostToolHostGate(
+            .compositionCurrency,
+            for: request
+        )
+        XCTAssertEqual(noncanonicalResult.failure, .readbackFailed)
+
+        let incomplete = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPostToolGateHostState.schema),
+            "gates": .array(Array(gates.dropLast()).map(
+                ManagedInstallerPostToolReadbackSnapshot.gateValue
+            )),
+        ]))
+        try writePostToolGateHostState(incomplete, root: root)
+        let incompleteResult = await reader.readPostToolHostGate(
+            .compositionCurrency,
+            for: request
+        )
+        XCTAssertEqual(incompleteResult.failure, .readbackFailed)
+
+        let duplicate = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPostToolGateHostState.schema),
+            "gates": .array((gates + [gates[0]]).map(
+                ManagedInstallerPostToolReadbackSnapshot.gateValue
+            )),
+        ]))
+        try writePostToolGateHostState(duplicate, root: root)
+        let duplicateResult = await reader.readPostToolHostGate(
+            .compositionCurrency,
+            for: request
+        )
+        XCTAssertEqual(duplicateResult.failure, .readbackFailed)
+    }
+
     func testFileAtomicHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
         let fixture = try FreshReplannerFixture()
         let request = try ManagedInstallerPostToolHostObservationRequest(
@@ -2217,6 +2363,19 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
     private func writeManagedPythonHostState(_ data: Data, root: URL) throws -> URL {
         let state = root.appendingPathComponent(
             FileManagedInstallerManagedPythonHostReader.fileName
+        )
+        try data.write(to: state, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: state.path
+        )
+        return state
+    }
+
+    @discardableResult
+    private func writePostToolGateHostState(_ data: Data, root: URL) throws -> URL {
+        let state = root.appendingPathComponent(
+            FileManagedInstallerPostToolGateHostReader.fileName
         )
         try data.write(to: state, options: .atomic)
         try FileManager.default.setAttributes(
