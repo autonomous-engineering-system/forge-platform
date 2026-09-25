@@ -226,6 +226,16 @@ receipt that rebinds the same request. Nil, malformed, noncanonical or
 cross-request replies fail closed. This supplies no launchd registration,
 concrete helper executor, product resolver or live helper evidence by itself.
 
+Behind that transport, the platform-neutral helper service now composes the
+strict decoder, helper-owned authority resolution, admission and durable
+dispatcher in one closed call. Candidate and installed manifests plus the
+current installer release come only from the injected helper authority. The
+admission check uses the dispatcher's exact durable registry, and dispatch
+rechecks that registry after route resolution before mutation. All boundary
+failures become one non-secret rejection and only a bounded canonical terminal
+receipt can return. A concrete authority resolver, product route resolver and
+released helper-process registration are still absent.
+
 The managed-deployment operation coordinator reuses
 `DurableComponentOperationCoordinator`. Each product mutation therefore keeps
 its own product operation identity and resume semantics.
