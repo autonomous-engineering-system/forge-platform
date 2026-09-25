@@ -70,6 +70,7 @@ public struct ReviewedManagedDeploymentOperation: Equatable, Sendable {
     public let deploymentExists: Bool
     public let inventoryEvidenceReference: String
     public let currentInstallerRelease: VerifiedInstallerRelease
+    public let enabledProviderRequirements: [ProviderRequirement]
     public let components: [ComponentDiff]
 
     init(
@@ -80,6 +81,7 @@ public struct ReviewedManagedDeploymentOperation: Equatable, Sendable {
         deploymentExists: Bool,
         inventoryEvidenceReference: String,
         currentInstallerRelease: VerifiedInstallerRelease,
+        enabledProviderRequirements: [ProviderRequirement] = [],
         components: [ComponentDiff]
     ) {
         self.sessionID = sessionID
@@ -89,6 +91,9 @@ public struct ReviewedManagedDeploymentOperation: Equatable, Sendable {
         self.deploymentExists = deploymentExists
         self.inventoryEvidenceReference = inventoryEvidenceReference
         self.currentInstallerRelease = currentInstallerRelease
+        self.enabledProviderRequirements = enabledProviderRequirements.sorted {
+            $0.id.rawValue < $1.id.rawValue
+        }
         self.components = components
     }
 }
@@ -228,6 +233,7 @@ public extension InstallerWizardState {
             deploymentExists: selected.target.exists,
             inventoryEvidenceReference: selected.evidenceReference,
             currentInstallerRelease: release,
+            enabledProviderRequirements: enabledProviders.map(\.requirement),
             components: composition.components
         )
         step = .execution
@@ -256,6 +262,10 @@ public extension InstallerWizardState {
               operation.manifestSHA256 == plan.manifestSHA256,
               operation.deploymentID == selected.target.id,
               operation.inventoryEvidenceReference == selected.evidenceReference,
+              operation.enabledProviderRequirements
+                == enabledProviders.map(\.requirement).sorted(by: {
+                    $0.id.rawValue < $1.id.rawValue
+                }),
               operation.components == composition.components else {
             return false
         }

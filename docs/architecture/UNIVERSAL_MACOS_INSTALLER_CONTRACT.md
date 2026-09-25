@@ -709,9 +709,12 @@ own later exact evidence.
 The source-level journal seeder and post-tool replanner now share one typed
 native stable plan. Its canonical fingerprint is derived internally from the
 reviewed installer release, immutable session and catalog identities, exact
-Forge+EP inventory, provider requirements, reviewed component diff, original
-managed Git actions and the complete pre-mutation Python, rollback and venv
-intent. Neither boundary accepts a caller-supplied stable-plan hash. A strict
+Forge+EP inventory, all admitted provider requirements, the exact
+required-plus-selected-optional provider set, reviewed component diff,
+original managed Git actions and the complete pre-mutation Python, rollback
+and venv intent. The constructor rejects missing required providers, selected
+requirements that drift from the admitted session and duplicate provider
+identities. Neither boundary accepts a caller-supplied stable-plan hash. A strict
 post-tool snapshot reader, its durable single-assignment store, the
 capture/persist/readback producer coordinator, closed host-observation adapter,
 fixed NSXPC boundaries, locked capturer, fixed-file host-state reader, atomic

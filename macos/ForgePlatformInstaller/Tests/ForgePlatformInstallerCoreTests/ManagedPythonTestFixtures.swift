@@ -43,6 +43,7 @@ func managedInstallerTestStablePlan(
     deployment: ManagedDeploymentTarget,
     activationPlan: ManagedPythonRuntimeActivationPlan,
     actions: [ManagedToolOriginalPlanAction],
+    enabledProviderRequirements: [ProviderRequirement]? = nil,
     components: [ComponentDiff] = [
         ComponentDiff(
             componentID: "forge-runtime",
@@ -81,6 +82,8 @@ func managedInstallerTestStablePlan(
                 sha256: String(repeating: "f", count: 64),
                 signingKeyID: "forge-platform-installer-release-v1"
             ),
+            enabledProviderRequirements: enabledProviderRequirements
+                ?? session.providerRequirements.filter(\.isRequired),
             components: components
         ),
         originalManagedToolActions: actions

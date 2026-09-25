@@ -103,6 +103,86 @@ final class ManagedInstallerStablePlanTests: XCTestCase {
         XCTAssertEqual(plan.fingerprint.count, 64)
     }
 
+    func testBindsExactEnabledProviderSetAndRejectsMissingOrDriftedRequirements() throws {
+        let git = try stableGitRequirement()
+        let deployment = try ManagedDeploymentTarget(
+            id: "stable-deployment",
+            exists: true,
+            forgeInstanceID: "forge-one",
+            engineeringPlatformInstanceID: "ep-one"
+        )
+        let session = try stableSession(deployment: deployment, git: git)
+        let activation = try ManagedPythonRuntimeActivationPlan(
+            session: session,
+            deployment: deployment,
+            initialReadback: ManagedPythonRuntimeInstalledReadback(
+                activeRuntimeIdentitySHA256: nil,
+                activeRuntimeSlotIdentity: nil,
+                retainedRuntimeIdentitySHA256s: [],
+                evidenceReference: "receipt:provider-binding-python-absent"
+            )
+        )
+        let required = try XCTUnwrap(session.providerRequirements.first(where: \.isRequired))
+        let optional = try XCTUnwrap(session.providerRequirements.first(where: { !$0.isRequired }))
+        let action = ManagedToolOriginalPlanAction(requirement: git, action: .install)
+
+        let requiredOnly = try managedInstallerTestStablePlan(
+            session: session,
+            deployment: deployment,
+            activationPlan: activation,
+            actions: [action],
+            enabledProviderRequirements: [required]
+        )
+        let withOptional = try managedInstallerTestStablePlan(
+            session: session,
+            deployment: deployment,
+            activationPlan: activation,
+            actions: [action],
+            enabledProviderRequirements: [optional, required]
+        )
+        let reversed = try managedInstallerTestStablePlan(
+            session: session,
+            deployment: deployment,
+            activationPlan: activation,
+            actions: [action],
+            enabledProviderRequirements: [required, optional]
+        )
+
+        XCTAssertEqual(requiredOnly.enabledProviderRequirements, [required])
+        XCTAssertEqual(withOptional.enabledProviderRequirements, [required, optional].sorted {
+            $0.id.rawValue < $1.id.rawValue
+        })
+        XCTAssertNotEqual(requiredOnly.fingerprint, withOptional.fingerprint)
+        XCTAssertEqual(withOptional.fingerprint, reversed.fingerprint)
+
+        XCTAssertThrowsError(try managedInstallerTestStablePlan(
+            session: session,
+            deployment: deployment,
+            activationPlan: activation,
+            actions: [action],
+            enabledProviderRequirements: []
+        ))
+        let driftedOptional = ProviderRequirement(
+            provider: optional.provider,
+            isRequired: optional.isRequired,
+            minimumVersion: try InstallerVersion("9.9.9")
+        )
+        XCTAssertThrowsError(try managedInstallerTestStablePlan(
+            session: session,
+            deployment: deployment,
+            activationPlan: activation,
+            actions: [action],
+            enabledProviderRequirements: [required, driftedOptional]
+        ))
+        XCTAssertThrowsError(try managedInstallerTestStablePlan(
+            session: session,
+            deployment: deployment,
+            activationPlan: activation,
+            actions: [action],
+            enabledProviderRequirements: [required, required]
+        ))
+    }
+
     func testRejectsActivationAndManagedToolDrift() throws {
         let git = try stableGitRequirement()
         let fixture = try ActivationFixture(managedTools: [git])
@@ -263,6 +343,7 @@ private func reviewedOperation(
     manifestSHA256: String? = nil,
     deploymentID: String? = nil,
     deploymentExists: Bool? = nil,
+    enabledProviderRequirements: [ProviderRequirement]? = nil,
     components: [ComponentDiff]? = nil
 ) throws -> ReviewedManagedDeploymentOperation {
     ReviewedManagedDeploymentOperation(
@@ -279,6 +360,8 @@ private func reviewedOperation(
             sha256: String(repeating: "f", count: 64),
             signingKeyID: "forge-platform-installer-release-v1"
         ),
+        enabledProviderRequirements: enabledProviderRequirements
+            ?? session.providerRequirements.filter(\.isRequired),
         components: components ?? [
             ComponentDiff(
                 componentID: "forge-runtime",
