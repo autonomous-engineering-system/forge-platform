@@ -79,7 +79,10 @@ reads. A first concrete managed-Git source adapter now reads one fixed,
 helper-owned canonical state record through a stable descriptor. It preserves
 only an explicitly recorded `ABSENT` or `UNKNOWN` state and otherwise rejects a
 missing, insecure, malformed or noncanonical record; it does not inspect
-caller-selected paths or `PATH`. The managed-Git mutation/observation publisher,
+caller-selected paths or `PATH`. Its paired store now publishes one typed
+observation atomically, refuses to repair insecure prior state, synchronizes
+file and directory descriptors and requires exact durable readback through a
+closed decorator. The live managed-Git OS observer and mutation adapter,
 concrete Python and gate adapters, signed service registration and released
 wiring are not implemented. No Git or Python artifact, privileged helper or
 operational runtime installation is claimed.
@@ -103,10 +106,11 @@ implemented together with exact signed-helper authentication on the client;
 the locked single-read helper capturer is also implemented. The concrete
 fixed-file host-state reader, atomic publisher, source/publish/durable-readback
 coordinator and epoch-bracketed exact source collector are also implemented.
-The concrete descriptor-safe managed-Git record reader is also implemented;
-its producer and mutation route remain absent. Concrete Python and gate
-adapters, signed service registration, released route wiring and mutation
-dispatch remain unimplemented.
+The concrete descriptor-safe managed-Git record reader, atomic publisher and
+source/publish/durable-readback decorator are also implemented. Its live OS
+observer and mutation route remain absent. Concrete Python and gate adapters,
+signed service registration, released route wiring and mutation dispatch remain
+unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
