@@ -211,8 +211,11 @@ reader, preventing a decision assembled from different observation epochs. A
 helper-facing store durably publishes that exact snapshot with exclusive atomic
 rename, descriptor readback and idempotent conflict handling. A producer
 coordinator validates one complete host observation, persists it and requires
-an identical durable readback before returning it to the replanner. The
-privileged host observation adapter and released route are not yet implemented. The
+an identical durable readback before returning it to the replanner. A concrete
+host-observation adapter derives one closed request containing only frozen
+identities, accepts one canonical serialized helper response and rejects
+malformed, noncanonical or context-drifted evidence. The authorized privileged
+helper transport and released route are not yet implemented. The
 native seeding coordinator now validates the exact session/deployment and
 pre-mutation activation plan plus original managed-tool action set, derives reconciliation itself,
 persists `PLANNED`, and accepts success only after an identical durable
@@ -226,8 +229,9 @@ action, and explicit product-dispatch readiness. Only then does it construct
 the typed `TOOLS_VERIFIED` evidence and call the atomic journal-advance seam.
 The concrete source-level fresh replanner, its read-only snapshot adapter,
 durable helper-facing snapshot store and capture/persist/readback producer
-coordinator are implemented; the privileged host observation adapter and
-released route wiring are not yet implemented.
+coordinator plus the strict host-observation request/response adapter are
+implemented; the authorized privileged helper transport and released route
+wiring are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -325,9 +329,9 @@ reviewed release, immutable session/catalogs, exact Forge+EP inventory,
 provider requirements, component diff, managed Git actions and complete
 pre-mutation Python/rollback/venv intent. No caller may inject an unrelated
 stable-plan digest. The concrete read-only snapshot adapter, durable
-single-assignment store and producer coordinator are implemented, but the
-privileged host observation adapter and these coordinators are not wired into
-the released runtime. A
-concrete reviewed privileged adapter, released mutation wiring and an actual
+single-assignment store, producer coordinator and closed canonical-response
+host adapter are implemented, but the authorized privileged helper transport
+and these coordinators are not wired into the released runtime. A concrete
+reviewed privileged helper transport, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
 installation can be claimed.
