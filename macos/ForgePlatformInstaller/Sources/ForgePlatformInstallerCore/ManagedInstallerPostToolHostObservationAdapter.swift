@@ -5,7 +5,7 @@ import Foundation
 /// request; it admits no caller-selected path, command, environment or
 /// credential value.
 public struct ManagedInstallerPostToolHostObservationRequest: Equatable, Sendable {
-    public static let schema = "forge-platform.managed-installer-post-tool-observation-request/v1"
+    public static let schema = "forge-platform.managed-installer-post-tool-observation-request/v2"
     static let maximumBytes = 64 * 1_024
 
     public let operationID: String
@@ -14,6 +14,7 @@ public struct ManagedInstallerPostToolHostObservationRequest: Equatable, Sendabl
     public let stablePlanFingerprint: String
     public let requestFingerprint: String
     public let managedTools: [ManagedToolRequirement]
+    public let enabledProviderRequirements: [ProviderRequirement]
     public let runtimeIdentitySHA256: String
     public let runtimeSlotIdentity: String
     public let retainedRuntimeIdentitySHA256s: [String]
@@ -26,9 +27,13 @@ public struct ManagedInstallerPostToolHostObservationRequest: Equatable, Sendabl
         let tools = stablePlan.session.managedTools.sorted {
             $0.identity.rawValue < $1.identity.rawValue
         }
+        let enabledProviders = stablePlan.enabledProviderRequirements.sorted {
+            $0.id.rawValue < $1.id.rawValue
+        }
         let activation = stablePlan.activationPlan
         guard !tools.isEmpty,
               Set(tools.map(\.identity)).count == tools.count,
+              Set(enabledProviders.map(\.id)).count == enabledProviders.count,
               ManagedPythonRuntimePostToolQualification.isFingerprint(stablePlan.fingerprint),
               request.operationID == activation.operationID,
               request.sessionID == stablePlan.session.sessionID,
@@ -53,6 +58,7 @@ public struct ManagedInstallerPostToolHostObservationRequest: Equatable, Sendabl
         stablePlanFingerprint = stablePlan.fingerprint
         requestFingerprint = request.executionRequestFingerprint
         managedTools = tools
+        enabledProviderRequirements = enabledProviders
         runtimeIdentitySHA256 = request.runtimeIdentitySHA256
         runtimeSlotIdentity = request.runtimeSlotIdentity
         retainedRuntimeIdentitySHA256s = request.requiredRetainedRuntimeIdentitySHA256s
@@ -66,12 +72,16 @@ public struct ManagedInstallerPostToolHostObservationRequest: Equatable, Sendabl
         stablePlanFingerprint: String,
         requestFingerprint: String,
         managedTools: [ManagedToolRequirement],
+        enabledProviderRequirements: [ProviderRequirement],
         runtimeIdentitySHA256: String,
         runtimeSlotIdentity: String,
         retainedRuntimeIdentitySHA256s: [String],
         gates: [ManagedInstallerPostToolGate]
     ) throws {
         let tools = managedTools.sorted { $0.identity.rawValue < $1.identity.rawValue }
+        let enabledProviders = enabledProviderRequirements.sorted {
+            $0.id.rawValue < $1.id.rawValue
+        }
         let orderedGates = gates.sorted { $0.rawValue < $1.rawValue }
         let retained = retainedRuntimeIdentitySHA256s.sorted()
         guard ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
@@ -81,6 +91,7 @@ public struct ManagedInstallerPostToolHostObservationRequest: Equatable, Sendabl
               ManagedPythonRuntimePostToolQualification.isFingerprint(requestFingerprint),
               !tools.isEmpty,
               Set(tools.map(\.identity)).count == tools.count,
+              Set(enabledProviders.map(\.id)).count == enabledProviders.count,
               CompositionCatalogValidation.isTaggedSHA256(runtimeIdentitySHA256),
               runtimeSlotIdentity == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
                 for: runtimeIdentitySHA256
@@ -99,6 +110,7 @@ public struct ManagedInstallerPostToolHostObservationRequest: Equatable, Sendabl
         self.stablePlanFingerprint = stablePlanFingerprint
         self.requestFingerprint = requestFingerprint
         self.managedTools = tools
+        self.enabledProviderRequirements = enabledProviders
         self.runtimeIdentitySHA256 = runtimeIdentitySHA256
         self.runtimeSlotIdentity = runtimeSlotIdentity
         self.retainedRuntimeIdentitySHA256s = retained
@@ -121,6 +133,9 @@ public struct ManagedInstallerPostToolHostObservationRequest: Equatable, Sendabl
                     "artifact_sha256": .string(tool.artifact.sha256),
                 ])
             }),
+            "enabled_providers": .array(
+                enabledProviderRequirements.map(Self.providerValue)
+            ),
             "runtime_identity": .string(runtimeIdentitySHA256),
             "runtime_slot_identity": .string(runtimeSlotIdentity),
             "retained_runtime_identities": .array(
@@ -139,6 +154,7 @@ public struct ManagedInstallerPostToolHostObservationRequest: Equatable, Sendabl
               Set(fields.keys) == Set([
                   "schema", "operation_id", "session_id", "deployment_id",
                   "stable_plan_fingerprint", "request_fingerprint", "managed_tools",
+                  "enabled_providers",
                   "runtime_identity", "runtime_slot_identity",
                   "retained_runtime_identities", "gates",
               ]),
@@ -149,6 +165,7 @@ public struct ManagedInstallerPostToolHostObservationRequest: Equatable, Sendabl
               let stablePlanFingerprint = fields["stable_plan_fingerprint"]?.stringValue,
               let requestFingerprint = fields["request_fingerprint"]?.stringValue,
               let toolValues = fields["managed_tools"]?.arrayValue,
+              let providerValues = fields["enabled_providers"]?.arrayValue,
               let runtimeIdentitySHA256 = fields["runtime_identity"]?.stringValue,
               let runtimeSlotIdentity = fields["runtime_slot_identity"]?.stringValue,
               let retainedValues = fields["retained_runtime_identities"]?.arrayValue,
@@ -196,11 +213,160 @@ public struct ManagedInstallerPostToolHostObservationRequest: Equatable, Sendabl
             stablePlanFingerprint: stablePlanFingerprint,
             requestFingerprint: requestFingerprint,
             managedTools: tools,
+            enabledProviderRequirements: try providerValues.map(Self.decodeProvider),
             runtimeIdentitySHA256: runtimeIdentitySHA256,
             runtimeSlotIdentity: runtimeSlotIdentity,
             retainedRuntimeIdentitySHA256s: retained,
             gates: gates
         )
+    }
+
+    private static func providerValue(
+        _ requirement: ProviderRequirement
+    ) -> StrictJSONResourceValue {
+        .object([
+            "identity": .string(requirement.id.rawValue),
+            "provider": .string(requirement.provider.rawValue),
+            "required": .boolean(requirement.isRequired),
+            "minimum_version": requirement.minimumVersion.map {
+                .string($0.description)
+            } ?? .null,
+            "credential_scope": .string(requirement.credentialScope.rawValue),
+            "owner_component": requirement.ownerComponent.map {
+                .string($0.rawValue)
+            } ?? .null,
+            "target_identity": requirement.targetIdentity.map { .string($0) } ?? .null,
+            "runtime": requirement.runtime.map(providerRuntimeValue) ?? .null,
+        ])
+    }
+
+    private static func providerRuntimeValue(
+        _ runtime: ProviderRuntimeRequirement
+    ) -> StrictJSONResourceValue {
+        .object([
+            "version": .string(runtime.version.description),
+            "archive_kind": .string(runtime.archiveKind.rawValue),
+            "artifact_url": .string(runtime.artifactURL),
+            "artifact_sha256": .string(runtime.artifactSHA256),
+            "executable_relative_path": .string(runtime.executableRelativePath),
+            "executable_sha256": .string(runtime.executableSHA256),
+        ])
+    }
+
+    private static func decodeProvider(
+        _ value: StrictJSONResourceValue
+    ) throws -> ProviderRequirement {
+        guard let fields = value.objectValue,
+              Set(fields.keys) == Set([
+                  "identity", "provider", "required", "minimum_version",
+                  "credential_scope", "owner_component", "target_identity", "runtime",
+              ]),
+              let identity = fields["identity"]?.stringValue,
+              let providerRaw = fields["provider"]?.stringValue,
+              let provider = ProviderID(rawValue: providerRaw),
+              case .boolean(let required)? = fields["required"],
+              let scopeRaw = fields["credential_scope"]?.stringValue,
+              let scope = ProviderCredentialScope(rawValue: scopeRaw) else {
+            throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+        }
+        let minimumVersion = try optionalVersion(fields["minimum_version"])
+        let owner = try optionalOwner(fields["owner_component"])
+        let target = try optionalString(fields["target_identity"])
+        let runtime = try optionalProviderRuntime(fields["runtime"])
+        guard (owner == nil) == (target == nil),
+              target.map(isSafeTargetIdentity) ?? true,
+              owner.map({ scope == $0.requiredCredentialScope }) ?? (scope == .user),
+              runtime.map({ observed in
+                  minimumVersion.map({ $0 <= observed.version }) ?? true
+              }) ?? true else {
+            throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+        }
+        let requirement = ProviderRequirement(
+            provider: provider,
+            isRequired: required,
+            minimumVersion: minimumVersion,
+            credentialScope: scope,
+            ownerComponent: owner,
+            targetIdentity: target,
+            runtime: runtime
+        )
+        guard requirement.id.rawValue == identity else {
+            throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+        }
+        return requirement
+    }
+
+    private static func optionalProviderRuntime(
+        _ value: StrictJSONResourceValue?
+    ) throws -> ProviderRuntimeRequirement? {
+        guard case .object(let fields)? = value else {
+            if case .null? = value { return nil }
+            throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+        }
+        guard Set(fields.keys) == Set([
+            "version", "archive_kind", "artifact_url", "artifact_sha256",
+            "executable_relative_path", "executable_sha256",
+        ]),
+              let versionRaw = fields["version"]?.stringValue,
+              let archiveRaw = fields["archive_kind"]?.stringValue,
+              let archiveKind = ProviderRuntimeArchiveKind(rawValue: archiveRaw),
+              let artifactURL = fields["artifact_url"]?.stringValue,
+              let artifactSHA256 = fields["artifact_sha256"]?.stringValue,
+              let executableRelativePath = fields["executable_relative_path"]?.stringValue,
+              let executableSHA256 = fields["executable_sha256"]?.stringValue else {
+            throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+        }
+        return try ProviderRuntimeRequirement(
+            version: InstallerVersion(versionRaw),
+            archiveKind: archiveKind,
+            artifactURL: artifactURL,
+            artifactSHA256: artifactSHA256,
+            executableRelativePath: executableRelativePath,
+            executableSHA256: executableSHA256
+        )
+    }
+
+    private static func optionalVersion(
+        _ value: StrictJSONResourceValue?
+    ) throws -> InstallerVersion? {
+        switch value {
+        case .string(let raw): return try InstallerVersion(raw)
+        case .null: return nil
+        default: throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+        }
+    }
+
+    private static func optionalOwner(
+        _ value: StrictJSONResourceValue?
+    ) throws -> ProviderOwnerComponent? {
+        switch value {
+        case .string(let raw):
+            guard let owner = ProviderOwnerComponent(rawValue: raw) else {
+                throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+            }
+            return owner
+        case .null: return nil
+        default: throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+        }
+    }
+
+    private static func optionalString(
+        _ value: StrictJSONResourceValue?
+    ) throws -> String? {
+        switch value {
+        case .string(let string): return string
+        case .null: return nil
+        default: throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+        }
+    }
+
+    private static func isSafeTargetIdentity(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 128 && value.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 45, 46, 95, 48...57, 97...122: return true
+            default: return false
+            }
+        }
     }
 }
 

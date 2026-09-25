@@ -57,10 +57,13 @@ it with exclusive atomic rename and durable descriptor readback. A producer
 coordinator accepts one host observation, validates its frozen context, persists
 it and requires identical durable readback before the replanner can consume it.
 A closed privileged-boundary adapter now derives one pathless helper request
-from the stable plan and activation request, accepts exactly one canonical
-snapshot response and rejects malformed, noncanonical or context-drifted
-responses. A native client sends those canonical bytes only through one fixed
-NSXPC interface to one fixed privileged Mach service and requires that remote
+from the stable plan and activation request. Its V2 request canonically
+projects every exact required-plus-selected-optional provider requirement,
+including scope, owner/target and immutable runtime identity when present. It
+accepts exactly one canonical snapshot response and rejects malformed,
+noncanonical or context-drifted responses. A native client sends those
+canonical bytes only through one fixed NSXPC interface to one fixed privileged
+Mach service and requires that remote
 service to satisfy the exact fixed helper signing identifier and configured
 Team identity on a Developer ID Application chain. A paired service handler
 rejects invalid or noncanonical requests before capture and emits only a
@@ -100,10 +103,10 @@ insecure, malformed, incomplete, duplicate or noncanonical gate evidence fails
 closed; an explicit failed gate remains valid blocking evidence. Its atomic
 publisher refuses to repair insecure prior state and its decorator exposes a
 gate only after the complete five-gate set has exact durable readback. Live
-gate observers are not implemented. The closed helper request does not yet
-project the stable plan's enabled-provider set, so it cannot authorize live
-provider observation. No Git or Python artifact, privileged helper or
-operational runtime installation is claimed.
+gate observers are not implemented. The helper request supplies the exact
+provider authority needed by a future live provider observer; no such observer
+is implemented. No Git or Python artifact, privileged helper or operational
+runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
