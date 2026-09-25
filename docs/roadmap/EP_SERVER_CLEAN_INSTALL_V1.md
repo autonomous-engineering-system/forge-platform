@@ -157,7 +157,11 @@ stable-plan fanout coordinator now prevalidates the full enabled-provider set,
 derives deterministic operations per exact target, processes component-owned
 V3 targets in canonical order and accepts only a complete plan-bound receipt
 set. It remains source-only and does not make the released route mutation
-capable. The concrete extraction/install adapter,
+capable. A runtime-preparation admission coordinator now requires the exact
+stable-plan parent `PLANNED` record to be durably seeded and read back before
+provider or managed-Python preparation, and revalidates each receipt before
+advancing. Its `RUNTIMES_READY` result is source-level evidence only and grants
+no product dispatch authority. The concrete extraction/install adapter,
 credential-home provisioning, released wiring and live host evidence remain
 planned, so this increment does not change the node to complete or `READY`.
 
