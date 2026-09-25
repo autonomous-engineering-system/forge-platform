@@ -114,7 +114,11 @@ directories and a single-link `0500` executable, hashes the bytes before any
 execution, runs only fixed noninteractive Codex or GitHub version/auth-status
 commands with a scrubbed environment, discards auth output, and re-hashes the
 executable after each probe. Legacy user scope without an exact OS-user binding
-fails closed. Provider installation and credential-home provisioning,
+fails closed. A separate native transport accepts only that exact V3
+component-owned requirement, performs one bounded credential-free HTTPS fetch,
+rejects redirects and final-URL drift, and verifies the signed archive SHA-256
+before returning target-bound bytes. It does not stage, extract or install the
+archive. Provider installation and credential-home provisioning,
 service-account/Keychain integration, the other four live gate observers and
 released wiring are not implemented. No live provider readiness, Git or Python
 artifact, privileged helper or operational runtime installation is claimed.
@@ -146,7 +150,9 @@ are implemented; its live OS observer and mutation route remain absent.
 The descriptor-safe complete five-gate record reader, atomic publisher and
 complete-set source/publish/durable-readback decorator are implemented. The
 source-level provider-gate evaluator and separate gate router are implemented
-with a fixed-layout macOS component-provider inspector. Provider
+with a fixed-layout macOS component-provider inspector. Exact component-provider
+archive acquisition is implemented as a bounded credential-free HTTPS transport
+with redirect, final-URL and digest enforcement. Provider
 installation/credential provisioning, service-account secure-store integration
 and the other four live gate observers remain absent. Signed service
 registration, released route wiring and mutation dispatch remain unimplemented.
