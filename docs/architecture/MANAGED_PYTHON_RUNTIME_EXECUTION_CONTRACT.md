@@ -69,8 +69,11 @@ operation-scoped private directory, exposes only an opaque reference and file
 identity, and reopens no-follow bytes for exact identity and digest readback.
 Exact discard is retry-safe. Strict fixed-layout reconciliation removes an
 operation left before the complete staged identity returns and rejects unknown,
-linked, permissive or oversized entries. Exclusive provider-operation lease
-coordination, extraction and installation remain unimplemented. A read-only
+linked, permissive or oversized entries. One host-wide nonblocking provider
+lease now covers reconciliation, staging, inspection and exact terminal discard.
+The coordinator emits `QUALIFIED` only after cleanup succeeds; busy, cleanup
+and lock-release failures block the receipt. Extraction and installation remain
+unimplemented. A read-only
 native provider archive inspector validates the exact staged archive as strict
 bounded `tar.gz`/USTAR or ZIP, requires canonical explicit-parent layout and
 safe permissions, rebinds the executable SHA-256, and accepts only a thin
@@ -297,8 +300,7 @@ reader are implemented. The source-level provider-gate evaluator and router
 consume the fixed-layout macOS component-provider inspector. Exact component
 provider archive acquisition and private descriptor-safe staging/readback/discard
 plus interrupted-acquisition cleanup are implemented. Live Git/Python OS
-observers and mutation routes, exclusive
-recovery coordination, installation and credential-home
+observers and mutation routes, provider installation and credential-home
 provisioning, service-account secure-store integration, the other four live
 gate observers, signed service registration and the released route are not yet
 implemented. The
@@ -332,8 +334,8 @@ implemented. The exact V3 component-provider archive transport and private
 descriptor-safe staging/readback/discard are also implemented, including strict
 interrupted-acquisition cleanup. Read-only strict `tar.gz`/ZIP archive
 inspection with exact executable-digest and thin-arm64 Mach-O validation is
-implemented. Archive extraction,
-exclusive recovery coordination, installation and
+implemented together with a host-wide nonblocking cleanup-enforcing archive
+qualification coordinator. Archive extraction, installation and
 credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed service registration and released route wiring are not yet implemented.
@@ -463,7 +465,9 @@ the fixed-layout macOS component-provider inspector. Exact provider archive
 transport and private descriptor-safe staging/readback/discard are implemented.
 Strict interrupted-acquisition cleanup and read-only strict `tar.gz`/ZIP
 archive inspection with executable-digest and thin-arm64 Mach-O validation are
-also implemented. Archive extraction, exclusive recovery coordination, installation and
+also implemented. A host-wide nonblocking provider lease and coordinator bind
+reconciliation, staging, inspection and exact terminal discard. Archive
+extraction, installation and
 credential-home provisioning, service-account secure-store integration and the
 other four live gate observers are absent. A concrete reviewed authorized helper
 process, released mutation wiring and an actual
