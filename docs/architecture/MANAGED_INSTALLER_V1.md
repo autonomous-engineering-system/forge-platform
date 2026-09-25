@@ -203,8 +203,18 @@ and digests, required/enabled provider targets, durable deployment topology,
 installed composition provenance, installed manifest versions and explicit
 `upgrade_from` route. Its admitted result contains correlation objects only; it
 does not contain or resolve an adapter, path, command, environment value or
-credential. Concrete privileged transport, product target resolution and saga
-dispatch remain unimplemented and therefore fail closed.
+credential. Concrete privileged transport, resolver implementation and
+released-installer wiring remain unimplemented and therefore fail closed.
+
+After that admission boundary, a separate helper-owned resolver may now bind
+the exact Forge and EP product instance identities, adapters and pairing
+executor. The dispatcher rechecks the durable registry after resolution,
+constructs deterministic component-operation identities from the admitted
+request fingerprint, runs only the existing durable Forge+EP saga, and emits a
+canonical native completion receipt only after both product receipts, pairing
+and both readiness receipts exist. Fresh product identities therefore come
+from the helper resolver rather than native request data. No concrete resolver,
+privileged transport or released-installer wiring is supplied yet.
 
 The managed-deployment operation coordinator reuses
 `DurableComponentOperationCoordinator`. Each product mutation therefore keeps

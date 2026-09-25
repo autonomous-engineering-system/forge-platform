@@ -804,7 +804,15 @@ The platform-neutral helper now strictly admits canonical native product request
 v2 against its exact installer release, digest-bound Forge+EP manifests,
 provider set and durable registry before dispatch. The admitted result exposes
 no adapter, path, command, environment value or credential. Concrete privileged
-transport, product target resolution and saga dispatch remain unavailable.
+transport, resolver implementation and released-installer wiring remain
+unavailable.
+
+A source-level helper dispatcher now accepts only that admitted object, asks an
+injected helper-owned resolver for exact product identities/adapters/pairing,
+rechecks the registry, and invokes the existing durable Forge+EP saga. It emits
+the native canonical completion receipt only for terminal product, pairing and
+dual-readiness evidence. No concrete resolver, privileged transport or
+released-installer integration is configured.
 
 The native activation coordinator continues only from an exact preparation
 receipt. It derives install, upgrade or no-change from trusted active-runtime

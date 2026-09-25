@@ -97,6 +97,7 @@ class ManagedForgeEPInstallationResult:
     deployment_id: str
     state: str
     registry_revision: int | None
+    product_receipt_references: tuple[str, ...]
     pairing_receipt_reference: str | None
     readiness_receipt_references: tuple[str, ...]
     currency_receipt_references: tuple[str, ...]
@@ -105,6 +106,7 @@ class ManagedForgeEPInstallationResult:
         if self.state not in {"RECOVERY_PENDING", "FAILED", "READINESS_FAILED", "COMPLETE"}:
             raise ValueError("managed Forge+EP result state is unsupported")
         for reference in (
+            *self.product_receipt_references,
             *self.readiness_receipt_references,
             *self.currency_receipt_references,
         ):
@@ -116,6 +118,8 @@ class ManagedForgeEPInstallationResult:
                 raise ValueError("complete Forge+EP result requires a registry revision")
             if self.pairing_receipt_reference is None:
                 raise ValueError("complete Forge+EP result requires pairing evidence")
+            if len(self.product_receipt_references) != 2:
+                raise ValueError("complete Forge+EP result requires both product receipts")
             if len(self.readiness_receipt_references) != 2:
                 raise ValueError("complete Forge+EP result requires both readiness receipts")
 
@@ -383,6 +387,7 @@ class ManagedForgeEPInstallationCoordinator:
                 plan.deployment_id,
                 "READINESS_FAILED",
                 current.revision,
+                self._product_references(current),
                 pairing_reference,
                 (),
                 tuple(currency.references),
@@ -402,6 +407,7 @@ class ManagedForgeEPInstallationCoordinator:
             plan.deployment_id,
             "COMPLETE",
             current.revision,
+            self._product_references(current),
             pairing_reference,
             readiness,
             tuple(currency.references),
@@ -584,7 +590,15 @@ class ManagedForgeEPInstallationCoordinator:
             deployment_result.deployment_id,
             state,
             deployment_result.registry_revision,
+            (),
             None,
             (),
             tuple(currency.references),
         )
+
+    @staticmethod
+    def _product_references(current: ManagedDeployment) -> tuple[str, str]:
+        return tuple(
+            current.by_component[component].receipt_reference
+            for component in (FORGE_COMPONENT, EP_COMPONENT)
+        )  # type: ignore[return-value]
