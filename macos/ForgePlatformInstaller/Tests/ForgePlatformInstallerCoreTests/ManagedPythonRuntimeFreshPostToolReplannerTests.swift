@@ -1136,6 +1136,143 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         }
     }
 
+    func testAtomicHostSourceReaderCollectsOneExactEpochInRequestOrder() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+        let events = LockedHostObservationEvents()
+        let reader = ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: HostToolSource(readback: expected.managedTools[0], events: events),
+            pythonRuntime: HostPythonSource(readback: expected.pythonRuntime, events: events),
+            gates: HostGateSource(readbacks: expected.gates, events: events),
+            epoch: HostEpochSource(
+                results: [.success(expected.evidenceReference), .success(expected.evidenceReference)],
+                events: events
+            )
+        )
+
+        let observed = try atomicReadbackValue(
+            await reader.readAtomicPostToolHostState(for: request)
+        )
+
+        XCTAssertEqual(observed, expected)
+        XCTAssertEqual(events.values(), [
+            "epoch",
+            "tool:git",
+            "python",
+            "gate:composition-currency",
+            "gate:host-preflight",
+            "gate:installer-currency",
+            "gate:product-plan",
+            "gate:providers",
+            "epoch",
+        ])
+    }
+
+    func testAtomicHostSourceReaderStopsAtEveryFailedSourceBoundary() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+        let epoch = expected.evidenceReference
+
+        let initialEpochFailure = await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: HostToolSource(readback: expected.managedTools[0]),
+            pythonRuntime: HostPythonSource(readback: expected.pythonRuntime),
+            gates: HostGateSource(readbacks: expected.gates),
+            epoch: HostEpochSource(results: [.failure(.readbackFailed)])
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(initialEpochFailure.failure, .readbackFailed)
+
+        let toolFailure = await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: HostToolSource(
+                readback: expected.managedTools[0],
+                failure: .operationLockUnavailable
+            ),
+            pythonRuntime: HostPythonSource(readback: expected.pythonRuntime),
+            gates: HostGateSource(readbacks: expected.gates),
+            epoch: HostEpochSource(results: [.success(epoch)])
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(toolFailure.failure, .operationLockUnavailable)
+
+        let pythonFailure = await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: HostToolSource(readback: expected.managedTools[0]),
+            pythonRuntime: HostPythonSource(
+                readback: expected.pythonRuntime,
+                failure: .readbackFailed
+            ),
+            gates: HostGateSource(readbacks: expected.gates),
+            epoch: HostEpochSource(results: [.success(epoch)])
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(pythonFailure.failure, .readbackFailed)
+
+        let gateFailure = await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: HostToolSource(readback: expected.managedTools[0]),
+            pythonRuntime: HostPythonSource(readback: expected.pythonRuntime),
+            gates: HostGateSource(
+                readbacks: expected.gates,
+                failureGate: .hostPreflight
+            ),
+            epoch: HostEpochSource(results: [.success(epoch)])
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(gateFailure.failure, .readbackFailed)
+
+        let finalEpochFailure = await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: HostToolSource(readback: expected.managedTools[0]),
+            pythonRuntime: HostPythonSource(readback: expected.pythonRuntime),
+            gates: HostGateSource(readbacks: expected.gates),
+            epoch: HostEpochSource(results: [
+                .success(epoch),
+                .failure(.receiptPersistenceFailed),
+            ])
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(finalEpochFailure.failure, .receiptPersistenceFailed)
+    }
+
+    func testAtomicHostSourceReaderRejectsInvalidOrDriftedEpochAndGateIdentity() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+
+        let invalidEpoch = await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: HostToolSource(readback: expected.managedTools[0]),
+            pythonRuntime: HostPythonSource(readback: expected.pythonRuntime),
+            gates: HostGateSource(readbacks: expected.gates),
+            epoch: HostEpochSource(results: [.success("invalid")])
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(invalidEpoch.failure, .rejected)
+
+        let driftedEpoch = await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: HostToolSource(readback: expected.managedTools[0]),
+            pythonRuntime: HostPythonSource(readback: expected.pythonRuntime),
+            gates: HostGateSource(readbacks: expected.gates),
+            epoch: HostEpochSource(results: [
+                .success(expected.evidenceReference),
+                .success("receipt:different-host-epoch"),
+            ])
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(driftedEpoch.failure, .rejected)
+
+        let wrongGate = await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: HostToolSource(readback: expected.managedTools[0]),
+            pythonRuntime: HostPythonSource(readback: expected.pythonRuntime),
+            gates: HostGateSource(
+                readbacks: expected.gates,
+                wrongIdentityGate: .compositionCurrency
+            ),
+            epoch: HostEpochSource(results: [.success(expected.evidenceReference)])
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(wrongGate.failure, .rejected)
+    }
+
     func testFileAtomicHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
         let fixture = try FreshReplannerFixture()
         let request = try ManagedInstallerPostToolHostObservationRequest(
@@ -1822,6 +1959,117 @@ private actor AtomicHostReader: ManagedInstallerPostToolAtomicHostReading {
 
     func requests() -> [ManagedInstallerPostToolHostObservationRequest] {
         capturedRequests
+    }
+}
+
+private struct HostToolSource: ManagedToolPostMutationReading {
+    let readback: ManagedToolInstalledReadback
+    let failure: ManagedPythonRuntimeTerminalReceiptFailure?
+    let events: LockedHostObservationEvents?
+
+    init(
+        readback: ManagedToolInstalledReadback,
+        failure: ManagedPythonRuntimeTerminalReceiptFailure? = nil,
+        events: LockedHostObservationEvents? = nil
+    ) {
+        self.readback = readback
+        self.failure = failure
+        self.events = events
+    }
+
+    func readManagedTool(
+        _ requirement: ManagedToolRequirement
+    ) async -> Result<ManagedToolInstalledReadback, ManagedPythonRuntimeTerminalReceiptFailure> {
+        events?.record("tool:\(requirement.identity.rawValue)")
+        if let failure { return .failure(failure) }
+        return .success(readback)
+    }
+}
+
+private struct HostPythonSource: ManagedInstallerPostToolPythonHostReading {
+    let readback: ManagedPythonRuntimeInstalledReadback
+    let failure: ManagedPythonRuntimeTerminalReceiptFailure?
+    let events: LockedHostObservationEvents?
+
+    init(
+        readback: ManagedPythonRuntimeInstalledReadback,
+        failure: ManagedPythonRuntimeTerminalReceiptFailure? = nil,
+        events: LockedHostObservationEvents? = nil
+    ) {
+        self.readback = readback
+        self.failure = failure
+        self.events = events
+    }
+
+    func readPostToolPythonRuntime(
+        for request: ManagedInstallerPostToolHostObservationRequest
+    ) async -> Result<
+        ManagedPythonRuntimeInstalledReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    > {
+        _ = request
+        events?.record("python")
+        if let failure { return .failure(failure) }
+        return .success(readback)
+    }
+}
+
+private struct HostGateSource: ManagedInstallerPostToolGateHostReading {
+    let readbacks: [ManagedInstallerPostToolGateReadback]
+    let failureGate: ManagedInstallerPostToolGate?
+    let wrongIdentityGate: ManagedInstallerPostToolGate?
+    let events: LockedHostObservationEvents?
+
+    init(
+        readbacks: [ManagedInstallerPostToolGateReadback],
+        failureGate: ManagedInstallerPostToolGate? = nil,
+        wrongIdentityGate: ManagedInstallerPostToolGate? = nil,
+        events: LockedHostObservationEvents? = nil
+    ) {
+        self.readbacks = readbacks
+        self.failureGate = failureGate
+        self.wrongIdentityGate = wrongIdentityGate
+        self.events = events
+    }
+
+    func readPostToolHostGate(
+        _ gate: ManagedInstallerPostToolGate,
+        for request: ManagedInstallerPostToolHostObservationRequest
+    ) async -> Result<
+        ManagedInstallerPostToolGateReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    > {
+        _ = request
+        events?.record("gate:\(gate.rawValue)")
+        if failureGate == gate { return .failure(.readbackFailed) }
+        let selectedGate: ManagedInstallerPostToolGate = wrongIdentityGate == gate
+            ? .hostPreflight : gate
+        guard let readback = readbacks.first(where: { $0.gate == selectedGate }) else {
+            return .failure(.readbackFailed)
+        }
+        return .success(readback)
+    }
+}
+
+private actor HostEpochSource: ManagedInstallerPostToolHostEpochReading {
+    private var results: [Result<String, ManagedPythonRuntimeTerminalReceiptFailure>]
+    private let events: LockedHostObservationEvents?
+
+    init(
+        results: [Result<String, ManagedPythonRuntimeTerminalReceiptFailure>],
+        events: LockedHostObservationEvents? = nil
+    ) {
+        self.results = results
+        self.events = events
+    }
+
+    func readPostToolHostEpoch(
+        for request: ManagedInstallerPostToolHostObservationRequest
+    ) async -> Result<String, ManagedPythonRuntimeTerminalReceiptFailure> {
+        _ = request
+        events?.record("epoch")
+        guard !results.isEmpty else { return .failure(.readbackFailed) }
+        return results.removeFirst()
     }
 }
 
