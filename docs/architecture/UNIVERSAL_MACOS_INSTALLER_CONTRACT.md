@@ -6,7 +6,10 @@ Exact V3 provider archives additionally have credential-free transport, private
 staging, strict read-only archive/Mach-O inspection, exclusive cleanup-enforcing
 qualification and a closed pathless mutation coordinator/protocol with exact
 staged-byte readback before and after mutation plus independent exact
-installed-runtime readback. The concrete provider extraction/install adapter,
+installed-runtime readback. One cleanup-enforcing provider preparation
+coordinator composes reconciliation, staging, inspection, mutation and exact
+terminal discard under that same exclusive lease and returns a fully rebound
+`READY` receipt only after cleanup succeeds. The concrete provider extraction/install adapter,
 credential-home provisioning and released wiring remain unimplemented; this
 source-level seam is not live provider-readiness evidence.
 
@@ -777,7 +780,9 @@ inspection with executable-digest and thin-arm64 Mach-O validation are included.
 A host-wide nonblocking cleanup-enforcing archive-qualification transaction and
 a closed pathless provider-runtime mutation coordinator/protocol are also
 included. The mutation coordinator re-reads exact staged bytes before and after
-mutation and requires independent exact installed-runtime readback. The
+mutation and requires independent exact installed-runtime readback. A provider
+preparation transaction composes the complete path through exact terminal
+discard under the same lease, with cleanup and release failure precedence. The
 concrete extraction/install adapter and credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed helper registration and released journal-seeding integration remain
@@ -837,7 +842,8 @@ staging/readback/discard are implemented. The live Git and Python OS observers
 and mutation routes remain absent. Strict provider interrupted-acquisition
 cleanup, read-only strict `tar.gz`/ZIP archive inspection and a host-wide
 nonblocking cleanup-enforcing qualification coordinator plus the closed
-pathless provider-runtime mutation coordinator/protocol are implemented. The
+pathless provider-runtime mutation coordinator/protocol and their complete
+cleanup-enforcing provider preparation transaction are implemented. The
 concrete extraction/install adapter and credential-home provisioning, service-account secure-store
 integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,

@@ -149,7 +149,10 @@ component target, immutable runtime, staged file identity and archive-inspection
 evidence to derived opaque runtime-slot and provider-home identities; passes no
 path, command, environment value or credential over the privilege seam; and
 requires staged-byte readback before and after mutation plus independent exact
-installed-runtime readback. The concrete extraction/install adapter,
+installed-runtime readback. A cleanup-enforcing provider preparation
+coordinator now composes orphan reconciliation, staging, inspection, mutation
+and terminal discard under the same exclusive lease; its `READY` receipt binds
+all of that evidence and cleanup or lock-release failure takes precedence. The concrete extraction/install adapter,
 credential-home provisioning, released wiring and live host evidence remain
 planned, so this increment does not change the node to complete or `READY`.
 
