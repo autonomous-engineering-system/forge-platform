@@ -150,6 +150,28 @@ final class ManagedPythonRuntimeTerminalReceiptTests: XCTestCase {
         XCTAssertEqual(operationLock.snapshot(), .init(acquires: 1, releases: 1))
     }
 
+    func testCoordinatorForwardsExactManagedToolReceiptReferences() async throws {
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: fixture.missingReadback())
+        let activation = try terminalActivationReceipt(request: request)
+        let bridge = TerminalReceiptBridge()
+
+        let result = await ManagedPythonRuntimeTerminalReceiptCoordinator(
+            receiptStore: TerminalReceiptStore(pending: activation),
+            readback: TerminalReceiptReadback(request: request),
+            journalBridge: bridge,
+            operationLock: TerminalReceiptLock()
+        ).complete(
+            request: request,
+            verifiedActivationReceipt: activation,
+            managedToolReceiptReferences: [.git: "receipt:git-mutation"]
+        )
+
+        XCTAssertNotNil(try terminalSuccess(result))
+        let references = await bridge.receiptReferences()
+        XCTAssertEqual(references, [[.git: "receipt:git-mutation"]])
+    }
+
     func testCoordinatorRetainsPendingReceiptUntilBridgeAndClearBothSucceed() async throws {
         let fixture = try ActivationFixture()
         let request = try fixture.request(initial: fixture.missingReadback())
@@ -417,6 +439,7 @@ private actor TerminalReceiptStore: ManagedPythonRuntimeActivationStoring {
 private actor TerminalReceiptBridge: ManagedPythonRuntimeTerminalReceiptBridging {
     private let failure: ManagedPythonRuntimeTerminalReceiptFailure?
     private var committed: [ManagedPythonRuntimeExecutionReceipt] = []
+    private var committedReferences: [[ManagedToolRequirement.Identity: String]] = []
 
     init(failure: ManagedPythonRuntimeTerminalReceiptFailure? = nil) {
         self.failure = failure
@@ -424,7 +447,8 @@ private actor TerminalReceiptBridge: ManagedPythonRuntimeTerminalReceiptBridging
 
     func commitManagedPythonRuntimeTerminalReceipt(
         _ receipt: ManagedPythonRuntimeExecutionReceipt,
-        for request: ManagedPythonRuntimeActivationRequest
+        for request: ManagedPythonRuntimeActivationRequest,
+        managedToolReceiptReferences: [ManagedToolRequirement.Identity: String]
     ) async -> Result<Void, ManagedPythonRuntimeTerminalReceiptFailure> {
         if let failure { return .failure(failure) }
         guard receipt.operationID == request.operationID,
@@ -432,10 +456,14 @@ private actor TerminalReceiptBridge: ManagedPythonRuntimeTerminalReceiptBridging
             return .failure(.rejected)
         }
         committed.append(receipt)
+        committedReferences.append(managedToolReceiptReferences)
         return .success(())
     }
 
     func receipts() -> [ManagedPythonRuntimeExecutionReceipt] { committed }
+    func receiptReferences() -> [[ManagedToolRequirement.Identity: String]] {
+        committedReferences
+    }
 }
 
 private final class TerminalReceiptLock: ManagedPythonRuntimeOperationLocking, @unchecked Sendable {

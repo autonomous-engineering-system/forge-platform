@@ -96,7 +96,15 @@ managed-Python record store now atomically publishes only over secure canonical
 prior state, synchronizes file and directory descriptors and exposes the source
 observation only after exact durable readback. The live managed-Git and
 managed-Python OS observers and mutation adapters, signed service registration
-and released wiring are not implemented. A first
+and released wiring are not implemented. A source-level generic managed-tool
+reconciliation coordinator now derives only non-`NO_CHANGE` Git requests from
+the immutable stable plan, holds one injected exclusive host lease across each
+closed mutation plus independent helper-owned final readback, and returns an
+exact plan-bound receipt map. The runtime completion path requires that receipt
+before Python activation and forwards the same identity-bound references into
+the terminal parent-journal adapter; a missing or substituted Git receipt can no
+longer reach `MANAGED_TOOLS`. The injected Git mutation implementation remains
+absent. A first
 concrete gate source now reads one fixed canonical record containing exactly
 all five gate identities through the same stable no-follow boundary. Missing,
 insecure, malformed, incomplete, duplicate or noncanonical gate evidence fails

@@ -16,6 +16,8 @@ public struct ManagedInstallerRuntimeCompletionReceipt: Equatable, Sendable {
     public let stablePlanFingerprint: String
     public let operationID: String
     public let runtimeAdmissionReceipt: ManagedInstallerRuntimePreparationAdmissionReceipt
+    public let managedToolReconciliationReceipt:
+        ManagedInstallerManagedToolReconciliationReceipt
     public let activationReceipt: ManagedPythonRuntimeActivationReceipt
     public let terminalReceipt: ManagedPythonRuntimeExecutionReceipt
     public let state: State
@@ -23,10 +25,11 @@ public struct ManagedInstallerRuntimeCompletionReceipt: Equatable, Sendable {
     public init(
         stablePlan: ManagedInstallerStablePlan,
         runtimeAdmissionReceipt: ManagedInstallerRuntimePreparationAdmissionReceipt,
+        managedToolReconciliationReceipt: ManagedInstallerManagedToolReconciliationReceipt,
         activationReceipt: ManagedPythonRuntimeActivationReceipt,
         terminalReceipt: ManagedPythonRuntimeExecutionReceipt
     ) throws {
-        guard stablePlan.originalManagedToolActions.allSatisfy({ $0.action == .noChange }),
+        guard managedToolReconciliationReceipt.matches(stablePlan),
               let expectedAdmission = try? ManagedInstallerRuntimePreparationAdmissionReceipt(
                   stablePlan: stablePlan,
                   parentJournalRecord: runtimeAdmissionReceipt.parentJournalRecord,
@@ -49,9 +52,29 @@ public struct ManagedInstallerRuntimeCompletionReceipt: Equatable, Sendable {
         stablePlanFingerprint = stablePlan.fingerprint
         operationID = stablePlan.activationPlan.operationID
         self.runtimeAdmissionReceipt = runtimeAdmissionReceipt
+        self.managedToolReconciliationReceipt = managedToolReconciliationReceipt
         self.activationReceipt = activationReceipt
         self.terminalReceipt = terminalReceipt
         state = .managedTools
+    }
+
+    public init(
+        stablePlan: ManagedInstallerStablePlan,
+        runtimeAdmissionReceipt: ManagedInstallerRuntimePreparationAdmissionReceipt,
+        activationReceipt: ManagedPythonRuntimeActivationReceipt,
+        terminalReceipt: ManagedPythonRuntimeExecutionReceipt
+    ) throws {
+        try self.init(
+            stablePlan: stablePlan,
+            runtimeAdmissionReceipt: runtimeAdmissionReceipt,
+            managedToolReconciliationReceipt:
+                ManagedInstallerManagedToolReconciliationReceipt(
+                    stablePlan: stablePlan,
+                    mutationReceipts: []
+                ),
+            activationReceipt: activationReceipt,
+            terminalReceipt: terminalReceipt
+        )
     }
 }
 
@@ -66,7 +89,8 @@ extension ManagedPythonRuntimeActivationCoordinator: ManagedPythonRuntimeActivat
 public protocol ManagedPythonRuntimeTerminalCompleting: Sendable {
     func complete(
         request: ManagedPythonRuntimeActivationRequest,
-        verifiedActivationReceipt: ManagedPythonRuntimeActivationReceipt
+        verifiedActivationReceipt: ManagedPythonRuntimeActivationReceipt,
+        managedToolReceiptReferences: [ManagedToolRequirement.Identity: String]
     ) async -> Result<
         ManagedPythonRuntimeExecutionReceipt,
         ManagedPythonRuntimeTerminalReceiptFailure
@@ -77,9 +101,10 @@ extension ManagedPythonRuntimeTerminalReceiptCoordinator: ManagedPythonRuntimeTe
 
 /// Continues one exact `RUNTIMES_READY` admission through managed-Python
 /// activation and the terminal parent-journal commit. Plans that still need a
-/// managed-tool mutation fail before activation because no reviewed native
-/// managed-tool mutation authority exists yet. The terminal collaborator owns
-/// the fresh post-tool requalification and durable `MANAGED_TOOLS` transition.
+/// managed-tool mutation require one exact independently read-back
+/// reconciliation receipt before activation. The terminal collaborator owns
+/// the fresh post-tool requalification and durable `MANAGED_TOOLS` transition,
+/// and must accept the same identity-bound generic-tool receipt references.
 /// This coordinator exposes no product-operation or released-route authority.
 public struct ManagedInstallerRuntimeCompletionCoordinator: Sendable {
     private let activation: any ManagedPythonRuntimeActivationExecuting
@@ -95,7 +120,8 @@ public struct ManagedInstallerRuntimeCompletionCoordinator: Sendable {
 
     public func completeRuntimes(
         stablePlan: ManagedInstallerStablePlan,
-        runtimeAdmissionReceipt: ManagedInstallerRuntimePreparationAdmissionReceipt
+        runtimeAdmissionReceipt: ManagedInstallerRuntimePreparationAdmissionReceipt,
+        managedToolReconciliationReceipt: ManagedInstallerManagedToolReconciliationReceipt
     ) async -> Result<
         ManagedInstallerRuntimeCompletionReceipt,
         ManagedInstallerRuntimeCompletionFailure
@@ -108,7 +134,7 @@ public struct ManagedInstallerRuntimeCompletionCoordinator: Sendable {
         ), expectedAdmission == runtimeAdmissionReceipt else {
             return .failure(.invalidRequest)
         }
-        guard stablePlan.originalManagedToolActions.allSatisfy({ $0.action == .noChange }) else {
+        guard managedToolReconciliationReceipt.matches(stablePlan) else {
             return .failure(.managedToolReconciliationRequired)
         }
 
@@ -135,7 +161,8 @@ public struct ManagedInstallerRuntimeCompletionCoordinator: Sendable {
         let terminalReceipt: ManagedPythonRuntimeExecutionReceipt
         switch await terminal.complete(
             request: request,
-            verifiedActivationReceipt: activationReceipt
+            verifiedActivationReceipt: activationReceipt,
+            managedToolReceiptReferences: managedToolReconciliationReceipt.receiptReferences
         ) {
         case .success(let receipt):
             guard let expected = try? ManagedPythonRuntimeExecutionReceipt(
@@ -153,11 +180,35 @@ public struct ManagedInstallerRuntimeCompletionCoordinator: Sendable {
             return .success(try ManagedInstallerRuntimeCompletionReceipt(
                 stablePlan: stablePlan,
                 runtimeAdmissionReceipt: runtimeAdmissionReceipt,
+                managedToolReconciliationReceipt: managedToolReconciliationReceipt,
                 activationReceipt: activationReceipt,
                 terminalReceipt: terminalReceipt
             ))
         } catch {
             return .failure(.invalidRequest)
         }
+    }
+
+    public func completeRuntimes(
+        stablePlan: ManagedInstallerStablePlan,
+        runtimeAdmissionReceipt: ManagedInstallerRuntimePreparationAdmissionReceipt
+    ) async -> Result<
+        ManagedInstallerRuntimeCompletionReceipt,
+        ManagedInstallerRuntimeCompletionFailure
+    > {
+        let reconciliation: ManagedInstallerManagedToolReconciliationReceipt
+        do {
+            reconciliation = try ManagedInstallerManagedToolReconciliationReceipt(
+                stablePlan: stablePlan,
+                mutationReceipts: []
+            )
+        } catch {
+            return .failure(.managedToolReconciliationRequired)
+        }
+        return await completeRuntimes(
+            stablePlan: stablePlan,
+            runtimeAdmissionReceipt: runtimeAdmissionReceipt,
+            managedToolReconciliationReceipt: reconciliation
+        )
     }
 }

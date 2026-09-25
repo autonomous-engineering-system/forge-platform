@@ -871,7 +871,15 @@ ordered venv identities, all-`NO_CHANGE` managed-tool state and explicit
 product-dispatch readiness before it projects evidence to the atomic journal
 seam. The session parser retains the exact managed Git requirement and the
 concrete replanner derives the fresh action and fingerprint itself. Production
-readback adapters and released wiring remain unimplemented.
+readback adapters and released wiring remain unimplemented. A source-level
+generic managed-tool reconciliation coordinator now converts only the frozen
+non-`NO_CHANGE` Git actions into pathless mutation requests, holds one injected
+exclusive host lease, requires independent exact helper-owned final readback,
+and returns a stable-plan-bound receipt map. Runtime completion accepts a
+non-`NO_CHANGE` Git plan only with that exact receipt and carries its canonical
+identity-bound references through the Python terminal coordinator into the
+fresh replanner and parent-journal bridge. The concrete Git mutation adapter is
+still absent, so this does not claim a live managed-Git installation.
 
 The structural verifier reads V2 trust and V1 provenance resources directly
 from every supplied archive and binds their semantic identities to the durable

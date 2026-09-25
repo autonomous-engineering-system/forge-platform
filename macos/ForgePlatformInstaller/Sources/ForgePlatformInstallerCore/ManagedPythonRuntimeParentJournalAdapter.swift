@@ -114,10 +114,14 @@ public struct ManagedPythonRuntimeParentJournalAdapter:
 
     public func commitManagedPythonRuntimeTerminalReceipt(
         _ receipt: ManagedPythonRuntimeExecutionReceipt,
-        for request: ManagedPythonRuntimeActivationRequest
+        for request: ManagedPythonRuntimeActivationRequest,
+        managedToolReceiptReferences: [ManagedToolRequirement.Identity: String] = [:]
     ) async -> Result<Void, ManagedPythonRuntimeTerminalReceiptFailure> {
         guard receipt.operationID == request.operationID,
-              receipt.requestFingerprint == request.executionRequestFingerprint else {
+              receipt.requestFingerprint == request.executionRequestFingerprint,
+              managedToolReceiptReferences.values.allSatisfy(
+                  ManagedPythonRuntimeInstalledReadback.isEvidenceReference
+              ) else {
             return .failure(.rejected)
         }
         let qualification: ManagedPythonRuntimePostToolQualification
@@ -130,6 +134,9 @@ public struct ManagedPythonRuntimeParentJournalAdapter:
         case .failure:
             return .failure(.journalBridgeFailed)
         }
+        let orderedToolReceiptReferences = managedToolReceiptReferences
+            .sorted { $0.key.rawValue < $1.key.rawValue }
+            .map(\.value)
         guard qualification.operationID == request.operationID,
               qualification.stablePlanFingerprint == expectedStablePlanFingerprint,
               qualification.runtimeIdentitySHA256 == receipt.runtimeIdentitySHA256,
@@ -137,6 +144,7 @@ public struct ManagedPythonRuntimeParentJournalAdapter:
                 == receipt.rollbackRuntimeIdentitySHA256,
               qualification.productVirtualEnvironments
                 == request.productVirtualEnvironments,
+              qualification.toolReceiptReferences == orderedToolReceiptReferences,
               !qualification.requiresManagedToolReconciliation,
               qualification.permitsProductOperationDispatch,
               qualification.managedToolActionsAreNoChange,
@@ -147,7 +155,7 @@ public struct ManagedPythonRuntimeParentJournalAdapter:
         do {
             evidence = try receipt.installerJournalEvidence(
                 postToolPlanFingerprint: qualification.postToolPlanFingerprint,
-                toolReceiptReferences: qualification.toolReceiptReferences
+                toolReceiptReferences: orderedToolReceiptReferences
             )
         } catch {
             return .failure(.rejected)
