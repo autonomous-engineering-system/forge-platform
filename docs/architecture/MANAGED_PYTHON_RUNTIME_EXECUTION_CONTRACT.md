@@ -46,7 +46,9 @@ installation is approved by this increment. A concrete gate source reads one
 fixed canonical record containing exactly all five requested gates through a
 stable no-follow descriptor. Missing, insecure, malformed, incomplete,
 duplicate or noncanonical evidence fails closed; an explicit failed gate is
-preserved as blocking evidence. Its publisher and live gate observers remain
+preserved as blocking evidence. Its atomic publisher refuses to repair insecure
+or noncanonical prior state, and its decorator exposes a gate only after exact
+durable readback of the complete five-gate set. Live gate observers remain
 unimplemented.
 
 This contract is subordinate to the exact managed-Python identity in the
@@ -288,9 +290,9 @@ reader plus its atomic publisher and exact durable-readback decorator, and the
 descriptor-safe managed-Python record reader plus its atomic publisher and
 exact durable-readback decorator; the live managed-Git and managed-Python OS
 observer/mutation routes remain unimplemented. The descriptor-safe complete
-five-gate record reader is implemented; its atomic publisher and live gate
-observers, signed service registration and released route wiring are not yet
-implemented.
+five-gate record reader, atomic publisher and complete-set exact durable-readback
+decorator are implemented; live gate observers, signed service registration and
+released route wiring are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -406,8 +408,8 @@ are explicitly empty. Its atomic publisher and exact durable-readback decorator
 are implemented. The live Git and Python OS observers and mutation routes,
 signed service registration and these coordinators are not wired into the
 released runtime. A descriptor-safe source now admits one fixed canonical
-complete five-gate record; its publisher and live gate observers are not
-implemented. A
+complete five-gate record. Its atomic publisher and complete-set exact
+durable-readback decorator are implemented; live gate observers are not. A
 concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
