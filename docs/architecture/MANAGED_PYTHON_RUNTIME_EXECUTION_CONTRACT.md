@@ -60,7 +60,11 @@ requires private no-follow layout plus a single-link `0500` executable, verifies
 the immutable digest before execution, invokes only fixed noninteractive
 Codex/GitHub version and auth-status probes with scrubbed environment, discards
 auth output and re-verifies the executable after every probe. Legacy user scope
-without an OS-user authority fails closed. Provider installation,
+without an OS-user authority fails closed. A separate native provider-runtime
+transport accepts only an exact V3 component requirement, uses an ephemeral
+credential-free HTTPS session, rejects redirects, final-URL drift, empty or
+oversized responses and digest drift, and returns only target-bound archive
+bytes. It performs no staging, extraction or mutation. Provider installation,
 credential-home provisioning, service-account secure-store integration and the
 other four live gate observers remain unimplemented, so this is not live
 provider-readiness evidence.
@@ -280,7 +284,9 @@ closed source coordinator that supplies the document now enforces the exact
 request set and matching before/after host epochs. The descriptor-safe
 managed-Git and managed-Python record readers and complete five-gate record
 reader are implemented. The source-level provider-gate evaluator and router
-consume the fixed-layout macOS component-provider inspector. Live Git/Python OS
+consume the fixed-layout macOS component-provider inspector. Exact component
+provider archive acquisition is implemented as a bounded credential-free HTTPS
+transport with redirect, final-URL and digest enforcement. Live Git/Python OS
 observers and mutation routes, provider installation and credential-home
 provisioning, service-account secure-store integration, the other four live
 gate observers, signed service registration and the released route are not yet
@@ -311,7 +317,9 @@ observer/mutation routes remain unimplemented. The descriptor-safe complete
 five-gate record reader, atomic publisher and complete-set exact durable-readback
 decorator are implemented. The source-level provider-gate evaluator and
 separate gate router plus fixed-layout macOS component-provider inspector are
-implemented. Provider installation and credential-home provisioning,
+implemented. The exact V3 component-provider archive transport is also
+implemented; provider staging, archive inspection, installation and
+credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed service registration and released route wiring are not yet implemented.
 
@@ -436,8 +444,9 @@ released runtime. A descriptor-safe source now admits one fixed canonical
 complete five-gate record. Its atomic publisher and complete-set exact
 durable-readback decorator are implemented. The source-level provider-gate
 evaluator and separate router consume the exact enabled-provider request through
-the fixed-layout macOS component-provider inspector. Provider installation and
-credential-home provisioning, service-account secure-store integration and the
+the fixed-layout macOS component-provider inspector. The exact provider archive
+transport is implemented without staging or mutation. Provider installation
+and credential-home provisioning, service-account secure-store integration and the
 other four live gate observers are absent. A concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational

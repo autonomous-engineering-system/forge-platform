@@ -26,7 +26,11 @@ macOS inspector now derives only exact V3 component-owned executable/home
 locations beneath its helper-configured root, verifies private no-follow
 layout and immutable executable digest before fixed noninteractive Codex/GitHub
 probes, discards auth output and re-verifies the executable after every probe.
-Legacy user scope without an exact OS-user binding fails closed. Provider
+Legacy user scope without an exact OS-user binding fails closed. A separate
+native provider-runtime transport accepts only the exact V3 component-owned
+requirement, fetches through an ephemeral credential-free HTTPS session,
+rejects redirects, final-URL drift, empty or oversized responses and digest
+drift, and returns target-bound archive bytes without staging or mutation. Provider
 installation and credential-home provisioning, service-account secure-store
 integration, the other four live gate observers, live Git and Python OS
 observer/mutation routes, signed helper registration and released wiring remain
@@ -747,7 +751,9 @@ record and preserves an explicit failed gate as blocking evidence. Its
 atomic publisher refuses insecure prior state, and its decorator requires exact
 durable readback of the complete set. The source-level provider-gate evaluator
 and separate gate router plus fixed-layout macOS component-provider inspector
-are implemented. Provider installation and credential-home provisioning,
+are implemented, together with the exact bounded credential-free V3 provider
+archive transport. Provider staging, inspection, installation and
+credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed helper registration and released journal-seeding integration remain
 unimplemented.
@@ -801,8 +807,9 @@ decorator are implemented. A managed-Python record reader performs equivalent
 stable no-follow admission for one fixed canonical helper-owned record and
 accepts absence only when runtime, slot and retained identities are explicitly
 empty. Its atomic publisher and exact durable-readback decorator are
-implemented. The live Git and Python OS observers and mutation routes, provider
-installation and credential-home provisioning, service-account secure-store
+implemented. The exact provider archive transport is implemented without
+staging or mutation. The live Git and Python OS observers and mutation routes,
+provider installation and credential-home provisioning, service-account secure-store
 integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,
 separate gate router and fixed-layout macOS component-provider inspector are
