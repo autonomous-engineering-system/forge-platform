@@ -241,9 +241,14 @@ helper call boundary. A concrete released-authority loader now accepts only
 by the signed release/catalog boundary. It derives the native release binding,
 requires all candidate manifests to share one exact current catalog, and keeps
 historical same-scope selections eligible only for installed-manifest lookup.
-It accepts no path, URL, raw bytes or request value. The product route resolver,
-helper-process registration and released-installer process wiring are still
-absent.
+It accepts no path, URL, raw bytes or request value. A concrete pinned product
+route resolver now snapshots helper-owned typed Forge/EP adapters and pairing
+executors under exact deployment IDs, rejects product-instance reuse across
+routes, and allows an admitted request to select only its predeclared route.
+Existing deployments must match the route's exact Forge and EP instances.
+Construction of those adapters and the pairing executor from released helper
+configuration, helper-process registration and released-installer process
+wiring are still absent.
 
 The managed-deployment operation coordinator reuses
 `DurableComponentOperationCoordinator`. Each product mutation therefore keeps

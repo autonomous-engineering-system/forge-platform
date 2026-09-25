@@ -90,6 +90,62 @@ class ManagedProductRouteResolver(Protocol):
     ) -> ResolvedManagedProductRoute: ...
 
 
+class PinnedManagedProductRouteResolver:
+    """Immutable helper-owned routes keyed by an admitted deployment ID.
+
+    Route construction remains outside the native request boundary. The helper
+    supplies fully typed adapters and its pairing executor once, this resolver
+    snapshots them, and a request can only select the exact predeclared route
+    matching its already admitted deployment identity.
+    """
+
+    def __init__(self, routes: Mapping[str, ResolvedManagedProductRoute]) -> None:
+        if not isinstance(routes, Mapping) or not routes:
+            raise TypeError("helper-owned product routes are required")
+        snapshot = dict(routes)
+        claimed_instances: set[tuple[str, str]] = set()
+        for deployment_id, route in snapshot.items():
+            # Deployment and instance identifiers use the same closed safe-ID
+            # grammar. This validates the key without exposing registry paths.
+            ManagedComponentBinding(FORGE_COMPONENT, deployment_id, "receipt:route")
+            if not isinstance(route, ResolvedManagedProductRoute):
+                raise TypeError("helper-owned product route is invalid")
+            claims = {
+                (FORGE_COMPONENT, route.forge_instance_id),
+                (EP_COMPONENT, route.engineering_platform_instance_id),
+            }
+            if claimed_instances.intersection(claims):
+                raise ValueError("helper-owned product routes reuse a product instance")
+            claimed_instances.update(claims)
+        self._routes = MappingProxyType(snapshot)
+
+    def resolve(
+        self, admitted: AdmittedNativeProductOperation
+    ) -> ResolvedManagedProductRoute:
+        if not isinstance(admitted, AdmittedNativeProductOperation):
+            raise TypeError("admitted native product operation is required")
+        route = self._routes.get(admitted.request.deployment_id)
+        if route is None:
+            raise ManagedProductOperationDispatchError(
+                "helper-owned product route is unavailable"
+            )
+        current = admitted.current_deployment
+        if current is not None:
+            by_component = current.by_component
+            forge = by_component.get(FORGE_COMPONENT)
+            ep = by_component.get(EP_COMPONENT)
+            if (
+                forge is None
+                or ep is None
+                or forge.instance_id != route.forge_instance_id
+                or ep.instance_id != route.engineering_platform_instance_id
+            ):
+                raise ManagedProductOperationDispatchError(
+                    "helper-owned product route conflicts with existing topology"
+                )
+        return route
+
+
 @dataclass(frozen=True)
 class NativeProductOperationDispatchReceipt:
     request_fingerprint: str
