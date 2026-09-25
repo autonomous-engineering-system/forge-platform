@@ -795,6 +795,79 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(service.capturedRequests().count, 1)
     }
 
+    func testXPCClientRequiresExactDeveloperIDSignedHelperIdentity() async throws {
+        let identity = try ManagedInstallerPostToolXPCHelperIdentity(
+            teamIdentifier: "ZEML4LPXH4"
+        )
+
+        XCTAssertEqual(
+            ManagedInstallerPostToolXPCHelperIdentity.signingIdentifier,
+            MacOSManagedInstallerPostToolXPCTransport.machServiceName
+        )
+        XCTAssertEqual(
+            identity.codeSigningRequirement,
+            "anchor apple generic"
+                + " and identifier \"com.autonomous-engineering-system."
+                + "forge-platform-installer.helper\""
+                + " and certificate 1[field.1.2.840.113635.100.6.2.6] exists"
+                + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+                + " and certificate leaf[subject.OU] = \"ZEML4LPXH4\""
+        )
+        var parsedRequirement: SecRequirement?
+        XCTAssertEqual(
+            SecRequirementCreateWithString(
+                identity.codeSigningRequirement as CFString,
+                [],
+                &parsedRequirement
+            ),
+            errSecSuccess
+        )
+        XCTAssertNotNil(parsedRequirement)
+        XCTAssertThrowsError(try ManagedInstallerPostToolXPCHelperIdentity(
+            teamIdentifier: "ZEML4LPXH4\" or true"
+        )) { error in
+            XCTAssertEqual(
+                error as? ManagedInstallerPostToolXPCHelperIdentityError,
+                .invalidIdentity
+            )
+        }
+
+        let key = try SealedInstallerReleaseTrustEd25519PublicKey(
+            keyID: "release-root",
+            publicKeyBase64: Data(repeating: 11, count: 32).base64EncodedString()
+        )
+        let digest = SealedInstallerReleaseTrustConfiguration.canonicalSHA256(
+            repository: "autonomous-engineering-system/forge-platform",
+            releaseDescriptorLocator:
+                SealedInstallerReleaseTrustConfiguration.githubReleaseAssetLocator,
+            releaseDescriptorAssetName: "forge-platform-installer-release.json",
+            expectedBundleIdentifier:
+                "com.autonomous-engineering-system.forge-platform-installer",
+            expectedTeamIdentifier: identity.teamIdentifier,
+            signatureThreshold: 1,
+            ed25519PublicKeys: [key]
+        )
+        let releaseTrust = try SealedInstallerReleaseTrustConfiguration(
+            configurationSHA256: digest,
+            repository: "autonomous-engineering-system/forge-platform",
+            releaseDescriptorLocator:
+                SealedInstallerReleaseTrustConfiguration.githubReleaseAssetLocator,
+            releaseDescriptorAssetName: "forge-platform-installer-release.json",
+            expectedBundleIdentifier:
+                "com.autonomous-engineering-system.forge-platform-installer",
+            expectedTeamIdentifier: identity.teamIdentifier,
+            signatureThreshold: 1,
+            ed25519PublicKeys: [key]
+        )
+        XCTAssertEqual(
+            try ManagedInstallerPostToolXPCHelperIdentity(releaseTrust: releaseTrust),
+            identity
+        )
+
+        let transport = MacOSManagedInstallerPostToolXPCTransport(helperIdentity: identity)
+        await transport.invalidate()
+    }
+
     func testXPCServiceHandlerReturnsOnlyCanonicalContextBoundSnapshot() async throws {
         let fixture = try FreshReplannerFixture()
         let snapshot = try fixture.snapshot()
