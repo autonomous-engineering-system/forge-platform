@@ -75,8 +75,13 @@ state, synchronizes file and directory descriptors, and requires exact durable
 readback before returning the observation. The Git, Python and gate adapter
 seams are now composed through one closed source coordinator that reads only the
 exact request set and requires the same helper-owned epoch before and after all
-reads. Their concrete OS implementations, signed service registration and
-released wiring are not implemented. No Python artifact, privileged helper or
+reads. A first concrete managed-Git source adapter now reads one fixed,
+helper-owned canonical state record through a stable descriptor. It preserves
+only an explicitly recorded `ABSENT` or `UNKNOWN` state and otherwise rejects a
+missing, insecure, malformed or noncanonical record; it does not inspect
+caller-selected paths or `PATH`. The managed-Git mutation/observation publisher,
+concrete Python and gate adapters, signed service registration and released
+wiring are not implemented. No Git or Python artifact, privileged helper or
 operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
@@ -98,8 +103,10 @@ implemented together with exact signed-helper authentication on the client;
 the locked single-read helper capturer is also implemented. The concrete
 fixed-file host-state reader, atomic publisher, source/publish/durable-readback
 coordinator and epoch-bracketed exact source collector are also implemented.
-Concrete OS-backed Git, Python and gate adapters, signed service registration,
-released route wiring and mutation dispatch remain unimplemented.
+The concrete descriptor-safe managed-Git record reader is also implemented;
+its producer and mutation route remain absent. Concrete Python and gate
+adapters, signed service registration, released route wiring and mutation
+dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
