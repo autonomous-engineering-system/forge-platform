@@ -7,8 +7,11 @@ configured Team identity on a Developer ID Application chain before accepting
 remote messages. Its paired fail-closed service handler admits only exact
 canonical requests and canonical context-bound responses. The named listener
 applies the reciprocal pre-delegate requirement for the exact configured
-installer bundle and Team identities. Concrete host reads, signed helper
-registration and released wiring remain outside the implemented boundary.
+installer bundle and Team identities. A locked helper-side capturer holds the
+shared mutation lease across exactly one complete low-level host read and binds
+the verified tool and gate sets to the request. The concrete OS-specific host
+reader, signed helper registration and released wiring remain outside the
+implemented boundary.
 
 This contract implements [ADR-0004](adr/ADR-0004-universal-installer-artifact-composition.md) and [ADR-0006](adr/ADR-0006-server-deployment-and-discovery.md). It is not a second EP, Forge, or Workspace installation engine.
 
@@ -739,7 +742,9 @@ fixed NSXPC interface and accepts messages only from the exact configured signed
 helper identity. A paired service handler accepts only exact canonical requests
 and returns only a canonical context-bound snapshot. Its named listener admits
 only the exact signed installer identity through Foundation's reciprocal
-code-signing gate. Concrete host-read capture, signed service registration and
+code-signing gate. A locked helper-side capturer performs one complete atomic
+host read under the shared mutation lease and binds it to the canonical
+request. The concrete OS-specific host reader, signed service registration and
 released wiring remain unimplemented.
 
 The native parent-journal admission adapter now requires a fresh qualification

@@ -21,9 +21,11 @@ final runtime readback under the host-wide lock contract. A native client now
 uses one fixed privileged Mach service and one fixed NSXPC interface to exchange
 only canonical, bounded request and response bytes and authenticates the exact
 fixed helper signing identifier and configured Team identity before accepting
-remote messages. No production runtime artifact, concrete host-read
-implementation, signed helper registration, released mutation wiring, or live
-machine installation is approved by this increment.
+remote messages. The helper-side capture coordinator now holds the shared host
+mutation lease across exactly one complete low-level observation and binds its
+exact tool and gate sets to that request. No production runtime artifact,
+concrete OS-specific host reader, signed helper registration, released mutation
+wiring, or live machine installation is approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -226,9 +228,11 @@ Application chain. A paired service handler rejects noncanonical requests
 before capture and returns only a canonical context-bound snapshot. Its named
 listener uses Foundation's reciprocal pre-delegate code-signing gate to admit
 only the exact configured installer bundle and Team identities; both Team
-bindings can be constructed from sealed release trust.
-Concrete host-read capture, signed service registration and the released route
-are not yet implemented. The
+bindings can be constructed from sealed release trust. A locked helper-side
+capturer then admits one complete atomic host read, verifies the exact tool and
+gate sets and attaches the request context only after successful lock release.
+The concrete OS-specific host reader, signed service registration and the
+released route are not yet implemented. The
 native seeding coordinator now validates the exact session/deployment and
 pre-mutation activation plan plus original managed-tool action set, derives reconciliation itself,
 persists `PLANNED`, and accepts success only after an identical durable
@@ -244,9 +248,9 @@ The concrete source-level fresh replanner, its read-only snapshot adapter,
 durable helper-facing snapshot store and capture/persist/readback producer
 coordinator plus the strict host-observation request/response adapter, fixed
 native NSXPC client transport and fail-closed helper service handler are
-implemented together with mutual exact signed-peer authentication; concrete
-host-read capture, signed service registration and released route wiring are not
-yet implemented.
+implemented together with mutual exact signed-peer authentication and a locked
+single-read helper capture coordinator; the concrete OS-specific host reader,
+signed service registration and released route wiring are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -346,9 +350,10 @@ pre-mutation Python/rollback/venv intent. No caller may inject an unrelated
 stable-plan digest. The concrete read-only snapshot adapter, durable
 single-assignment store, producer coordinator, closed canonical-response host
 adapter, fixed privileged NSXPC client transport, canonical helper service
-handler and mutual exact Developer ID peer authentication are implemented.
-Concrete host-read capture, signed service registration and these coordinators
-are not wired into the released runtime. A concrete reviewed authorized helper process,
-released mutation wiring and an actual
+handler, mutual exact Developer ID peer authentication and the locked
+single-read helper capture coordinator are implemented. The concrete
+OS-specific host reader, signed service registration and these coordinators are
+not wired into the released runtime. A concrete reviewed authorized helper
+process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
 installation can be claimed.

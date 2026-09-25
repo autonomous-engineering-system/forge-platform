@@ -64,10 +64,12 @@ service to satisfy the exact fixed helper signing identifier and configured
 Team identity on a Developer ID Application chain. A paired service handler
 rejects invalid or noncanonical requests before capture and emits only a
 canonical context-matched snapshot. Its named listener applies the reciprocal
-requirement to the configured installer bundle and Team identities. Concrete
-host reads, signed service registration and released wiring are not
-implemented. No Python artifact, privileged helper or operational runtime
-installation is claimed.
+requirement to the configured installer bundle and Team identities. A locked
+helper-side capturer acquires the shared host mutation lease, performs exactly
+one complete low-level host read, verifies the exact tool and gate sets and
+binds the result to that request. The concrete OS-specific host reader, signed
+service registration and released wiring are not implemented. No Python
+artifact, privileged helper or operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
@@ -85,8 +87,9 @@ coordinator then binds exactly one host observation to that store and
 reader. The strict host-observation adapter, fixed privileged NSXPC client
 transport, fail-closed service handler and exact signed-caller listener are
 implemented together with exact signed-helper authentication on the client;
-concrete host-read capture, signed service registration, released route wiring
-and mutation dispatch remain unimplemented.
+the locked single-read helper capturer is also implemented. The concrete
+OS-specific host reader, signed service registration, released route wiring and
+mutation dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
