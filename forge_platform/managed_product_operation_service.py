@@ -24,7 +24,11 @@ from .managed_product_operation_admission import (
 from .managed_product_operation_dispatch import (
     ManagedProductOperationDispatcher,
 )
-from .universal_installer import CompositionManifest
+from .universal_installer import (
+    CompositionManifest,
+    VerifiedCompositionSelection,
+    VerifiedInstallerContext,
+)
 
 
 MAXIMUM_NATIVE_PRODUCT_OPERATION_RECEIPT_BYTES = 128 * 1_024
@@ -80,6 +84,7 @@ class PinnedManagedProductOperationAuthorityResolver:
         *,
         current_installer_release: NativeInstallerReleaseBinding,
         manifests: Iterable[CompositionManifest],
+        installed_manifests: Iterable[CompositionManifest] = (),
     ) -> None:
         if not isinstance(current_installer_release, NativeInstallerReleaseBinding):
             raise TypeError("current installer release authority is required")
@@ -92,9 +97,22 @@ class PinnedManagedProductOperationAuthorityResolver:
             raise ValueError("composition authority identities are ambiguous")
         if len(set(digests)) != len(digests):
             raise ValueError("composition authority digests are ambiguous")
+        installed_values = tuple(installed_manifests)
+        if any(not isinstance(value, CompositionManifest) for value in installed_values):
+            raise TypeError("installed composition manifest authorities are invalid")
+        all_values = tuple(dict.fromkeys(values + installed_values))
+        all_identities = [value.composition_id for value in all_values]
+        all_digests = [value.manifest_digest for value in all_values]
+        if len(set(all_identities)) != len(all_identities):
+            raise ValueError("composition authority identities are ambiguous")
+        if len(set(all_digests)) != len(all_digests):
+            raise ValueError("composition authority digests are ambiguous")
         self.current_installer_release = current_installer_release
-        self._manifests = MappingProxyType({
+        self._candidate_manifests = MappingProxyType({
             (value.composition_id, value.manifest_digest): value for value in values
+        })
+        self._installed_manifests = MappingProxyType({
+            (value.composition_id, value.manifest_digest): value for value in all_values
         })
 
     def resolve(
@@ -102,7 +120,7 @@ class PinnedManagedProductOperationAuthorityResolver:
     ) -> ManagedProductOperationAuthorities:
         if not isinstance(request, NativeProductOperationRequest):
             raise TypeError("decoded native product request is required")
-        candidate = self._manifests.get(
+        candidate = self._candidate_manifests.get(
             (request.composition_identity, request.manifest_sha256)
         )
         if candidate is None:
@@ -111,7 +129,7 @@ class PinnedManagedProductOperationAuthorityResolver:
             )
         installed: CompositionManifest | None = None
         if request.installed_composition_identity is not None:
-            installed = self._manifests.get((
+            installed = self._installed_manifests.get((
                 request.installed_composition_identity,
                 request.installed_composition_manifest_sha256,
             ))
@@ -123,6 +141,90 @@ class PinnedManagedProductOperationAuthorityResolver:
             candidate,
             self.current_installer_release,
             installed,
+        )
+
+
+class ReleasedManagedProductOperationAuthorityLoader:
+    """Load one helper snapshot only from verified released selections.
+
+    Candidate selections must all belong to one exact current signed catalog
+    under the same in-process verified installer context. Historical selections
+    may authorize only an installed-manifest lookup; they never become candidate
+    authority. No path, URL, bytes, request value or trust adapter enters this
+    boundary.
+    """
+
+    @staticmethod
+    def load(
+        *,
+        current_installer_context: VerifiedInstallerContext,
+        candidate_selections: Iterable[VerifiedCompositionSelection],
+        installed_selections: Iterable[VerifiedCompositionSelection] = (),
+    ) -> PinnedManagedProductOperationAuthorityResolver:
+        if not isinstance(current_installer_context, VerifiedInstallerContext):
+            raise TypeError("verified current installer context is required")
+        candidates = tuple(candidate_selections)
+        installed = tuple(installed_selections)
+        if not candidates or any(
+            not isinstance(value, VerifiedCompositionSelection) for value in candidates
+        ):
+            raise TypeError("verified candidate composition selections are required")
+        if any(not isinstance(value, VerifiedCompositionSelection) for value in installed):
+            raise TypeError("verified installed composition selections are invalid")
+        if any(
+            value.installer_context is not current_installer_context
+            for value in candidates + installed
+        ):
+            raise ValueError(
+                "composition authority does not share the exact verified installer context"
+            )
+        current_catalog_identity = candidates[0].catalog_identity
+        if any(
+            value.catalog_identity != current_catalog_identity
+            or value.catalog != candidates[0].catalog
+            for value in candidates[1:]
+        ):
+            raise ValueError(
+                "candidate composition authorities do not share one verified current catalog"
+            )
+        for value in installed:
+            identity = value.catalog_identity
+            if identity.scope != current_catalog_identity.scope:
+                raise ValueError(
+                    "installed composition authority does not share the current catalog scope"
+                )
+            if (
+                identity.sequence > current_catalog_identity.sequence
+                or (
+                    identity.sequence == current_catalog_identity.sequence
+                    and identity.catalog_digest != current_catalog_identity.catalog_digest
+                )
+            ):
+                raise ValueError(
+                    "installed composition authority is newer than the current catalog"
+                )
+
+        release = current_installer_context.release
+        asset = release.asset_for("arm64")
+        if asset is None:
+            raise ValueError("verified current installer has no arm64 release asset")
+        signing_key_ids = tuple(sorted(signature.key_id for signature in release.signatures))
+        if not signing_key_ids:
+            raise ValueError("verified current installer has no signing key identity")
+        native_release = NativeInstallerReleaseBinding(
+            str(release.version),
+            (
+                f"https://github.com/{release.github_release.repository}/releases/tag/"
+                f"{release.github_release.tag}"
+            ),
+            asset.asset_name,
+            asset.archive_digest,
+            signing_key_ids[0],
+        )
+        return PinnedManagedProductOperationAuthorityResolver(
+            current_installer_release=native_release,
+            manifests=(value.manifest for value in candidates),
+            installed_manifests=(value.manifest for value in installed),
         )
 
 
