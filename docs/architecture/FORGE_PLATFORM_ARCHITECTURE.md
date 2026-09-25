@@ -88,10 +88,13 @@ boundary. It preserves the exact active runtime and slot, ordered retained
 runtime identities and evidence reference; only an explicit nil runtime/slot
 with no retained identities means absent. Missing, insecure, malformed,
 noncanonical or internally inconsistent evidence fails closed. The live
-managed-Git and managed-Python OS observers and mutation adapters, the
-managed-Python publisher, concrete gate adapters, signed service registration
-and released wiring are not implemented. No Git or Python artifact, privileged
-helper or operational runtime installation is claimed.
+managed-Python record store now atomically publishes only over secure canonical
+prior state, synchronizes file and directory descriptors and exposes the source
+observation only after exact durable readback. The live managed-Git and
+managed-Python OS observers and mutation adapters, concrete gate adapters,
+signed service registration and released wiring are not implemented. No Git or
+Python artifact, privileged helper or operational runtime installation is
+claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
@@ -115,9 +118,10 @@ coordinator and epoch-bracketed exact source collector are also implemented.
 The concrete descriptor-safe managed-Git record reader, atomic publisher and
 source/publish/durable-readback decorator are also implemented. Its live OS
 observer and mutation route remain absent. The descriptor-safe managed-Python
-record reader is implemented; its live OS observer, mutation route and atomic
-publisher remain absent. Concrete gate adapters, signed service registration,
-released route wiring and mutation dispatch remain unimplemented.
+record reader, atomic publisher and source/publish/durable-readback decorator
+are implemented; its live OS observer and mutation route remain absent.
+Concrete gate adapters, signed service registration, released route wiring and
+mutation dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 

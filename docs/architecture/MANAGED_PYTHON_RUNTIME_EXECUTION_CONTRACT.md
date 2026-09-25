@@ -37,10 +37,12 @@ fixed helper-owned canonical record through a stable descriptor. It preserves
 the exact active runtime and slot, retained identities and evidence reference;
 only an explicit nil runtime/slot with no retained identities means absent.
 Missing, insecure, malformed, noncanonical or inconsistent evidence fails
-closed. No live managed-Git or managed-Python OS observer or mutation adapter,
-managed-Python publisher, production runtime artifact, concrete gate adapter,
-signed helper registration, released mutation wiring, or live machine
-installation is approved by this increment.
+closed. Its paired atomic publisher refuses to repair insecure or noncanonical
+prior state, synchronizes file and directory descriptors and requires exact
+durable readback through a closed decorator. No live managed-Git or
+managed-Python OS observer or mutation adapter, production runtime artifact,
+concrete gate adapter, signed helper registration, released mutation wiring, or
+live machine installation is approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -278,10 +280,10 @@ single-read helper capture coordinator plus the descriptor-safe fixed-file
 host-state reader, atomic publisher, source/publish/durable-readback coordinator,
 epoch-bracketed exact source collector and descriptor-safe managed-Git record
 reader plus its atomic publisher and exact durable-readback decorator, and the
-descriptor-safe managed-Python record reader; the live managed-Git and
-managed-Python OS observer/mutation routes, managed-Python publisher, concrete
-gate adapters, signed service registration and released route wiring are not
-yet implemented.
+descriptor-safe managed-Python record reader plus its atomic publisher and
+exact durable-readback decorator; the live managed-Git and managed-Python OS
+observer/mutation routes, concrete gate adapters, signed service registration
+and released route wiring are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -393,9 +395,10 @@ only an explicitly recorded `ABSENT` or `UNKNOWN` is preserved. Its paired
 atomic publisher and exact durable-readback decorator are implemented. The
 managed-Python source admits one fixed canonical record through the same stable
 no-follow checks and accepts absence only when runtime, slot and retained set
-are explicitly empty. Its atomic publisher is not implemented. The live Git
-and Python OS observers and mutation routes, concrete gate adapters, signed
-service registration and these coordinators are not wired into the released runtime. A
+are explicitly empty. Its atomic publisher and exact durable-readback decorator
+are implemented. The live Git and Python OS observers and mutation routes,
+concrete gate adapters, signed service registration and these coordinators are
+not wired into the released runtime. A
 concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
