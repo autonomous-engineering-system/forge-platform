@@ -609,7 +609,7 @@ private struct ManagedPythonTarInspector {
     }
 }
 
-private enum ManagedPythonMachOInspector {
+enum ManagedPythonMachOInspector {
     private static let headerByteCount = 32
     private static let magic64: UInt32 = 0xfeedfacf
     private static let cpuTypeARM64: UInt32 = 0x0100000c

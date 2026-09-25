@@ -125,7 +125,10 @@ Exact discard is retry-safe after the operation directory has disappeared.
 The stager also reconciles an operation left before the staged identity returns,
 but only through strict fixed-name, no-follow descriptor validation; any unknown,
 linked, permissive or oversized entry fails closed. Exclusive lease coordination,
-archive inspection/extraction and provider installation remain absent. Provider
+archive extraction and provider installation remain absent. A read-only native
+inspector now reopens the exact staged archive, validates strict bounded
+`tar.gz` or ZIP layout, exact executable SHA-256, and one thin arm64 macOS
+Mach-O without extracting or executing content. Provider
 credential-home provisioning,
 service-account/Keychain integration, the other four live gate observers and
 released wiring are not implemented. No live provider readiness, Git or Python
@@ -161,7 +164,8 @@ source-level provider-gate evaluator and separate gate router are implemented
 with a fixed-layout macOS component-provider inspector. Exact component-provider
 archive acquisition and private descriptor-safe staging/readback/discard are
 implemented, including strict cleanup of an unrecorded interrupted acquisition.
-Provider archive inspection/extraction, exclusive recovery coordination,
+Read-only exact `tar.gz`/ZIP provider archive inspection with executable-digest
+and thin-arm64 Mach-O validation is implemented. Archive extraction, exclusive recovery coordination,
 installation/credential provisioning, service-account secure-store integration
 and the other four live gate observers remain absent. Signed service
 registration, released route wiring and mutation dispatch remain unimplemented.

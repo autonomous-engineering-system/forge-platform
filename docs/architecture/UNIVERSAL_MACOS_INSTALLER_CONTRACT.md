@@ -35,8 +35,11 @@ one exact archive under fixed no-follow `0700`/`0600` layout, returns only an
 opaque reference and descriptor identity, and requires exact digest readback
 before retry-safe discard. Strict fixed-layout reconciliation removes an
 operation left before identity return and rejects unknown, linked, permissive or
-oversized entries. Exclusive provider-operation lease coordination, provider
-archive inspection/extraction, installation and credential-home provisioning,
+oversized entries. A read-only native provider archive inspector accepts only
+strict bounded `tar.gz`/USTAR or ZIP layout, verifies the exact executable
+SHA-256 and thin arm64 macOS Mach-O, and never extracts or executes content.
+Exclusive provider-operation lease coordination, archive extraction,
+installation and credential-home provisioning,
 service-account secure-store
 integration, the other four live gate observers, live Git and Python OS
 observer/mutation routes, signed helper registration and released wiring remain
@@ -759,7 +762,9 @@ durable readback of the complete set. The source-level provider-gate evaluator
 and separate gate router plus fixed-layout macOS component-provider inspector
 are implemented, together with the exact bounded credential-free V3 provider
 archive transport and private descriptor-safe staging/readback/discard. Provider
-interrupted-acquisition cleanup is included. Provider archive inspection,
+interrupted-acquisition cleanup and read-only exact `tar.gz`/ZIP archive
+inspection with executable-digest and thin-arm64 Mach-O validation are included.
+Archive extraction,
 exclusive recovery coordination, installation and
 credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
@@ -818,7 +823,8 @@ empty. Its atomic publisher and exact durable-readback decorator are
 implemented. Exact provider archive transport and private descriptor-safe
 staging/readback/discard are implemented. The live Git and Python OS observers
 and mutation routes remain absent. Strict provider interrupted-acquisition
-cleanup is implemented. Provider archive inspection/extraction, exclusive recovery
+cleanup and read-only strict `tar.gz`/ZIP archive inspection are implemented.
+Archive extraction, exclusive recovery
 coordination, installation and credential-home provisioning, service-account secure-store
 integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,
