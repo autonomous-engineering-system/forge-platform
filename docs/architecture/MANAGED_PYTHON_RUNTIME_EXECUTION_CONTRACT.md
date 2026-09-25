@@ -24,8 +24,9 @@ fixed helper signing identifier and configured Team identity before accepting
 remote messages. The helper-side capture coordinator now holds the shared host
 mutation lease across exactly one complete low-level observation and binds its
 exact tool and gate sets to that request. No production runtime artifact,
-concrete OS-specific host reader, signed helper registration, released mutation
-wiring, or live machine installation is approved by this increment.
+a live OS-backed producer for the helper-owned host-state document, signed
+helper registration, released mutation wiring, or live machine installation is
+approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -231,8 +232,13 @@ only the exact configured installer bundle and Team identities; both Team
 bindings can be constructed from sealed release trust. A locked helper-side
 capturer then admits one complete atomic host read, verifies the exact tool and
 gate sets and attaches the request context only after successful lock release.
-The concrete OS-specific host reader, signed service registration and the
-released route are not yet implemented. The
+A concrete file reader now opens one fixed helper-owned host-state document
+without following links, requires private ownership and modes, verifies stable
+descriptor identity and size, and accepts only canonical complete bytes whose
+tool and gate sets exactly match the closed request. The OS-backed producer
+that refreshes that document from actual managed Git, managed Python and gate
+adapters, signed service registration and the released route are not yet
+implemented. The
 native seeding coordinator now validates the exact session/deployment and
 pre-mutation activation plan plus original managed-tool action set, derives reconciliation itself,
 persists `PLANNED`, and accepts success only after an identical durable
@@ -249,8 +255,9 @@ durable helper-facing snapshot store and capture/persist/readback producer
 coordinator plus the strict host-observation request/response adapter, fixed
 native NSXPC client transport and fail-closed helper service handler are
 implemented together with mutual exact signed-peer authentication and a locked
-single-read helper capture coordinator; the concrete OS-specific host reader,
-signed service registration and released route wiring are not yet implemented.
+single-read helper capture coordinator plus the descriptor-safe fixed-file
+host-state reader; the OS-backed atomic host-state producer, signed service
+registration and released route wiring are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -351,9 +358,11 @@ stable-plan digest. The concrete read-only snapshot adapter, durable
 single-assignment store, producer coordinator, closed canonical-response host
 adapter, fixed privileged NSXPC client transport, canonical helper service
 handler, mutual exact Developer ID peer authentication and the locked
-single-read helper capture coordinator are implemented. The concrete
-OS-specific host reader, signed service registration and these coordinators are
-not wired into the released runtime. A concrete reviewed authorized helper
+single-read helper capture coordinator are implemented. The fixed-file reader
+also admits one canonical complete helper-owned host-state document with
+descriptor, ownership, mode, link-count and request-set checks. An OS-backed
+producer of that document, signed service registration and these coordinators
+are not wired into the released runtime. A concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
 installation can be claimed.
