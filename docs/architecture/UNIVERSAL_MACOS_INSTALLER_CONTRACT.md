@@ -2,6 +2,11 @@
 
 **Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a durable platform-neutral managed-Python executor kernel with an atomic terminal-receipt-to-installer-journal bridge, a native wizard shell, an internal read-only C-3a catalog-admission coordinator that composes sealed trust, exact transport, independently injected time evidence and a read-only anti-replay anchor, a native source-level exact component-combination selector for the digest-pinned index, credential-free native transport plus private no-follow staging/readback for the four exact managed-Python identity assets, a read-only native archive/Mach-O inspector, a closed source-level runtime-slot mutation coordinator behind an injected privilege seam, a cleanup-enforcing preparation coordinator with a host-wide nonblocking operation lease, private atomic pending-record, cleanup-only restart integration and descriptor-safe acquisition-orphan reconciliation, separately locked native coordination for exact product-venv readiness, activation, rollback retention, final readback, durable private `READY`-receipt recovery, platform-neutral `COMPLETE`-receipt handoff and exact typed `TOOLS_VERIFIED` evidence projection, a private atomic/idempotent active parent-journal store behind the admission bridge, a source-level exact `PLANNED` journal seeder with durable readback, and a strict context-bound post-tool snapshot reader with a durable single-assignment store, capture/persist/readback producer coordinator, closed canonical host-observation request/response adapter and fixed privileged NSXPC client transport. No independently reviewed production time-evidence adapter, concrete privileged helper backend, signed helper registration, released executor-journal wiring, composition-session producer, product provisioner adapter, published production runtime, released mutation wiring, or production deployment is certified.
 
+The fixed NSXPC client now has a paired fail-closed service handler that admits
+only exact canonical requests and canonical context-bound responses. Authorized
+caller admission, concrete host reads, signed helper registration and released
+wiring remain outside the implemented boundary.
+
 This contract implements [ADR-0004](adr/ADR-0004-universal-installer-artifact-composition.md) and [ADR-0006](adr/ADR-0006-server-deployment-and-discovery.md). It is not a second EP, Forge, or Workspace installation engine.
 
 ## Separately versioned artifacts
@@ -727,8 +732,10 @@ snapshot adapter, durable helper-facing store and producer coordinator are
 implemented. A strict host-observation adapter emits only a closed pathless
 request and accepts one canonical context-matched snapshot response. A native
 client sends those bytes only to one fixed privileged Mach service through one
-fixed NSXPC interface. The authorized helper backend, signed service
-registration and released wiring remain unimplemented.
+fixed NSXPC interface. A paired service handler accepts only exact canonical
+requests and returns only a canonical context-bound snapshot. Authorized caller
+admission, concrete host-read capture, signed service registration and released
+wiring remain unimplemented.
 
 The native parent-journal admission adapter now requires a fresh qualification
 bound to the original stable-plan fingerprint, exact runtime, rollback and

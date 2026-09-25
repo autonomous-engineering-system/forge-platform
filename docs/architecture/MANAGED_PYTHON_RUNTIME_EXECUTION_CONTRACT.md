@@ -20,7 +20,7 @@ coordinator now binds exact component venvs, activation, rollback retention and
 final runtime readback under the host-wide lock contract. A native client now
 uses one fixed privileged Mach service and one fixed NSXPC interface to exchange
 only canonical, bounded request and response bytes. No production runtime
-artifact, concrete privileged helper backend, signed helper registration,
+artifact, concrete authorized helper process, signed helper registration,
 released mutation wiring, or live machine installation is approved by this
 increment.
 
@@ -219,7 +219,9 @@ host-observation adapter derives one closed request containing only frozen
 identities, accepts one canonical serialized helper response and rejects
 malformed, noncanonical or context-drifted evidence. Its native NSXPC client
 uses one fixed privileged Mach service, one fixed interface and canonical
-request bytes. The authorized helper backend, signed service registration and
+request bytes. A paired service handler rejects noncanonical requests before
+capture and returns only a canonical context-bound snapshot. Authorized caller
+admission, concrete host-read capture, signed service registration and the
 released route are not yet implemented. The
 native seeding coordinator now validates the exact session/deployment and
 pre-mutation activation plan plus original managed-tool action set, derives reconciliation itself,
@@ -234,9 +236,10 @@ action, and explicit product-dispatch readiness. Only then does it construct
 the typed `TOOLS_VERIFIED` evidence and call the atomic journal-advance seam.
 The concrete source-level fresh replanner, its read-only snapshot adapter,
 durable helper-facing snapshot store and capture/persist/readback producer
-coordinator plus the strict host-observation request/response adapter and fixed
-native NSXPC client transport are implemented; the authorized helper backend,
-signed service registration and released route wiring are not yet implemented.
+coordinator plus the strict host-observation request/response adapter, fixed
+native NSXPC client transport and fail-closed helper service handler are
+implemented; authorized caller admission, concrete host-read capture, signed
+service registration and released route wiring are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -335,9 +338,10 @@ provider requirements, component diff, managed Git actions and complete
 pre-mutation Python/rollback/venv intent. No caller may inject an unrelated
 stable-plan digest. The concrete read-only snapshot adapter, durable
 single-assignment store, producer coordinator, closed canonical-response host
-adapter and fixed privileged NSXPC client transport are implemented, but the
-authorized helper backend, signed service registration and these coordinators
-are not wired into the released runtime. A concrete reviewed helper backend,
+adapter, fixed privileged NSXPC client transport and canonical helper service
+handler are implemented, but authorized caller admission, concrete host-read
+capture, signed service registration and these coordinators are not wired into
+the released runtime. A concrete reviewed authorized helper process,
 released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
 installation can be claimed.
