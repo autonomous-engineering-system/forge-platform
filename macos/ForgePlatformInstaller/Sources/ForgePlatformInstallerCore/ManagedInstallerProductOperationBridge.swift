@@ -11,15 +11,52 @@ public enum ManagedInstallerProductOperationBridgeFailure:
 public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
     public let componentID: String
     public let change: ComponentChange
+    public let installedVersion: String?
+    public let candidateVersion: String
+    public let artifactSHA256: String
 
-    init(componentID: String, change: ComponentChange) throws {
+    init(component: ComponentDiff) throws {
+        try self.init(
+            componentID: component.componentID,
+            change: component.change,
+            installedVersion: component.installedVersion,
+            candidateVersion: component.candidateVersion,
+            artifactSHA256: component.artifactDigest
+        )
+    }
+
+    init(
+        componentID: String,
+        change: ComponentChange,
+        installedVersion: String?,
+        candidateVersion: String?,
+        artifactSHA256: String?
+    ) throws {
         guard ManagedPythonRuntimeStagingValidation.isOperationID(componentID),
               change != .blocked,
-              change != .remove else {
+              change != .remove,
+              change == .install
+                ? installedVersion == nil
+                : installedVersion.map(Self.isBoundedVersion) == true,
+              let candidateVersion,
+              Self.isBoundedVersion(candidateVersion),
+              let artifactSHA256,
+              CompositionCatalogValidation.isTaggedSHA256(artifactSHA256) else {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
         }
         self.componentID = componentID
         self.change = change
+        self.installedVersion = installedVersion
+        self.candidateVersion = candidateVersion
+        self.artifactSHA256 = artifactSHA256
+    }
+
+    private static func isBoundedVersion(_ value: String) -> Bool {
+        !value.isEmpty
+            && value.utf8.count <= 128
+            && !value.unicodeScalars.contains {
+                $0.value < 32 || $0.value == 127
+            }
     }
 }
 
@@ -29,7 +66,7 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
 /// reviewed actions and evidence references already bound by one reconstructed
 /// terminal `MANAGED_TOOLS` receipt.
 public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
-    public static let schema = "forge-platform.native-product-operation-request/v1"
+    public static let schema = "forge-platform.native-product-operation-request/v2"
     static let maximumBytes = 128 * 1_024
 
     public let stablePlanFingerprint: String
@@ -37,6 +74,10 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
     public let sessionID: String
     public let deploymentID: String
     public let deploymentExists: Bool
+    public let forgeInstanceID: String?
+    public let engineeringPlatformInstanceID: String?
+    public let installedCompositionIdentity: String?
+    public let installedCompositionManifestSHA256: String?
     public let inventoryEvidenceReference: String
     public let compositionIdentity: String
     public let manifestSHA256: String
@@ -59,12 +100,9 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
               ), reconstructed == runtimeTransactionReceipt else {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
         }
-        let operations = try stablePlan.reviewedOperation.components.map {
-            try ManagedInstallerProductComponentOperation(
-                componentID: $0.componentID,
-                change: $0.change
-            )
-        }.sorted { $0.componentID < $1.componentID }
+        let operations = try stablePlan.reviewedOperation.components
+            .map(ManagedInstallerProductComponentOperation.init)
+            .sorted { $0.componentID < $1.componentID }
         let providerTargets = stablePlan.enabledProviderRequirements
             .map(\.id.rawValue).sorted()
         var references = [runtimeTransactionReceipt.completionReceipt
@@ -89,6 +127,13 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             sessionID: stablePlan.session.sessionID,
             deploymentID: stablePlan.deployment.id,
             deploymentExists: stablePlan.deployment.exists,
+            forgeInstanceID: stablePlan.deployment.forgeInstanceID,
+            engineeringPlatformInstanceID:
+                stablePlan.deployment.engineeringPlatformInstanceID,
+            installedCompositionIdentity:
+                stablePlan.deployment.installedCompositionID,
+            installedCompositionManifestSHA256:
+                stablePlan.deployment.installedCompositionManifestSHA256,
             inventoryEvidenceReference:
                 stablePlan.reviewedOperation.inventoryEvidenceReference,
             compositionIdentity: stablePlan.session.compositionIdentity,
@@ -106,6 +151,10 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         sessionID: String,
         deploymentID: String,
         deploymentExists: Bool,
+        forgeInstanceID: String?,
+        engineeringPlatformInstanceID: String?,
+        installedCompositionIdentity: String?,
+        installedCompositionManifestSHA256: String?,
         inventoryEvidenceReference: String,
         compositionIdentity: String,
         manifestSHA256: String,
@@ -128,6 +177,24 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
               ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
               ManagedPythonRuntimeStagingValidation.isOperationID(sessionID),
               ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID),
+              forgeInstanceID.map(ManagedPythonRuntimeStagingValidation.isOperationID)
+                ?? true,
+              engineeringPlatformInstanceID.map(
+                  ManagedPythonRuntimeStagingValidation.isOperationID
+              ) ?? true,
+              deploymentExists
+                || forgeInstanceID == nil && engineeringPlatformInstanceID == nil,
+              !deploymentExists
+                || forgeInstanceID != nil || engineeringPlatformInstanceID != nil,
+              (installedCompositionIdentity == nil)
+                == (installedCompositionManifestSHA256 == nil),
+              installedCompositionIdentity.map(
+                  CompositionCatalogValidation.isCompositionIdentity
+              ) ?? true,
+              installedCompositionManifestSHA256.map(
+                  CompositionCatalogValidation.isTaggedSHA256
+              ) ?? true,
+              deploymentExists || installedCompositionIdentity == nil,
               Self.isInventoryEvidenceReference(inventoryEvidenceReference),
               !compositionIdentity.isEmpty,
               compositionIdentity.utf8.count <= 256,
@@ -159,6 +226,10 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             sessionID: sessionID,
             deploymentID: deploymentID,
             deploymentExists: deploymentExists,
+            forgeInstanceID: forgeInstanceID,
+            engineeringPlatformInstanceID: engineeringPlatformInstanceID,
+            installedCompositionIdentity: installedCompositionIdentity,
+            installedCompositionManifestSHA256: installedCompositionManifestSHA256,
             inventoryEvidenceReference: inventoryEvidenceReference,
             compositionIdentity: compositionIdentity,
             manifestSHA256: manifestSHA256,
@@ -176,6 +247,10 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         self.sessionID = sessionID
         self.deploymentID = deploymentID
         self.deploymentExists = deploymentExists
+        self.forgeInstanceID = forgeInstanceID
+        self.engineeringPlatformInstanceID = engineeringPlatformInstanceID
+        self.installedCompositionIdentity = installedCompositionIdentity
+        self.installedCompositionManifestSHA256 = installedCompositionManifestSHA256
         self.inventoryEvidenceReference = inventoryEvidenceReference
         self.compositionIdentity = compositionIdentity
         self.manifestSHA256 = manifestSHA256
@@ -193,6 +268,10 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             sessionID: sessionID,
             deploymentID: deploymentID,
             deploymentExists: deploymentExists,
+            forgeInstanceID: forgeInstanceID,
+            engineeringPlatformInstanceID: engineeringPlatformInstanceID,
+            installedCompositionIdentity: installedCompositionIdentity,
+            installedCompositionManifestSHA256: installedCompositionManifestSHA256,
             inventoryEvidenceReference: inventoryEvidenceReference,
             compositionIdentity: compositionIdentity,
             manifestSHA256: manifestSHA256,
@@ -212,7 +291,9 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         guard let fields = try reader.parseDocument().objectValue,
               Set(fields.keys) == Set([
                   "schema", "stable_plan_fingerprint", "operation_id", "session_id",
-                  "deployment_id", "deployment_exists", "inventory_evidence_reference",
+                  "deployment_id", "deployment_exists", "forge_instance_id",
+                  "engineering_platform_instance_id", "installed_composition_identity",
+                  "installed_composition_manifest_sha256", "inventory_evidence_reference",
                   "composition_identity", "manifest_sha256", "installer_release",
                   "components", "provider_target_ids", "runtime_evidence_references",
                   "request_fingerprint",
@@ -223,6 +304,12 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
               let sessionID = fields["session_id"]?.stringValue,
               let deploymentID = fields["deployment_id"]?.stringValue,
               let deploymentExists = boolean(fields["deployment_exists"]),
+              let forgeInstanceValue = fields["forge_instance_id"],
+              let engineeringPlatformInstanceValue =
+                fields["engineering_platform_instance_id"],
+              let installedCompositionValue = fields["installed_composition_identity"],
+              let installedCompositionManifestValue =
+                fields["installed_composition_manifest_sha256"],
               let inventoryEvidenceReference = fields["inventory_evidence_reference"]?.stringValue,
               let compositionIdentity = fields["composition_identity"]?.stringValue,
               let manifestSHA256 = fields["manifest_sha256"]?.stringValue,
@@ -239,6 +326,13 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             sessionID: sessionID,
             deploymentID: deploymentID,
             deploymentExists: deploymentExists,
+            forgeInstanceID: try optionalString(forgeInstanceValue),
+            engineeringPlatformInstanceID:
+                try optionalString(engineeringPlatformInstanceValue),
+            installedCompositionIdentity:
+                try optionalString(installedCompositionValue),
+            installedCompositionManifestSHA256:
+                try optionalString(installedCompositionManifestValue),
             inventoryEvidenceReference: inventoryEvidenceReference,
             compositionIdentity: compositionIdentity,
             manifestSHA256: manifestSHA256,
@@ -256,6 +350,10 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         sessionID: String,
         deploymentID: String,
         deploymentExists: Bool,
+        forgeInstanceID: String?,
+        engineeringPlatformInstanceID: String?,
+        installedCompositionIdentity: String?,
+        installedCompositionManifestSHA256: String?,
         inventoryEvidenceReference: String,
         compositionIdentity: String,
         manifestSHA256: String,
@@ -270,6 +368,10 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             sessionID: sessionID,
             deploymentID: deploymentID,
             deploymentExists: deploymentExists,
+            forgeInstanceID: forgeInstanceID,
+            engineeringPlatformInstanceID: engineeringPlatformInstanceID,
+            installedCompositionIdentity: installedCompositionIdentity,
+            installedCompositionManifestSHA256: installedCompositionManifestSHA256,
             inventoryEvidenceReference: inventoryEvidenceReference,
             compositionIdentity: compositionIdentity,
             manifestSHA256: manifestSHA256,
@@ -287,6 +389,10 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         sessionID: String,
         deploymentID: String,
         deploymentExists: Bool,
+        forgeInstanceID: String?,
+        engineeringPlatformInstanceID: String?,
+        installedCompositionIdentity: String?,
+        installedCompositionManifestSHA256: String?,
         inventoryEvidenceReference: String,
         compositionIdentity: String,
         manifestSHA256: String,
@@ -303,6 +409,15 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             "session_id": .string(sessionID),
             "deployment_id": .string(deploymentID),
             "deployment_exists": .boolean(deploymentExists),
+            "forge_instance_id": forgeInstanceID.map { .string($0) } ?? .null,
+            "engineering_platform_instance_id": engineeringPlatformInstanceID.map {
+                .string($0)
+            } ?? .null,
+            "installed_composition_identity": installedCompositionIdentity.map {
+                .string($0)
+            } ?? .null,
+            "installed_composition_manifest_sha256":
+                installedCompositionManifestSHA256.map { .string($0) } ?? .null,
             "inventory_evidence_reference": .string(inventoryEvidenceReference),
             "composition_identity": .string(compositionIdentity),
             "manifest_sha256": .string(manifestSHA256),
@@ -360,6 +475,11 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         .object([
             "identity": .string(component.componentID),
             "change": .string(component.change.rawValue),
+            "installed_version": component.installedVersion.map {
+                .string($0)
+            } ?? .null,
+            "candidate_version": .string(component.candidateVersion),
+            "artifact_sha256": .string(component.artifactSHA256),
         ])
     }
 
@@ -367,21 +487,40 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         _ value: StrictJSONResourceValue
     ) throws -> ManagedInstallerProductComponentOperation {
         guard let fields = value.objectValue,
-              Set(fields.keys) == Set(["identity", "change"]),
+              Set(fields.keys) == Set([
+                  "identity", "change", "installed_version", "candidate_version",
+                  "artifact_sha256",
+              ]),
               let identity = fields["identity"]?.stringValue,
               let changeValue = fields["change"]?.stringValue,
-              let change = ComponentChange(rawValue: changeValue) else {
+              let change = ComponentChange(rawValue: changeValue),
+              let installedVersionValue = fields["installed_version"],
+              let candidateVersion = fields["candidate_version"]?.stringValue,
+              let artifactSHA256 = fields["artifact_sha256"]?.stringValue else {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
         }
         return try ManagedInstallerProductComponentOperation(
             componentID: identity,
-            change: change
+            change: change,
+            installedVersion: try optionalString(installedVersionValue),
+            candidateVersion: candidateVersion,
+            artifactSHA256: artifactSHA256
         )
     }
 
     private static func boolean(_ value: StrictJSONResourceValue?) -> Bool? {
         guard case .boolean(let boolean)? = value else { return nil }
         return boolean
+    }
+
+    private static func optionalString(
+        _ value: StrictJSONResourceValue
+    ) throws -> String? {
+        switch value {
+        case .null: return nil
+        case .string(let string): return string
+        default: throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
+        }
     }
 
     private static func isInventoryEvidenceReference(_ value: String) -> Bool {
