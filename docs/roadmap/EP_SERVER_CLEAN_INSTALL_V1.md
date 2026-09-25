@@ -152,7 +152,12 @@ requires staged-byte readback before and after mutation plus independent exact
 installed-runtime readback. A cleanup-enforcing provider preparation
 coordinator now composes orphan reconciliation, staging, inspection, mutation
 and terminal discard under the same exclusive lease; its `READY` receipt binds
-all of that evidence and cleanup or lock-release failure takes precedence. The concrete extraction/install adapter,
+all of that evidence and cleanup or lock-release failure takes precedence. A
+stable-plan fanout coordinator now prevalidates the full enabled-provider set,
+derives deterministic operations per exact target, processes component-owned
+V3 targets in canonical order and accepts only a complete plan-bound receipt
+set. It remains source-only and does not make the released route mutation
+capable. The concrete extraction/install adapter,
 credential-home provisioning, released wiring and live host evidence remain
 planned, so this increment does not change the node to complete or `READY`.
 
