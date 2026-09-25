@@ -40,15 +40,20 @@ own validated lock, and atomically replaces it with the exact idempotent
 `MANAGED_TOOLS` evidence. A concrete native fresh replanner now derives managed
 Git and Python actions, five non-tool gates and the canonical post-tool plan
 fingerprint from independently injected fresh readbacks; it cannot accept a
-precomputed qualification. No production readback adapter, Python artifact,
-privileged adapter or operational runtime installation is claimed.
+precomputed qualification. A native parent-journal seeder now rebinds the
+exact session, deployment, pre-mutation runtime plan and original managed-tool actions,
+derives whether reconciliation is required, writes `PLANNED`, and requires an
+identical durable readback before preparation may begin. The later activation
+request must bind that plan to the exact `READY` preparation receipt. No production readback adapter,
+Python artifact, privileged adapter or operational runtime installation is
+claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
 runtime/rollback/venv identities, all-`NO_CHANGE` tool state and product
 dispatch readiness. The composition parser now also retains the exact managed
 Git requirement used by that replanner. Production readback adapters, released
-journal seeding and released wiring remain unimplemented.
+route wiring and mutation dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
