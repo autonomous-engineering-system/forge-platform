@@ -1136,6 +1136,174 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         }
     }
 
+    func testFileAtomicHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let first = try atomicReadback(fixture.snapshot())
+        let replacement = try atomicReadback(fixture.snapshot(
+            evidenceReference: "receipt:post-tool-host-state-replacement"
+        ))
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerPostToolAtomicHostStateStore(rootDirectory: root)
+        let reader = FileManagedInstallerPostToolAtomicHostReader(rootDirectory: root)
+
+        XCTAssertNoThrow(try store.persistAtomicPostToolHostState(first).get())
+        XCTAssertNoThrow(try store.persistAtomicPostToolHostState(first).get())
+        let firstReadback = try atomicReadbackValue(
+            await reader.readAtomicPostToolHostState(for: request)
+        )
+        XCTAssertEqual(firstReadback, first)
+
+        XCTAssertNoThrow(try store.persistAtomicPostToolHostState(replacement).get())
+        let replacementReadback = try atomicReadbackValue(
+            await reader.readAtomicPostToolHostState(for: request)
+        )
+        XCTAssertEqual(replacementReadback, replacement)
+        let state = root.appendingPathComponent(
+            FileManagedInstallerPostToolAtomicHostReader.fileName
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: state.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .contains(where: { $0.hasPrefix(".post-tool-host-state.tmp-") }))
+    }
+
+    func testFileAtomicHostStateStoreRefusesToRepairInsecureOrCorruptState() throws {
+        let fixture = try FreshReplannerFixture()
+        let readback = try atomicReadback(fixture.snapshot())
+
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "missing-post-tool-host-state-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        XCTAssertEqual(
+            FileManagedInstallerPostToolAtomicHostStateStore(rootDirectory: missing)
+                .persistAtomicPostToolHostState(readback).failure,
+            .receiptPersistenceFailed
+        )
+
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerPostToolAtomicHostStateStore(rootDirectory: root)
+        let state = try writeAtomicHostState(Data("{}".utf8), root: root)
+        XCTAssertEqual(
+            store.persistAtomicPostToolHostState(readback).failure,
+            .receiptPersistenceFailed
+        )
+
+        try FileManager.default.removeItem(at: state)
+        try writeAtomicHostState(readback.canonicalHostStateJSONData(), root: root)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o644))],
+            ofItemAtPath: state.path
+        )
+        XCTAssertEqual(
+            store.persistAtomicPostToolHostState(readback).failure,
+            .receiptPersistenceFailed
+        )
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: state.path
+        )
+        let linked = root.appendingPathComponent("linked-state.json")
+        try FileManager.default.linkItem(at: state, to: linked)
+        XCTAssertEqual(
+            store.persistAtomicPostToolHostState(readback).failure,
+            .receiptPersistenceFailed
+        )
+        try FileManager.default.removeItem(at: linked)
+
+        try FileManager.default.removeItem(at: state)
+        let target = root.appendingPathComponent("target-state.json")
+        try readback.canonicalHostStateJSONData().write(to: target)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: target.path
+        )
+        try FileManager.default.createSymbolicLink(at: state, withDestinationURL: target)
+        XCTAssertEqual(
+            store.persistAtomicPostToolHostState(readback).failure,
+            .receiptPersistenceFailed
+        )
+    }
+
+    func testPublishingAtomicHostReaderRequiresExactDurableReadback() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+        let events = LockedHostObservationEvents()
+        let persister = HostStatePersisterSpy(events: events)
+        let reader = ManagedInstallerPostToolPublishingAtomicHostReader(
+            sourceReader: AtomicHostReader(
+                result: .success(expected),
+                events: events,
+                eventName: "source"
+            ),
+            persister: persister,
+            durableReader: AtomicHostReader(
+                result: .success(expected),
+                events: events,
+                eventName: "durable"
+            )
+        )
+
+        let observed = try atomicReadbackValue(
+            await reader.readAtomicPostToolHostState(for: request)
+        )
+
+        XCTAssertEqual(observed, expected)
+        XCTAssertEqual(events.values(), ["source", "persist", "durable"])
+        XCTAssertEqual(persister.values(), [expected])
+    }
+
+    func testPublishingAtomicHostReaderStopsAtFailedOrDriftedBoundaries() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+        let drifted = try atomicReadback(fixture.snapshot(
+            evidenceReference: "receipt:drifted-durable-host-state"
+        ))
+
+        let sourceFailure = await ManagedInstallerPostToolPublishingAtomicHostReader(
+            sourceReader: AtomicHostReader(result: .failure(.readbackFailed)),
+            persister: HostStatePersisterSpy(),
+            durableReader: AtomicHostReader(result: .success(expected))
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(sourceFailure.failure, .readbackFailed)
+
+        let persistFailure = await ManagedInstallerPostToolPublishingAtomicHostReader(
+            sourceReader: AtomicHostReader(result: .success(expected)),
+            persister: HostStatePersisterSpy(failure: .receiptPersistenceFailed),
+            durableReader: AtomicHostReader(result: .success(expected))
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(persistFailure.failure, .receiptPersistenceFailed)
+
+        let durableFailure = await ManagedInstallerPostToolPublishingAtomicHostReader(
+            sourceReader: AtomicHostReader(result: .success(expected)),
+            persister: HostStatePersisterSpy(),
+            durableReader: AtomicHostReader(result: .failure(.readbackFailed))
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(durableFailure.failure, .readbackFailed)
+
+        let drift = await ManagedInstallerPostToolPublishingAtomicHostReader(
+            sourceReader: AtomicHostReader(result: .success(expected)),
+            persister: HostStatePersisterSpy(),
+            durableReader: AtomicHostReader(result: .success(drifted))
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(drift.failure, .rejected)
+    }
+
     func testXPCServiceHandlerRejectsInvalidAndNoncanonicalRequestsBeforeCapture() async throws {
         let fixture = try FreshReplannerFixture()
         let snapshot = try fixture.snapshot()
@@ -1625,6 +1793,7 @@ private actor AtomicHostReader: ManagedInstallerPostToolAtomicHostReading {
         ManagedPythonRuntimeTerminalReceiptFailure
     >
     private let events: LockedHostObservationEvents?
+    private let eventName: String
     private var capturedRequests: [ManagedInstallerPostToolHostObservationRequest] = []
 
     init(
@@ -1632,10 +1801,12 @@ private actor AtomicHostReader: ManagedInstallerPostToolAtomicHostReading {
             ManagedInstallerPostToolAtomicHostReadback,
             ManagedPythonRuntimeTerminalReceiptFailure
         >,
-        events: LockedHostObservationEvents? = nil
+        events: LockedHostObservationEvents? = nil,
+        eventName: String = "read"
     ) {
         self.result = result
         self.events = events
+        self.eventName = eventName
     }
 
     func readAtomicPostToolHostState(
@@ -1645,12 +1816,45 @@ private actor AtomicHostReader: ManagedInstallerPostToolAtomicHostReading {
         ManagedPythonRuntimeTerminalReceiptFailure
     > {
         capturedRequests.append(request)
-        events?.record("read")
+        events?.record(eventName)
         return result
     }
 
     func requests() -> [ManagedInstallerPostToolHostObservationRequest] {
         capturedRequests
+    }
+}
+
+private final class HostStatePersisterSpy:
+    ManagedInstallerPostToolAtomicHostStatePersisting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let failure: ManagedPythonRuntimeTerminalReceiptFailure?
+    private let events: LockedHostObservationEvents?
+    private var readbacks: [ManagedInstallerPostToolAtomicHostReadback] = []
+
+    init(
+        failure: ManagedPythonRuntimeTerminalReceiptFailure? = nil,
+        events: LockedHostObservationEvents? = nil
+    ) {
+        self.failure = failure
+        self.events = events
+    }
+
+    func persistAtomicPostToolHostState(
+        _ readback: ManagedInstallerPostToolAtomicHostReadback
+    ) -> Result<Void, ManagedPythonRuntimeTerminalReceiptFailure> {
+        lock.lock()
+        readbacks.append(readback)
+        lock.unlock()
+        events?.record("persist")
+        if let failure { return .failure(failure) }
+        return .success(())
+    }
+
+    func values() -> [ManagedInstallerPostToolAtomicHostReadback] {
+        lock.lock()
+        defer { lock.unlock() }
+        return readbacks
     }
 }
 
