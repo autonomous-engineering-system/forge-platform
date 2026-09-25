@@ -79,7 +79,11 @@ provider-home identities. Its injected privilege interface accepts no path,
 command, environment value or credential. It re-reads staged bytes before and
 after mutation and requires a separate exact installed-runtime readback before
 returning `READY`; an exact existing readback is idempotent. The concrete
-archive extraction and installation adapter remains unimplemented. A read-only
+archive extraction and installation adapter remains unimplemented. A separate
+provider preparation coordinator composes orphan reconciliation, staging,
+inspection, mutation and terminal discard under the same exclusive lease. Its
+`READY` receipt rebinds the exact staged archive, inspection and mutation
+evidence; cleanup or lock-release failure overrides a terminal result. A read-only
 native provider archive inspector validates the exact staged archive as strict
 bounded `tar.gz`/USTAR or ZIP, requires canonical explicit-parent layout and
 safe permissions, rebinds the executable SHA-256, and accepts only a thin
@@ -342,7 +346,8 @@ interrupted-acquisition cleanup. Read-only strict `tar.gz`/ZIP archive
 inspection with exact executable-digest and thin-arm64 Mach-O validation is
 implemented together with a host-wide nonblocking cleanup-enforcing archive
 qualification coordinator and a closed pathless provider-runtime mutation
-coordinator/protocol with staged-byte and installed-runtime readback. The
+coordinator/protocol with staged-byte and installed-runtime readback, composed
+by a cleanup-enforcing provider preparation transaction under the same lease. The
 concrete extraction/install adapter and credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed service registration and released route wiring are not yet implemented.

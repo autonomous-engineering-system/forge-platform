@@ -134,7 +134,11 @@ slot and provider-home identities. It sends no path, command, environment value
 or credential across its injected privilege seam, re-reads the staged bytes
 before and after mutation, and requires an independent exact installed-runtime
 readback before returning `READY`. The concrete archive extraction and
-installation adapter remains absent. A read-only native
+installation adapter remains absent. A cleanup-enforcing provider preparation
+coordinator now composes reconciliation, staging, inspection, that mutation
+seam and terminal discard under the same host-wide lease. Its final `READY`
+receipt rebinds every archive, inspection, runtime-slot and provider-home
+identity; cleanup or lock-release failure overrides success. A read-only native
 inspector now reopens the exact staged archive, validates strict bounded
 `tar.gz` or ZIP layout, exact executable SHA-256, and one thin arm64 macOS
 Mach-O without extracting or executing content. Provider
@@ -176,7 +180,8 @@ implemented, including strict cleanup of an unrecorded interrupted acquisition.
 Read-only exact `tar.gz`/ZIP provider archive inspection with executable-digest
 and thin-arm64 Mach-O validation plus the exclusive cleanup-enforcing archive
 qualification coordinator and the closed pathless provider-runtime mutation
-coordinator/protocol are implemented. The concrete extraction/install adapter,
+coordinator/protocol are implemented and composed by one cleanup-enforcing
+provider preparation transaction under the same exclusive lease. The concrete extraction/install adapter,
 credential-home provisioning, service-account secure-store integration
 and the other four live gate observers remain absent. Signed service
 registration, released route wiring and mutation dispatch remain unimplemented.

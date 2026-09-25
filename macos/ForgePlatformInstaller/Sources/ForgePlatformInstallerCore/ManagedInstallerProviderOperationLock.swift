@@ -7,9 +7,10 @@ public enum ManagedInstallerProviderOperationLockFailure: Error, Equatable, Send
     case releaseFailed
 }
 
-/// Acquires one host-wide nonblocking lease for provider-runtime archive work.
+/// Acquires one host-wide nonblocking lease for provider-runtime preparation.
 /// Every provider archive coordinator must use the same installer-owned root
-/// so orphan reconciliation, acquisition, inspection and cleanup cannot race.
+/// so orphan reconciliation, acquisition, inspection, mutation and cleanup
+/// cannot race.
 public protocol ManagedInstallerProviderOperationLocking: Sendable {
     func acquireExclusiveManagedInstallerProviderOperationLock()
         -> Result<
