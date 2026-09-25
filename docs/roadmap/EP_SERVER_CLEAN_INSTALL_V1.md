@@ -143,6 +143,16 @@ flowchart TD
 | `FP-EP-CI-7` | Forge Platform, protected release authorities | Protected signing, notarization, GitHub Release, sealed production resources and current-installer handoff | Blocked pending protected signing/notarization/publishing authority |
 | `FP-EP-CI-Q` | Forge Platform + Engineering Platform | Authorized clean-Mac test: fresh install, service/readiness, fresh-shell and reboot resolver evidence | Planned; requires an explicitly authorized test host |
 
+Within `FP-EP-CI-5`, the closed provider-runtime mutation
+coordinator/protocol is now implemented at source level. It binds one exact V3
+component target, immutable runtime, staged file identity and archive-inspection
+evidence to derived opaque runtime-slot and provider-home identities; passes no
+path, command, environment value or credential over the privilege seam; and
+requires staged-byte readback before and after mutation plus independent exact
+installed-runtime readback. The concrete extraction/install adapter,
+credential-home provisioning, released wiring and live host evidence remain
+planned, so this increment does not change the node to complete or `READY`.
+
 `FP-EP-CI-1`, `EP-CI-1`, and the contract portion of `EP-CI-2` may be planned
 independently. No product mutation or clean-Mac test becomes eligible until all
 incoming evidence edges to the applicable node are satisfied.
