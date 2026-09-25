@@ -118,13 +118,15 @@ public protocol ManagedInstallerPostToolGateReading: Sendable {
 /// and the canonical post-tool fingerprint itself.
 public struct ManagedPythonRuntimeFreshPostToolReplanner:
     ManagedPythonRuntimePostToolRequalifying, Sendable {
+    private let stablePlan: ManagedInstallerStablePlan
     private let session: VerifiedCompositionSessionPlan
     private let deploymentID: String
     private let stablePlanFingerprint: String
     private let managedToolReceiptReferences: [ManagedToolRequirement.Identity: String]
-    private let managedToolReadback: any ManagedToolPostMutationReading
-    private let pythonReadback: any ManagedPythonRuntimeActivationReading
-    private let gateReadback: any ManagedInstallerPostToolGateReading
+    private let managedToolReadback: (any ManagedToolPostMutationReading)?
+    private let pythonReadback: (any ManagedPythonRuntimeActivationReading)?
+    private let gateReadback: (any ManagedInstallerPostToolGateReading)?
+    private let snapshotReadback: (any ManagedInstallerPostToolSnapshotReading)?
 
     public init(
         stablePlan: ManagedInstallerStablePlan,
@@ -160,6 +162,7 @@ public struct ManagedPythonRuntimeFreshPostToolReplanner:
               ) else {
             throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
         }
+        self.stablePlan = stablePlan
         self.session = session
         self.deploymentID = deploymentID
         self.stablePlanFingerprint = stablePlanFingerprint
@@ -167,6 +170,49 @@ public struct ManagedPythonRuntimeFreshPostToolReplanner:
         self.managedToolReadback = managedToolReadback
         self.pythonReadback = pythonReadback
         self.gateReadback = gateReadback
+        snapshotReadback = nil
+    }
+
+    /// Production-oriented boundary: all post-tool observations come from one
+    /// context-bound snapshot, preventing a qualification assembled from
+    /// different helper readback epochs.
+    public init(
+        stablePlan: ManagedInstallerStablePlan,
+        managedToolReceiptReferences: [ManagedToolRequirement.Identity: String],
+        snapshotReadback: any ManagedInstallerPostToolSnapshotReading
+    ) throws {
+        let session = stablePlan.session
+        let originalManagedToolActions = stablePlan.originalManagedToolActions
+        let requirements = Dictionary(uniqueKeysWithValues: session.managedTools.map {
+            ($0.identity, $0)
+        })
+        let originalActions = Dictionary(uniqueKeysWithValues: originalManagedToolActions.map {
+            ($0.requirement.identity, $0)
+        })
+        let receiptIdentities = Set(originalManagedToolActions.compactMap {
+            $0.action == .noChange ? nil : $0.requirement.identity
+        })
+        guard Set(originalManagedToolActions.map(\.requirement.identity)).count
+                == originalManagedToolActions.count,
+              ManagedPythonRuntimeStagingValidation.isOperationID(stablePlan.deployment.id),
+              ManagedPythonRuntimePostToolQualification.isFingerprint(stablePlan.fingerprint),
+              Set(originalActions.keys) == Set(requirements.keys),
+              originalActions.allSatisfy({ requirements[$0.key] == $0.value.requirement }),
+              Set(managedToolReceiptReferences.keys) == receiptIdentities,
+              managedToolReceiptReferences.values.allSatisfy(
+                ManagedPythonRuntimeInstalledReadback.isEvidenceReference
+              ) else {
+            throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
+        }
+        self.stablePlan = stablePlan
+        self.session = session
+        deploymentID = stablePlan.deployment.id
+        stablePlanFingerprint = stablePlan.fingerprint
+        self.managedToolReceiptReferences = managedToolReceiptReferences
+        managedToolReadback = nil
+        pythonReadback = nil
+        gateReadback = nil
+        self.snapshotReadback = snapshotReadback
     }
 
     public func requalifyAfterManagedPythonMutation(
@@ -186,47 +232,85 @@ public struct ManagedPythonRuntimeFreshPostToolReplanner:
             return .failure(.rejected)
         }
 
-        var tools: [(ManagedToolRequirement, ManagedToolInstalledReadback, String)] = []
-        for requirement in session.managedTools {
-            let readback: ManagedToolInstalledReadback
-            switch await managedToolReadback.readManagedTool(requirement) {
-            case .success(let observed):
-                guard observed.identity == requirement.identity else {
-                    return .failure(.rejected)
-                }
-                readback = observed
-            case .failure:
-                return .failure(.readbackFailed)
-            }
-            tools.append((
-                requirement,
-                readback,
-                Self.action(for: readback, requirement: requirement)
-            ))
-        }
-
-        let installedPython: ManagedPythonRuntimeInstalledReadback
-        switch await pythonReadback.readActiveRuntime(request) {
-        case .success(let readback):
-            installedPython = readback
-        case .failure:
-            return .failure(.readbackFailed)
-        }
-
-        var gates: [ManagedInstallerPostToolGateReadback] = []
-        for gate in ManagedInstallerPostToolGate.allCases {
-            switch await gateReadback.readPostToolGate(
-                gate,
-                session: session,
-                deploymentID: deploymentID
+        let observations: (
+            tools: [(ManagedToolRequirement, ManagedToolInstalledReadback, String)],
+            python: ManagedPythonRuntimeInstalledReadback,
+            gates: [ManagedInstallerPostToolGateReadback],
+            snapshotEvidenceReference: String?
+        )
+        if let snapshotReadback {
+            let snapshot: ManagedInstallerPostToolReadbackSnapshot
+            switch await snapshotReadback.readPostToolSnapshot(
+                stablePlan: stablePlan,
+                request: request
             ) {
-            case .success(let observed):
-                guard observed.gate == gate else { return .failure(.rejected) }
-                gates.append(observed)
-            case .failure:
+            case .success(let observed): snapshot = observed
+            case .failure: return .failure(.readbackFailed)
+            }
+            guard snapshot.matches(stablePlan: stablePlan, request: request) else {
+                return .failure(.rejected)
+            }
+            let byIdentity = Dictionary(uniqueKeysWithValues: snapshot.managedTools.map {
+                ($0.identity, $0)
+            })
+            let tools = session.managedTools.compactMap { requirement
+                -> (ManagedToolRequirement, ManagedToolInstalledReadback, String)? in
+                guard let readback = byIdentity[requirement.identity] else { return nil }
+                return (requirement, readback, Self.action(for: readback, requirement: requirement))
+            }
+            guard tools.count == session.managedTools.count else {
+                return .failure(.rejected)
+            }
+            observations = (tools, snapshot.pythonRuntime, snapshot.gates, snapshot.evidenceReference)
+        } else {
+            guard let managedToolReadback, let pythonReadback, let gateReadback else {
                 return .failure(.readbackFailed)
             }
+            var tools: [(ManagedToolRequirement, ManagedToolInstalledReadback, String)] = []
+            for requirement in session.managedTools {
+                let readback: ManagedToolInstalledReadback
+                switch await managedToolReadback.readManagedTool(requirement) {
+                case .success(let observed):
+                    guard observed.identity == requirement.identity else {
+                        return .failure(.rejected)
+                    }
+                    readback = observed
+                case .failure:
+                    return .failure(.readbackFailed)
+                }
+                tools.append((
+                    requirement,
+                    readback,
+                    Self.action(for: readback, requirement: requirement)
+                ))
+            }
+
+            let installedPython: ManagedPythonRuntimeInstalledReadback
+            switch await pythonReadback.readActiveRuntime(request) {
+            case .success(let readback): installedPython = readback
+            case .failure: return .failure(.readbackFailed)
+            }
+
+            var gates: [ManagedInstallerPostToolGateReadback] = []
+            for gate in ManagedInstallerPostToolGate.allCases {
+                switch await gateReadback.readPostToolGate(
+                    gate,
+                    session: session,
+                    deploymentID: deploymentID
+                ) {
+                case .success(let observed):
+                    guard observed.gate == gate else { return .failure(.rejected) }
+                    gates.append(observed)
+                case .failure:
+                    return .failure(.readbackFailed)
+                }
+            }
+            observations = (tools, installedPython, gates, nil)
         }
+
+        let tools = observations.tools
+        let installedPython = observations.python
+        let gates = observations.gates
 
         let managedToolsAreNoChange = tools.allSatisfy { $0.2 == "NO_CHANGE" }
         let pythonIsNoChange = installedPython.matchesFinal(request)
@@ -241,7 +325,8 @@ public struct ManagedPythonRuntimeFreshPostToolReplanner:
             tools: tools,
             pythonReadback: installedPython,
             gates: gates,
-            toolReceiptReferences: receiptReferences
+            toolReceiptReferences: receiptReferences,
+            snapshotEvidenceReference: observations.snapshotEvidenceReference
         )
 
         do {
@@ -283,7 +368,8 @@ public struct ManagedPythonRuntimeFreshPostToolReplanner:
         tools: [(ManagedToolRequirement, ManagedToolInstalledReadback, String)],
         pythonReadback: ManagedPythonRuntimeInstalledReadback,
         gates: [ManagedInstallerPostToolGateReadback],
-        toolReceiptReferences: [String]
+        toolReceiptReferences: [String],
+        snapshotEvidenceReference: String?
     ) -> String {
         let toolValues: [StrictJSONResourceValue] = tools.map {
             requirement, readback, action in
@@ -325,7 +411,7 @@ public struct ManagedPythonRuntimeFreshPostToolReplanner:
                 "evidence_reference": .string($0.evidenceReference),
             ])
         }
-        let material: StrictJSONResourceValue = .object([
+        var materialFields: [String: StrictJSONResourceValue] = [
             "schema": .string("forge-platform.native-post-tool-plan/v1"),
             "operation_id": .string(request.operationID),
             "session_id": .string(request.sessionID),
@@ -337,7 +423,11 @@ public struct ManagedPythonRuntimeFreshPostToolReplanner:
             "python": pythonValue,
             "gates": .array(gateValues),
             "tool_receipt_references": .array(toolReceiptReferences.map { .string($0) }),
-        ])
+        ]
+        if let snapshotEvidenceReference {
+            materialFields["snapshot_evidence_reference"] = .string(snapshotEvidenceReference)
+        }
+        let material: StrictJSONResourceValue = .object(materialFields)
         return SHA256.hash(data: StrictSignedJSON.canonicalPayload(from: material))
             .map { String(format: "%02x", $0) }
             .joined()

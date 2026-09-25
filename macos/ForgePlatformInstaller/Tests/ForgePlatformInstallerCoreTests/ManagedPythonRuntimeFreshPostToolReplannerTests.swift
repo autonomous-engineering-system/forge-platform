@@ -174,6 +174,201 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
             evidenceReference: "invalid"
         ))
     }
+
+    func testOneContextBoundSnapshotProducesDispatchableQualification() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let replanner = try ManagedPythonRuntimeFreshPostToolReplanner(
+            stablePlan: fixture.stablePlan,
+            managedToolReceiptReferences: [.git: "receipt:git-install"],
+            snapshotReadback: SnapshotReadback(result: .success(snapshot))
+        )
+
+        let result = try qualification(await replanner.requalifyAfterManagedPythonMutation(
+            request: fixture.request,
+            receipt: fixture.receipt
+        ))
+
+        XCTAssertTrue(result.permitsProductOperationDispatch)
+        XCTAssertFalse(result.requiresManagedToolReconciliation)
+        XCTAssertTrue(result.managedToolActionsAreNoChange)
+        XCTAssertTrue(result.pythonRuntimeActionIsNoChange)
+        XCTAssertEqual(result.toolReceiptReferences, ["receipt:git-install"])
+    }
+
+    func testSnapshotFailureAndContextDriftFailClosed() async throws {
+        let fixture = try FreshReplannerFixture()
+        let failed = try ManagedPythonRuntimeFreshPostToolReplanner(
+            stablePlan: fixture.stablePlan,
+            managedToolReceiptReferences: [.git: "receipt:git-install"],
+            snapshotReadback: SnapshotReadback(result: .failure(.readbackFailed))
+        )
+        let failedResult = await failed.requalifyAfterManagedPythonMutation(
+            request: fixture.request,
+            receipt: fixture.receipt
+        )
+        XCTAssertEqual(failedResult.failure, .readbackFailed)
+
+        let drifted = try fixture.snapshot(deploymentID: "other-deployment")
+        let rejected = try ManagedPythonRuntimeFreshPostToolReplanner(
+            stablePlan: fixture.stablePlan,
+            managedToolReceiptReferences: [.git: "receipt:git-install"],
+            snapshotReadback: SnapshotReadback(result: .success(drifted))
+        )
+        let rejectedResult = await rejected.requalifyAfterManagedPythonMutation(
+            request: fixture.request,
+            receipt: fixture.receipt
+        )
+        XCTAssertEqual(rejectedResult.failure, .rejected)
+    }
+
+    func testSnapshotCanonicalJSONRoundTripsAndRejectsUntrustedShapes() throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let bytes = snapshot.canonicalJSONData()
+
+        XCTAssertEqual(
+            try ManagedInstallerPostToolReadbackSnapshot.decodeJSON(bytes),
+            snapshot
+        )
+        XCTAssertEqual(
+            try ManagedInstallerPostToolReadbackSnapshot.decodeJSON(bytes).canonicalJSONData(),
+            bytes
+        )
+        XCTAssertThrowsError(try ManagedInstallerPostToolReadbackSnapshot.decodeJSON(Data()))
+        XCTAssertThrowsError(try ManagedInstallerPostToolReadbackSnapshot.decodeJSON(
+            Data(repeating: 0x20, count: ManagedInstallerPostToolReadbackSnapshot.maximumBytes + 1)
+        ))
+        XCTAssertThrowsError(try ManagedInstallerPostToolReadbackSnapshot.decodeJSON(
+            Data("{\"schema\":\"x\",\"schema\":\"y\"}".utf8)
+        ))
+        XCTAssertThrowsError(try ManagedInstallerPostToolReadbackSnapshot.decodeJSON(
+            Data("{\"schema\":\"forge-platform.managed-installer-post-tool-readback/v1\"}".utf8)
+        ))
+    }
+
+    func testSnapshotConstructorRejectsIncompleteOrConflictingEvidence() throws {
+        let fixture = try FreshReplannerFixture()
+        let gates = try ManagedInstallerPostToolGate.allCases.map {
+            try ManagedInstallerPostToolGateReadback(
+                gate: $0,
+                passed: true,
+                evidenceReference: "receipt:gate-\($0.rawValue)"
+            )
+        }
+        XCTAssertThrowsError(try fixture.snapshot(tools: []))
+        XCTAssertThrowsError(try fixture.snapshot(
+            tools: [fixture.toolReadback(.active), fixture.toolReadback(.active)]
+        ))
+        XCTAssertThrowsError(try fixture.snapshot(gates: Array(gates.dropLast())))
+        XCTAssertThrowsError(try fixture.snapshot(gates: gates + [gates[0]]))
+        XCTAssertThrowsError(try fixture.snapshot(stablePlanFingerprint: "bad"))
+        XCTAssertThrowsError(try fixture.snapshot(evidenceReference: "bad"))
+    }
+
+    func testFileSnapshotReaderReadsOnlyExactPrivateRecord() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = root.appendingPathComponent(
+            FileManagedInstallerPostToolSnapshotReader.filePrefix
+                + fixture.request.operationID + ".json"
+        )
+        try snapshot.canonicalJSONData().write(to: record)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: record.path
+        )
+
+        let reader = FileManagedInstallerPostToolSnapshotReader(rootDirectory: root)
+        let result = await reader.readPostToolSnapshot(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        XCTAssertEqual(try snapshotValue(result), snapshot)
+    }
+
+    func testFileSnapshotReaderRejectsMissingPermissiveSymlinkedAndDriftedRecords() async throws {
+        let fixture = try FreshReplannerFixture()
+        let fileName = FileManagedInstallerPostToolSnapshotReader.filePrefix
+            + fixture.request.operationID + ".json"
+
+        let missingRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "post-tool-missing-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let missing = await FileManagedInstallerPostToolSnapshotReader(rootDirectory: missingRoot)
+            .readPostToolSnapshot(stablePlan: fixture.stablePlan, request: fixture.request)
+        XCTAssertEqual(missing.failure, .readbackFailed)
+
+        let permissiveRoot = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: permissiveRoot) }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o755))],
+            ofItemAtPath: permissiveRoot.path
+        )
+        let permissive = await FileManagedInstallerPostToolSnapshotReader(
+            rootDirectory: permissiveRoot
+        ).readPostToolSnapshot(stablePlan: fixture.stablePlan, request: fixture.request)
+        XCTAssertEqual(permissive.failure, .readbackFailed)
+
+        let insecureFileRoot = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: insecureFileRoot) }
+        let insecureFile = insecureFileRoot.appendingPathComponent(fileName)
+        try fixture.snapshot().canonicalJSONData().write(to: insecureFile)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o644))],
+            ofItemAtPath: insecureFile.path
+        )
+        let insecure = await FileManagedInstallerPostToolSnapshotReader(
+            rootDirectory: insecureFileRoot
+        ).readPostToolSnapshot(stablePlan: fixture.stablePlan, request: fixture.request)
+        XCTAssertEqual(insecure.failure, .readbackFailed)
+
+        let symlinkRoot = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: symlinkRoot) }
+        let target = symlinkRoot.appendingPathComponent("target.json")
+        try fixture.snapshot().canonicalJSONData().write(to: target)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: target.path
+        )
+        try FileManager.default.createSymbolicLink(
+            at: symlinkRoot.appendingPathComponent(fileName),
+            withDestinationURL: target
+        )
+        let symlinked = await FileManagedInstallerPostToolSnapshotReader(rootDirectory: symlinkRoot)
+            .readPostToolSnapshot(stablePlan: fixture.stablePlan, request: fixture.request)
+        XCTAssertEqual(symlinked.failure, .readbackFailed)
+
+        let driftRoot = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: driftRoot) }
+        let driftRecord = driftRoot.appendingPathComponent(fileName)
+        try fixture.snapshot(deploymentID: "other-deployment").canonicalJSONData().write(
+            to: driftRecord
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: driftRecord.path
+        )
+        let drifted = await FileManagedInstallerPostToolSnapshotReader(rootDirectory: driftRoot)
+            .readPostToolSnapshot(stablePlan: fixture.stablePlan, request: fixture.request)
+        XCTAssertEqual(drifted.failure, .rejected)
+    }
+
+    private func privateTemporaryDirectory() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "post-tool-readback-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+        return root
+    }
 }
 
 private struct FreshReplannerFixture {
@@ -289,6 +484,36 @@ private struct FreshReplannerFixture {
         )
     }
 
+    func snapshot(
+        operationID: String? = nil,
+        sessionID: String? = nil,
+        deploymentID: String? = nil,
+        stablePlanFingerprint: String? = nil,
+        requestFingerprint: String? = nil,
+        tools: [ManagedToolInstalledReadback]? = nil,
+        python: ManagedPythonRuntimeInstalledReadback? = nil,
+        gates: [ManagedInstallerPostToolGateReadback]? = nil,
+        evidenceReference: String = "receipt:post-tool-snapshot"
+    ) throws -> ManagedInstallerPostToolReadbackSnapshot {
+        try ManagedInstallerPostToolReadbackSnapshot(
+            operationID: operationID ?? request.operationID,
+            sessionID: sessionID ?? request.sessionID,
+            deploymentID: deploymentID ?? request.deploymentID,
+            stablePlanFingerprint: stablePlanFingerprint ?? stablePlan.fingerprint,
+            requestFingerprint: requestFingerprint ?? request.executionRequestFingerprint,
+            managedTools: tools ?? [toolReadback(.active)],
+            pythonRuntime: python ?? finalReadback,
+            gates: try gates ?? ManagedInstallerPostToolGate.allCases.map {
+                try ManagedInstallerPostToolGateReadback(
+                    gate: $0,
+                    passed: true,
+                    evidenceReference: "receipt:gate-\($0.rawValue)"
+                )
+            },
+            evidenceReference: evidenceReference
+        )
+    }
+
     private static func preparation(
         session: VerifiedCompositionSessionPlan,
         deployment: ManagedDeploymentTarget,
@@ -373,6 +598,22 @@ private struct FreshReplannerFixture {
         case .sourceProvenance: runtime.sourceProvenance
         case .buildProvenance: runtime.buildProvenance
         }
+    }
+}
+
+private struct SnapshotReadback: ManagedInstallerPostToolSnapshotReading {
+    let result: Result<
+        ManagedInstallerPostToolReadbackSnapshot,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >
+
+    func readPostToolSnapshot(
+        stablePlan: ManagedInstallerStablePlan,
+        request: ManagedPythonRuntimeActivationRequest
+    ) async -> Result<ManagedInstallerPostToolReadbackSnapshot, ManagedPythonRuntimeTerminalReceiptFailure> {
+        _ = stablePlan
+        _ = request
+        return result
     }
 }
 
@@ -533,8 +774,16 @@ private func qualification(
     }
 }
 
-private extension Result where Success == ManagedPythonRuntimePostToolQualification,
-    Failure == ManagedPythonRuntimeTerminalReceiptFailure {
+private func snapshotValue(
+    _ result: Result<ManagedInstallerPostToolReadbackSnapshot, ManagedPythonRuntimeTerminalReceiptFailure>
+) throws -> ManagedInstallerPostToolReadbackSnapshot {
+    switch result {
+    case .success(let value): return value
+    case .failure(let failure): throw failure
+    }
+}
+
+private extension Result where Failure == ManagedPythonRuntimeTerminalReceiptFailure {
     var failure: Failure? {
         if case .failure(let failure) = self { failure } else { nil }
     }

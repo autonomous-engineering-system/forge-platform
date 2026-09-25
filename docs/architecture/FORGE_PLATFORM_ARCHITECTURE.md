@@ -50,7 +50,8 @@ a caller-supplied digest. That plan canonically binds the reviewed installer
 release, session/catalog identities, exact Forge+EP inventory, provider
 requirements, component diff, managed Git actions, Python readback, rollback
 and venv intent; its derived fingerprint is the only stable-plan identity
-persisted in the parent journal. No production readback adapter,
+persisted in the parent journal. The concrete post-tool reader accepts one
+strict private snapshot, but its privileged producer is not implemented. No
 Python artifact, privileged adapter or operational runtime installation is
 claimed.
 
@@ -58,8 +59,13 @@ The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
 runtime/rollback/venv identities, all-`NO_CHANGE` tool state and product
 dispatch readiness. The composition parser now also retains the exact managed
-Git requirement used by that replanner. Production readback adapters, released
-route wiring and mutation dispatch remain unimplemented.
+Git requirement used by that replanner. A concrete descriptor-safe file reader
+now admits one strict, bounded post-tool snapshot that binds the operation,
+session, deployment, stable plan, execution request, all managed-tool and
+Python observations, and all five gates to one evidence epoch. It rejects
+symlinks, hardlinks, permissive ownership/modes, context drift and mixed
+snapshots. The privileged snapshot producer, released route wiring and mutation
+dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
