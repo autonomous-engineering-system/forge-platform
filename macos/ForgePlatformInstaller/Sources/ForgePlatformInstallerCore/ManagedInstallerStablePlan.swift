@@ -9,6 +9,7 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
     public let deployment: ManagedDeploymentTarget
     public let activationPlan: ManagedPythonRuntimeActivationPlan
     public let reviewedOperation: ReviewedManagedDeploymentOperation
+    public let enabledProviderRequirements: [ProviderRequirement]
     public let originalManagedToolActions: [ManagedToolOriginalPlanAction]
     public let fingerprint: String
 
@@ -25,9 +26,21 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
         let requirements = Dictionary(uniqueKeysWithValues: session.managedTools.map {
             ($0.identity, $0)
         })
+        let availableProviders = Dictionary(uniqueKeysWithValues: session.providerRequirements.map {
+            ($0.id, $0)
+        })
+        let enabledProviders = reviewedOperation.enabledProviderRequirements.sorted {
+            $0.id.rawValue < $1.id.rawValue
+        }
+        let requiredProviderIdentities = Set(session.providerRequirements.compactMap {
+            $0.isRequired ? $0.id : nil
+        })
         guard Set(actions.map(\.requirement.identity)).count == actions.count,
               Set(actions.map(\.requirement.identity)) == Set(requirements.keys),
               actions.allSatisfy({ requirements[$0.requirement.identity] == $0.requirement }),
+              Set(enabledProviders.map(\.id)).count == enabledProviders.count,
+              enabledProviders.allSatisfy({ availableProviders[$0.id] == $0 }),
+              requiredProviderIdentities.isSubset(of: Set(enabledProviders.map(\.id))),
               activationPlan.sessionID == session.sessionID,
               activationPlan.deploymentID == deployment.id,
               activationPlan.compositionIdentity == session.compositionIdentity,
@@ -49,12 +62,14 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
         self.deployment = deployment
         self.activationPlan = activationPlan
         self.reviewedOperation = reviewedOperation
+        enabledProviderRequirements = enabledProviders
         self.originalManagedToolActions = actions
         fingerprint = Self.fingerprint(
             session: session,
             deployment: deployment,
             activationPlan: activationPlan,
             reviewedOperation: reviewedOperation,
+            enabledProviders: enabledProviders,
             actions: actions
         )
     }
@@ -64,6 +79,7 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
         deployment: ManagedDeploymentTarget,
         activationPlan: ManagedPythonRuntimeActivationPlan,
         reviewedOperation: ReviewedManagedDeploymentOperation,
+        enabledProviders: [ProviderRequirement],
         actions: [ManagedToolOriginalPlanAction]
     ) -> String {
         let material: StrictJSONResourceValue = .object([
@@ -74,6 +90,7 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
                 inventoryEvidenceReference: reviewedOperation.inventoryEvidenceReference
             ),
             "installer_release": installerValue(reviewedOperation.currentInstallerRelease),
+            "enabled_providers": .array(enabledProviders.map(providerValue)),
             "managed_tools": .array(actions.map(toolValue)),
             "python": pythonValue(activationPlan),
             "components": .array(

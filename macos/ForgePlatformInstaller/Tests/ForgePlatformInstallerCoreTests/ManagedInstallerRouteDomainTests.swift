@@ -131,6 +131,7 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
             deploymentExists: valid.deploymentExists,
             inventoryEvidenceReference: valid.inventoryEvidenceReference,
             currentInstallerRelease: valid.currentInstallerRelease,
+            enabledProviderRequirements: valid.enabledProviderRequirements,
             components: valid.components
         )
         XCTAssertFalse(fresh.recordManagedDeploymentExecution(

@@ -387,8 +387,11 @@ durably reads back the exact `PLANNED` record before runtime preparation or
 tool mutation may proceed. That seeder and the fresh replanner now consume one
 typed native stable plan whose canonical fingerprint is derived from the
 reviewed release, immutable session/catalogs, exact Forge+EP inventory,
-provider requirements, component diff, managed Git actions and complete
-pre-mutation Python/rollback/venv intent. No caller may inject an unrelated
+all admitted provider requirements, the exact required-plus-selected-optional
+provider set, component diff, managed Git actions and complete pre-mutation
+Python/rollback/venv intent. The stable-plan constructor rejects a missing
+required provider, an unknown or drifted selected requirement and duplicate
+provider identities. No caller may inject an unrelated
 stable-plan digest. The concrete read-only snapshot adapter, durable
 single-assignment store, producer coordinator, closed canonical-response host
 adapter, fixed privileged NSXPC client transport, canonical helper service

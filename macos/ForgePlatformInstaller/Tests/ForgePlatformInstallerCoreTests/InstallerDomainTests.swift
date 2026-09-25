@@ -177,6 +177,43 @@ final class InstallerDomainTests: XCTestCase {
         XCTAssertEqual(state.step, .execution)
     }
 
+    func testReviewedOperationFreezesRequiredAndSelectedOptionalProviders() throws {
+        let required = ProviderRequirement(provider: .codex, isRequired: true)
+        let optional = ProviderRequirement(provider: .githubCLI, isRequired: false)
+        var state = try providerState([required, optional])
+        verifyRequiredProvider(.codex, state: &state)
+        XCTAssertTrue(state.setProviderSelected(.githubCLI, isSelected: true))
+        verifyRequiredProvider(.githubCLI, state: &state)
+        XCTAssertTrue(state.advance())
+        let session = try XCTUnwrap(state.acceptedSessionPlan)
+        state.composition = CompositionReview(
+            manifestIdentity: session.compositionIdentity,
+            status: .compatible,
+            components: [
+                ComponentDiff(
+                    componentID: "forge-runtime",
+                    title: "Forge Server",
+                    change: .update,
+                    candidateVersion: "2.8.0",
+                    artifactDigest: "sha256:" + String(repeating: "a", count: 64),
+                    detail: "Qualified exact artifact"
+                ),
+            ]
+        )
+        XCTAssertTrue(state.setCompositionAcknowledged(true))
+        XCTAssertTrue(state.beginPreMutationCurrencyCheck())
+        XCTAssertTrue(state.recordPreMutationCurrencyCheck(
+            .current(try makeRelease("1.2.3"))
+        ))
+
+        let operation = try XCTUnwrap(state.beginManagedDeploymentExecution())
+
+        XCTAssertEqual(
+            operation.enabledProviderRequirements,
+            [required, optional].sorted { $0.id.rawValue < $1.id.rawValue }
+        )
+    }
+
     func testNewerInstallerAtPreMutationGateInvalidatesPlanAndReturnsToMandatorySelfUpdate() throws {
         var state = try providerState([
             ProviderRequirement(provider: .codex, isRequired: true),

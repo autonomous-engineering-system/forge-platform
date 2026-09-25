@@ -48,8 +48,9 @@ request must bind that plan to the exact `READY` preparation receipt. The
 seeder and fresh replanner now accept one typed native stable plan rather than
 a caller-supplied digest. That plan canonically binds the reviewed installer
 release, session/catalog identities, exact Forge+EP inventory, provider
-requirements, component diff, managed Git actions, Python readback, rollback
-and venv intent; its derived fingerprint is the only stable-plan identity
+requirements, the exact required-plus-selected-optional provider set, component
+diff, managed Git actions, Python readback, rollback and venv intent; its
+derived fingerprint is the only stable-plan identity
 persisted in the parent journal. The concrete post-tool reader accepts one
 strict private snapshot, and a helper-facing single-assignment store persists
 it with exclusive atomic rename and durable descriptor readback. A producer
@@ -99,8 +100,10 @@ insecure, malformed, incomplete, duplicate or noncanonical gate evidence fails
 closed; an explicit failed gate remains valid blocking evidence. Its atomic
 publisher refuses to repair insecure prior state and its decorator exposes a
 gate only after the complete five-gate set has exact durable readback. Live
-gate observers are not implemented. No Git or Python artifact, privileged
-helper or operational runtime installation is claimed.
+gate observers are not implemented. The closed helper request does not yet
+project the stable plan's enabled-provider set, so it cannot authorize live
+provider observation. No Git or Python artifact, privileged helper or
+operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
