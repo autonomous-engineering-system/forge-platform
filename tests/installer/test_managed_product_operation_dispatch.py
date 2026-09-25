@@ -14,6 +14,7 @@ from forge_platform.managed_product_operation_admission import (
 from forge_platform.managed_product_operation_dispatch import (
     ManagedProductOperationDispatchError,
     ManagedProductOperationDispatcher,
+    PinnedManagedProductRouteResolver,
     ResolvedManagedProductRoute,
 )
 from tests.installer.test_managed_install_flow import Adapter, Guard, Pairer
@@ -85,6 +86,63 @@ def route(*, forge="forge-new", ep="ep-new", pending_ep=False, degrade_ep=False)
 
 
 class ManagedProductOperationDispatchTests(unittest.TestCase):
+    def test_pinned_resolver_snapshots_exact_helper_owned_route(self) -> None:
+        _installed, candidate = manifests()
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ManagedDeploymentRegistry(Path(directory).resolve() / "registry")
+            admitted = admit_native_product_operation(
+                decoded(request_payload(candidate, installed=None, exists=False)),
+                manifest=candidate,
+                registry=registry,
+                current_installer_release=installer_release(),
+            )
+            expected = route()
+            routes = {"production": expected}
+            resolver = PinnedManagedProductRouteResolver(routes)
+            routes.clear()
+
+            self.assertIs(resolver.resolve(admitted), expected)
+
+    def test_pinned_resolver_rejects_unknown_or_conflicting_existing_route(self) -> None:
+        installed, candidate = manifests()
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ManagedDeploymentRegistry(Path(directory).resolve() / "registry")
+            registry.create(stored_deployment(installed))
+            admitted = admit_native_product_operation(
+                decoded(request_payload(candidate, installed=installed)),
+                manifest=candidate,
+                installed_manifest=installed,
+                registry=registry,
+                current_installer_release=installer_release(),
+            )
+            with self.assertRaisesRegex(
+                ManagedProductOperationDispatchError, "existing topology"
+            ):
+                PinnedManagedProductRouteResolver({
+                    "production": route(forge="other-forge", ep="other-ep")
+                }).resolve(admitted)
+            with self.assertRaisesRegex(
+                ManagedProductOperationDispatchError, "unavailable"
+            ):
+                PinnedManagedProductRouteResolver({"other": route()}).resolve(admitted)
+            with self.assertRaises(TypeError):
+                PinnedManagedProductRouteResolver({"production": route()}).resolve(object())
+
+    def test_pinned_resolver_rejects_invalid_or_reused_helper_routes(self) -> None:
+        valid = route()
+        for routes in (
+            {},
+            {"production": object()},
+            {"unsafe/path": valid},
+        ):
+            with self.subTest(routes=routes), self.assertRaises((TypeError, ValueError)):
+                PinnedManagedProductRouteResolver(routes)
+        with self.assertRaisesRegex(ValueError, "reuse"):
+            PinnedManagedProductRouteResolver({
+                "production": valid,
+                "staging": route(forge=valid.forge_instance_id, ep="ep-staging"),
+            })
+
     def test_fresh_admitted_route_dispatches_saga_and_returns_native_receipt(self) -> None:
         _installed, candidate = manifests()
         with tempfile.TemporaryDirectory() as directory:
