@@ -67,8 +67,10 @@ canonical context-matched snapshot. Its named listener applies the reciprocal
 requirement to the configured installer bundle and Team identities. A locked
 helper-side capturer acquires the shared host mutation lease, performs exactly
 one complete low-level host read, verifies the exact tool and gate sets and
-binds the result to that request. The concrete OS-specific host reader, signed
-service registration and released wiring are not implemented. No Python
+binds the result to that request. A concrete fixed-file reader securely admits
+one canonical helper-owned host-state document and rejects insecure filesystem
+objects, unstable bytes and request-set drift. The OS-backed producer for that
+document, signed service registration and released wiring are not implemented. No Python
 artifact, privileged helper or operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
@@ -88,8 +90,9 @@ reader. The strict host-observation adapter, fixed privileged NSXPC client
 transport, fail-closed service handler and exact signed-caller listener are
 implemented together with exact signed-helper authentication on the client;
 the locked single-read helper capturer is also implemented. The concrete
-OS-specific host reader, signed service registration, released route wiring and
-mutation dispatch remain unimplemented.
+fixed-file host-state reader is also implemented. Its OS-backed producer,
+signed service registration, released route wiring and mutation dispatch remain
+unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 

@@ -988,6 +988,154 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         ))
     }
 
+    func testFileAtomicHostReaderReturnsOneCanonicalHelperOwnedObservation() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeAtomicHostState(expected.canonicalHostStateJSONData(), root: root)
+        let reader = FileManagedInstallerPostToolAtomicHostReader(rootDirectory: root)
+
+        let observed = try atomicReadbackValue(
+            await reader.readAtomicPostToolHostState(for: request)
+        )
+
+        XCTAssertEqual(observed, expected)
+        XCTAssertEqual(
+            try ManagedInstallerPostToolAtomicHostReadback.decodeHostStateJSON(
+                observed.canonicalHostStateJSONData()
+            ),
+            expected
+        )
+    }
+
+    func testFileAtomicHostReaderRejectsNoncanonicalAndMalformedState() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reader = FileManagedInstallerPostToolAtomicHostReader(rootDirectory: root)
+
+        try writeAtomicHostState(
+            Data(" \(String(decoding: expected.canonicalHostStateJSONData(), as: UTF8.self))".utf8),
+            root: root
+        )
+        let noncanonical = await reader.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(noncanonical.failure, .rejected)
+
+        var wrongSchema = String(
+            decoding: expected.canonicalHostStateJSONData(),
+            as: UTF8.self
+        )
+        wrongSchema = wrongSchema.replacingOccurrences(
+            of: ManagedInstallerPostToolAtomicHostReadback.hostStateSchema,
+            with: "forge-platform.invalid/v1"
+        )
+        try writeAtomicHostState(Data(wrongSchema.utf8), root: root)
+        let invalidSchema = await reader.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(invalidSchema.failure, .readbackFailed)
+
+        try writeAtomicHostState(Data(), root: root)
+        let empty = await reader.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(empty.failure, .readbackFailed)
+
+        try writeAtomicHostState(
+            Data(
+                repeating: 0,
+                count: ManagedInstallerPostToolReadbackSnapshot.maximumBytes + 1
+            ),
+            root: root
+        )
+        let oversized = await reader.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(oversized.failure, .readbackFailed)
+    }
+
+    func testFileAtomicHostReaderRejectsMissingAndInsecureFilesystemObjects() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reader = FileManagedInstallerPostToolAtomicHostReader(rootDirectory: root)
+
+        let missing = await reader.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(missing.failure, .readbackFailed)
+
+        let state = try writeAtomicHostState(
+            expected.canonicalHostStateJSONData(),
+            root: root
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o644))],
+            ofItemAtPath: state.path
+        )
+        let broadFileMode = await reader.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(broadFileMode.failure, .readbackFailed)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: state.path
+        )
+        let hardLink = root.appendingPathComponent("linked-host-state.json")
+        try FileManager.default.linkItem(at: state, to: hardLink)
+        let multipleLinks = await reader.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(multipleLinks.failure, .readbackFailed)
+        try FileManager.default.removeItem(at: hardLink)
+
+        try FileManager.default.removeItem(at: state)
+        let target = root.appendingPathComponent("target.json")
+        try expected.canonicalHostStateJSONData().write(to: target)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: target.path
+        )
+        try FileManager.default.createSymbolicLink(at: state, withDestinationURL: target)
+        let symbolicLink = await reader.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(symbolicLink.failure, .readbackFailed)
+
+        try FileManager.default.removeItem(at: state)
+        try expected.canonicalHostStateJSONData().write(to: state)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: state.path
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o755))],
+            ofItemAtPath: root.path
+        )
+        let broadRootMode = await reader.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(broadRootMode.failure, .readbackFailed)
+    }
+
+    func testFileAtomicHostReaderRejectsNonFileAndRootLocations() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        for root in [
+            URL(string: "https://example.test/state")!,
+            URL(fileURLWithPath: "/", isDirectory: true),
+            URL(fileURLWithPath: "relative-state", isDirectory: true),
+        ] {
+            let result = await FileManagedInstallerPostToolAtomicHostReader(
+                rootDirectory: root
+            ).readAtomicPostToolHostState(for: request)
+            XCTAssertEqual(result.failure, .readbackFailed)
+        }
+    }
+
     func testXPCServiceHandlerRejectsInvalidAndNoncanonicalRequestsBeforeCapture() async throws {
         let fixture = try FreshReplannerFixture()
         let snapshot = try fixture.snapshot()
@@ -1169,6 +1317,19 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
             attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
         )
         return root
+    }
+
+    @discardableResult
+    private func writeAtomicHostState(_ data: Data, root: URL) throws -> URL {
+        let state = root.appendingPathComponent(
+            FileManagedInstallerPostToolAtomicHostReader.fileName
+        )
+        try data.write(to: state, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: state.path
+        )
+        return state
     }
 }
 
@@ -1427,6 +1588,18 @@ private func atomicReadback(
         gates: snapshot.gates,
         evidenceReference: snapshot.evidenceReference
     )
+}
+
+private func atomicReadbackValue(
+    _ result: Result<
+        ManagedInstallerPostToolAtomicHostReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >
+) throws -> ManagedInstallerPostToolAtomicHostReadback {
+    switch result {
+    case .success(let value): return value
+    case .failure(let failure): throw failure
+    }
 }
 
 private final class LockedHostObservationEvents: @unchecked Sendable {

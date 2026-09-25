@@ -744,8 +744,10 @@ and returns only a canonical context-bound snapshot. Its named listener admits
 only the exact signed installer identity through Foundation's reciprocal
 code-signing gate. A locked helper-side capturer performs one complete atomic
 host read under the shared mutation lease and binds it to the canonical
-request. The concrete OS-specific host reader, signed service registration and
-released wiring remain unimplemented.
+request. A concrete fixed-file reader admits only one canonical complete
+helper-owned host-state document through secure stable descriptors and requires
+the exact requested tool and gate sets. The OS-backed producer of that
+document, signed service registration and released wiring remain unimplemented.
 
 The native parent-journal admission adapter now requires a fresh qualification
 bound to the original stable-plan fingerprint, exact runtime, rollback and

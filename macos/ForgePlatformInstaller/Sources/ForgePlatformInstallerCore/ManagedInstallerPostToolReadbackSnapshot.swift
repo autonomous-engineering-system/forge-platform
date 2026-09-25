@@ -120,7 +120,7 @@ public struct ManagedInstallerPostToolReadbackSnapshot: Equatable, Sendable {
         )
     }
 
-    private static func toolValue(_ readback: ManagedToolInstalledReadback) -> StrictJSONResourceValue {
+    static func toolValue(_ readback: ManagedToolInstalledReadback) -> StrictJSONResourceValue {
         .object([
             "identity": .string(readback.identity.rawValue),
             "state": .string(readback.state.rawValue),
@@ -131,7 +131,7 @@ public struct ManagedInstallerPostToolReadbackSnapshot: Equatable, Sendable {
         ])
     }
 
-    private static func pythonValue(
+    static func pythonValue(
         _ readback: ManagedPythonRuntimeInstalledReadback
     ) -> StrictJSONResourceValue {
         .object([
@@ -148,7 +148,7 @@ public struct ManagedInstallerPostToolReadbackSnapshot: Equatable, Sendable {
         ])
     }
 
-    private static func gateValue(
+    static func gateValue(
         _ readback: ManagedInstallerPostToolGateReadback
     ) -> StrictJSONResourceValue {
         .object([
@@ -158,7 +158,7 @@ public struct ManagedInstallerPostToolReadbackSnapshot: Equatable, Sendable {
         ])
     }
 
-    private static func decodeTool(_ value: StrictJSONResourceValue) throws
+    static func decodeTool(_ value: StrictJSONResourceValue) throws
         -> ManagedToolInstalledReadback {
         guard let fields = value.objectValue,
               Set(fields.keys) == Set([
@@ -185,7 +185,7 @@ public struct ManagedInstallerPostToolReadbackSnapshot: Equatable, Sendable {
         )
     }
 
-    private static func decodePython(_ value: StrictJSONResourceValue) throws
+    static func decodePython(_ value: StrictJSONResourceValue) throws
         -> ManagedPythonRuntimeInstalledReadback {
         guard let fields = value.objectValue,
               Set(fields.keys) == Set([
@@ -212,7 +212,7 @@ public struct ManagedInstallerPostToolReadbackSnapshot: Equatable, Sendable {
         )
     }
 
-    private static func decodeGate(_ value: StrictJSONResourceValue) throws
+    static func decodeGate(_ value: StrictJSONResourceValue) throws
         -> ManagedInstallerPostToolGateReadback {
         guard let fields = value.objectValue,
               Set(fields.keys) == Set(["identity", "passed", "evidence_reference"]),
