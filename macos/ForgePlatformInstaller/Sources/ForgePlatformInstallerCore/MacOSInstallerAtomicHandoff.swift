@@ -19,6 +19,31 @@ protocol MacOSInstallerApplicationLaunching: Sendable {
 /// root immediately before it is passed to LaunchServices.
 struct MacOSInstallerApplicationLauncher: MacOSInstallerApplicationLaunching {
     private static let launchTimeout: DispatchTimeInterval = .seconds(20)
+    private let openApplication: @MainActor @Sendable (
+        URL,
+        @escaping @Sendable (Bool) -> Void
+    ) -> Void
+
+    init() {
+        openApplication = { bundleURL, completion in
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            configuration.createsNewApplicationInstance = true
+            NSWorkspace.shared.openApplication(
+                at: bundleURL,
+                configuration: configuration
+            ) { application, error in
+                completion(application != nil && error == nil)
+            }
+        }
+    }
+
+    init(openApplication: @escaping @MainActor @Sendable (
+        URL,
+        @escaping @Sendable (Bool) -> Void
+    ) -> Void) {
+        self.openApplication = openApplication
+    }
 
     func launchFreshInstallerApplication(
         at bundleURL: URL
@@ -42,14 +67,8 @@ struct MacOSInstallerApplicationLauncher: MacOSInstallerApplicationLaunching {
                 completion.resolve(false)
             }
             Task { @MainActor in
-                let configuration = NSWorkspace.OpenConfiguration()
-                configuration.activates = true
-                configuration.createsNewApplicationInstance = true
-                NSWorkspace.shared.openApplication(
-                    at: bundleURL,
-                    configuration: configuration
-                ) { application, error in
-                    completion.resolve(application != nil && error == nil)
+                openApplication(bundleURL) { launched in
+                    completion.resolve(launched)
                 }
             }
         }

@@ -725,6 +725,75 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertTrue(captured.isEmpty)
     }
 
+    func testHostObservationRequestCanonicalJSONRoundTripsAndRejectsInvalidShapes() throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let canonical = request.canonicalJSONData()
+
+        XCTAssertEqual(
+            try ManagedInstallerPostToolHostObservationRequest.decodeJSON(canonical),
+            request
+        )
+        XCTAssertEqual(
+            try ManagedInstallerPostToolHostObservationRequest.decodeJSON(canonical)
+                .canonicalJSONData(),
+            canonical
+        )
+        XCTAssertThrowsError(try ManagedInstallerPostToolHostObservationRequest.decodeJSON(Data()))
+        XCTAssertThrowsError(try ManagedInstallerPostToolHostObservationRequest.decodeJSON(
+            Data(repeating: 0x20, count:
+                ManagedInstallerPostToolHostObservationRequest.maximumBytes + 1)
+        ))
+        XCTAssertThrowsError(try ManagedInstallerPostToolHostObservationRequest.decodeJSON(
+            Data("{}".utf8)
+        ))
+        let unknownField = String(decoding: canonical.dropLast(), as: UTF8.self)
+            + ",\"unknown\":true}"
+        XCTAssertThrowsError(try ManagedInstallerPostToolHostObservationRequest.decodeJSON(
+            Data(unknownField.utf8)
+        ))
+    }
+
+    func testXPCTransportSendsCanonicalRequestAndReturnsHelperSnapshot() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let service = HostObservationXPCService(response: snapshot.canonicalJSONData())
+        let transport = MacOSManagedInstallerPostToolXPCTransport(endpoint: service.endpoint)
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+
+        let response = await transport.capturePostToolObservation(request)
+
+        XCTAssertEqual(try response.get(), snapshot.canonicalJSONData())
+        let captured = try XCTUnwrap(service.capturedRequests().first)
+        XCTAssertEqual(service.capturedRequests().count, 1)
+        XCTAssertEqual(captured, request.canonicalJSONData())
+        XCTAssertEqual(
+            try ManagedInstallerPostToolHostObservationRequest.decodeJSON(captured),
+            request
+        )
+    }
+
+    func testXPCTransportMapsNilHelperResponseToUnavailable() async throws {
+        let fixture = try FreshReplannerFixture()
+        let service = HostObservationXPCService(response: nil)
+        let transport = MacOSManagedInstallerPostToolXPCTransport(endpoint: service.endpoint)
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+
+        let result = await transport.capturePostToolObservation(request)
+
+        XCTAssertEqual(result.failure, .receiptUnavailable)
+        XCTAssertEqual(service.capturedRequests().count, 1)
+    }
+
     private func privateTemporaryDirectory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "post-tool-readback-\(UUID().uuidString)",
@@ -1002,6 +1071,56 @@ private actor HostObservationTransport: ManagedInstallerPostToolHostObservationT
 
     func capturedRequests() -> [ManagedInstallerPostToolHostObservationRequest] {
         requests
+    }
+}
+
+private final class HostObservationXPCService: NSObject,
+    NSXPCListenerDelegate, ManagedInstallerPostToolObservationXPCService, @unchecked Sendable {
+    private let listener = NSXPCListener.anonymous()
+    private let response: Data?
+    private let lock = NSLock()
+    private var requests: [Data] = []
+
+    var endpoint: NSXPCListenerEndpoint { listener.endpoint }
+
+    init(response: Data?) {
+        self.response = response
+        super.init()
+        listener.delegate = self
+        listener.resume()
+    }
+
+    deinit {
+        listener.invalidate()
+    }
+
+    func listener(
+        _ listener: NSXPCListener,
+        shouldAcceptNewConnection newConnection: NSXPCConnection
+    ) -> Bool {
+        _ = listener
+        newConnection.exportedInterface = NSXPCInterface(
+            with: ManagedInstallerPostToolObservationXPCService.self
+        )
+        newConnection.exportedObject = self
+        newConnection.resume()
+        return true
+    }
+
+    func capturePostToolObservation(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        lock.lock()
+        requests.append(canonicalRequest)
+        lock.unlock()
+        reply(response)
+    }
+
+    func capturedRequests() -> [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
     }
 }
 
