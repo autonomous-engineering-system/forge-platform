@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import XCTest
 @testable import ForgePlatformInstallerCore
 
@@ -872,6 +873,117 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(calls, [request, request])
     }
 
+    func testXPCCallerIdentityRequiresExactDeveloperIDApplicationIdentity() throws {
+        let identity = try ManagedInstallerPostToolXPCCallerIdentity(
+            bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
+            teamIdentifier: "ZEML4LPXH4"
+        )
+
+        XCTAssertEqual(
+            identity.codeSigningRequirement,
+            "anchor apple generic"
+                + " and identifier \"com.autonomous-engineering-system.forge-platform-installer\""
+                + " and certificate 1[field.1.2.840.113635.100.6.2.6] exists"
+                + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+                + " and certificate leaf[subject.OU] = \"ZEML4LPXH4\""
+        )
+        var parsedRequirement: SecRequirement?
+        XCTAssertEqual(
+            SecRequirementCreateWithString(
+                identity.codeSigningRequirement as CFString,
+                [],
+                &parsedRequirement
+            ),
+            errSecSuccess
+        )
+        XCTAssertNotNil(parsedRequirement)
+        XCTAssertThrowsError(try ManagedInstallerPostToolXPCCallerIdentity(
+            bundleIdentifier: "com.example.installer\" or true",
+            teamIdentifier: "ZEML4LPXH4"
+        )) { error in
+            XCTAssertEqual(
+                error as? ManagedInstallerPostToolXPCCallerIdentityError,
+                .invalidIdentity
+            )
+        }
+        XCTAssertThrowsError(try ManagedInstallerPostToolXPCCallerIdentity(
+            bundleIdentifier: "com.example.installer",
+            teamIdentifier: "lowercase1"
+        ))
+
+        let key = try SealedInstallerReleaseTrustEd25519PublicKey(
+            keyID: "release-root",
+            publicKeyBase64: Data(repeating: 7, count: 32).base64EncodedString()
+        )
+        let digest = SealedInstallerReleaseTrustConfiguration.canonicalSHA256(
+            repository: "autonomous-engineering-system/forge-platform",
+            releaseDescriptorLocator:
+                SealedInstallerReleaseTrustConfiguration.githubReleaseAssetLocator,
+            releaseDescriptorAssetName: "forge-platform-installer-release.json",
+            expectedBundleIdentifier: identity.bundleIdentifier,
+            expectedTeamIdentifier: identity.teamIdentifier,
+            signatureThreshold: 1,
+            ed25519PublicKeys: [key]
+        )
+        let releaseTrust = try SealedInstallerReleaseTrustConfiguration(
+            configurationSHA256: digest,
+            repository: "autonomous-engineering-system/forge-platform",
+            releaseDescriptorLocator:
+                SealedInstallerReleaseTrustConfiguration.githubReleaseAssetLocator,
+            releaseDescriptorAssetName: "forge-platform-installer-release.json",
+            expectedBundleIdentifier: identity.bundleIdentifier,
+            expectedTeamIdentifier: identity.teamIdentifier,
+            signatureThreshold: 1,
+            ed25519PublicKeys: [key]
+        )
+        XCTAssertEqual(
+            try ManagedInstallerPostToolXPCCallerIdentity(releaseTrust: releaseTrust),
+            identity
+        )
+    }
+
+    func testXPCListenerInstallsCallerRequirementAndExportsOnlyObservationService() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let identity = try ManagedInstallerPostToolXPCCallerIdentity(
+            bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
+            teamIdentifier: "ZEML4LPXH4"
+        )
+        let requirement = XPCRequirementRecorder()
+        let capturer = HelperSnapshotCapturerSpy(results: [.success(snapshot)])
+        let service = ManagedInstallerPostToolObservationXPCServiceHandler(
+            snapshotCapturer: capturer
+        )
+        let listener = MacOSManagedInstallerPostToolObservationXPCListener(
+            listener: .anonymous(),
+            callerIdentity: identity,
+            serviceHandler: service,
+            installCodeSigningRequirement: { _, installed in
+                requirement.record(installed)
+            }
+        )
+        listener.activate()
+        defer { listener.invalidate() }
+        let transport = MacOSManagedInstallerPostToolXPCTransport(endpoint: listener.endpoint)
+
+        let response = await transport.capturePostToolObservation(request)
+
+        XCTAssertEqual(try response.get(), snapshot.canonicalJSONData())
+        XCTAssertEqual(requirement.value(), identity.codeSigningRequirement)
+        let calls = await capturer.calls()
+        XCTAssertEqual(calls, [request])
+
+        let namedListener = MacOSManagedInstallerPostToolObservationXPCListener(
+            callerIdentity: identity,
+            serviceHandler: service
+        )
+        namedListener.invalidate()
+    }
+
     private func privateTemporaryDirectory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "post-tool-readback-\(UUID().uuidString)",
@@ -1178,6 +1290,23 @@ private actor HelperSnapshotCapturerSpy: ManagedInstallerPostToolHelperSnapshotC
 
     func calls() -> [ManagedInstallerPostToolHostObservationRequest] {
         requests
+    }
+}
+
+private final class XPCRequirementRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requirement: String?
+
+    func record(_ requirement: String) {
+        lock.lock()
+        self.requirement = requirement
+        lock.unlock()
+    }
+
+    func value() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return requirement
     }
 }
 

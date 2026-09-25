@@ -61,10 +61,11 @@ snapshot response and rejects malformed, noncanonical or context-drifted
 responses. A native client sends those canonical bytes only through one fixed
 NSXPC interface to one fixed privileged Mach service. A paired service handler
 rejects invalid or noncanonical requests before capture and emits only a
-canonical context-matched snapshot. Authorized caller admission, concrete host
-reads, signed service registration and released wiring are not implemented. No
-Python artifact, privileged helper or operational runtime installation is
-claimed.
+canonical context-matched snapshot. Its named listener admits peers only when
+Foundation verifies the exact configured installer bundle and Team identities on a
+Developer ID Application chain. Concrete host reads, signed service
+registration and released wiring are not implemented. No Python artifact,
+privileged helper or operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
@@ -80,8 +81,8 @@ context-matched `0600` record with file and directory synchronization, accepts
 only exact idempotent retries and rejects conflicting evidence. A producer
 coordinator then binds exactly one host observation to that store and
 reader. The strict host-observation adapter, fixed privileged NSXPC client
-transport and fail-closed service handler are implemented; authorized caller
-admission, concrete host-read capture, signed service registration, released
+transport, fail-closed service handler and exact signed-caller listener are
+implemented; concrete host-read capture, signed service registration, released
 route wiring and mutation dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
