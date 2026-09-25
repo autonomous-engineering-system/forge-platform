@@ -1402,6 +1402,156 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(wrongIdentityResult.failure, .readbackFailed)
     }
 
+    func testManagedGitHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
+        let fixture = try FreshReplannerFixture()
+        let first = try fixture.toolReadback(.absent)
+        let replacement = try fixture.toolReadback(.active)
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerManagedGitHostStateStore(rootDirectory: root)
+        let reader = FileManagedInstallerManagedGitHostReader(rootDirectory: root)
+
+        XCTAssertNoThrow(try store.persistManagedGitHostState(first).get())
+        XCTAssertNoThrow(try store.persistManagedGitHostState(first).get())
+        let firstReadback = try await reader.readManagedTool(fixture.git).get()
+        XCTAssertEqual(firstReadback, first)
+
+        XCTAssertNoThrow(try store.persistManagedGitHostState(replacement).get())
+        let replacementReadback = try await reader.readManagedTool(fixture.git).get()
+        XCTAssertEqual(replacementReadback, replacement)
+        let state = root.appendingPathComponent(
+            FileManagedInstallerManagedGitHostReader.fileName
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: state.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .contains(where: { $0.hasPrefix(".managed-git-host-state.tmp-") }))
+    }
+
+    func testManagedGitHostStateStoreRefusesToRepairInsecureOrCorruptState() throws {
+        let fixture = try FreshReplannerFixture()
+        let readback = try fixture.toolReadback(.active)
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "missing-managed-git-host-state-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        XCTAssertEqual(
+            FileManagedInstallerManagedGitHostStateStore(rootDirectory: missing)
+                .persistManagedGitHostState(readback).failure,
+            .receiptPersistenceFailed
+        )
+
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerManagedGitHostStateStore(rootDirectory: root)
+        let state = try writeManagedGitHostState(Data("{}".utf8), root: root)
+        XCTAssertEqual(
+            store.persistManagedGitHostState(readback).failure,
+            .receiptPersistenceFailed
+        )
+
+        try FileManager.default.removeItem(at: state)
+        try writeManagedGitHostState(
+            readback.canonicalManagedGitHostStateJSONData(),
+            root: root
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o644))],
+            ofItemAtPath: state.path
+        )
+        XCTAssertEqual(
+            store.persistManagedGitHostState(readback).failure,
+            .receiptPersistenceFailed
+        )
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: state.path
+        )
+        let linked = root.appendingPathComponent("managed-git-store-linked.json")
+        try FileManager.default.linkItem(at: state, to: linked)
+        XCTAssertEqual(
+            store.persistManagedGitHostState(readback).failure,
+            .receiptPersistenceFailed
+        )
+        try FileManager.default.removeItem(at: linked)
+
+        try FileManager.default.removeItem(at: state)
+        let target = root.appendingPathComponent("managed-git-store-target.json")
+        try readback.canonicalManagedGitHostStateJSONData().write(to: target)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: target.path
+        )
+        try FileManager.default.createSymbolicLink(at: state, withDestinationURL: target)
+        XCTAssertEqual(
+            store.persistManagedGitHostState(readback).failure,
+            .receiptPersistenceFailed
+        )
+    }
+
+    func testManagedGitPublishingHostReaderRequiresExactDurableReadback() async throws {
+        let fixture = try FreshReplannerFixture()
+        let expected = try fixture.toolReadback(.active)
+        let events = LockedHostObservationEvents()
+        let persister = ManagedGitHostStatePersisterSpy(events: events)
+        let reader = ManagedInstallerManagedGitPublishingHostReader(
+            sourceReader: ManagedGitHostReaderSpy(
+                result: .success(expected),
+                events: events,
+                eventName: "source"
+            ),
+            persister: persister,
+            durableReader: ManagedGitHostReaderSpy(
+                result: .success(expected),
+                events: events,
+                eventName: "durable"
+            )
+        )
+
+        let observed = try await reader.readManagedTool(fixture.git).get()
+
+        XCTAssertEqual(observed, expected)
+        XCTAssertEqual(events.values(), ["source", "persist", "durable"])
+        XCTAssertEqual(persister.values(), [expected])
+    }
+
+    func testManagedGitPublishingHostReaderStopsAtFailedOrDriftedBoundaries() async throws {
+        let fixture = try FreshReplannerFixture()
+        let expected = try fixture.toolReadback(.active)
+        let drifted = try fixture.toolReadback(.unknown)
+
+        let sourceFailure = await ManagedInstallerManagedGitPublishingHostReader(
+            sourceReader: ManagedGitHostReaderSpy(result: .failure(.readbackFailed)),
+            persister: ManagedGitHostStatePersisterSpy(),
+            durableReader: ManagedGitHostReaderSpy(result: .success(expected))
+        ).readManagedTool(fixture.git)
+        XCTAssertEqual(sourceFailure.failure, .readbackFailed)
+
+        let persistFailure = await ManagedInstallerManagedGitPublishingHostReader(
+            sourceReader: ManagedGitHostReaderSpy(result: .success(expected)),
+            persister: ManagedGitHostStatePersisterSpy(
+                failure: .receiptPersistenceFailed
+            ),
+            durableReader: ManagedGitHostReaderSpy(result: .success(expected))
+        ).readManagedTool(fixture.git)
+        XCTAssertEqual(persistFailure.failure, .receiptPersistenceFailed)
+
+        let durableFailure = await ManagedInstallerManagedGitPublishingHostReader(
+            sourceReader: ManagedGitHostReaderSpy(result: .success(expected)),
+            persister: ManagedGitHostStatePersisterSpy(),
+            durableReader: ManagedGitHostReaderSpy(result: .failure(.readbackFailed))
+        ).readManagedTool(fixture.git)
+        XCTAssertEqual(durableFailure.failure, .readbackFailed)
+
+        let drift = await ManagedInstallerManagedGitPublishingHostReader(
+            sourceReader: ManagedGitHostReaderSpy(result: .success(expected)),
+            persister: ManagedGitHostStatePersisterSpy(),
+            durableReader: ManagedGitHostReaderSpy(result: .success(drifted))
+        ).readManagedTool(fixture.git)
+        XCTAssertEqual(drift.failure, .rejected)
+    }
+
     func testFileAtomicHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
         let fixture = try FreshReplannerFixture()
         let request = try ManagedInstallerPostToolHostObservationRequest(
@@ -2125,6 +2275,72 @@ private struct HostToolSource: ManagedToolPostMutationReading {
         events?.record("tool:\(requirement.identity.rawValue)")
         if let failure { return .failure(failure) }
         return .success(readback)
+    }
+}
+
+private struct ManagedGitHostReaderSpy: ManagedToolPostMutationReading {
+    let result: Result<
+        ManagedToolInstalledReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >
+    let events: LockedHostObservationEvents?
+    let eventName: String
+
+    init(
+        result: Result<
+            ManagedToolInstalledReadback,
+            ManagedPythonRuntimeTerminalReceiptFailure
+        >,
+        events: LockedHostObservationEvents? = nil,
+        eventName: String = "read"
+    ) {
+        self.result = result
+        self.events = events
+        self.eventName = eventName
+    }
+
+    func readManagedTool(
+        _ requirement: ManagedToolRequirement
+    ) async -> Result<
+        ManagedToolInstalledReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    > {
+        _ = requirement
+        events?.record(eventName)
+        return result
+    }
+}
+
+private final class ManagedGitHostStatePersisterSpy:
+    ManagedInstallerManagedGitHostStatePersisting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let failure: ManagedPythonRuntimeTerminalReceiptFailure?
+    private let events: LockedHostObservationEvents?
+    private var readbacks: [ManagedToolInstalledReadback] = []
+
+    init(
+        failure: ManagedPythonRuntimeTerminalReceiptFailure? = nil,
+        events: LockedHostObservationEvents? = nil
+    ) {
+        self.failure = failure
+        self.events = events
+    }
+
+    func persistManagedGitHostState(
+        _ readback: ManagedToolInstalledReadback
+    ) -> Result<Void, ManagedPythonRuntimeTerminalReceiptFailure> {
+        lock.lock()
+        readbacks.append(readback)
+        lock.unlock()
+        events?.record("persist")
+        if let failure { return .failure(failure) }
+        return .success(())
+    }
+
+    func values() -> [ManagedToolInstalledReadback] {
+        lock.lock()
+        defer { lock.unlock() }
+        return readbacks
     }
 }
 

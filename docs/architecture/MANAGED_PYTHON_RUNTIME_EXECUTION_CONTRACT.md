@@ -30,9 +30,12 @@ and rejects an observation when its helper-owned epoch changes across those
 reads. A concrete managed-Git source now reads one fixed helper-owned canonical
 record through a stable descriptor and fails closed for missing, insecure,
 malformed or noncanonical evidence. Only an explicit canonical `ABSENT` record
-means absent. No managed-Git mutation/observation publisher, production runtime
-artifact, concrete Python or gate adapter, signed helper registration, released
-mutation wiring, or live machine installation is approved by this increment.
+means absent. A paired atomic publisher refuses to repair insecure prior state,
+synchronizes file and directory descriptors and requires exact durable readback
+through a closed decorator. No live managed-Git OS observer or mutation adapter,
+production runtime artifact, concrete Python or gate adapter, signed helper
+registration, released mutation wiring, or live machine installation is
+approved by this increment.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -269,9 +272,9 @@ implemented together with mutual exact signed-peer authentication and a locked
 single-read helper capture coordinator plus the descriptor-safe fixed-file
 host-state reader, atomic publisher, source/publish/durable-readback coordinator,
 epoch-bracketed exact source collector and descriptor-safe managed-Git record
-reader; the managed-Git producer/mutation route, concrete Python and gate
-adapters, signed service registration and released route wiring are not yet
-implemented.
+reader plus its atomic publisher and exact durable-readback decorator; the live
+managed-Git OS observer/mutation route, concrete Python and gate adapters,
+signed service registration and released route wiring are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -379,9 +382,10 @@ publisher requires a private root and exact durable readback after publication.
 The exact source collector also requires matching helper-owned epochs around
 all requested tool, Python and gate reads. The concrete managed-Git source
 admits one fixed canonical helper-owned record with stable no-follow readback;
-only an explicitly recorded `ABSENT` or `UNKNOWN` is preserved. Its producer
-and mutation route, concrete Python and gate adapters, signed service
-registration and these coordinators are not wired into the released runtime. A
+only an explicitly recorded `ABSENT` or `UNKNOWN` is preserved. Its paired
+atomic publisher and exact durable-readback decorator are implemented. The live
+OS observer and mutation route, concrete Python and gate adapters, signed
+service registration and these coordinators are not wired into the released runtime. A
 concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
