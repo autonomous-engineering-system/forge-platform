@@ -70,7 +70,11 @@ identity, and reopens no-follow bytes for exact identity and digest readback.
 Exact discard is retry-safe. Strict fixed-layout reconciliation removes an
 operation left before the complete staged identity returns and rejects unknown,
 linked, permissive or oversized entries. Exclusive provider-operation lease
-coordination, provider archive inspection, extraction, installation,
+coordination, extraction and installation remain unimplemented. A read-only
+native provider archive inspector validates the exact staged archive as strict
+bounded `tar.gz`/USTAR or ZIP, requires canonical explicit-parent layout and
+safe permissions, rebinds the executable SHA-256, and accepts only a thin
+arm64 macOS Mach-O. It neither extracts nor executes archive members. Provider
 credential-home provisioning, service-account secure-store integration and the
 other four live gate observers remain unimplemented, so this is not live
 provider-readiness evidence.
@@ -293,7 +297,7 @@ reader are implemented. The source-level provider-gate evaluator and router
 consume the fixed-layout macOS component-provider inspector. Exact component
 provider archive acquisition and private descriptor-safe staging/readback/discard
 plus interrupted-acquisition cleanup are implemented. Live Git/Python OS
-observers and mutation routes, provider archive inspection/extraction, exclusive
+observers and mutation routes, exclusive
 recovery coordination, installation and credential-home
 provisioning, service-account secure-store integration, the other four live
 gate observers, signed service registration and the released route are not yet
@@ -326,7 +330,9 @@ decorator are implemented. The source-level provider-gate evaluator and
 separate gate router plus fixed-layout macOS component-provider inspector are
 implemented. The exact V3 component-provider archive transport and private
 descriptor-safe staging/readback/discard are also implemented, including strict
-interrupted-acquisition cleanup. Provider archive inspection,
+interrupted-acquisition cleanup. Read-only strict `tar.gz`/ZIP archive
+inspection with exact executable-digest and thin-arm64 Mach-O validation is
+implemented. Archive extraction,
 exclusive recovery coordination, installation and
 credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
@@ -455,8 +461,9 @@ durable-readback decorator are implemented. The source-level provider-gate
 evaluator and separate router consume the exact enabled-provider request through
 the fixed-layout macOS component-provider inspector. Exact provider archive
 transport and private descriptor-safe staging/readback/discard are implemented.
-Strict interrupted-acquisition cleanup is also implemented. Archive
-inspection/extraction, exclusive recovery coordination, installation and
+Strict interrupted-acquisition cleanup and read-only strict `tar.gz`/ZIP
+archive inspection with executable-digest and thin-arm64 Mach-O validation are
+also implemented. Archive extraction, exclusive recovery coordination, installation and
 credential-home provisioning, service-account secure-store integration and the
 other four live gate observers are absent. A concrete reviewed authorized helper
 process, released mutation wiring and an actual
