@@ -794,6 +794,84 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(service.capturedRequests().count, 1)
     }
 
+    func testXPCServiceHandlerReturnsOnlyCanonicalContextBoundSnapshot() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let capturer = HelperSnapshotCapturerSpy(results: [.success(snapshot)])
+        let service = ManagedInstallerPostToolObservationXPCServiceHandler(
+            snapshotCapturer: capturer
+        )
+
+        let response = await callXPCService(service, request: request.canonicalJSONData())
+
+        XCTAssertEqual(response, snapshot.canonicalJSONData())
+        let calls = await capturer.calls()
+        XCTAssertEqual(calls, [request])
+    }
+
+    func testXPCServiceHandlerRejectsInvalidAndNoncanonicalRequestsBeforeCapture() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let capturer = HelperSnapshotCapturerSpy(results: [.success(snapshot)])
+        let service = ManagedInstallerPostToolObservationXPCServiceHandler(
+            snapshotCapturer: capturer
+        )
+
+        let invalid = await callXPCService(service, request: Data("{}".utf8))
+        let noncanonical = await callXPCService(
+            service,
+            request: Data(" \(String(decoding: request.canonicalJSONData(), as: UTF8.self))".utf8)
+        )
+
+        XCTAssertNil(invalid)
+        XCTAssertNil(noncanonical)
+        let calls = await capturer.calls()
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testXPCServiceHandlerRejectsCaptureFailureAndContextDrift() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let drifted = try ManagedInstallerPostToolReadbackSnapshot(
+            operationID: "different-operation",
+            sessionID: snapshot.sessionID,
+            deploymentID: snapshot.deploymentID,
+            stablePlanFingerprint: snapshot.stablePlanFingerprint,
+            requestFingerprint: snapshot.requestFingerprint,
+            managedTools: snapshot.managedTools,
+            pythonRuntime: snapshot.pythonRuntime,
+            gates: snapshot.gates,
+            evidenceReference: snapshot.evidenceReference
+        )
+        let capturer = HelperSnapshotCapturerSpy(results: [
+            .failure(.readbackFailed),
+            .success(drifted),
+        ])
+        let service = ManagedInstallerPostToolObservationXPCServiceHandler(
+            snapshotCapturer: capturer
+        )
+
+        let failed = await callXPCService(service, request: request.canonicalJSONData())
+        let mismatched = await callXPCService(service, request: request.canonicalJSONData())
+
+        XCTAssertNil(failed)
+        XCTAssertNil(mismatched)
+        let calls = await capturer.calls()
+        XCTAssertEqual(calls, [request, request])
+    }
+
     private func privateTemporaryDirectory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "post-tool-readback-\(UUID().uuidString)",
@@ -1071,6 +1149,46 @@ private actor HostObservationTransport: ManagedInstallerPostToolHostObservationT
 
     func capturedRequests() -> [ManagedInstallerPostToolHostObservationRequest] {
         requests
+    }
+}
+
+private actor HelperSnapshotCapturerSpy: ManagedInstallerPostToolHelperSnapshotCapturing {
+    private var results: [Result<
+        ManagedInstallerPostToolReadbackSnapshot,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >]
+    private var requests: [ManagedInstallerPostToolHostObservationRequest] = []
+
+    init(results: [Result<
+        ManagedInstallerPostToolReadbackSnapshot,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >]) {
+        self.results = results
+    }
+
+    func capturePostToolSnapshot(
+        for request: ManagedInstallerPostToolHostObservationRequest
+    ) async -> Result<
+        ManagedInstallerPostToolReadbackSnapshot,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    > {
+        requests.append(request)
+        return results.removeFirst()
+    }
+
+    func calls() -> [ManagedInstallerPostToolHostObservationRequest] {
+        requests
+    }
+}
+
+private func callXPCService(
+    _ service: ManagedInstallerPostToolObservationXPCService,
+    request: Data
+) async -> Data? {
+    await withCheckedContinuation { continuation in
+        service.capturePostToolObservation(request) { response in
+            continuation.resume(returning: response)
+        }
     }
 }
 
