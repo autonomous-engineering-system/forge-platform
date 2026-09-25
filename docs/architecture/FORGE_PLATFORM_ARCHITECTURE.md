@@ -138,7 +138,13 @@ installation adapter remains absent. A cleanup-enforcing provider preparation
 coordinator now composes reconciliation, staging, inspection, that mutation
 seam and terminal discard under the same host-wide lease. Its final `READY`
 receipt rebinds every archive, inspection, runtime-slot and provider-home
-identity; cleanup or lock-release failure overrides success. A read-only native
+identity; cleanup or lock-release failure overrides success. A stable-plan
+provider coordinator now validates the complete enabled set before dispatch,
+derives one operation identity from the stable-plan fingerprint plus exact
+target, runs component-owned V3 targets in canonical order and accepts only a
+complete plan-bound receipt set. Legacy or user-scoped targets fail before the
+first mutation. This source-level fanout is not connected to the released
+installer route. A read-only native
 inspector now reopens the exact staged archive, validates strict bounded
 `tar.gz` or ZIP layout, exact executable SHA-256, and one thin arm64 macOS
 Mach-O without extracting or executing content. Provider
@@ -181,7 +187,9 @@ Read-only exact `tar.gz`/ZIP provider archive inspection with executable-digest
 and thin-arm64 Mach-O validation plus the exclusive cleanup-enforcing archive
 qualification coordinator and the closed pathless provider-runtime mutation
 coordinator/protocol are implemented and composed by one cleanup-enforcing
-provider preparation transaction under the same exclusive lease. The concrete extraction/install adapter,
+provider preparation transaction under the same exclusive lease. A separate
+canonical source-level coordinator binds the exact enabled-provider fanout and
+complete receipt set to the stable plan. The concrete extraction/install adapter,
 credential-home provisioning, service-account secure-store integration
 and the other four live gate observers remain absent. Signed service
 registration, released route wiring and mutation dispatch remain unimplemented.
