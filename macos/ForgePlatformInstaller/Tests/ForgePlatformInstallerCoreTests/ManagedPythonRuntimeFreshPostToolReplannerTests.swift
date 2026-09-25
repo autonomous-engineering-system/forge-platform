@@ -1982,6 +1982,210 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(duplicateResult.failure, .readbackFailed)
     }
 
+    func testPostToolGateHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let first = try fixture.snapshot().gates
+        let replacement = try first.map { readback in
+            try ManagedInstallerPostToolGateReadback(
+                gate: readback.gate,
+                passed: readback.gate == .providers ? false : readback.passed,
+                evidenceReference: readback.gate == .providers
+                    ? "receipt:provider-availability-blocked"
+                    : readback.evidenceReference
+            )
+        }
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerPostToolGateHostStateStore(rootDirectory: root)
+        let reader = FileManagedInstallerPostToolGateHostReader(rootDirectory: root)
+
+        XCTAssertNoThrow(try store.persistPostToolGateHostState(first).get())
+        XCTAssertNoThrow(try store.persistPostToolGateHostState(first).get())
+        for expected in first.sorted(by: { $0.gate.rawValue < $1.gate.rawValue }) {
+            let observed = try await reader.readPostToolHostGate(
+                expected.gate,
+                for: request
+            ).get()
+            XCTAssertEqual(observed, expected)
+        }
+
+        XCTAssertNoThrow(try store.persistPostToolGateHostState(replacement).get())
+        for expected in replacement.sorted(by: { $0.gate.rawValue < $1.gate.rawValue }) {
+            let observed = try await reader.readPostToolHostGate(
+                expected.gate,
+                for: request
+            ).get()
+            XCTAssertEqual(observed, expected)
+        }
+        let state = root.appendingPathComponent(
+            FileManagedInstallerPostToolGateHostReader.fileName
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: state.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .contains(where: { $0.hasPrefix(".managed-installer-post-tool-gates.tmp-") }))
+    }
+
+    func testPostToolGateHostStateStoreRefusesIncompleteInsecureOrCorruptState() throws {
+        let gates = try FreshReplannerFixture().snapshot().gates
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "missing-post-tool-gates-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        XCTAssertEqual(
+            FileManagedInstallerPostToolGateHostStateStore(rootDirectory: missing)
+                .persistPostToolGateHostState(gates).failure,
+            .receiptPersistenceFailed
+        )
+
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerPostToolGateHostStateStore(rootDirectory: root)
+        XCTAssertEqual(
+            store.persistPostToolGateHostState(Array(gates.dropLast())).failure,
+            .rejected
+        )
+        let state = try writePostToolGateHostState(Data("{}".utf8), root: root)
+        XCTAssertEqual(
+            store.persistPostToolGateHostState(gates).failure,
+            .receiptPersistenceFailed
+        )
+
+        try FileManager.default.removeItem(at: state)
+        let canonical = try ManagedInstallerPostToolGateHostState(gates: gates)
+            .canonicalJSONData()
+        try writePostToolGateHostState(canonical, root: root)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o644))],
+            ofItemAtPath: state.path
+        )
+        XCTAssertEqual(
+            store.persistPostToolGateHostState(gates).failure,
+            .receiptPersistenceFailed
+        )
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: state.path
+        )
+        let linked = root.appendingPathComponent("post-tool-gates-store-linked.json")
+        try FileManager.default.linkItem(at: state, to: linked)
+        XCTAssertEqual(
+            store.persistPostToolGateHostState(gates).failure,
+            .receiptPersistenceFailed
+        )
+        try FileManager.default.removeItem(at: linked)
+
+        try FileManager.default.removeItem(at: state)
+        let target = root.appendingPathComponent("post-tool-gates-store-target.json")
+        try canonical.write(to: target)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: target.path
+        )
+        try FileManager.default.createSymbolicLink(at: state, withDestinationURL: target)
+        XCTAssertEqual(
+            store.persistPostToolGateHostState(gates).failure,
+            .receiptPersistenceFailed
+        )
+    }
+
+    func testPostToolGatePublishingHostReaderRequiresCompleteExactDurableReadback() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let expected = try fixture.snapshot().gates
+        let events = LockedHostObservationEvents()
+        let persister = PostToolGateHostStatePersisterSpy(events: events)
+        let reader = ManagedInstallerPostToolGatePublishingHostReader(
+            sourceReader: HostGateSource(
+                readbacks: expected,
+                events: events,
+                eventPrefix: "source"
+            ),
+            persister: persister,
+            durableReader: HostGateSource(
+                readbacks: expected,
+                events: events,
+                eventPrefix: "durable"
+            )
+        )
+
+        let observed = try await reader.readPostToolHostGate(
+            .productPlan,
+            for: request
+        ).get()
+
+        XCTAssertEqual(observed, expected.first(where: { $0.gate == .productPlan }))
+        XCTAssertEqual(
+            events.values(),
+            request.gates.map { "source:\($0.rawValue)" }
+                + ["persist"]
+                + request.gates.map { "durable:\($0.rawValue)" }
+        )
+        XCTAssertEqual(persister.values(), [expected])
+    }
+
+    func testPostToolGatePublishingHostReaderStopsAtFailedOrDriftedBoundaries() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let expected = try fixture.snapshot().gates
+        let drifted = try expected.map { readback in
+            try ManagedInstallerPostToolGateReadback(
+                gate: readback.gate,
+                passed: readback.passed,
+                evidenceReference: readback.gate == .productPlan
+                    ? "receipt:product-plan-drifted"
+                    : readback.evidenceReference
+            )
+        }
+
+        let sourceFailure = await ManagedInstallerPostToolGatePublishingHostReader(
+            sourceReader: HostGateSource(
+                readbacks: expected,
+                failureGate: .compositionCurrency
+            ),
+            persister: PostToolGateHostStatePersisterSpy(),
+            durableReader: HostGateSource(readbacks: expected)
+        ).readPostToolHostGate(.productPlan, for: request)
+        XCTAssertEqual(sourceFailure.failure, .readbackFailed)
+
+        let persistFailure = await ManagedInstallerPostToolGatePublishingHostReader(
+            sourceReader: HostGateSource(readbacks: expected),
+            persister: PostToolGateHostStatePersisterSpy(
+                failure: .receiptPersistenceFailed
+            ),
+            durableReader: HostGateSource(readbacks: expected)
+        ).readPostToolHostGate(.productPlan, for: request)
+        XCTAssertEqual(persistFailure.failure, .receiptPersistenceFailed)
+
+        let durableFailure = await ManagedInstallerPostToolGatePublishingHostReader(
+            sourceReader: HostGateSource(readbacks: expected),
+            persister: PostToolGateHostStatePersisterSpy(),
+            durableReader: HostGateSource(
+                readbacks: expected,
+                failureGate: .compositionCurrency
+            )
+        ).readPostToolHostGate(.productPlan, for: request)
+        XCTAssertEqual(durableFailure.failure, .readbackFailed)
+
+        let drift = await ManagedInstallerPostToolGatePublishingHostReader(
+            sourceReader: HostGateSource(readbacks: expected),
+            persister: PostToolGateHostStatePersisterSpy(),
+            durableReader: HostGateSource(readbacks: drifted)
+        ).readPostToolHostGate(.productPlan, for: request)
+        XCTAssertEqual(drift.failure, .rejected)
+    }
+
     func testFileAtomicHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
         let fixture = try FreshReplannerFixture()
         let request = try ManagedInstallerPostToolHostObservationRequest(
@@ -2899,17 +3103,20 @@ private struct HostGateSource: ManagedInstallerPostToolGateHostReading {
     let failureGate: ManagedInstallerPostToolGate?
     let wrongIdentityGate: ManagedInstallerPostToolGate?
     let events: LockedHostObservationEvents?
+    let eventPrefix: String
 
     init(
         readbacks: [ManagedInstallerPostToolGateReadback],
         failureGate: ManagedInstallerPostToolGate? = nil,
         wrongIdentityGate: ManagedInstallerPostToolGate? = nil,
-        events: LockedHostObservationEvents? = nil
+        events: LockedHostObservationEvents? = nil,
+        eventPrefix: String = "gate"
     ) {
         self.readbacks = readbacks
         self.failureGate = failureGate
         self.wrongIdentityGate = wrongIdentityGate
         self.events = events
+        self.eventPrefix = eventPrefix
     }
 
     func readPostToolHostGate(
@@ -2920,7 +3127,7 @@ private struct HostGateSource: ManagedInstallerPostToolGateHostReading {
         ManagedPythonRuntimeTerminalReceiptFailure
     > {
         _ = request
-        events?.record("gate:\(gate.rawValue)")
+        events?.record("\(eventPrefix):\(gate.rawValue)")
         if failureGate == gate { return .failure(.readbackFailed) }
         let selectedGate: ManagedInstallerPostToolGate = wrongIdentityGate == gate
             ? .hostPreflight : gate
@@ -2928,6 +3135,39 @@ private struct HostGateSource: ManagedInstallerPostToolGateHostReading {
             return .failure(.readbackFailed)
         }
         return .success(readback)
+    }
+}
+
+private final class PostToolGateHostStatePersisterSpy:
+    ManagedInstallerPostToolGateHostStatePersisting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let failure: ManagedPythonRuntimeTerminalReceiptFailure?
+    private let events: LockedHostObservationEvents?
+    private var observations: [[ManagedInstallerPostToolGateReadback]] = []
+
+    init(
+        failure: ManagedPythonRuntimeTerminalReceiptFailure? = nil,
+        events: LockedHostObservationEvents? = nil
+    ) {
+        self.failure = failure
+        self.events = events
+    }
+
+    func persistPostToolGateHostState(
+        _ gates: [ManagedInstallerPostToolGateReadback]
+    ) -> Result<Void, ManagedPythonRuntimeTerminalReceiptFailure> {
+        lock.lock()
+        observations.append(gates)
+        lock.unlock()
+        events?.record("persist")
+        if let failure { return .failure(failure) }
+        return .success(())
+    }
+
+    func values() -> [[ManagedInstallerPostToolGateReadback]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return observations
     }
 }
 

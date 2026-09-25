@@ -97,8 +97,10 @@ concrete gate source now reads one fixed canonical record containing exactly
 all five gate identities through the same stable no-follow boundary. Missing,
 insecure, malformed, incomplete, duplicate or noncanonical gate evidence fails
 closed; an explicit failed gate remains valid blocking evidence. Its atomic
-publisher and live gate observers are not implemented. No Git or Python
-artifact, privileged helper or operational runtime installation is claimed.
+publisher refuses to repair insecure prior state and its decorator exposes a
+gate only after the complete five-gate set has exact durable readback. Live
+gate observers are not implemented. No Git or Python artifact, privileged
+helper or operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
@@ -124,9 +126,10 @@ source/publish/durable-readback decorator are also implemented. Its live OS
 observer and mutation route remain absent. The descriptor-safe managed-Python
 record reader, atomic publisher and source/publish/durable-readback decorator
 are implemented; its live OS observer and mutation route remain absent.
-The descriptor-safe complete five-gate record reader is implemented; its
-atomic publisher and live gate observers remain absent. Signed service
-registration, released route wiring and mutation dispatch remain unimplemented.
+The descriptor-safe complete five-gate record reader, atomic publisher and
+complete-set source/publish/durable-readback decorator are implemented; live
+gate observers remain absent. Signed service registration, released route
+wiring and mutation dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
