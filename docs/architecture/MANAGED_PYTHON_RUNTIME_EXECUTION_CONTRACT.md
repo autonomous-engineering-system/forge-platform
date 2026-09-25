@@ -205,8 +205,10 @@ now admits one canonical private `PLANNED` record, rejects a second identity,
 and atomically advances only an exact terminal request/evidence set to
 `MANAGED_TOOLS`; identical retries are idempotent. The concrete native fresh
 replanner now derives the post-tool decision and fingerprint from fresh managed
-Git, managed-Python and five non-tool gate readbacks. Production implementations
-of those readback seams and the released route are not yet implemented. The
+Git, managed-Python and five non-tool gate readbacks. The replanner can now
+consume one strict context-bound snapshot through a concrete private-file
+reader, preventing a decision assembled from different observation epochs.
+The privileged snapshot producer and released route are not yet implemented. The
 native seeding coordinator now validates the exact session/deployment and
 pre-mutation activation plan plus original managed-tool action set, derives reconciliation itself,
 persists `PLANNED`, and accepts success only after an identical durable
@@ -218,8 +220,9 @@ qualification with the original stable-plan fingerprint, the exact runtime,
 rollback and ordered venv identities, no remaining managed-tool or Python
 action, and explicit product-dispatch readiness. Only then does it construct
 the typed `TOOLS_VERIFIED` evidence and call the atomic journal-advance seam.
-The concrete source-level fresh replanner is implemented; production readback
-adapters and released route wiring are not yet implemented.
+The concrete source-level fresh replanner and its read-only snapshot adapter are
+implemented; the privileged snapshot producer and released route wiring are not
+yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -317,8 +320,9 @@ reviewed release, immutable session/catalogs, exact Forge+EP inventory,
 provider requirements, component diff, managed Git actions and complete
 pre-mutation Python/rollback/venv intent. No caller may inject an unrelated
 stable-plan digest.
-Production readback adapters are not implemented, and these coordinators are
-not wired into the released runtime. A concrete reviewed
+The concrete read-only snapshot adapter is implemented, but the privileged
+snapshot producer and these coordinators are not wired into the released
+runtime. A concrete reviewed
 privileged adapter, released mutation wiring and an actual protected arm64
 runtime publication remain required before operational installation can be
 claimed.
