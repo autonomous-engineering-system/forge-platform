@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import XCTest
 @testable import ForgePlatformInstallerCore
 
@@ -811,6 +812,216 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         }
     }
 
+    func testProductOperationXPCRoundTripUsesCanonicalBoundedInterface() async throws {
+        let (request, receipt) = try productOperationXPCFixture()
+        let executor = ProductOperationHelperExecutor(results: [.success(receipt)])
+        let service = ManagedInstallerProductOperationXPCServiceHandler(executor: executor)
+        let identity = try ManagedInstallerProductOperationXPCCallerIdentity(
+            bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
+            teamIdentifier: "ZEML4LPXH4"
+        )
+        let requirement = ProductOperationXPCRequirementRecorder()
+        let listener = MacOSManagedInstallerProductOperationXPCListener(
+            listener: .anonymous(),
+            callerIdentity: identity,
+            serviceHandler: service,
+            installCodeSigningRequirement: { _, value in requirement.record(value) }
+        )
+        listener.activate()
+        defer { listener.invalidate() }
+        let transport = MacOSManagedInstallerProductOperationXPCTransport(
+            endpoint: listener.endpoint
+        )
+
+        let response = try await transport.executeProductOperation(
+            request.canonicalJSONData()
+        ).get()
+
+        XCTAssertEqual(response, receipt.canonicalJSONData())
+        XCTAssertEqual(requirement.value(), identity.codeSigningRequirement)
+        let calls = await executor.calls()
+        XCTAssertEqual(calls, [request])
+        await transport.invalidate()
+    }
+
+    func testProductOperationXPCTransportRejectsInvalidRequestsBeforeIPC() async throws {
+        let (request, receipt) = try productOperationXPCFixture()
+        let service = RawProductOperationXPCService(
+            responses: [receipt.canonicalJSONData()]
+        )
+        let transport = MacOSManagedInstallerProductOperationXPCTransport(
+            endpoint: service.endpoint
+        )
+        let noncanonical = Data(
+            (" " + String(decoding: request.canonicalJSONData(), as: UTF8.self)).utf8
+        )
+
+        let invalid = await transport.executeProductOperation(Data("{}".utf8))
+        let changedEncoding = await transport.executeProductOperation(noncanonical)
+
+        XCTAssertEqual(invalid.failure, .invalidRequest)
+        XCTAssertEqual(changedEncoding.failure, .invalidRequest)
+        XCTAssertTrue(service.capturedRequests().isEmpty)
+        await transport.invalidate()
+    }
+
+    func testProductOperationXPCTransportMapsNilAndInvalidReceiptsFailClosed() async throws {
+        let (request, _) = try productOperationXPCFixture()
+        let service = RawProductOperationXPCService(
+            responses: [nil, Data("{}".utf8)]
+        )
+        let transport = MacOSManagedInstallerProductOperationXPCTransport(
+            endpoint: service.endpoint
+        )
+
+        let unavailable = await transport.executeProductOperation(
+            request.canonicalJSONData()
+        )
+        let rejected = await transport.executeProductOperation(
+            request.canonicalJSONData()
+        )
+
+        XCTAssertEqual(unavailable.failure, .unavailable)
+        XCTAssertEqual(rejected.failure, .rejected)
+        XCTAssertEqual(service.capturedRequests().count, 2)
+        await transport.invalidate()
+    }
+
+    func testProductOperationXPCHandlerRejectsInvalidFailureAndReceiptDrift() async throws {
+        let (request, _) = try productOperationXPCFixture()
+        let (_, otherReceipt) = try productOperationXPCFixture(
+            deploymentID: "other-deployment"
+        )
+        let executor = ProductOperationHelperExecutor(results: [
+            .failure(.rejected),
+            .success(otherReceipt),
+        ])
+        let service = ManagedInstallerProductOperationXPCServiceHandler(executor: executor)
+        let noncanonical = Data(
+            (" " + String(decoding: request.canonicalJSONData(), as: UTF8.self)).utf8
+        )
+
+        let invalid = await callProductOperationXPCService(
+            service,
+            request: Data("{}".utf8)
+        )
+        let changedEncoding = await callProductOperationXPCService(
+            service,
+            request: noncanonical
+        )
+        let failed = await callProductOperationXPCService(
+            service,
+            request: request.canonicalJSONData()
+        )
+        let drifted = await callProductOperationXPCService(
+            service,
+            request: request.canonicalJSONData()
+        )
+
+        XCTAssertNil(invalid)
+        XCTAssertNil(changedEncoding)
+        XCTAssertNil(failed)
+        XCTAssertNil(drifted)
+        let calls = await executor.calls()
+        XCTAssertEqual(calls, [request, request])
+    }
+
+    func testProductOperationXPCIdentitiesRequireExactDeveloperIDChain() async throws {
+        let caller = try ManagedInstallerProductOperationXPCCallerIdentity(
+            bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
+            teamIdentifier: "ZEML4LPXH4"
+        )
+        XCTAssertEqual(
+            caller.codeSigningRequirement,
+            "anchor apple generic"
+                + " and identifier \"com.autonomous-engineering-system.forge-platform-installer\""
+                + " and certificate 1[field.1.2.840.113635.100.6.2.6] exists"
+                + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+                + " and certificate leaf[subject.OU] = \"ZEML4LPXH4\""
+        )
+        var parsedRequirement: SecRequirement?
+        XCTAssertEqual(
+            SecRequirementCreateWithString(
+                caller.codeSigningRequirement as CFString,
+                [],
+                &parsedRequirement
+            ),
+            errSecSuccess
+        )
+        XCTAssertNotNil(parsedRequirement)
+        XCTAssertThrowsError(try ManagedInstallerProductOperationXPCCallerIdentity(
+            bundleIdentifier: "com.example.installer\" or true",
+            teamIdentifier: "ZEML4LPXH4"
+        )) { error in
+            XCTAssertEqual(
+                error as? ManagedInstallerProductOperationXPCCallerIdentityError,
+                .invalidIdentity
+            )
+        }
+        XCTAssertThrowsError(try ManagedInstallerProductOperationXPCCallerIdentity(
+            bundleIdentifier: "com.example.installer",
+            teamIdentifier: "lowercase1"
+        ))
+
+        let helper = try ManagedInstallerPostToolXPCHelperIdentity(
+            teamIdentifier: caller.teamIdentifier
+        )
+        XCTAssertEqual(
+            MacOSManagedInstallerProductOperationXPCTransport.machServiceName,
+            "com.autonomous-engineering-system.forge-platform-installer.helper.product-operations"
+        )
+        XCTAssertEqual(
+            ManagedInstallerPostToolXPCHelperIdentity.signingIdentifier,
+            "com.autonomous-engineering-system.forge-platform-installer.helper"
+        )
+        let transport = MacOSManagedInstallerProductOperationXPCTransport(
+            helperIdentity: helper
+        )
+        await transport.invalidate()
+
+        let (_, receipt) = try productOperationXPCFixture()
+        let service = ManagedInstallerProductOperationXPCServiceHandler(
+            executor: ProductOperationHelperExecutor(results: [.success(receipt)])
+        )
+        let namedListener = MacOSManagedInstallerProductOperationXPCListener(
+            callerIdentity: caller,
+            serviceHandler: service
+        )
+        namedListener.invalidate()
+    }
+
+    private func productOperationXPCFixture(
+        deploymentID: String = "activation-deployment"
+    ) throws -> (
+        request: ManagedInstallerProductOperationRequest,
+        receipt: ManagedInstallerProductOperationReceipt
+    ) {
+        let fixture = try RuntimeCompletionFixture(deploymentID: deploymentID)
+        let request = try ManagedInstallerProductOperationRequest(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: fixture.transactionReceipt()
+        )
+        let receipt = try ManagedInstallerProductOperationReceipt(
+            request: request,
+            productReceiptReferences: ["receipt:forge-product", "receipt:ep-product"],
+            pairingReceiptReference: "receipt:forge-ep-pairing",
+            readinessReceiptReferences: [
+                "receipt:ep-readiness", "receipt:forge-readiness",
+            ],
+            completions: [
+                try ManagedInstallerProductCompletion(
+                    componentID: "engineering-platform-server",
+                    state: .ready
+                ),
+                try ManagedInstallerProductCompletion(
+                    componentID: "forge-runtime",
+                    state: .ready
+                ),
+            ]
+        )
+        return (request, receipt)
+    }
+
     private func reviewedExecutionCoordinator(
         stablePlan: ManagedInstallerStablePlanPreparationResult,
         currency: InstallerCurrencyCheckResult,
@@ -1344,6 +1555,118 @@ private struct ProductBridgeTransport: ManagedInstallerProductOperationTransport
     }
 }
 
+private actor ProductOperationHelperExecutor:
+    ManagedInstallerProductOperationHelperExecuting {
+    private var results: [Result<
+        ManagedInstallerProductOperationReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    >]
+    private var requests: [ManagedInstallerProductOperationRequest] = []
+
+    init(results: [Result<
+        ManagedInstallerProductOperationReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    >]) {
+        self.results = results
+    }
+
+    func executeProductOperation(
+        _ request: ManagedInstallerProductOperationRequest
+    ) async -> Result<
+        ManagedInstallerProductOperationReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        requests.append(request)
+        return results.removeFirst()
+    }
+
+    func calls() -> [ManagedInstallerProductOperationRequest] {
+        requests
+    }
+}
+
+private final class RawProductOperationXPCService:
+    NSObject, NSXPCListenerDelegate, ManagedInstallerProductOperationXPCService,
+    @unchecked Sendable {
+    private let listener = NSXPCListener.anonymous()
+    private let lock = NSLock()
+    private var responses: [Data?]
+    private var requests: [Data] = []
+
+    init(responses: [Data?]) {
+        self.responses = responses
+        super.init()
+        listener.delegate = self
+        listener.activate()
+    }
+
+    deinit {
+        listener.invalidate()
+    }
+
+    var endpoint: NSXPCListenerEndpoint {
+        listener.endpoint
+    }
+
+    func listener(
+        _ listener: NSXPCListener,
+        shouldAcceptNewConnection newConnection: NSXPCConnection
+    ) -> Bool {
+        _ = listener
+        newConnection.exportedInterface = NSXPCInterface(
+            with: ManagedInstallerProductOperationXPCService.self
+        )
+        newConnection.exportedObject = self
+        newConnection.resume()
+        return true
+    }
+
+    func executeProductOperation(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        lock.lock()
+        requests.append(canonicalRequest)
+        let response = responses.removeFirst()
+        lock.unlock()
+        reply(response)
+    }
+
+    func capturedRequests() -> [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+}
+
+private final class ProductOperationXPCRequirementRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requirement: String?
+
+    func record(_ value: String) {
+        lock.lock()
+        requirement = value
+        lock.unlock()
+    }
+
+    func value() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return requirement
+    }
+}
+
+private func callProductOperationXPCService(
+    _ service: ManagedInstallerProductOperationXPCService,
+    request: Data
+) async -> Data? {
+    await withCheckedContinuation { continuation in
+        service.executeProductOperation(request) { response in
+            continuation.resume(returning: response)
+        }
+    }
+}
+
 private func runtimeCompletionSuccess(
     _ result: Result<
         ManagedInstallerRuntimeCompletionReceipt,
@@ -1379,6 +1702,14 @@ private extension Result where Success == ManagedInstallerRuntimeCompletionRecei
 private extension Result where Success == ManagedInstallerRuntimeTransactionReceipt,
     Failure == ManagedInstallerRuntimeTransactionFailure {
     var transactionFailure: Failure? {
+        guard case .failure(let failure) = self else { return nil }
+        return failure
+    }
+}
+
+private extension Result where Success == Data,
+    Failure == ManagedInstallerProductOperationBridgeFailure {
+    var failure: Failure? {
         guard case .failure(let failure) = self else { return nil }
         return failure
     }
