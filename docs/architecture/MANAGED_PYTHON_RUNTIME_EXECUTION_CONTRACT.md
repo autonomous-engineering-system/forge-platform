@@ -209,8 +209,10 @@ Git, managed-Python and five non-tool gate readbacks. The replanner can now
 consume one strict context-bound snapshot through a concrete private-file
 reader, preventing a decision assembled from different observation epochs. A
 helper-facing store durably publishes that exact snapshot with exclusive atomic
-rename, descriptor readback and idempotent conflict handling. The privileged
-host observation adapter and released route are not yet implemented. The
+rename, descriptor readback and idempotent conflict handling. A producer
+coordinator validates one complete host observation, persists it and requires
+an identical durable readback before returning it to the replanner. The
+privileged host observation adapter and released route are not yet implemented. The
 native seeding coordinator now validates the exact session/deployment and
 pre-mutation activation plan plus original managed-tool action set, derives reconciliation itself,
 persists `PLANNED`, and accepts success only after an identical durable
@@ -222,9 +224,10 @@ qualification with the original stable-plan fingerprint, the exact runtime,
 rollback and ordered venv identities, no remaining managed-tool or Python
 action, and explicit product-dispatch readiness. Only then does it construct
 the typed `TOOLS_VERIFIED` evidence and call the atomic journal-advance seam.
-The concrete source-level fresh replanner, its read-only snapshot adapter and
-the durable helper-facing snapshot store are implemented; the privileged host
-observation adapter and released route wiring are not yet implemented.
+The concrete source-level fresh replanner, its read-only snapshot adapter,
+durable helper-facing snapshot store and capture/persist/readback producer
+coordinator are implemented; the privileged host observation adapter and
+released route wiring are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -321,9 +324,10 @@ typed native stable plan whose canonical fingerprint is derived from the
 reviewed release, immutable session/catalogs, exact Forge+EP inventory,
 provider requirements, component diff, managed Git actions and complete
 pre-mutation Python/rollback/venv intent. No caller may inject an unrelated
-stable-plan digest. The concrete read-only snapshot adapter and durable
-single-assignment store are implemented, but the privileged host observation
-adapter and these coordinators are not wired into the released runtime. A
+stable-plan digest. The concrete read-only snapshot adapter, durable
+single-assignment store and producer coordinator are implemented, but the
+privileged host observation adapter and these coordinators are not wired into
+the released runtime. A
 concrete reviewed privileged adapter, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
 installation can be claimed.

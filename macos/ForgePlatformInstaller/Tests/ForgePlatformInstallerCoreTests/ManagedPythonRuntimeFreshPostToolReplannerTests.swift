@@ -508,6 +508,142 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(hardlinkResult.failure, .receiptPersistenceFailed)
     }
 
+    func testSnapshotProducerPublishesReadsBackAndFeedsReplanner() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let calls = SnapshotBoundaryCalls()
+        let producer = ManagedInstallerPostToolSnapshotProducer(
+            hostObserver: HostSnapshotObserver(result: .success(snapshot), calls: calls),
+            persistence: CountingSnapshotPersistence(
+                base: FileManagedInstallerPostToolSnapshotStore(rootDirectory: root),
+                calls: calls
+            ),
+            durableReader: CountingSnapshotReader(
+                base: FileManagedInstallerPostToolSnapshotReader(rootDirectory: root),
+                calls: calls
+            )
+        )
+        let replanner = try ManagedPythonRuntimeFreshPostToolReplanner(
+            stablePlan: fixture.stablePlan,
+            managedToolReceiptReferences: [.git: "receipt:git-install"],
+            snapshotReadback: producer
+        )
+
+        let result = try qualification(await replanner.requalifyAfterManagedPythonMutation(
+            request: fixture.request,
+            receipt: fixture.receipt
+        ))
+
+        XCTAssertTrue(result.permitsProductOperationDispatch)
+        let counts = await calls.snapshot()
+        XCTAssertEqual(counts, .init(host: 1, persistence: 1, reader: 1))
+        let durable = await FileManagedInstallerPostToolSnapshotReader(rootDirectory: root)
+            .readPostToolSnapshot(stablePlan: fixture.stablePlan, request: fixture.request)
+        XCTAssertEqual(try snapshotValue(durable), snapshot)
+    }
+
+    func testSnapshotProducerRejectsHostContextDriftBeforePersistence() async throws {
+        let fixture = try FreshReplannerFixture()
+        let drifted = try fixture.snapshot(deploymentID: "other-deployment")
+        let calls = SnapshotBoundaryCalls()
+        let producer = ManagedInstallerPostToolSnapshotProducer(
+            hostObserver: HostSnapshotObserver(result: .success(drifted), calls: calls),
+            persistence: StubSnapshotPersistence(result: .success(()), calls: calls),
+            durableReader: StubSnapshotReader(result: .success(drifted), calls: calls)
+        )
+
+        let result = await producer.readPostToolSnapshot(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+
+        XCTAssertEqual(result.failure, .rejected)
+        let counts = await calls.snapshot()
+        XCTAssertEqual(counts, .init(host: 1, persistence: 0, reader: 0))
+    }
+
+    func testSnapshotProducerStopsAtEveryFailedBoundary() async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+
+        let hostCalls = SnapshotBoundaryCalls()
+        let failedHost = ManagedInstallerPostToolSnapshotProducer(
+            hostObserver: HostSnapshotObserver(result: .failure(.readbackFailed), calls: hostCalls),
+            persistence: StubSnapshotPersistence(result: .success(()), calls: hostCalls),
+            durableReader: StubSnapshotReader(result: .success(snapshot), calls: hostCalls)
+        )
+        let hostResult = await failedHost.readPostToolSnapshot(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        XCTAssertEqual(hostResult.failure, .readbackFailed)
+        let hostCounts = await hostCalls.snapshot()
+        XCTAssertEqual(hostCounts, .init(host: 1, persistence: 0, reader: 0))
+
+        let persistenceCalls = SnapshotBoundaryCalls()
+        let failedPersistence = ManagedInstallerPostToolSnapshotProducer(
+            hostObserver: HostSnapshotObserver(
+                result: .success(snapshot),
+                calls: persistenceCalls
+            ),
+            persistence: StubSnapshotPersistence(
+                result: .failure(.receiptPersistenceFailed),
+                calls: persistenceCalls
+            ),
+            durableReader: StubSnapshotReader(
+                result: .success(snapshot),
+                calls: persistenceCalls
+            )
+        )
+        let persistenceResult = await failedPersistence.readPostToolSnapshot(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        XCTAssertEqual(persistenceResult.failure, .receiptPersistenceFailed)
+        let persistenceCounts = await persistenceCalls.snapshot()
+        XCTAssertEqual(persistenceCounts, .init(host: 1, persistence: 1, reader: 0))
+
+        let readerCalls = SnapshotBoundaryCalls()
+        let failedReader = ManagedInstallerPostToolSnapshotProducer(
+            hostObserver: HostSnapshotObserver(result: .success(snapshot), calls: readerCalls),
+            persistence: StubSnapshotPersistence(result: .success(()), calls: readerCalls),
+            durableReader: StubSnapshotReader(
+                result: .failure(.readbackFailed),
+                calls: readerCalls
+            )
+        )
+        let readerResult = await failedReader.readPostToolSnapshot(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        XCTAssertEqual(readerResult.failure, .readbackFailed)
+        let readerCounts = await readerCalls.snapshot()
+        XCTAssertEqual(readerCounts, .init(host: 1, persistence: 1, reader: 1))
+    }
+
+    func testSnapshotProducerRejectsNonidenticalDurableReadback() async throws {
+        let fixture = try FreshReplannerFixture()
+        let observed = try fixture.snapshot()
+        let conflicting = try fixture.snapshot(evidenceReference: "receipt:other-snapshot")
+        let calls = SnapshotBoundaryCalls()
+        let producer = ManagedInstallerPostToolSnapshotProducer(
+            hostObserver: HostSnapshotObserver(result: .success(observed), calls: calls),
+            persistence: StubSnapshotPersistence(result: .success(()), calls: calls),
+            durableReader: StubSnapshotReader(result: .success(conflicting), calls: calls)
+        )
+
+        let result = await producer.readPostToolSnapshot(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+
+        XCTAssertEqual(result.failure, .rejected)
+        let counts = await calls.snapshot()
+        XCTAssertEqual(counts, .init(host: 1, persistence: 1, reader: 1))
+    }
+
     private func privateTemporaryDirectory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "post-tool-readback-\(UUID().uuidString)",
@@ -765,6 +901,107 @@ private struct SnapshotReadback: ManagedInstallerPostToolSnapshotReading {
         _ = stablePlan
         _ = request
         return result
+    }
+}
+
+private actor SnapshotBoundaryCalls {
+    struct Counts: Equatable {
+        let host: Int
+        let persistence: Int
+        let reader: Int
+    }
+
+    private var host = 0
+    private var persistence = 0
+    private var reader = 0
+
+    func recordHost() { host += 1 }
+    func recordPersistence() { persistence += 1 }
+    func recordReader() { reader += 1 }
+    func snapshot() -> Counts { Counts(host: host, persistence: persistence, reader: reader) }
+}
+
+private struct HostSnapshotObserver: ManagedInstallerPostToolHostObserving {
+    let result: Result<
+        ManagedInstallerPostToolReadbackSnapshot,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >
+    let calls: SnapshotBoundaryCalls
+
+    func capturePostToolSnapshot(
+        stablePlan: ManagedInstallerStablePlan,
+        request: ManagedPythonRuntimeActivationRequest
+    ) async -> Result<ManagedInstallerPostToolReadbackSnapshot, ManagedPythonRuntimeTerminalReceiptFailure> {
+        _ = stablePlan
+        _ = request
+        await calls.recordHost()
+        return result
+    }
+}
+
+private struct StubSnapshotPersistence: ManagedInstallerPostToolSnapshotPersisting {
+    let result: Result<Void, ManagedPythonRuntimeTerminalReceiptFailure>
+    let calls: SnapshotBoundaryCalls
+
+    func persistPostToolSnapshot(
+        _ snapshot: ManagedInstallerPostToolReadbackSnapshot,
+        stablePlan: ManagedInstallerStablePlan,
+        request: ManagedPythonRuntimeActivationRequest
+    ) async -> Result<Void, ManagedPythonRuntimeTerminalReceiptFailure> {
+        _ = snapshot
+        _ = stablePlan
+        _ = request
+        await calls.recordPersistence()
+        return result
+    }
+}
+
+private struct CountingSnapshotPersistence: ManagedInstallerPostToolSnapshotPersisting {
+    let base: any ManagedInstallerPostToolSnapshotPersisting
+    let calls: SnapshotBoundaryCalls
+
+    func persistPostToolSnapshot(
+        _ snapshot: ManagedInstallerPostToolReadbackSnapshot,
+        stablePlan: ManagedInstallerStablePlan,
+        request: ManagedPythonRuntimeActivationRequest
+    ) async -> Result<Void, ManagedPythonRuntimeTerminalReceiptFailure> {
+        await calls.recordPersistence()
+        return await base.persistPostToolSnapshot(
+            snapshot,
+            stablePlan: stablePlan,
+            request: request
+        )
+    }
+}
+
+private struct StubSnapshotReader: ManagedInstallerPostToolSnapshotReading {
+    let result: Result<
+        ManagedInstallerPostToolReadbackSnapshot,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >
+    let calls: SnapshotBoundaryCalls
+
+    func readPostToolSnapshot(
+        stablePlan: ManagedInstallerStablePlan,
+        request: ManagedPythonRuntimeActivationRequest
+    ) async -> Result<ManagedInstallerPostToolReadbackSnapshot, ManagedPythonRuntimeTerminalReceiptFailure> {
+        _ = stablePlan
+        _ = request
+        await calls.recordReader()
+        return result
+    }
+}
+
+private struct CountingSnapshotReader: ManagedInstallerPostToolSnapshotReading {
+    let base: any ManagedInstallerPostToolSnapshotReading
+    let calls: SnapshotBoundaryCalls
+
+    func readPostToolSnapshot(
+        stablePlan: ManagedInstallerStablePlan,
+        request: ManagedPythonRuntimeActivationRequest
+    ) async -> Result<ManagedInstallerPostToolReadbackSnapshot, ManagedPythonRuntimeTerminalReceiptFailure> {
+        await calls.recordReader()
+        return await base.readPostToolSnapshot(stablePlan: stablePlan, request: request)
     }
 }
 
