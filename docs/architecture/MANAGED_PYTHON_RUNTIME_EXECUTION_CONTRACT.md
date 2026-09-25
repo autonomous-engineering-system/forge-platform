@@ -394,8 +394,9 @@ required provider, an unknown or drifted selected requirement and duplicate
 provider identities. No caller may inject an unrelated
 stable-plan digest. The concrete read-only snapshot adapter, durable
 single-assignment store, producer coordinator, closed canonical-response host
-adapter, fixed privileged NSXPC client transport, canonical helper service
-handler, mutual exact Developer ID peer authentication and the locked
+adapter, its canonical V2 projection of the exact enabled-provider
+requirements, fixed privileged NSXPC client transport, canonical helper
+service handler, mutual exact Developer ID peer authentication and the locked
 single-read helper capture coordinator are implemented. The fixed-file reader
 also admits one canonical complete helper-owned host-state document with
 descriptor, ownership, mode, link-count and request-set checks. Its atomic

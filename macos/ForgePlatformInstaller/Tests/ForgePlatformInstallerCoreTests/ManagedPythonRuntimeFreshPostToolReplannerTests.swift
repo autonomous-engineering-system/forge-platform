@@ -668,6 +668,10 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(request.stablePlanFingerprint, fixture.stablePlan.fingerprint)
         XCTAssertEqual(request.requestFingerprint, fixture.request.executionRequestFingerprint)
         XCTAssertEqual(request.managedTools, fixture.stablePlan.session.managedTools)
+        XCTAssertEqual(
+            request.enabledProviderRequirements,
+            fixture.stablePlan.enabledProviderRequirements
+        )
         XCTAssertEqual(request.runtimeIdentitySHA256, fixture.request.runtimeIdentitySHA256)
         XCTAssertEqual(request.runtimeSlotIdentity, fixture.request.runtimeSlotIdentity)
         XCTAssertEqual(
@@ -675,6 +679,53 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
             fixture.request.requiredRetainedRuntimeIdentitySHA256s
         )
         XCTAssertEqual(Set(request.gates), Set(ManagedInstallerPostToolGate.allCases))
+    }
+
+    func testHostObservationRequestCanonicallyBindsExactEnabledProviderRequirements() throws {
+        let required = ProviderRequirement(provider: .codex, isRequired: true)
+        let optional = ProviderRequirement(
+            provider: .githubCLI,
+            isRequired: false,
+            minimumVersion: try InstallerVersion("2.60.0"),
+            credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer,
+            targetIdentity: "ep-one",
+            runtime: try ProviderRuntimeRequirement(
+                version: InstallerVersion("2.70.0"),
+                archiveKind: .zip,
+                artifactURL: "https://artifacts.example.test/github-cli.zip",
+                artifactSHA256: "sha256:" + String(repeating: "6", count: 64),
+                executableRelativePath: "bin/gh",
+                executableSHA256: "sha256:" + String(repeating: "7", count: 64)
+            )
+        )
+        let fixture = try FreshReplannerFixture(
+            providerRequirements: [required, optional],
+            enabledProviderRequirements: [optional, required]
+        )
+
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let canonical = request.canonicalJSONData()
+        let decoded = try ManagedInstallerPostToolHostObservationRequest.decodeJSON(canonical)
+
+        XCTAssertEqual(
+            request.enabledProviderRequirements,
+            [required, optional].sorted { $0.id.rawValue < $1.id.rawValue }
+        )
+        XCTAssertEqual(decoded, request)
+        XCTAssertEqual(decoded.canonicalJSONData(), canonical)
+
+        let mismatchedIdentity = String(decoding: canonical, as: UTF8.self)
+            .replacingOccurrences(
+                of: "\"identity\":\"github-cli:engineering-platform-server:ep-one\"",
+                with: "\"identity\":\"github-cli:engineering-platform-server:other\""
+            )
+        XCTAssertThrowsError(try ManagedInstallerPostToolHostObservationRequest.decodeJSON(
+            Data(mismatchedIdentity.utf8)
+        ))
     }
 
     func testHostObservationAdapterRejectsInvalidHelperResponses() async throws {
@@ -2601,7 +2652,11 @@ private struct FreshReplannerFixture {
 
     var stableFingerprint: String { stablePlan.fingerprint }
 
-    init(deploymentID: String? = nil) throws {
+    init(
+        deploymentID: String? = nil,
+        providerRequirements: [ProviderRequirement] = [],
+        enabledProviderRequirements: [ProviderRequirement]? = nil
+    ) throws {
         git = ManagedToolRequirement(
             identity: .git,
             version: try InstallerVersion("2.45.0"),
@@ -2610,7 +2665,10 @@ private struct FreshReplannerFixture {
                 sha256: "sha256:" + String(repeating: "9", count: 64)
             )
         )
-        activation = try ActivationFixture(managedTools: [git])
+        activation = try ActivationFixture(
+            providerRequirements: providerRequirements,
+            managedTools: [git]
+        )
         if let deploymentID {
             let replacement = try ManagedDeploymentTarget(
                 id: deploymentID,
@@ -2652,7 +2710,8 @@ private struct FreshReplannerFixture {
                 deployment: deployment,
                 initialReadback: request.initialReadback
             ),
-            actions: [ManagedToolOriginalPlanAction(requirement: git, action: .install)]
+            actions: [ManagedToolOriginalPlanAction(requirement: git, action: .install)],
+            enabledProviderRequirements: enabledProviderRequirements
         )
     }
 

@@ -717,10 +717,11 @@ requirements that drift from the admitted session and duplicate provider
 identities. Neither boundary accepts a caller-supplied stable-plan hash. A strict
 post-tool snapshot reader, its durable single-assignment store, the
 capture/persist/readback producer coordinator, closed host-observation adapter,
+its canonical V2 helper-request projection of the exact enabled-provider set,
 fixed NSXPC boundaries, locked capturer, fixed-file host-state reader, atomic
-publisher with exact durable readback and epoch-bracketed exact source collector
-are implemented. A descriptor-safe managed-Git source adapter now admits only
-one fixed canonical helper-owned record; an explicitly recorded `ABSENT` is
+publisher with exact durable readback and epoch-bracketed exact source
+collector are implemented. A descriptor-safe managed-Git source adapter now
+admits only one fixed canonical helper-owned record; an explicitly recorded `ABSENT` is
 preserved while missing, insecure, malformed or noncanonical evidence fails
 closed. Its paired publisher atomically replaces only secure canonical prior
 state and requires exact durable readback. The live managed-Git OS observer and
@@ -762,9 +763,10 @@ runtime preparation. The later activation request binds that plan to the exact
 `READY` preparation receipt. The seeder and replanner consume the same typed
 stable plan and its internally derived fingerprint. The read-only post-tool
 snapshot adapter, durable helper-facing store and producer coordinator are
-implemented. A strict host-observation adapter emits only a closed pathless
-request and accepts one canonical context-matched snapshot response. A native
-client sends those bytes only to one fixed privileged Mach service through one
+implemented. A strict host-observation adapter emits only a closed pathless V2
+request that contains the stable plan's canonical exact enabled-provider
+requirements and accepts one canonical context-matched snapshot response. A
+native client sends those bytes only to one fixed privileged Mach service through one
 fixed NSXPC interface and accepts messages only from the exact configured signed
 helper identity. A paired service handler accepts only exact canonical requests
 and returns only a canonical context-bound snapshot. Its named listener admits
