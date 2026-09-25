@@ -33,9 +33,11 @@ rejects redirects, final-URL drift, empty or oversized responses and digest
 drift, and returns target-bound archive bytes. A private native stager persists
 one exact archive under fixed no-follow `0700`/`0600` layout, returns only an
 opaque reference and descriptor identity, and requires exact digest readback
-before retry-safe discard. Interrupted acquisition before identity return still
-needs orphan reconciliation. Provider archive inspection/extraction,
-installation and credential-home provisioning, service-account secure-store
+before retry-safe discard. Strict fixed-layout reconciliation removes an
+operation left before identity return and rejects unknown, linked, permissive or
+oversized entries. Exclusive provider-operation lease coordination, provider
+archive inspection/extraction, installation and credential-home provisioning,
+service-account secure-store
 integration, the other four live gate observers, live Git and Python OS
 observer/mutation routes, signed helper registration and released wiring remain
 outside the implemented boundary. No live provider readiness is certified.
@@ -757,7 +759,8 @@ durable readback of the complete set. The source-level provider-gate evaluator
 and separate gate router plus fixed-layout macOS component-provider inspector
 are implemented, together with the exact bounded credential-free V3 provider
 archive transport and private descriptor-safe staging/readback/discard. Provider
-archive inspection, interrupted-acquisition recovery, installation and
+interrupted-acquisition cleanup is included. Provider archive inspection,
+exclusive recovery coordination, installation and
 credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed helper registration and released journal-seeding integration remain
@@ -814,8 +817,9 @@ accepts absence only when runtime, slot and retained identities are explicitly
 empty. Its atomic publisher and exact durable-readback decorator are
 implemented. Exact provider archive transport and private descriptor-safe
 staging/readback/discard are implemented. The live Git and Python OS observers
-and mutation routes, provider archive inspection/extraction,
-interrupted-acquisition recovery, installation and credential-home provisioning, service-account secure-store
+and mutation routes remain absent. Strict provider interrupted-acquisition
+cleanup is implemented. Provider archive inspection/extraction, exclusive recovery
+coordination, installation and credential-home provisioning, service-account secure-store
 integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,
 separate gate router and fixed-layout macOS component-provider inspector are

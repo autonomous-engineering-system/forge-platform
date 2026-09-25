@@ -67,9 +67,10 @@ oversized responses and digest drift, and returns only target-bound archive
 bytes. A private native stager writes those bytes under one fixed name in an
 operation-scoped private directory, exposes only an opaque reference and file
 identity, and reopens no-follow bytes for exact identity and digest readback.
-Exact discard is retry-safe. Interruption before the complete staged identity
-returns still needs orphan reconciliation. Provider archive inspection,
-extraction, installation,
+Exact discard is retry-safe. Strict fixed-layout reconciliation removes an
+operation left before the complete staged identity returns and rejects unknown,
+linked, permissive or oversized entries. Exclusive provider-operation lease
+coordination, provider archive inspection, extraction, installation,
 credential-home provisioning, service-account secure-store integration and the
 other four live gate observers remain unimplemented, so this is not live
 provider-readiness evidence.
@@ -291,8 +292,9 @@ managed-Git and managed-Python record readers and complete five-gate record
 reader are implemented. The source-level provider-gate evaluator and router
 consume the fixed-layout macOS component-provider inspector. Exact component
 provider archive acquisition and private descriptor-safe staging/readback/discard
-are implemented. Live Git/Python OS observers and mutation routes, provider
-archive inspection/extraction, interrupted-acquisition recovery, installation and credential-home
+plus interrupted-acquisition cleanup are implemented. Live Git/Python OS
+observers and mutation routes, provider archive inspection/extraction, exclusive
+recovery coordination, installation and credential-home
 provisioning, service-account secure-store integration, the other four live
 gate observers, signed service registration and the released route are not yet
 implemented. The
@@ -323,8 +325,9 @@ five-gate record reader, atomic publisher and complete-set exact durable-readbac
 decorator are implemented. The source-level provider-gate evaluator and
 separate gate router plus fixed-layout macOS component-provider inspector are
 implemented. The exact V3 component-provider archive transport and private
-descriptor-safe staging/readback/discard are also implemented; provider archive
-inspection, interrupted-acquisition recovery, installation and
+descriptor-safe staging/readback/discard are also implemented, including strict
+interrupted-acquisition cleanup. Provider archive inspection,
+exclusive recovery coordination, installation and
 credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed service registration and released route wiring are not yet implemented.
@@ -452,8 +455,9 @@ durable-readback decorator are implemented. The source-level provider-gate
 evaluator and separate router consume the exact enabled-provider request through
 the fixed-layout macOS component-provider inspector. Exact provider archive
 transport and private descriptor-safe staging/readback/discard are implemented.
-Archive inspection/extraction, interrupted-acquisition recovery, installation
-and credential-home provisioning, service-account secure-store integration and the
+Strict interrupted-acquisition cleanup is also implemented. Archive
+inspection/extraction, exclusive recovery coordination, installation and
+credential-home provisioning, service-account secure-store integration and the
 other four live gate observers are absent. A concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
