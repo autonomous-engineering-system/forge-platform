@@ -1,4 +1,4 @@
-import ForgePlatformInstallerCore
+@testable import ForgePlatformInstallerCore
 
 let managedPythonTestRuntime: ManagedPythonRuntimeIdentity = try! ManagedPythonRuntimeIdentity(
     version: InstallerVersion("3.14.7"),
@@ -37,3 +37,52 @@ let managedPythonTestVenvs: [ManagedProductVirtualEnvironmentIdentity] = [
         pythonRuntimeIdentitySHA256: managedPythonTestRuntime.identitySHA256
     ),
 ]
+
+func managedInstallerTestStablePlan(
+    session: VerifiedCompositionSessionPlan,
+    deployment: ManagedDeploymentTarget,
+    activationPlan: ManagedPythonRuntimeActivationPlan,
+    actions: [ManagedToolOriginalPlanAction],
+    components: [ComponentDiff] = [
+        ComponentDiff(
+            componentID: "forge-runtime",
+            title: "Forge",
+            change: .update,
+            installedVersion: "1.0.0",
+            candidateVersion: "1.1.0",
+            artifactDigest: "sha256:" + String(repeating: "8", count: 64),
+            detail: "Exact reviewed Forge update"
+        ),
+        ComponentDiff(
+            componentID: "engineering-platform-server",
+            title: "Engineering Platform",
+            change: .retain,
+            installedVersion: "2.0.0",
+            candidateVersion: "2.0.0",
+            detail: "Exact reviewed EP retention"
+        ),
+    ]
+) throws -> ManagedInstallerStablePlan {
+    try ManagedInstallerStablePlan(
+        session: session,
+        deployment: deployment,
+        activationPlan: activationPlan,
+        reviewedOperation: ReviewedManagedDeploymentOperation(
+            sessionID: session.sessionID,
+            compositionIdentity: session.compositionIdentity,
+            manifestSHA256: session.manifestSHA256,
+            deploymentID: deployment.id,
+            deploymentExists: deployment.exists,
+            inventoryEvidenceReference: "inventory:test-readback",
+            currentInstallerRelease: VerifiedInstallerRelease(
+                version: try InstallerVersion("1.0.0"),
+                releasePage: "https://github.com/autonomous-engineering-system/forge-platform/releases/tag/installer-v1.0.0",
+                assetName: "ForgePlatformInstaller.app.zip",
+                sha256: String(repeating: "f", count: 64),
+                signingKeyID: "forge-platform-installer-release-v1"
+            ),
+            components: components
+        ),
+        originalManagedToolActions: actions
+    )
+}

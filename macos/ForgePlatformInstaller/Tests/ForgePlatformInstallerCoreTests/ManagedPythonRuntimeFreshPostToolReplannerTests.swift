@@ -130,10 +130,16 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         ))
         let noTools = try ActivationFixture()
         XCTAssertThrowsError(try ManagedPythonRuntimeFreshPostToolReplanner(
-            session: noTools.session,
-            deploymentID: noTools.deployment.id,
-            stablePlanFingerprint: fixture.stableFingerprint,
-            originalManagedToolActions: [],
+            stablePlan: managedInstallerTestStablePlan(
+                session: noTools.session,
+                deployment: noTools.deployment,
+                activationPlan: ManagedPythonRuntimeActivationPlan(
+                    session: noTools.session,
+                    deployment: noTools.deployment,
+                    initialReadback: noTools.missingReadback()
+                ),
+                actions: []
+            ),
             managedToolReceiptReferences: [.git: "receipt:git-install"],
             managedToolReadback: ToolReadback(requirement: fixture.git, plan: .exact),
             pythonReadback: PythonReadback(readback: fixture.finalReadback, plan: .exact),
@@ -173,10 +179,13 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
 private struct FreshReplannerFixture {
     let git: ManagedToolRequirement
     let activation: ActivationFixture
+    let deployment: ManagedDeploymentTarget
     let request: ManagedPythonRuntimeActivationRequest
     let receipt: ManagedPythonRuntimeExecutionReceipt
     let finalReadback: ManagedPythonRuntimeInstalledReadback
-    let stableFingerprint = String(repeating: "a", count: 64)
+    let stablePlan: ManagedInstallerStablePlan
+
+    var stableFingerprint: String { stablePlan.fingerprint }
 
     init(deploymentID: String? = nil) throws {
         git = ManagedToolRequirement(
@@ -195,6 +204,7 @@ private struct FreshReplannerFixture {
                 forgeInstanceID: activation.deployment.forgeInstanceID,
                 engineeringPlatformInstanceID: activation.deployment.engineeringPlatformInstanceID
             )
+            deployment = replacement
             let preparation = try Self.preparation(
                 session: activation.session,
                 deployment: replacement,
@@ -207,6 +217,7 @@ private struct FreshReplannerFixture {
                 initialReadback: activation.missingReadback()
             )
         } else {
+            deployment = activation.deployment
             request = try activation.request(initial: activation.missingReadback())
         }
         finalReadback = try ManagedPythonRuntimeInstalledReadback(
@@ -219,6 +230,16 @@ private struct FreshReplannerFixture {
             request: request,
             activationReceipt: try terminalReceipt(request)
         )
+        stablePlan = try managedInstallerTestStablePlan(
+            session: activation.session,
+            deployment: deployment,
+            activationPlan: ManagedPythonRuntimeActivationPlan(
+                session: activation.session,
+                deployment: deployment,
+                initialReadback: request.initialReadback
+            ),
+            actions: [ManagedToolOriginalPlanAction(requirement: git, action: .install)]
+        )
     }
 
     func replanner(
@@ -228,13 +249,26 @@ private struct FreshReplannerFixture {
         originalActions: [ManagedToolOriginalPlanAction]? = nil,
         receiptReferences: [ManagedToolRequirement.Identity: String]? = nil
     ) throws -> ManagedPythonRuntimeFreshPostToolReplanner {
-        try ManagedPythonRuntimeFreshPostToolReplanner(
-            session: activation.session,
-            deploymentID: request.deploymentID,
-            stablePlanFingerprint: stableFingerprint,
-            originalManagedToolActions: originalActions ?? [
-                ManagedToolOriginalPlanAction(requirement: git, action: .install),
-            ],
+        let actions = originalActions ?? [
+            ManagedToolOriginalPlanAction(requirement: git, action: .install),
+        ]
+        let selectedStablePlan: ManagedInstallerStablePlan
+        if actions == stablePlan.originalManagedToolActions {
+            selectedStablePlan = stablePlan
+        } else {
+            selectedStablePlan = try managedInstallerTestStablePlan(
+                session: activation.session,
+                deployment: deployment,
+                activationPlan: ManagedPythonRuntimeActivationPlan(
+                    session: activation.session,
+                    deployment: deployment,
+                    initialReadback: request.initialReadback
+                ),
+                actions: actions
+            )
+        }
+        return try ManagedPythonRuntimeFreshPostToolReplanner(
+            stablePlan: selectedStablePlan,
             managedToolReceiptReferences: receiptReferences ?? [.git: "receipt:git-install"],
             managedToolReadback: ToolReadback(requirement: git, plan: toolPlan),
             pythonReadback: PythonReadback(readback: finalReadback, plan: pythonPlan),

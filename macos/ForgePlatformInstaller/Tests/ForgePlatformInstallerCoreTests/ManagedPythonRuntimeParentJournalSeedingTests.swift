@@ -3,36 +3,32 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedPythonRuntimeParentJournalSeedingTests: XCTestCase {
-    private let stableFingerprint = String(repeating: "a", count: 64)
-
     func testSeedsReadsBackAndIdempotentlyReloadsExactPlannedRecord() async throws {
         let fixture = try ActivationFixture()
         let plan = try activationPlan(fixture, initial: fixture.missingReadback())
+        let stablePlan = try managedInstallerTestStablePlan(
+            session: fixture.session,
+            deployment: fixture.deployment,
+            activationPlan: plan,
+            actions: []
+        )
         let root = temporarySeedingRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let journal = FileManagedPythonRuntimeRecoveryStore(rootDirectory: root)
         let seeder = ManagedPythonRuntimeParentJournalSeeder(journal: journal)
 
         let first = try seeded(await seeder.seedPlannedOperation(
-            session: fixture.session,
-            deployment: fixture.deployment,
-            plan: plan,
-            stablePlanFingerprint: stableFingerprint,
-            originalManagedToolActions: []
+            stablePlan: stablePlan
         ))
         let retry = try seeded(await seeder.seedPlannedOperation(
-            session: fixture.session,
-            deployment: fixture.deployment,
-            plan: plan,
-            stablePlanFingerprint: stableFingerprint,
-            originalManagedToolActions: []
+            stablePlan: stablePlan
         ))
 
         XCTAssertEqual(first, retry)
         XCTAssertEqual(first.state, .planned)
         XCTAssertEqual(first.operationID, plan.operationID)
         XCTAssertEqual(first.requestFingerprint, plan.executionRequestFingerprint)
-        XCTAssertEqual(first.stablePlanFingerprint, stableFingerprint)
+        XCTAssertEqual(first.stablePlanFingerprint, stablePlan.fingerprint)
         XCTAssertTrue(first.requiresManagedToolReconciliation)
         XCTAssertNil(first.managedToolsEvidence)
 
@@ -51,16 +47,16 @@ final class ManagedPythonRuntimeParentJournalSeedingTests: XCTestCase {
             fixture,
             initial: fixture.activeReadback(evidence: "receipt:seeding-active")
         )
+        let stablePlan = try managedInstallerTestStablePlan(
+            session: fixture.session,
+            deployment: fixture.deployment,
+            activationPlan: plan,
+            actions: [ManagedToolOriginalPlanAction(requirement: git, action: .noChange)]
+        )
         let journal = ParentJournalSeedingSpy()
         let result = try seeded(await ManagedPythonRuntimeParentJournalSeeder(journal: journal)
             .seedPlannedOperation(
-                session: fixture.session,
-                deployment: fixture.deployment,
-                plan: plan,
-                stablePlanFingerprint: stableFingerprint,
-                originalManagedToolActions: [
-                    ManagedToolOriginalPlanAction(requirement: git, action: .noChange),
-                ]
+                stablePlan: stablePlan
             ))
 
         XCTAssertEqual(plan.action, .noChange)
@@ -69,7 +65,7 @@ final class ManagedPythonRuntimeParentJournalSeedingTests: XCTestCase {
         XCTAssertEqual(started, [result])
     }
 
-    func testRejectsContextFingerprintMissingAndDuplicateActionDriftBeforeWrite() async throws {
+    func testStablePlanRejectsContextMissingAndDuplicateActionDriftBeforeWrite() async throws {
         let git = try managedGitRequirementForSeeding()
         let fixture = try ActivationFixture(managedTools: [git])
         let plan = try activationPlan(fixture, initial: fixture.missingReadback())
@@ -79,26 +75,19 @@ final class ManagedPythonRuntimeParentJournalSeedingTests: XCTestCase {
             forgeInstanceID: "forge-one"
         )
         let exact = ManagedToolOriginalPlanAction(requirement: git, action: .install)
-        let cases: [(ManagedDeploymentTarget, String, [ManagedToolOriginalPlanAction])] = [
-            (wrongDeployment, stableFingerprint, [exact]),
-            (fixture.deployment, "not-a-fingerprint", [exact]),
-            (fixture.deployment, stableFingerprint, []),
-            (fixture.deployment, stableFingerprint, [exact, exact]),
+        let cases: [(ManagedDeploymentTarget, [ManagedToolOriginalPlanAction])] = [
+            (wrongDeployment, [exact]),
+            (fixture.deployment, []),
+            (fixture.deployment, [exact, exact]),
         ]
 
         for item in cases {
-            let journal = ParentJournalSeedingSpy()
-            let result = await ManagedPythonRuntimeParentJournalSeeder(journal: journal)
-                .seedPlannedOperation(
-                    session: fixture.session,
-                    deployment: item.0,
-                    plan: plan,
-                    stablePlanFingerprint: item.1,
-                    originalManagedToolActions: item.2
-                )
-            XCTAssertEqual(result.seedingFailure, .rejected)
-            let started = await journal.startedRecords()
-            XCTAssertEqual(started, [])
+            XCTAssertThrowsError(try managedInstallerTestStablePlan(
+                session: fixture.session,
+                deployment: item.0,
+                activationPlan: plan,
+                actions: item.1
+            ))
         }
     }
 
@@ -129,16 +118,16 @@ final class ManagedPythonRuntimeParentJournalSeedingTests: XCTestCase {
             fixture,
             initial: fixture.activeReadback(evidence: "receipt:seeding-active")
         )
+        let stablePlan = try managedInstallerTestStablePlan(
+            session: fixture.session,
+            deployment: fixture.deployment,
+            activationPlan: plan,
+            actions: [ManagedToolOriginalPlanAction(requirement: git, action: .upgrade)]
+        )
         let journal = ParentJournalSeedingSpy()
         let record = try seeded(await ManagedPythonRuntimeParentJournalSeeder(journal: journal)
             .seedPlannedOperation(
-                session: fixture.session,
-                deployment: fixture.deployment,
-                plan: plan,
-                stablePlanFingerprint: stableFingerprint,
-                originalManagedToolActions: [
-                    ManagedToolOriginalPlanAction(requirement: git, action: .upgrade),
-                ]
+                stablePlan: stablePlan
             ))
         XCTAssertTrue(record.requiresManagedToolReconciliation)
     }
@@ -146,6 +135,12 @@ final class ManagedPythonRuntimeParentJournalSeedingTests: XCTestCase {
     func testFailsClosedForStartAndDurableReadbackFailures() async throws {
         let fixture = try ActivationFixture()
         let plan = try activationPlan(fixture, initial: fixture.missingReadback())
+        let stablePlan = try managedInstallerTestStablePlan(
+            session: fixture.session,
+            deployment: fixture.deployment,
+            activationPlan: plan,
+            actions: []
+        )
         let cases: [(ParentJournalSeedingSpy.Plan, ManagedPythonRuntimeTerminalReceiptFailure)] = [
             (.startFailure, .receiptPersistenceFailed),
             (.missingReadback, .journalBridgeFailed),
@@ -157,11 +152,7 @@ final class ManagedPythonRuntimeParentJournalSeedingTests: XCTestCase {
             let result = await ManagedPythonRuntimeParentJournalSeeder(
                 journal: ParentJournalSeedingSpy(plan: item.0)
             ).seedPlannedOperation(
-                session: fixture.session,
-                deployment: fixture.deployment,
-                plan: plan,
-                stablePlanFingerprint: stableFingerprint,
-                originalManagedToolActions: []
+                stablePlan: stablePlan
             )
             XCTAssertEqual(result.seedingFailure, item.1)
         }

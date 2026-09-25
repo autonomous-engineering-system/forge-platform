@@ -311,7 +311,12 @@ mode and link-count checks, durable atomic replacement and exact idempotent
 retry comparison. The concrete fresh replanner now owns the native canonical
 post-tool fingerprint. The source-level parent-journal seeder validates and
 durably reads back the exact `PLANNED` record before runtime preparation or
-tool mutation may proceed.
+tool mutation may proceed. That seeder and the fresh replanner now consume one
+typed native stable plan whose canonical fingerprint is derived from the
+reviewed release, immutable session/catalogs, exact Forge+EP inventory,
+provider requirements, component diff, managed Git actions and complete
+pre-mutation Python/rollback/venv intent. No caller may inject an unrelated
+stable-plan digest.
 Production readback adapters are not implemented, and these coordinators are
 not wired into the released runtime. A concrete reviewed
 privileged adapter, released mutation wiring and an actual protected arm64

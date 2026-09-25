@@ -12,44 +12,16 @@ public struct ManagedPythonRuntimeParentJournalSeeder: Sendable {
     }
 
     public func seedPlannedOperation(
-        session: VerifiedCompositionSessionPlan,
-        deployment: ManagedDeploymentTarget,
-        plan: ManagedPythonRuntimeActivationPlan,
-        stablePlanFingerprint: String,
-        originalManagedToolActions: [ManagedToolOriginalPlanAction]
+        stablePlan: ManagedInstallerStablePlan
     ) async -> Result<ManagedPythonRuntimeParentJournalRecord, ManagedPythonRuntimeTerminalReceiptFailure> {
-        guard plan.sessionID == session.sessionID,
-              plan.deploymentID == deployment.id,
-              plan.operationID == ManagedPythonRuntimePreparationCoordinator.operationID(
-                  session: session,
-                  deployment: deployment
-              ),
-              plan.compositionIdentity == session.compositionIdentity,
-              plan.manifestSHA256 == session.manifestSHA256,
-              plan.runtimeIdentitySHA256 == session.managedPythonRuntime.identitySHA256,
-              plan.runtimeArchiveSHA256 == session.managedPythonRuntime.artifact.sha256,
-              plan.runtimeSlotIdentity
-                == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
-                    for: session.managedPythonRuntime.identitySHA256
-                ),
-              plan.productVirtualEnvironments == session.productVirtualEnvironments,
-              ManagedPythonRuntimePostToolQualification.isFingerprint(
-                  stablePlanFingerprint
-              ),
-              Self.actionsMatchSession(
-                  originalManagedToolActions,
-                  session: session
-              ) else {
-            return .failure(.rejected)
-        }
-
+        let plan = stablePlan.activationPlan
         let requiresReconciliation = plan.action != .noChange
-            || originalManagedToolActions.contains { $0.action != .noChange }
+            || stablePlan.originalManagedToolActions.contains { $0.action != .noChange }
         let record: ManagedPythonRuntimeParentJournalRecord
         do {
             record = try ManagedPythonRuntimeParentJournalRecord(
                 plan: plan,
-                stablePlanFingerprint: stablePlanFingerprint,
+                stablePlanFingerprint: stablePlan.fingerprint,
                 requiresManagedToolReconciliation: requiresReconciliation
             )
         } catch let failure as ManagedPythonRuntimeTerminalReceiptFailure {
@@ -76,19 +48,4 @@ public struct ManagedPythonRuntimeParentJournalSeeder: Sendable {
         }
     }
 
-    private static func actionsMatchSession(
-        _ actions: [ManagedToolOriginalPlanAction],
-        session: VerifiedCompositionSessionPlan
-    ) -> Bool {
-        guard Set(actions.map(\.requirement.identity)).count == actions.count else {
-            return false
-        }
-        let expected = Dictionary(uniqueKeysWithValues: session.managedTools.map {
-            ($0.identity, $0)
-        })
-        let supplied = Dictionary(uniqueKeysWithValues: actions.map {
-            ($0.requirement.identity, $0.requirement)
-        })
-        return supplied == expected
-    }
 }
