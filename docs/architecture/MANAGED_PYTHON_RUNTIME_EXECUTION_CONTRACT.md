@@ -48,8 +48,15 @@ stable no-follow descriptor. Missing, insecure, malformed, incomplete,
 duplicate or noncanonical evidence fails closed; an explicit failed gate is
 preserved as blocking evidence. Its atomic publisher refuses to repair insecure
 or noncanonical prior state, and its decorator exposes a gate only after exact
-durable readback of the complete five-gate set. Live gate observers remain
-unimplemented.
+durable readback of the complete five-gate set. A source-level provider-gate
+observer evaluates only the exact enabled-provider requirements carried by the
+canonical helper request, using an injected helper-owned inspector. It emits a
+pass only for exact verified minimum-version and immutable runtime-identity
+matches; absent, authentication-required and drifted readbacks remain valid
+blocking evidence. A dedicated router keeps that authority separate from the
+other four gates. The concrete OS/provider inspector and the other four live
+gate observers remain unimplemented, so this is not live provider-readiness
+evidence.
 
 This contract is subordinate to the exact managed-Python identity in the
 [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
@@ -264,9 +271,12 @@ directory synchronization, atomic replacement and exact durable readback; it
 rejects insecure or noncanonical prior state rather than repairing it. The
 closed source coordinator that supplies the document now enforces the exact
 request set and matching before/after host epochs. The descriptor-safe
-managed-Git record reader is implemented; its producer and mutation route,
-concrete Python and gate adapters, signed service registration and the released
-route are not yet implemented. The
+managed-Git and managed-Python record readers and complete five-gate record
+reader are implemented. The source-level provider-gate evaluator and router
+consume an injected provider inspector. Live Git/Python OS observers and
+mutation routes, the concrete OS/provider inspector, the other four live gate
+observers, signed service registration and the released route are not yet
+implemented. The
 native seeding coordinator now validates the exact session/deployment and
 pre-mutation activation plan plus original managed-tool action set, derives reconciliation itself,
 persists `PLANNED`, and accepts success only after an identical durable
@@ -291,8 +301,10 @@ descriptor-safe managed-Python record reader plus its atomic publisher and
 exact durable-readback decorator; the live managed-Git and managed-Python OS
 observer/mutation routes remain unimplemented. The descriptor-safe complete
 five-gate record reader, atomic publisher and complete-set exact durable-readback
-decorator are implemented; live gate observers, signed service registration and
-released route wiring are not yet implemented.
+decorator are implemented. The source-level provider-gate evaluator and
+separate gate router are implemented behind an injected provider inspector;
+the concrete OS/provider inspector, the other four live gate observers, signed
+service registration and released route wiring are not yet implemented.
 
 Each selected product receives a separate venv bound to that runtime slot.
 Component and venv identities come from the admitted composition, but the
@@ -413,8 +425,10 @@ are implemented. The live Git and Python OS observers and mutation routes,
 signed service registration and these coordinators are not wired into the
 released runtime. A descriptor-safe source now admits one fixed canonical
 complete five-gate record. Its atomic publisher and complete-set exact
-durable-readback decorator are implemented; live gate observers are not. A
-concrete reviewed authorized helper
+durable-readback decorator are implemented. The source-level provider-gate
+evaluator and separate router consume the exact enabled-provider request behind
+an injected inspector; the concrete OS/provider inspector and other four live
+gate observers are absent. A concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
 installation can be claimed.

@@ -728,6 +728,217 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         ))
     }
 
+    func testProviderHostReadbackRejectsContradictoryOrUnsafeEvidence() throws {
+        XCTAssertThrowsError(try ManagedInstallerProviderHostReadback(
+            providerTargetID: .codex,
+            state: .verified,
+            version: nil,
+            executableIdentity: "provider/codex",
+            executableSHA256: nil,
+            evidenceReference: "receipt:provider-codex"
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProviderHostReadback(
+            providerTargetID: .codex,
+            state: .absent,
+            version: try InstallerVersion("1.0.0"),
+            executableIdentity: nil,
+            executableSHA256: nil,
+            evidenceReference: "receipt:provider-codex"
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProviderHostReadback(
+            providerTargetID: .codex,
+            state: .verified,
+            version: try InstallerVersion("1.0.0"),
+            executableIdentity: "unsafe identity",
+            executableSHA256: nil,
+            evidenceReference: "receipt:provider-codex"
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProviderHostReadback(
+            providerTargetID: .codex,
+            state: .verified,
+            version: try InstallerVersion("1.0.0"),
+            executableIdentity: nil,
+            executableSHA256: "sha256:" + String(repeating: "1", count: 64),
+            evidenceReference: "receipt:provider-codex"
+        ))
+    }
+
+    func testProviderGateObserverPassesOnlyExactEnabledProviderSet() async throws {
+        let required = ProviderRequirement(
+            provider: .codex,
+            isRequired: true,
+            minimumVersion: try InstallerVersion("1.0.0")
+        )
+        let optional = try providerRuntimeRequirement()
+        let fixture = try FreshReplannerFixture(
+            providerRequirements: [required, optional],
+            enabledProviderRequirements: [optional, required]
+        )
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let inspector = ProviderInspectorSpy(results: [
+            required.id: .success(try ManagedInstallerProviderHostReadback(
+                providerTargetID: required.id,
+                state: .verified,
+                version: try InstallerVersion("1.2.0"),
+                executableIdentity: "provider/codex",
+                executableSHA256: nil,
+                evidenceReference: "receipt:provider-codex"
+            )),
+            optional.id: .success(try exactProviderReadback(optional)),
+        ])
+        let reader = ManagedInstallerPostToolProviderGateHostReader(inspector: inspector)
+
+        let first = try await reader.readPostToolHostGate(.providers, for: request).get()
+        let second = try await reader.readPostToolHostGate(.providers, for: request).get()
+
+        XCTAssertTrue(first.passed)
+        XCTAssertEqual(first, second)
+        XCTAssertTrue(first.evidenceReference.hasPrefix("receipt:provider-gate-"))
+        let calls = await inspector.calls()
+        XCTAssertEqual(calls, [required, optional, required, optional])
+    }
+
+    func testProviderGateObserverReturnsBlockingGateForEveryProviderDrift() async throws {
+        let requirement = try providerRuntimeRequirement(isRequired: true)
+        let fixture = try FreshReplannerFixture(
+            providerRequirements: [requirement],
+            enabledProviderRequirements: [requirement]
+        )
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let blockingReadbacks = [
+            try ManagedInstallerProviderHostReadback(
+                providerTargetID: requirement.id,
+                state: .absent,
+                version: nil,
+                executableIdentity: nil,
+                executableSHA256: nil,
+                evidenceReference: "receipt:provider-absent"
+            ),
+            try ManagedInstallerProviderHostReadback(
+                providerTargetID: requirement.id,
+                state: .authenticationRequired,
+                version: requirement.runtime?.version,
+                executableIdentity: "provider/github-cli",
+                executableSHA256: requirement.runtime?.executableSHA256,
+                evidenceReference: "receipt:provider-authentication"
+            ),
+            try ManagedInstallerProviderHostReadback(
+                providerTargetID: requirement.id,
+                state: .verified,
+                version: try InstallerVersion("2.69.0"),
+                executableIdentity: "provider/github-cli",
+                executableSHA256: requirement.runtime?.executableSHA256,
+                evidenceReference: "receipt:provider-version-drift"
+            ),
+            try ManagedInstallerProviderHostReadback(
+                providerTargetID: requirement.id,
+                state: .verified,
+                version: requirement.runtime?.version,
+                executableIdentity: "provider/github-cli",
+                executableSHA256: "sha256:" + String(repeating: "8", count: 64),
+                evidenceReference: "receipt:provider-digest-drift"
+            ),
+        ]
+
+        for readback in blockingReadbacks {
+            let inspector = ProviderInspectorSpy(results: [requirement.id: .success(readback)])
+            let observed = try await ManagedInstallerPostToolProviderGateHostReader(
+                inspector: inspector
+            ).readPostToolHostGate(.providers, for: request).get()
+            XCTAssertFalse(observed.passed)
+        }
+    }
+
+    func testProviderGateObserverFailsClosedForWrongGateFailureAndTargetDrift() async throws {
+        let requirement = ProviderRequirement(provider: .codex, isRequired: true)
+        let fixture = try FreshReplannerFixture(
+            providerRequirements: [requirement],
+            enabledProviderRequirements: [requirement]
+        )
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let failedInspector = ProviderInspectorSpy(results: [
+            requirement.id: .failure(.readbackFailed),
+        ])
+        let failedReader = ManagedInstallerPostToolProviderGateHostReader(
+            inspector: failedInspector
+        )
+
+        let wrongGate = await failedReader.readPostToolHostGate(.hostPreflight, for: request)
+        XCTAssertEqual(wrongGate.failure, .rejected)
+        let wrongGateCalls = await failedInspector.calls()
+        XCTAssertTrue(wrongGateCalls.isEmpty)
+        let unavailable = await failedReader.readPostToolHostGate(.providers, for: request)
+        XCTAssertEqual(unavailable.failure, .readbackFailed)
+
+        let mismatchedInspector = ProviderInspectorSpy(results: [
+            requirement.id: .success(try ManagedInstallerProviderHostReadback(
+                providerTargetID: .githubCLI,
+                state: .verified,
+                version: try InstallerVersion("1.0.0"),
+                executableIdentity: "provider/github-cli",
+                executableSHA256: nil,
+                evidenceReference: "receipt:provider-mismatch"
+            )),
+        ])
+        let mismatch = await ManagedInstallerPostToolProviderGateHostReader(
+            inspector: mismatchedInspector
+        ).readPostToolHostGate(.providers, for: request)
+        XCTAssertEqual(mismatch.failure, .rejected)
+    }
+
+    func testProviderGateObserverAcceptsBoundProviderFreePlanWithoutInspection() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let inspector = ProviderInspectorSpy(results: [:])
+
+        let observed = try await ManagedInstallerPostToolProviderGateHostReader(
+            inspector: inspector
+        ).readPostToolHostGate(.providers, for: request).get()
+
+        XCTAssertTrue(observed.passed)
+        let providerFreeCalls = await inspector.calls()
+        XCTAssertTrue(providerFreeCalls.isEmpty)
+    }
+
+    func testProviderGateRouterKeepsProviderAuthoritySeparate() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan,
+            request: fixture.request
+        )
+        let reader = ManagedInstallerPostToolGateRoutingHostReader(
+            providerGate: FixedGateHostReader(
+                expectedGate: .providers,
+                evidenceReference: "receipt:provider-route"
+            ),
+            otherGates: FixedGateHostReader(
+                expectedGate: .hostPreflight,
+                evidenceReference: "receipt:other-route"
+            )
+        )
+
+        let providers = try await reader.readPostToolHostGate(.providers, for: request).get()
+        let preflight = try await reader.readPostToolHostGate(
+            .hostPreflight,
+            for: request
+        ).get()
+
+        XCTAssertEqual(providers.evidenceReference, "receipt:provider-route")
+        XCTAssertEqual(preflight.evidenceReference, "receipt:other-route")
+    }
+
     func testHostObservationAdapterRejectsInvalidHelperResponses() async throws {
         let fixture = try FreshReplannerFixture()
         let snapshot = try fixture.snapshot()
@@ -2575,6 +2786,40 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         namedListener.invalidate()
     }
 
+    private func providerRuntimeRequirement(
+        isRequired: Bool = false
+    ) throws -> ProviderRequirement {
+        ProviderRequirement(
+            provider: .githubCLI,
+            isRequired: isRequired,
+            minimumVersion: try InstallerVersion("2.60.0"),
+            credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer,
+            targetIdentity: "ep-one",
+            runtime: try ProviderRuntimeRequirement(
+                version: InstallerVersion("2.70.0"),
+                archiveKind: .zip,
+                artifactURL: "https://artifacts.example.test/github-cli.zip",
+                artifactSHA256: "sha256:" + String(repeating: "6", count: 64),
+                executableRelativePath: "bin/gh",
+                executableSHA256: "sha256:" + String(repeating: "7", count: 64)
+            )
+        )
+    }
+
+    private func exactProviderReadback(
+        _ requirement: ProviderRequirement
+    ) throws -> ManagedInstallerProviderHostReadback {
+        try ManagedInstallerProviderHostReadback(
+            providerTargetID: requirement.id,
+            state: .verified,
+            version: requirement.runtime?.version ?? requirement.minimumVersion,
+            executableIdentity: "provider/\(requirement.provider.rawValue)",
+            executableSHA256: requirement.runtime?.executableSHA256,
+            evidenceReference: "receipt:provider-\(requirement.provider.rawValue)"
+        )
+    }
+
     private func privateTemporaryDirectory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "post-tool-readback-\(UUID().uuidString)",
@@ -3194,6 +3439,60 @@ private struct HostGateSource: ManagedInstallerPostToolGateHostReading {
             return .failure(.readbackFailed)
         }
         return .success(readback)
+    }
+}
+
+private actor ProviderInspectorSpy: ManagedInstallerProviderHostInspecting {
+    private let results: [ProviderTargetID: Result<
+        ManagedInstallerProviderHostReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >]
+    private var observed: [ProviderRequirement] = []
+
+    init(results: [ProviderTargetID: Result<
+        ManagedInstallerProviderHostReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >]) {
+        self.results = results
+    }
+
+    func inspectProvider(
+        _ requirement: ProviderRequirement,
+        for request: ManagedInstallerPostToolHostObservationRequest
+    ) async -> Result<
+        ManagedInstallerProviderHostReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    > {
+        _ = request
+        observed.append(requirement)
+        return results[requirement.id] ?? .failure(.readbackFailed)
+    }
+
+    func calls() -> [ProviderRequirement] { observed }
+}
+
+private struct FixedGateHostReader: ManagedInstallerPostToolGateHostReading {
+    let expectedGate: ManagedInstallerPostToolGate
+    let evidenceReference: String
+
+    func readPostToolHostGate(
+        _ gate: ManagedInstallerPostToolGate,
+        for request: ManagedInstallerPostToolHostObservationRequest
+    ) async -> Result<
+        ManagedInstallerPostToolGateReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    > {
+        _ = request
+        guard gate == expectedGate else { return .failure(.rejected) }
+        do {
+            return .success(try ManagedInstallerPostToolGateReadback(
+                gate: gate,
+                passed: true,
+                evidenceReference: evidenceReference
+            ))
+        } catch {
+            return .failure(.rejected)
+        }
     }
 }
 

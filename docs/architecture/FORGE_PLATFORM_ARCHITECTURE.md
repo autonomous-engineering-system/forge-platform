@@ -102,11 +102,15 @@ all five gate identities through the same stable no-follow boundary. Missing,
 insecure, malformed, incomplete, duplicate or noncanonical gate evidence fails
 closed; an explicit failed gate remains valid blocking evidence. Its atomic
 publisher refuses to repair insecure prior state and its decorator exposes a
-gate only after the complete five-gate set has exact durable readback. Live
-gate observers are not implemented. The helper request supplies the exact
-provider authority needed by a future live provider observer; no such observer
-is implemented. No Git or Python artifact, privileged helper or operational
-runtime installation is claimed.
+gate only after the complete five-gate set has exact durable readback. A
+source-level provider-gate observer now evaluates the request's exact enabled
+provider set through an injected helper-owned inspector. It passes only
+verified minimum-version and immutable runtime-identity matches, converts
+absence, authentication requirements and drift into blocking evidence, and
+routes the provider gate separately from the other four gates. The concrete
+OS/provider inspector and the other four live gate observers are not
+implemented. No live provider readiness, Git or Python artifact, privileged
+helper or operational runtime installation is claimed.
 
 The source-level native parent-journal admission adapter now gates that bridge
 on a fresh qualification bound to the frozen stable-plan fingerprint, exact
@@ -133,9 +137,11 @@ observer and mutation route remain absent. The descriptor-safe managed-Python
 record reader, atomic publisher and source/publish/durable-readback decorator
 are implemented; its live OS observer and mutation route remain absent.
 The descriptor-safe complete five-gate record reader, atomic publisher and
-complete-set source/publish/durable-readback decorator are implemented; live
-gate observers remain absent. Signed service registration, released route
-wiring and mutation dispatch remain unimplemented.
+complete-set source/publish/durable-readback decorator are implemented. The
+source-level provider-gate evaluator and separate gate router are implemented
+behind an injected provider inspector; the concrete OS/provider inspector and
+the other four live gate observers remain absent. Signed service registration,
+released route wiring and mutation dispatch remain unimplemented.
 
 ## Installed-server deployment and topology bootstrap
 
