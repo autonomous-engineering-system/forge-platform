@@ -61,6 +61,18 @@ class ForgeUpdateIntentTests(unittest.TestCase):
         with self.assertRaisesRegex(ForgeUpdateIntentError, "receipt changed"):
             self.store.advance(terminal, "COMPLETE", "forge-update:sha256:" + "f" * 64)
 
+    def test_pending_same_instance_blocks_new_operation_but_other_instance_isolated(self) -> None:
+        first = self.store.prepare(self.intent)
+        second = replace(self.intent, operation_id="forge-update-2", request_fingerprint="f" * 64)
+        with self.assertRaisesRegex(ForgeUpdateIntentError, "another pending"):
+            self.store.prepare(second)
+        other = replace(second, operation_id="forge-update-other", instance_id="forge-instance-2")
+        self.assertEqual(self.store.prepare(other), other)
+        invoked = self.store.advance(first, "UPDATER_INVOKED")
+        terminal = self.store.advance(invoked, "PRODUCT_COMPLETE", self.receipt)
+        self.store.advance(terminal, "COMPLETE")
+        self.assertEqual(self.store.prepare(second), second)
+
     def test_corrupt_foreign_or_unsafe_file_fails_closed(self) -> None:
         path = self.root / "forge-update-1.json"
         self.store.prepare(self.intent)

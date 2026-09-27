@@ -29,6 +29,7 @@ from .component_operations import (
     ProductUpdateAssessment,
     QualifiedArtifact,
 )
+from .forge_update_intent import ForgeUpdateIntent, ForgeUpdateIntentStore
 
 
 FORGE_COMPONENT = "forge-runtime"
@@ -246,6 +247,7 @@ class ForgeUpdateBinding:
     existing_interpreter: Path
     existing_version: str
     base_python: Path
+    intent_root: Path | None = None
 
     def __post_init__(self) -> None:
         for value in (
@@ -254,6 +256,10 @@ class ForgeUpdateBinding:
         ):
             if not isinstance(value, Path) or not value.is_absolute():
                 raise ValueError("Forge update binding paths must be absolute")
+        if self.intent_root is not None and (
+            not isinstance(self.intent_root, Path) or not self.intent_root.is_absolute()
+        ):
+            raise ValueError("Forge update intent root must be absolute")
 
 
 @dataclass(frozen=True)
@@ -557,30 +563,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         elif request.kind == "remove":
             return self._run_uninstall(request)
         elif request.kind == "update":
-            before = self.readback(request)
-            if (
-                before.state != "ACTIVE"
-                or before.artifact != self.installed_artifact.correlation
-                or before.selected_instance_identity != self.target.instance_id
-            ):
-                raise ForgeServerAdapterError("Forge update selected inventory is stale or unhealthy")
-            assessment = self.assess_update(request)
-            if assessment.state != "UPDATE_AVAILABLE":
-                raise ForgeServerAdapterError("Forge product did not authorize the fresh update")
-            binding = self.update_binding
-            if binding is None or binding.runtime_id != self.target.instance_id or binding.existing_version != self.installed_artifact.version:
-                raise ForgeServerAdapterError("Forge update binding changed before service mutation")
-            self.supervisor.stop(self.target)
-            if self.supervisor.loaded(self.target):
-                raise ForgeServerAdapterError("Forge service remained loaded before product update")
-            evidence_reference = self._run_update(request)
-            self.supervisor.register(self.target, binding.resolver)
-            self.supervisor.start(self.target)
-            self.forge_executable = binding.resolver
-            self.installed_artifact = request.artifact
-            after = self.readback(request)
-            if after.state != "ACTIVE" or after.artifact != request.artifact.correlation:
-                raise ForgeServerAdapterError("Forge update did not restore exact instance readiness")
+            evidence_reference = self._execute_update(request)
             state = "COMPLETED"
         else:
             raise ForgeServerAdapterError("Forge operation kind is unsupported")
@@ -592,6 +575,95 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             state,
             evidence_reference,
         )
+
+    def _execute_update(self, request: ComponentOperationRequest) -> str:
+        binding = self.update_binding
+        if (
+            binding is None or binding.intent_root is None
+            or binding.runtime_id != self.target.instance_id
+        ):
+            raise ForgeServerAdapterError("Forge durable update binding changed or is unavailable")
+        store = ForgeUpdateIntentStore(binding.intent_root)
+        existing = store.read(request.operation_id)
+        if existing is not None:
+            if (
+                self.installed_artifact.version != binding.existing_version
+                and self.installed_artifact != request.artifact
+            ):
+                raise ForgeServerAdapterError("Forge update retry installed artifact changed")
+            if (
+                self.installed_artifact.version == binding.existing_version
+                and existing.installed_artifact != self.installed_artifact.digest
+            ):
+                raise ForgeServerAdapterError("Forge update retry changed installed artifact evidence")
+            selected = ForgeUpdateIntent(
+                request.operation_id, request.fingerprint(), self.target.instance_id,
+                existing.installed_artifact, request.artifact.digest,
+                existing.assessment_reference,
+            )
+            if not existing.same_selection(selected):
+                raise ForgeServerAdapterError("Forge update retry changed the exact operation selection")
+            if existing.phase in {"UPDATER_INVOKED", "PRODUCT_COMPLETE", "COMPLETE"}:
+                return self._continue_update(request, binding, store, existing)
+
+        if binding.existing_version != self.installed_artifact.version:
+            raise ForgeServerAdapterError("Forge update binding changed before service mutation")
+
+        before = self.readback(request)
+        if (
+            before.state != "ACTIVE"
+            or before.artifact != self.installed_artifact.correlation
+            or before.selected_instance_identity != self.target.instance_id
+        ):
+            raise ForgeServerAdapterError("Forge update selected inventory is stale or unhealthy")
+        assessment = self.assess_update(request)
+        if assessment.state != "UPDATE_AVAILABLE":
+            raise ForgeServerAdapterError("Forge product did not authorize the fresh update")
+        if existing is not None and existing.assessment_reference != assessment.evidence_reference:
+            raise ForgeServerAdapterError("Forge update assessment changed before mutation")
+        intended = ForgeUpdateIntent(
+            request.operation_id, request.fingerprint(), self.target.instance_id,
+            self.installed_artifact.digest, request.artifact.digest,
+            assessment.evidence_reference,
+        )
+        intent = store.prepare(intended)
+        if intent.assessment_reference != assessment.evidence_reference:
+            raise ForgeServerAdapterError("Forge update assessment changed before mutation")
+        if intent.phase != "PREPARED":
+            return self._continue_update(request, binding, store, intent)
+        intent = store.advance(intent, "UPDATER_INVOKED")
+        return self._continue_update(request, binding, store, intent)
+
+    def _continue_update(
+        self,
+        request: ComponentOperationRequest,
+        binding: ForgeUpdateBinding,
+        store: ForgeUpdateIntentStore,
+        intent: ForgeUpdateIntent,
+    ) -> str:
+        if intent.phase == "UPDATER_INVOKED":
+            self.supervisor.stop(self.target)
+            if self.supervisor.loaded(self.target):
+                raise ForgeServerAdapterError("Forge service remained loaded before product update")
+            receipt_reference = self._run_update(request)
+            intent = store.advance(intent, "PRODUCT_COMPLETE", receipt_reference)
+        if intent.phase == "PRODUCT_COMPLETE":
+            self.supervisor.register(self.target, binding.resolver)
+            self.supervisor.start(self.target)
+        self.forge_executable = binding.resolver
+        self.installed_artifact = request.artifact
+        after = self.readback(request)
+        if (
+            after.state != "ACTIVE"
+            or after.artifact != request.artifact.correlation
+            or after.selected_instance_identity != self.target.instance_id
+        ):
+            raise ForgeServerAdapterError("Forge update did not restore exact instance readiness")
+        if intent.phase == "PRODUCT_COMPLETE":
+            intent = store.advance(intent, "COMPLETE")
+        if intent.phase != "COMPLETE" or intent.product_receipt_reference is None:
+            raise ForgeServerAdapterError("Forge update lacks a terminal durable product receipt")
+        return intent.product_receipt_reference
 
     def removal_support(self) -> str:
         """Advertise support only for a helper-bound exact product dispatcher."""
@@ -722,7 +794,12 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         prior_receipt: ProductOperationReceipt,
     ) -> ProductOperationReceipt:
         self._validate_request(request)
-        if prior_receipt.product_operation_id != request.operation_id:
+        if (
+            prior_receipt.product_operation_id != request.operation_id
+            or prior_receipt.component != FORGE_COMPONENT
+            or prior_receipt.installation_identity != self.target.instance_id
+            or prior_receipt.artifact != request.artifact.correlation
+        ):
             raise ForgeServerAdapterError("Forge resume operation identity changed")
         # Forge's updater and uninstall dispatcher are durable/idempotent under
         # the same operation ID. The product returns its terminal receipt again
