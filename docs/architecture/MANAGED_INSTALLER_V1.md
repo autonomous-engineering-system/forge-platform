@@ -202,10 +202,11 @@ object and exact LaunchDaemon plist. Its released-route listener reads only
 canonical evidence from one fixed helper-owned machine root. It opens that
 root and each digest-derived route file without following links and requires
 root ownership, `0700`/`0600` modes, one file link and stable descriptor
-identity before replying. Product mutation and post-tool handlers still return
-no authority until their production backends are composed and qualified. The
-separate verified publisher that creates route evidence is also still absent,
-so a fresh host remains fail-closed rather than accepting app-supplied state.
+identity before replying. Product mutation now enters the serial managed-Python
+worker executor described below. Post-tool observation still returns no
+authority until its production backend is composed and qualified. The separate
+verified producer that constructs route snapshots is also still absent, so a
+fresh host remains fail-closed rather than accepting app-supplied state.
 
 The durable publication primitive for that future producer is now
 source-qualified. It accepts only a fully typed
@@ -257,11 +258,11 @@ readiness receipts, and report the expected terminal state for both exact
 components. Substituted, partial, malformed or noncanonical responses fail
 closed before the GUI or CLI can show completion.
 
-This is source-level composition only. The released runtime continues to inject
-the unavailable route until the snapshot loader, concrete host and managed-tool
-adapters, reviewed execution coordinator and released privileged-helper wiring
-are composed, qualified and explicitly installed. It does not establish live
-install, signing, notarization or product-readiness evidence.
+This is source-level composition only. The released runtime still needs the
+snapshot producer, concrete host and managed-tool adapters, reviewed execution
+coordinator and product worker resource before it can complete the route. It
+does not establish live install, signing, notarization or product-readiness
+evidence.
 
 The platform-neutral helper boundary now independently admits request v2 before
 any product dispatcher can be selected. It accepts only bounded strict canonical
@@ -295,6 +296,21 @@ those bytes into the closed helper execution seam and returns only a canonical
 receipt that rebinds the same request. Nil, malformed, noncanonical or
 cross-request replies fail closed. This supplies no launchd registration or
 live helper evidence by itself.
+
+The privileged helper now connects that product-operation handler to one
+serial managed-Python worker executor. It reads the active runtime slot only
+from the helper-owned canonical host-state record and derives the interpreter
+under one fixed runtime-slots root. It resolves one fixed bundle resource and
+requires its exact `sha256:` digest from the code-sealed application
+`Info.plist`. The interpreter must be a root-owned executable regular file with
+one link and neither file may be group- or world-writable. Execution uses no
+shell, `PATH` or inherited environment: the argument vector is fixed to
+isolated Python, the environment is a five-key constant, the working directory
+is `/var/empty`, request and response pipes are bounded, a fixed timeout is
+enforced, and the response is decoded again against the exact request before
+XPC replies. The release packager does not yet build or embed that worker
+resource, so the installed product route remains fail-closed until that next
+boundary is supplied and qualified.
 
 Behind that transport, the platform-neutral helper service now composes the
 strict decoder, helper-owned authority resolution, admission and durable

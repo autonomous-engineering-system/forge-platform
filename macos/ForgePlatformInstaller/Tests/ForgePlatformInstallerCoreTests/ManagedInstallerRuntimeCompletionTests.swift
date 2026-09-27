@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Security
 import XCTest
@@ -990,6 +991,213 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         namedListener.invalidate()
     }
 
+    func testProductWorkerResolverUsesOnlyPublishedActiveSlotAndSealedWorker() throws {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let resources = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: resources)
+        }
+        let runtimeIdentity = "sha256:" + String(repeating: "a", count: 64)
+        let slot = "sha256-" + String(repeating: "a", count: 64)
+        let state = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: runtimeIdentity,
+            activeRuntimeSlotIdentity: slot,
+            retainedRuntimeIdentitySHA256s: [],
+            evidenceReference: "receipt:active-python"
+        )
+        let stateURL = root.appendingPathComponent(
+            FileManagedInstallerManagedPythonHostReader.fileName
+        )
+        try state.canonicalManagedPythonHostStateJSONData().write(to: stateURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateURL.path)
+        let worker = resources.appendingPathComponent("worker.pyz")
+        try Data("worker".utf8).write(to: worker)
+        let slots = root.appendingPathComponent("slots", isDirectory: true)
+
+        let result = FileManagedInstallerProductWorkerInvocationResolver(
+            stateRoot: root,
+            runtimeSlotsRoot: slots,
+            workerURL: worker,
+            workerSHA256: "sha256:" + String(repeating: "b", count: 64),
+            expectedInterpreterOwner: geteuid(),
+            timeoutNanoseconds: 99
+        ).resolveProductWorkerInvocation()
+        let invocation = try result.get()
+
+        XCTAssertEqual(
+            invocation.interpreterURL,
+            slots.appendingPathComponent(slot).appendingPathComponent("bin/python3")
+        )
+        XCTAssertEqual(invocation.workerURL, worker)
+        XCTAssertEqual(invocation.timeoutNanoseconds, 99)
+        XCTAssertEqual(invocation.expectedInterpreterOwner, geteuid())
+
+        XCTAssertEqual(
+            FileManagedInstallerProductWorkerInvocationResolver(
+                stateRoot: root,
+                runtimeSlotsRoot: slots,
+                workerURL: nil,
+                workerSHA256: nil
+            ).resolveProductWorkerInvocation().workerFailure,
+            .unavailable
+        )
+        try Data("{}".utf8).write(to: stateURL)
+        XCTAssertEqual(
+            FileManagedInstallerProductWorkerInvocationResolver(
+                stateRoot: root,
+                runtimeSlotsRoot: slots,
+                workerURL: worker,
+                workerSHA256: "sha256:" + String(repeating: "b", count: 64)
+            ).resolveProductWorkerInvocation().workerFailure,
+            .unavailable
+        )
+    }
+
+    func testPythonProductExecutorSerializesCanonicalWorkerReceipt() async throws {
+        let (request, receipt) = try productOperationXPCFixture()
+        let invocation = productWorkerInvocation()
+        let resolver = ProductWorkerResolver(result: .success(invocation))
+        let runner = ProductWorkerRunner(result: .success(receipt.canonicalJSONData()))
+        let executor = ManagedInstallerPythonProductOperationExecutor(
+            resolver: resolver,
+            runner: runner
+        )
+
+        let result = await executor.executeProductOperation(request)
+
+        XCTAssertEqual(try result.get(), receipt)
+        let calls = await runner.calls()
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls[0].invocation, invocation)
+        XCTAssertEqual(calls[0].request, request.canonicalJSONData())
+    }
+
+    func testPythonProductExecutorMapsResolutionExecutionAndReceiptFailureClosed() async throws {
+        let (request, _) = try productOperationXPCFixture()
+        let invocation = productWorkerInvocation()
+        let cases: [(
+            Result<ManagedInstallerProductWorkerInvocation, ManagedInstallerProductWorkerFailure>,
+            Result<Data, ManagedInstallerProductWorkerFailure>,
+            ManagedInstallerProductOperationBridgeFailure
+        )] = [
+            (.failure(.unavailable), .success(Data()), .unavailable),
+            (.failure(.rejected), .success(Data()), .rejected),
+            (.success(invocation), .failure(.unavailable), .unavailable),
+            (.success(invocation), .failure(.rejected), .rejected),
+            (.success(invocation), .success(Data("{}".utf8)), .rejected),
+        ]
+
+        for (resolution, execution, expected) in cases {
+            let executor = ManagedInstallerPythonProductOperationExecutor(
+                resolver: ProductWorkerResolver(result: resolution),
+                runner: ProductWorkerRunner(result: execution)
+            )
+            let result = await executor.executeProductOperation(request)
+            guard case .failure(let failure) = result else {
+                return XCTFail("Expected product worker execution to fail closed")
+            }
+            XCTAssertEqual(failure, expected)
+        }
+    }
+
+    func testProductWorkerRunnerUsesIsolatedPythonAndBoundedCanonicalPipes() async throws {
+        let (request, _) = try productOperationXPCFixture()
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let interpreter = URL(fileURLWithPath: "/usr/bin/python3")
+        let worker = root.appendingPathComponent("worker.pyz")
+        let source = Data("import sys\nsys.stdout.buffer.write(sys.stdin.buffer.read())\n".utf8)
+        try source.write(to: worker)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: worker.path)
+        let digest = SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
+        let invocation = ManagedInstallerProductWorkerInvocation(
+            interpreterURL: interpreter,
+            workerURL: URL(fileURLWithPath: worker.path),
+            workerSHA256: "sha256:" + digest,
+            expectedInterpreterOwner: 0,
+            requireSingleInterpreterLink: false,
+            timeoutNanoseconds: 5_000_000_000
+        )
+        let runner = MacOSManagedInstallerProductWorkerRunner()
+        XCTAssertNil(invocation.interpreterURL.baseURL)
+        XCTAssertNil(invocation.workerURL.baseURL)
+        XCTAssertTrue(runner.secureInterpreter(invocation))
+        XCTAssertTrue(runner.secureWorker(invocation))
+
+        let result = await runner.runProductWorker(
+            invocation,
+            canonicalRequest: request.canonicalJSONData()
+        )
+
+        XCTAssertEqual(try result.get(), request.canonicalJSONData())
+        let changedDigest = ManagedInstallerProductWorkerInvocation(
+            interpreterURL: interpreter,
+            workerURL: URL(fileURLWithPath: worker.path),
+            workerSHA256: "sha256:" + String(repeating: "0", count: 64),
+            expectedInterpreterOwner: 0,
+            requireSingleInterpreterLink: false,
+            timeoutNanoseconds: 5_000_000_000
+        )
+        let changedResult = await MacOSManagedInstallerProductWorkerRunner().runProductWorker(
+            changedDigest,
+            canonicalRequest: request.canonicalJSONData()
+        )
+        XCTAssertEqual(changedResult.workerFailure, .rejected)
+    }
+
+    func testProductWorkerRunnerRejectsTimeoutAndUnboundedOutput() async throws {
+        let (request, _) = try productOperationXPCFixture()
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let interpreter = URL(fileURLWithPath: "/usr/bin/python3")
+
+        for (sourceText, timeout) in [
+            ("import time\ntime.sleep(3)\n", UInt64(10_000_000)),
+            ("import sys\nsys.stdout.write('x' * 200000)\n", UInt64(5_000_000_000)),
+        ] {
+            let source = Data(sourceText.utf8)
+            let worker = root.appendingPathComponent(UUID().uuidString + ".pyz")
+            try source.write(to: worker)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: worker.path)
+            let digest = SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
+            let result = await MacOSManagedInstallerProductWorkerRunner().runProductWorker(
+                ManagedInstallerProductWorkerInvocation(
+                    interpreterURL: interpreter,
+                    workerURL: URL(fileURLWithPath: worker.path),
+                    workerSHA256: "sha256:" + digest,
+                    expectedInterpreterOwner: 0,
+                    requireSingleInterpreterLink: false,
+                    timeoutNanoseconds: timeout
+                ),
+                canonicalRequest: request.canonicalJSONData()
+            )
+            XCTAssertEqual(result.workerFailure, .unavailable)
+        }
+    }
+
+    private func productWorkerInvocation() -> ManagedInstallerProductWorkerInvocation {
+        ManagedInstallerProductWorkerInvocation(
+            interpreterURL: URL(fileURLWithPath: "/fixed/python3"),
+            workerURL: URL(fileURLWithPath: "/fixed/worker.pyz"),
+            workerSHA256: "sha256:" + String(repeating: "a", count: 64),
+            expectedInterpreterOwner: 0,
+            requireSingleInterpreterLink: true,
+            timeoutNanoseconds: 1
+        )
+    }
+
     private func productOperationXPCFixture(
         deploymentID: String = "activation-deployment"
     ) throws -> (
@@ -1585,6 +1793,45 @@ private actor ProductOperationHelperExecutor:
     }
 }
 
+private struct ProductWorkerResolver:
+    ManagedInstallerProductWorkerInvocationResolving {
+    let result: Result<
+        ManagedInstallerProductWorkerInvocation,
+        ManagedInstallerProductWorkerFailure
+    >
+
+    func resolveProductWorkerInvocation()
+        -> Result<ManagedInstallerProductWorkerInvocation, ManagedInstallerProductWorkerFailure> {
+        result
+    }
+}
+
+private actor ProductWorkerRunner: ManagedInstallerProductWorkerRunning {
+    struct Call: Sendable {
+        let invocation: ManagedInstallerProductWorkerInvocation
+        let request: Data
+    }
+
+    let result: Result<Data, ManagedInstallerProductWorkerFailure>
+    private var recorded: [Call] = []
+
+    init(result: Result<Data, ManagedInstallerProductWorkerFailure>) {
+        self.result = result
+    }
+
+    func runProductWorker(
+        _ invocation: ManagedInstallerProductWorkerInvocation,
+        canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductWorkerFailure> {
+        recorded.append(Call(invocation: invocation, request: canonicalRequest))
+        return result
+    }
+
+    func calls() -> [Call] {
+        recorded
+    }
+}
+
 private final class RawProductOperationXPCService:
     NSObject, NSXPCListenerDelegate, ManagedInstallerProductOperationXPCService,
     @unchecked Sendable {
@@ -1710,6 +1957,13 @@ private extension Result where Success == ManagedInstallerRuntimeTransactionRece
 private extension Result where Success == Data,
     Failure == ManagedInstallerProductOperationBridgeFailure {
     var failure: Failure? {
+        guard case .failure(let failure) = self else { return nil }
+        return failure
+    }
+}
+
+private extension Result where Failure == ManagedInstallerProductWorkerFailure {
+    var workerFailure: Failure? {
         guard case .failure(let failure) = self else { return nil }
         return failure
     }

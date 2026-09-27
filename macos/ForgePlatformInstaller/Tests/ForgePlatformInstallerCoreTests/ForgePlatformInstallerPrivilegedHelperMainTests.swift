@@ -77,12 +77,11 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
         let request = Data("caller bytes are never authority".utf8)
         var responses: [Data?] = []
 
-        backend.executeProductOperation(request) { responses.append($0) }
         backend.capturePostToolObservation(request) { responses.append($0) }
         backend.loadManagedDeploymentInventory { responses.append($0) }
         backend.loadReleasedRouteSnapshot(request) { responses.append($0) }
 
-        XCTAssertEqual(responses.count, 4)
+        XCTAssertEqual(responses.count, 3)
         XCTAssertTrue(responses.allSatisfy { $0 == nil })
     }
 }
