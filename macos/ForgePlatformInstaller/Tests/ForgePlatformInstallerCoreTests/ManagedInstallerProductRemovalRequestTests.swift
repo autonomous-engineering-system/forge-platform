@@ -38,20 +38,35 @@ final class ManagedInstallerProductRemovalRequestTests: XCTestCase {
         ))
     }
 
-    func testRejectsChangedIdentityFingerprintAndNoncanonicalJSON() throws {
+    func testRejectsChangedIdentityFingerprint() throws {
         let request = try makeRequest()
         let bytes = request.canonicalJSONData()
         let text = try XCTUnwrap(String(data: bytes, encoding: .utf8))
         XCTAssertThrowsError(try ManagedInstallerProductRemovalRequest.decodeJSON(
             Data(text.replacingOccurrences(of: "forge-one", with: "forge-two").utf8)
         ))
+    }
+
+    func testRejectsLeadingWhitespaceJSON() throws {
+        let text = try XCTUnwrap(String(
+            data: makeRequest().canonicalJSONData(), encoding: .utf8
+        ))
         XCTAssertThrowsError(try ManagedInstallerProductRemovalRequest.decodeJSON(
             Data((" " + text).utf8)
+        ))
+    }
+
+    func testRejectsDuplicateOperationKey() throws {
+        let text = try XCTUnwrap(String(
+            data: makeRequest().canonicalJSONData(), encoding: .utf8
         ))
         XCTAssertThrowsError(try ManagedInstallerProductRemovalRequest.decodeJSON(
             Data(text.replacingOccurrences(of: "\"operation_id\":", with:
                 "\"operation_id\":\"duplicate\",\"operation_id\":").utf8)
         ))
+    }
+
+    func testRejectsEmptyAndOversizeJSON() throws {
         XCTAssertThrowsError(try ManagedInstallerProductRemovalRequest.decodeJSON(Data()))
         XCTAssertThrowsError(try ManagedInstallerProductRemovalRequest.decodeJSON(
             Data(repeating: 65, count: ManagedInstallerProductRemovalRequest.maximumBytes + 1)
