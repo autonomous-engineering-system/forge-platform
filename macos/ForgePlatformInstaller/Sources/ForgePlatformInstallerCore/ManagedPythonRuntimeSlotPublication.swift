@@ -48,6 +48,12 @@ struct MacOSManagedPythonRuntimeSlotPublisher: Sendable {
         guard requestMatches(request, runtime: runtime, inspection: inventory.inspection) else {
             return .failure(.invalidRequest)
         }
+        switch MacOSManagedPythonRuntimeArchiveCache(
+            slotsRoot: slotsRoot, expectedOwner: expectedOwner
+        ).retain(archive, archiveSHA256: request.archiveSHA256) {
+        case .success: break
+        case .failure(let failure): return .failure(failure)
+        }
         do {
             let root = try openPrivateSlotsRoot()
             defer { _ = Darwin.close(root) }

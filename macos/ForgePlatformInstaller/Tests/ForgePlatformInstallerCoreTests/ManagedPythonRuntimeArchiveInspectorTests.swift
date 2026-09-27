@@ -137,8 +137,13 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
         }
         XCTAssertEqual(receipt.runtimeSlotIdentity, request.runtimeSlotIdentity)
         XCTAssertEqual(receipt.state, .ready)
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path),
-                       [request.runtimeSlotIdentity])
+        let cacheName = "archive-" + request.archiveSHA256.dropFirst("sha256:".count)
+            + ".tar.gz"
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: root.path)),
+                       Set([request.runtimeSlotIdentity, cacheName]))
+        XCTAssertEqual(try MacOSManagedPythonRuntimeArchiveCache(
+            slotsRoot: root, expectedOwner: geteuid()
+        ).read(archiveSHA256: request.archiveSHA256).get(), fixture.runtimeArchive)
         XCTAssertEqual(publisher.publish(
             archive: fixture.runtimeArchive, runtime: fixture.runtime, request: request
         ), first)
@@ -212,8 +217,39 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
         XCTAssertEqual(publisher.publish(
             archive: first.runtimeArchive, runtime: first.runtime, request: firstRequest
         ), firstResult)
+        let firstCache = "archive-" + firstRequest.archiveSHA256.dropFirst("sha256:".count)
+            + ".tar.gz"
+        let secondCache = "archive-" + secondRequest.archiveSHA256.dropFirst("sha256:".count)
+            + ".tar.gz"
         XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: root.path)),
-                       Set([firstRequest.runtimeSlotIdentity, secondRequest.runtimeSlotIdentity]))
+                       Set([firstRequest.runtimeSlotIdentity, secondRequest.runtimeSlotIdentity,
+                            firstCache, secondCache]))
+    }
+
+    func testSlotReadDoesNotCreateArchiveCacheAndTamperedCacheBlocksRepeatPublish() throws {
+        let fixture = try ArchiveInspectionFixture()
+        let root = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let request = try slotRequest(fixture)
+        let publisher = MacOSManagedPythonRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        )
+        XCTAssertNil(try publisher.readPublishedSlot(
+            archive: fixture.runtimeArchive, runtime: fixture.runtime, request: request
+        ).get())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+        guard case .success = publisher.publish(
+            archive: fixture.runtimeArchive, runtime: fixture.runtime, request: request
+        ) else { return XCTFail("Exact runtime slot must publish") }
+        let cacheName = "archive-" + request.archiveSHA256.dropFirst("sha256:".count)
+            + ".tar.gz"
+        let cache = root.appendingPathComponent(cacheName)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644], ofItemAtPath: cache.path
+        )
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.runtimeArchive, runtime: fixture.runtime, request: request
+        ), .failure(.rejected))
     }
 
     private func slotRequest(
