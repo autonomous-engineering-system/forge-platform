@@ -1897,6 +1897,13 @@ final class RawProductOperationXPCService:
         executeProductOperation(canonicalRequest, withReply: reply)
     }
 
+    func prepareProductRemovalReview(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalIntent, withReply: reply)
+    }
+
     func capturedRequests() -> [Data] {
         lock.lock()
         defer { lock.unlock() }

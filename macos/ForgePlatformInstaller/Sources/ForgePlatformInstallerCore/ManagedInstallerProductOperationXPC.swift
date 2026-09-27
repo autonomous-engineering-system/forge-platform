@@ -16,6 +16,12 @@ public protocol ManagedInstallerProductOperationHelperExecuting: Sendable {
         ManagedInstallerProductRemovalReceipt,
         ManagedInstallerProductOperationBridgeFailure
     >
+    func prepareProductRemovalReview(
+        _ intent: ManagedInstallerProductRemovalReviewIntent
+    ) async -> Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    >
 }
 
 public extension ManagedInstallerProductOperationHelperExecuting {
@@ -26,6 +32,16 @@ public extension ManagedInstallerProductOperationHelperExecuting {
         ManagedInstallerProductOperationBridgeFailure
     > {
         _ = request
+        return .failure(.rejected)
+    }
+
+    func prepareProductRemovalReview(
+        _ intent: ManagedInstallerProductRemovalReviewIntent
+    ) async -> Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = intent
         return .failure(.rejected)
     }
 }
@@ -40,6 +56,10 @@ public extension ManagedInstallerProductOperationHelperExecuting {
     )
     func executeProductRemoval(
         _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
+    func prepareProductRemovalReview(
+        _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     )
 }
@@ -187,6 +207,41 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
             }
         }
     }
+
+    public func prepareProductRemovalReview(
+        _ canonicalIntent: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        guard let intent = try? ManagedInstallerProductRemovalReviewIntent.decodeJSON(
+            canonicalIntent
+        ), intent.canonicalJSONData() == canonicalIntent else {
+            return .failure(.invalidRequest)
+        }
+        return await withCheckedContinuation { continuation in
+            let gate = ManagedInstallerProductOperationXPCReplyGate(
+                continuation: continuation
+            )
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+                gate.complete(.failure(.unavailable))
+            }) as? ManagedInstallerProductOperationXPCService else {
+                gate.complete(.failure(.unavailable))
+                return
+            }
+            proxy.prepareProductRemovalReview(canonicalIntent) { response in
+                guard let response else {
+                    gate.complete(.failure(.unavailable))
+                    return
+                }
+                guard response.count <= ManagedInstallerProductRemovalReviewProposal.maximumBytes,
+                      let proposal = try? ManagedInstallerProductRemovalReviewProposal.decodeJSON(
+                          response, intent: intent
+                      ), proposal.canonicalJSONData() == response else {
+                    gate.complete(.failure(.rejected))
+                    return
+                }
+                gate.complete(.success(response))
+            }
+        }
+    }
 }
 
 /// Fail-closed helper handler. It accepts one exact canonical request and emits
@@ -266,6 +321,38 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
                   (try? ManagedInstallerProductRemovalReceipt.decodeJSON(
                       response, request: request
                   )) == receipt else {
+                replyGate.complete(nil)
+                return
+            }
+            replyGate.complete(response)
+        }
+    }
+
+    public func prepareProductRemovalReview(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let replyGate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
+        let executor = executor
+        Task {
+            guard let intent = try? ManagedInstallerProductRemovalReviewIntent.decodeJSON(
+                canonicalIntent
+            ), intent.canonicalJSONData() == canonicalIntent else {
+                replyGate.complete(nil)
+                return
+            }
+            let proposal: ManagedInstallerProductRemovalReviewProposal
+            switch await executor.prepareProductRemovalReview(intent) {
+            case .success(let completed): proposal = completed
+            case .failure:
+                replyGate.complete(nil)
+                return
+            }
+            let response = proposal.canonicalJSONData()
+            guard response.count <= ManagedInstallerProductRemovalReviewProposal.maximumBytes,
+                  (try? ManagedInstallerProductRemovalReviewProposal.decodeJSON(
+                      response, intent: intent
+                  )) == proposal else {
                 replyGate.complete(nil)
                 return
             }
