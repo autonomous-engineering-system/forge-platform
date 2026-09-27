@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import ForgePlatformInstallerCore
@@ -66,6 +67,34 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         XCTAssertEqual(observations.venvReads, 2)
         XCTAssertEqual(observations.venvEnsures, 0)
         XCTAssertEqual(observations.activeReads, 3)
+        XCTAssertEqual(observations.activations, 0)
+    }
+
+    func testResumesFinalActiveStateAfterCrashBeforePendingReceipt() async throws {
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: fixture.missingReadback())
+        let existing = try Dictionary(uniqueKeysWithValues: request.productVirtualEnvironments.map {
+            ($0.componentIdentity, try fixture.venvReceipt(for: $0, request: request))
+        })
+        let final = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: request.runtimeIdentitySHA256,
+            activeRuntimeSlotIdentity: request.runtimeSlotIdentity,
+            retainedRuntimeIdentitySHA256s: request.requiredRetainedRuntimeIdentitySHA256s,
+            evidenceReference: request.expectedResumeEvidenceReference
+        )
+        let mutation = ActivationMutation(
+            request: request, initialVenvs: existing, currentReadback: final
+        )
+        let result = await ManagedPythonRuntimeActivationCoordinator(
+            mutation: mutation,
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
+        ).activate(request)
+        let receipt = try activationSuccess(result)
+        XCTAssertEqual(receipt.finalReadbackEvidenceReference, final.evidenceReference)
+        XCTAssertEqual(receipt.activationEvidenceReference, final.evidenceReference)
+        let observations = await mutation.snapshot()
+        XCTAssertEqual(observations.venvEnsures, 0)
         XCTAssertEqual(observations.activations, 0)
     }
 
@@ -402,6 +431,81 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         ).activate(request)
     }
 
+    func testInitialRuntimeActivatorPublishesDurableStateAndCrashResumes() async throws {
+        let host = try InitialActivationHostFixture()
+        defer { host.cleanup() }
+        let initial = try host.bootstrap.readOrBootstrap().get()
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: initial)
+        let venvs = InitialActivationVenvStub()
+        let mutation = MacOSManagedPythonInitialRuntimeActivator(
+            venvs: venvs,
+            runtime: InitialActivationSlotStub(
+                expectedEvidence: request.preparationReceipt.slotEvidenceReference
+            ),
+            hostState: host.bootstrap,
+            persister: FileManagedInstallerManagedPythonHostStateStore(rootDirectory: host.root)
+        )
+        let first = try activationSuccess(await ManagedPythonRuntimeActivationCoordinator(
+            mutation: mutation,
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
+        ).activate(request))
+        XCTAssertEqual(first.finalReadbackEvidenceReference,
+                       request.expectedResumeEvidenceReference)
+        let durable = try FileManagedInstallerManagedPythonHostReader(rootDirectory: host.root)
+            .readManagedPythonHostState().get()
+        XCTAssertEqual(durable.activeRuntimeIdentitySHA256, request.runtimeIdentitySHA256)
+        XCTAssertEqual(durable.evidenceReference, request.expectedResumeEvidenceReference)
+        let firstEnsureCount = await venvs.recordedEnsureCount()
+        XCTAssertEqual(firstEnsureCount, request.productVirtualEnvironments.count)
+
+        let resumed = try activationSuccess(await ManagedPythonRuntimeActivationCoordinator(
+            mutation: mutation,
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
+        ).activate(request))
+        XCTAssertEqual(resumed.finalReadbackEvidenceReference,
+                       request.expectedResumeEvidenceReference)
+        let resumeEnsureCount = await venvs.recordedEnsureCount()
+        XCTAssertEqual(resumeEnsureCount, firstEnsureCount)
+    }
+
+    func testInitialRuntimeActivatorRejectsUnavailableSlotAndStaleInitialEvidence() async throws {
+        let host = try InitialActivationHostFixture()
+        defer { host.cleanup() }
+        let initial = try host.bootstrap.readOrBootstrap().get()
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: initial)
+        let venvs = InitialActivationVenvStub()
+        let unavailable = MacOSManagedPythonInitialRuntimeActivator(
+            venvs: venvs,
+            runtime: InitialActivationSlotStub(expectedEvidence: "receipt:wrong-slot"),
+            hostState: host.bootstrap,
+            persister: FileManagedInstallerManagedPythonHostStateStore(rootDirectory: host.root)
+        )
+        let rejected = await ManagedPythonRuntimeActivationCoordinator(
+            mutation: unavailable,
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
+        ).activate(request)
+        XCTAssertEqual(rejected.failure, .rejected)
+        XCTAssertEqual(try host.bootstrap.readOrBootstrap().get(), initial)
+
+        let stale = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: nil, activeRuntimeSlotIdentity: nil,
+            retainedRuntimeIdentitySHA256s: [],
+            evidenceReference: "receipt:stale-initial-host"
+        )
+        let staleRequest = try fixture.request(initial: stale)
+        let staleResult = await ManagedPythonRuntimeActivationCoordinator(
+            mutation: unavailable,
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
+        ).activate(staleRequest)
+        XCTAssertEqual(staleResult.failure, .rejected)
+    }
+
     private func activationSuccess(
         _ result: Result<ManagedPythonRuntimeActivationReceipt, ManagedPythonRuntimeActivationFailure>
     ) throws -> ManagedPythonRuntimeActivationReceipt {
@@ -410,6 +514,84 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         case .failure(let failure): throw failure
         }
     }
+}
+
+private struct InitialActivationHostFixture {
+    let base: URL
+    let root: URL
+    let bootstrap: MacOSManagedPythonInitialHostState
+
+    init() throws {
+        base = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent(
+            "python-initial-activation-\(UUID().uuidString)", isDirectory: true
+        )
+        root = base.appendingPathComponent("helper", isDirectory: true)
+        for name in [
+            FileManagedInstallerProductWorkerInvocationResolver.runtimeSlotsDirectoryName,
+            ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
+        ] {
+            let child = root.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: child.path
+            )
+        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: root.path
+        )
+        bootstrap = MacOSManagedPythonInitialHostState(
+            helperRoot: root, expectedOwner: Darwin.geteuid()
+        )
+    }
+
+    func cleanup() { try? FileManager.default.removeItem(at: base) }
+}
+
+private struct InitialActivationSlotStub: ManagedPythonProductVenvRuntimeVerifying {
+    let expectedEvidence: String
+
+    func verifiedInterpreter(
+        for request: ManagedPythonProductVenvMutationRequest
+    ) -> Result<URL, ManagedPythonRuntimeActivationFailure> {
+        guard request.runtimeSlotEvidenceReference == expectedEvidence else {
+            return .failure(.rejected)
+        }
+        return .success(URL(fileURLWithPath: "/private/tmp/unit-only-qualified-python"))
+    }
+}
+
+private actor InitialActivationVenvStub: ManagedPythonProductVenvCreating {
+    private var receipts: [String: ManagedPythonProductVenvReceipt] = [:]
+    private var ensureCount = 0
+
+    func readProductVenv(
+        _ request: ManagedPythonProductVenvMutationRequest
+    ) async -> Result<ManagedPythonProductVenvReceipt?, ManagedPythonRuntimeActivationFailure> {
+        .success(receipts[request.componentIdentity])
+    }
+
+    func ensureProductVenv(
+        _ request: ManagedPythonProductVenvMutationRequest
+    ) async -> Result<ManagedPythonProductVenvReceipt, ManagedPythonRuntimeActivationFailure> {
+        ensureCount += 1
+        do {
+            let receipt = try ManagedPythonProductVenvReceipt(
+                operationID: request.operationID,
+                deploymentID: request.deploymentID,
+                componentIdentity: request.componentIdentity,
+                venvIdentity: request.venvIdentity,
+                runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+                runtimeSlotIdentity: request.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: request.runtimeSlotEvidenceReference,
+                state: .ready,
+                evidenceReference: "receipt:unit-venv-\(request.componentIdentity)"
+            )
+            receipts[request.componentIdentity] = receipt
+            return .success(receipt)
+        } catch { return .failure(.rejected) }
+    }
+
+    func recordedEnsureCount() -> Int { ensureCount }
 }
 
 struct ActivationFixture {

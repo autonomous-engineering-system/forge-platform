@@ -52,12 +52,18 @@ public struct ManagedPythonRuntimeInstalledReadback: Equatable, Sendable {
             && activeRuntimeSlotIdentity == request.initialReadback.activeRuntimeSlotIdentity
             && retainedRuntimeIdentitySHA256s
                 == request.initialReadback.retainedRuntimeIdentitySHA256s
+            && evidenceReference == request.initialReadback.evidenceReference
     }
 
     func matchesFinal(_ request: ManagedPythonRuntimeActivationRequest) -> Bool {
         activeRuntimeIdentitySHA256 == request.runtimeIdentitySHA256
             && activeRuntimeSlotIdentity == request.runtimeSlotIdentity
             && retainedRuntimeIdentitySHA256s == request.requiredRetainedRuntimeIdentitySHA256s
+    }
+
+    fileprivate func matchesResumableFinal(_ request: ManagedPythonRuntimeActivationRequest) -> Bool {
+        matchesFinal(request)
+            && evidenceReference == request.expectedResumeEvidenceReference
     }
 
     static func isEvidenceReference(_ value: String) -> Bool {
@@ -229,6 +235,22 @@ public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
     public let preparationReceipt: ManagedPythonRuntimePreparationReceipt
     public let initialReadback: ManagedPythonRuntimeInstalledReadback
     public let executionRequestFingerprint: String
+
+    var expectedResumeEvidenceReference: String {
+        let material: StrictJSONResourceValue = .object([
+            "schema": .string("forge-platform.managed-python-active-resume/v1"),
+            "operation_id": .string(operationID),
+            "deployment_id": .string(deploymentID),
+            "execution_fingerprint": .string(executionRequestFingerprint),
+            "runtime_identity": .string(runtimeIdentitySHA256),
+            "runtime_slot_identity": .string(runtimeSlotIdentity),
+            "runtime_slot_evidence": .string(preparationReceipt.slotEvidenceReference),
+            "initial_evidence": .string(initialReadback.evidenceReference),
+        ])
+        return "receipt:managed-python-active-" + SHA256.hash(
+            data: StrictSignedJSON.canonicalPayload(from: material)
+        ).map { String(format: "%02x", $0) }.joined()
+    }
 
     public init(
         session: VerifiedCompositionSessionPlan,
@@ -567,6 +589,9 @@ public protocol ManagedPythonRuntimeActivationReading: Sendable {
         _ request: ManagedPythonProductVenvMutationRequest
     ) async -> Result<ManagedPythonProductVenvReceipt?, ManagedPythonRuntimeActivationFailure>
 
+    /// A final active readback may be returned only when this exact request's
+    /// durable activation evidence is independently verified; the coordinator
+    /// uses it to resume after a crash between mutation and receipt storage.
     func readActiveRuntime(
         _ request: ManagedPythonRuntimeActivationRequest
     ) async -> Result<ManagedPythonRuntimeInstalledReadback, ManagedPythonRuntimeActivationFailure>
@@ -635,6 +660,8 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
 
         switch await mutation.readActiveRuntime(request) {
         case .success(let readback) where readback.matchesInitial(request):
+            break
+        case .success(let readback) where readback.matchesResumableFinal(request):
             break
         case .success:
             return .failure(.rejected)
