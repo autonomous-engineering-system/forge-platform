@@ -246,9 +246,14 @@ route resolver now snapshots helper-owned typed Forge/EP adapters and pairing
 executors under exact deployment IDs, rejects product-instance reuse across
 routes, and allows an admitted request to select only its predeclared route.
 Existing deployments must match the route's exact Forge and EP instances.
-Construction of those adapters and the pairing executor from released helper
-configuration, helper-process registration and released-installer process
-wiring are still absent. A closed helper builder now composes the verified
+The concrete pairing executor now accepts only the typed Forge Server and EP
+system-provisioner adapters, persists the exact helper-owned peer binding
+through Forge, requires Forge's authenticated read-only compatibility
+preflight, and independently binds EP's exact healthy instance/artifact
+readback into non-secret terminal pairing evidence. Construction of the
+adapters and binding from released helper configuration, helper-process
+registration and released-installer process wiring are still absent. A closed
+helper builder now composes the verified
 release/catalog authority loader and pinned route resolver around one exact
 `ManagedForgeEPInstallationCoordinator`; admission and dispatch therefore
 cannot be wired to different registries or replaced with caller-owned
