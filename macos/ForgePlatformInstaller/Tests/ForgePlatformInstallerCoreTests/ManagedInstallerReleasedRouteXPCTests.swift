@@ -2,6 +2,97 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
+    func testVersionTwoSnapshotBindsForgeAssessmentAndLegacySnapshotRemainsReadable() throws {
+        let fixture = try ReleasedRouteFixture()
+        let request = try ManagedInstallerReleasedRouteRequest(
+            session: fixture.session,
+            deployment: fixture.deployment,
+            inventoryEvidenceReference: fixture.inventory.evidenceReference
+        )
+        var review = fixture.review
+        let assessment = "forge-update-assess:sha256:" + String(repeating: "a", count: 64)
+        review.components = review.components.map { component in
+            guard component.componentID == "forge-runtime" else { return component }
+            return ComponentDiff(
+                componentID: component.componentID,
+                title: component.title,
+                change: .update,
+                installedVersion: "2.7.34",
+                candidateVersion: "2.7.35",
+                artifactDigest: component.artifactDigest,
+                updateAssessmentReference: assessment,
+                detail: component.detail
+            )
+        }
+        let snapshot = try fixture.snapshot(review: review)
+        let encoded = ManagedInstallerReleasedRouteXPCCodec.encodeSnapshot(snapshot)
+        let decoded = try ManagedInstallerReleasedRouteXPCCodec.decodeSnapshot(
+            encoded, request: request, session: fixture.session,
+            deployment: fixture.deployment
+        )
+        XCTAssertEqual(decoded, snapshot)
+        XCTAssertEqual(
+            decoded.review.components.first(where: { $0.componentID == "forge-runtime" })?
+                .updateAssessmentReference,
+            assessment
+        )
+
+        var reader = try StrictJSONResourceReader(data: encoded)
+        var fields = try XCTUnwrap(reader.parseDocument().objectValue)
+        var values = try XCTUnwrap(fields["components"]?.arrayValue)
+        var forge = try XCTUnwrap(values[1].objectValue)
+        forge["update_assessment_reference"] = .string("forge-update-assess:unavailable")
+        values[1] = .object(forge)
+        fields["components"] = .array(values)
+        let invalid = StrictSignedJSON.canonicalPayload(from: .object(fields))
+        XCTAssertThrowsError(try ManagedInstallerReleasedRouteXPCCodec.decodeSnapshot(
+            invalid, request: request, session: fixture.session,
+            deployment: fixture.deployment
+        ))
+
+        var legacyReader = try StrictJSONResourceReader(
+            data: ManagedInstallerReleasedRouteXPCCodec.encodeSnapshot(fixture.snapshot)
+        )
+        var legacyFields = try XCTUnwrap(legacyReader.parseDocument().objectValue)
+        legacyFields["schema"] = .string(
+            ManagedInstallerReleasedRouteXPCCodec.legacySnapshotSchema
+        )
+        legacyFields["components"] = .array(try XCTUnwrap(
+            legacyFields["components"]?.arrayValue
+        ).map { value in
+            var component = value.objectValue ?? [:]
+            component.removeValue(forKey: "update_assessment_reference")
+            return .object(component)
+        })
+        let legacy = StrictSignedJSON.canonicalPayload(from: .object(legacyFields))
+        let decodedLegacy = try ManagedInstallerReleasedRouteXPCCodec.decodeSnapshot(
+            legacy, request: request, session: fixture.session,
+            deployment: fixture.deployment
+        )
+        XCTAssertEqual(decodedLegacy, fixture.snapshot)
+        try ManagedInstallerReleasedRouteXPCCodec.validateStoredSnapshot(
+            legacy, request: request, inventory: fixture.inventory
+        )
+
+        var oldUpdateReader = try StrictJSONResourceReader(data: encoded)
+        var oldUpdateFields = try XCTUnwrap(oldUpdateReader.parseDocument().objectValue)
+        oldUpdateFields["schema"] = .string(
+            ManagedInstallerReleasedRouteXPCCodec.legacySnapshotSchema
+        )
+        oldUpdateFields["components"] = .array(try XCTUnwrap(
+            oldUpdateFields["components"]?.arrayValue
+        ).map { value in
+            var component = value.objectValue ?? [:]
+            component.removeValue(forKey: "update_assessment_reference")
+            return .object(component)
+        })
+        XCTAssertThrowsError(try ManagedInstallerReleasedRouteXPCCodec.decodeSnapshot(
+            StrictSignedJSON.canonicalPayload(from: .object(oldUpdateFields)),
+            request: request, session: fixture.session,
+            deployment: fixture.deployment
+        ))
+    }
+
     func testRequestAndResponseCodecsRoundTripCanonicalEvidence() throws {
         let fixture = try ReleasedRouteFixture(includeManagedGit: true)
         let request = try ManagedInstallerReleasedRouteRequest(
