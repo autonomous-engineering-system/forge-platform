@@ -380,6 +380,11 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             args.append("--allow-loopback-http")
         return self._run(*args)
 
+    def preflight_ep_peer(self) -> Mapping[str, object]:
+        """Run Forge's authenticated, read-only EP compatibility preflight."""
+
+        return self._run("execution-host", "preflight")
+
     def readback(self, request: ComponentOperationRequest) -> ProductInstallationReadback:
         self._validate_request(request)
         status = self._run("server", "status", allow_nonzero=True)
