@@ -15,6 +15,7 @@ from forge_platform.managed_product_removal_proposal import (
     NATIVE_PRODUCT_REMOVAL_REVIEW_PROPOSAL_SCHEMA,
     ManagedProductRemovalProposalError,
     decode_native_product_removal_review_intent,
+    decode_native_product_removal_review_proposal,
     prepare_native_product_removal_review,
 )
 import tests.installer.test_managed_product_removal_admission as fixtures
@@ -155,6 +156,28 @@ class ManagedProductRemovalProposalTests(unittest.TestCase):
                 ManagedProductRemovalProposalError
             ):
                 decode_native_product_removal_review_intent(changed)
+
+    def test_worker_decoder_rejects_review_target_and_diff_substitution(self) -> None:
+        intent_payload = self.intent()
+        intent = decode_native_product_removal_review_intent(canonical(intent_payload))
+        raw = self.prepare(intent_payload)
+        proposal = decode_native_product_removal_review_proposal(raw, intent=intent)
+        self.assertEqual(proposal["request"]["forge_instance_id"], "forge-a")
+        for changes in (
+            {"intent_fingerprint": "0" * 64},
+            {"deployment_action": "REMOVE_DEPLOYMENT"},
+            {"resulting_components": []},
+            {"component_diffs": []},
+            {"request": {**proposal["request"], "forge_instance_id": "forge-b"}},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(
+                ManagedProductRemovalProposalError
+            ):
+                decode_native_product_removal_review_proposal(
+                    canonical({**proposal, **changes}), intent=intent,
+                )
+        with self.assertRaises(ManagedProductRemovalProposalError):
+            decode_native_product_removal_review_proposal(b" " + raw, intent=intent)
 
 
 if __name__ == "__main__":

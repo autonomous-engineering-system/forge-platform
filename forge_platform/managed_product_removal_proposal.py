@@ -16,6 +16,7 @@ from .managed_deployments import ManagedDeploymentPlanner, ManagedDeploymentRegi
 from .managed_install_flow import EP_COMPONENT, FORGE_COMPONENT
 from .managed_product_operation_admission import NativeInstallerReleaseBinding
 from .managed_product_removal_admission import (
+    ManagedProductRemovalAdmissionError,
     NATIVE_PRODUCT_REMOVAL_REQUEST_SCHEMA,
     admit_native_product_removal,
     decode_native_product_removal_request,
@@ -229,4 +230,83 @@ def prepare_native_product_removal_review(
     except Exception as error:
         raise ManagedProductRemovalProposalError(
             "removal review proposal is unavailable"
+        ) from error
+
+
+def decode_native_product_removal_review_proposal(
+    raw: bytes, *, intent: NativeProductRemovalReviewIntent,
+) -> dict[str, object]:
+    """Independently check a bounded proposal before a worker emits it."""
+
+    if (
+        not isinstance(intent, NativeProductRemovalReviewIntent)
+        or not isinstance(raw, bytes) or not raw
+        or len(raw) > MAXIMUM_NATIVE_PRODUCT_REMOVAL_REVIEW_PROPOSAL_BYTES
+    ):
+        raise ManagedProductRemovalProposalError("removal review proposal size is invalid")
+    try:
+        proposal = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_unique_object,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("non-finite JSON")),
+        )
+        if (
+            not isinstance(proposal, dict)
+            or frozenset(proposal) != frozenset({
+                "schema", "intent_fingerprint", "request", "deployment_action",
+                "component_diffs", "resulting_components",
+            })
+            or proposal["schema"] != NATIVE_PRODUCT_REMOVAL_REVIEW_PROPOSAL_SCHEMA
+            or proposal["intent_fingerprint"] != intent.intent_fingerprint
+            or _canonical(proposal) != raw
+            or not isinstance(proposal["request"], dict)
+        ):
+            raise ValueError("removal review proposal is noncanonical")
+        request = decode_native_product_removal_request(_canonical(proposal["request"]))
+        if (
+            request.operation_id != intent.operation_id
+            or request.deployment_id != intent.deployment_id
+            or request.action != intent.action
+            or request.target_component != intent.target_component
+            or request.forge_instance_id != intent.forge_instance_id
+            or request.engineering_platform_instance_id
+                != intent.engineering_platform_instance_id
+            or request.installed_composition_identity
+                != intent.installed_composition_identity
+            or request.installed_manifest_sha256 != intent.installed_manifest_sha256
+            or request.installer_release != intent.installer_release
+        ):
+            raise ValueError("removal review proposal target changed")
+        expected_diffs = [
+            {
+                "component": FORGE_COMPONENT,
+                "instance_id": intent.forge_instance_id,
+                "action": "REMOVE_COMPONENT",
+            },
+        ]
+        if intent.engineering_platform_instance_id is not None:
+            expected_diffs.append({
+                "component": EP_COMPONENT,
+                "instance_id": intent.engineering_platform_instance_id,
+                "action": (
+                    "NO_CHANGE" if intent.action == "REMOVE_COMPONENT"
+                    else "REMOVE_COMPONENT"
+                ),
+            })
+        expected_diffs.sort(key=lambda item: item["component"])
+        if (
+            proposal["component_diffs"] != expected_diffs
+            or proposal["deployment_action"] != (
+                "CREATE_OR_UPDATE" if intent.action == "REMOVE_COMPONENT"
+                else "REMOVE_DEPLOYMENT"
+            )
+            or proposal["resulting_components"] != (
+                [EP_COMPONENT] if intent.action == "REMOVE_COMPONENT" else []
+            )
+        ):
+            raise ValueError("removal review proposal diff changed")
+        return proposal
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError,
+            ManagedProductRemovalAdmissionError) as error:
+        raise ManagedProductRemovalProposalError(
+            "removal review proposal was rejected"
         ) from error
