@@ -203,8 +203,9 @@ and digests, required/enabled provider targets, durable deployment topology,
 installed composition provenance, installed manifest versions and explicit
 `upgrade_from` route. Its admitted result contains correlation objects only; it
 does not contain or resolve an adapter, path, command, environment value or
-credential. The concrete helper executor, resolver implementation and
-released-installer wiring remain unimplemented and therefore fail closed.
+credential. The concrete helper service and resolver implementations are now
+source-qualified; signed helper-process registration and released-installer
+wiring remain unimplemented and therefore fail closed.
 
 After that admission boundary, a separate helper-owned resolver may now bind
 the exact Forge and EP product instance identities, adapters and pairing
@@ -213,8 +214,9 @@ constructs deterministic component-operation identities from the admitted
 request fingerprint, runs only the existing durable Forge+EP saga, and emits a
 canonical native completion receipt only after both product receipts, pairing
 and both readiness receipts exist. Fresh product identities therefore come
-from the helper resolver rather than native request data. No concrete resolver,
-helper process registration or released-installer wiring is supplied yet.
+from the helper resolver rather than native request data. The concrete pinned
+resolver is source-qualified; helper-process registration and released-installer
+wiring are not supplied yet.
 
 The native source now provides the authorized product-operation XPC boundary.
 It uses a fixed privileged Mach service, requires the exact Developer ID
@@ -223,8 +225,8 @@ released installer bundle identity and Team ID on the listener. The transport
 accepts only the bounded canonical request bytes above; the handler decodes
 those bytes into the closed helper execution seam and returns only a canonical
 receipt that rebinds the same request. Nil, malformed, noncanonical or
-cross-request replies fail closed. This supplies no launchd registration,
-concrete helper executor, product resolver or live helper evidence by itself.
+cross-request replies fail closed. This supplies no launchd registration or
+live helper evidence by itself.
 
 Behind that transport, the platform-neutral helper service now composes the
 strict decoder, helper-owned authority resolution, admission and durable
@@ -250,11 +252,14 @@ The concrete pairing executor now accepts only the typed Forge Server and EP
 system-provisioner adapters, persists the exact helper-owned peer binding
 through Forge, requires Forge's authenticated read-only compatibility
 preflight, and independently binds EP's exact healthy instance/artifact
-readback into non-secret terminal pairing evidence. Construction of the
-adapters and binding from released helper configuration, helper-process
-registration and released-installer process wiring are still absent. A closed
-helper builder now composes the verified
-release/catalog authority loader and pinned route resolver around one exact
+readback into non-secret terminal pairing evidence. A released product-route
+builder now freezes exact helper-owned paths, targets, staged catalog-authorized
+artifacts and pairing configuration, constructs the concrete Forge/EP adapters,
+macOS LaunchDaemon supervisor and pairing executor, and composes those routes
+with release/catalog authority in the closed helper builder. Helper-process
+registration and released-installer process wiring are still absent. That
+closed builder places the verified release/catalog authority loader and pinned
+route resolver around one exact
 `ManagedForgeEPInstallationCoordinator`; admission and dispatch therefore
 cannot be wired to different registries or replaced with caller-owned
 resolvers. This is still a source composition root rather than helper-process
