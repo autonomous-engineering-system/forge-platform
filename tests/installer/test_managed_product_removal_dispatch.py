@@ -10,7 +10,6 @@ from forge_platform.managed_install_flow import ManagedForgeEPInstallationCoordi
 from forge_platform.managed_product_removal_dispatch import (
     ManagedProductRemovalDispatcher, ManagedProductRemovalDispatchError,
 )
-from forge_platform.managed_product_removal_admission import ManagedProductRemovalAdmissionError
 from forge_platform.released_product_routes import ReleasedManagedProductRouteBuilder
 import tests.installer.test_managed_product_removal_admission as admission_fixtures
 import tests.installer.test_released_product_routes as route_fixtures
@@ -128,7 +127,7 @@ class ManagedProductRemovalDispatchTests(unittest.TestCase):
         self.admission.registry.replace(
             replace(self.admission.paired, revision=2), expected_revision=1,
         )
-        with self.assertRaises(ManagedProductRemovalAdmissionError):
+        with self.assertRaises(ManagedProductRemovalDispatchError):
             dispatcher.dispatch(admitted)
         with self.assertRaisesRegex(ValueError, "share an EP consumer scope"):
             ManagedProductRemovalDispatcher(
@@ -137,6 +136,54 @@ class ManagedProductRemovalDispatchTests(unittest.TestCase):
                     forge_id="forge-b", ep_id="ep-b", deployment_id="deployment-b"
                 )},
                 current_installer_release=self.admission.release,
+            )
+
+    def test_paired_component_terminal_replay_uses_same_reviewed_operation(self):
+        admitted = self.admission.admit(self.admission.payload())
+        dispatcher = self.dispatcher(self.route())
+        with patch(
+            "forge_platform.managed_product_removal_dispatch.ManagedPairedForgeComponentRemovalCoordinator"
+        ):
+            dispatcher.dispatch(admitted)
+        self.admission.registry.replace(
+            replace(admitted.plan.desired, revision=2), expected_revision=1,
+        )
+        restored = dispatcher.admit_or_restore(
+            admitted.request, installed_manifest=admitted.installed_manifest,
+        )
+        self.assertEqual(restored, admitted)
+        with patch(
+            "forge_platform.managed_product_removal_dispatch.ManagedPairedForgeComponentRemovalCoordinator"
+        ) as coordinator:
+            dispatcher.dispatch(restored)
+            coordinator.return_value.remove.assert_called_once()
+        self.assertEqual(self.admission.registry.load("deployment-a").revision, 2)
+
+    def test_full_removal_terminal_replay_rejects_reassigned_instance(self):
+        admitted = self.admission.admit(
+            self.admission.payload(action="REMOVE_DEPLOYMENT")
+        )
+        dispatcher = self.dispatcher(self.route())
+        with patch(
+            "forge_platform.managed_product_removal_dispatch.ManagedPairedDeploymentRemovalCoordinator"
+        ):
+            dispatcher.dispatch(admitted)
+        self.admission.registry.remove("deployment-a", expected_revision=1)
+        self.assertEqual(
+            dispatcher.admit_or_restore(
+                admitted.request, installed_manifest=admitted.installed_manifest,
+            ), admitted,
+        )
+        self.admission.registry.replace(
+            replace(self.admission.other, revision=2, components=(
+                admission_fixtures.ManagedComponentBinding(
+                    "forge-runtime", "forge-a", "receipt:reassigned"
+                ),
+            )), expected_revision=1,
+        )
+        with self.assertRaisesRegex(ManagedProductRemovalDispatchError, "reassigned"):
+            dispatcher.admit_or_restore(
+                admitted.request, installed_manifest=admitted.installed_manifest,
             )
 
 
