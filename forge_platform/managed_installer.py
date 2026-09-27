@@ -33,6 +33,7 @@ from .managed_deployments import (
     ManagedDeploymentPlan,
     ManagedDeploymentRegistry,
     ManagedPeerBinding,
+    MANAGED_DEPLOYMENT_SCHEMA_V2,
 )
 
 
@@ -134,6 +135,16 @@ class ManagedDeploymentOperationCoordinator:
                     return existing
 
             self._validate_requests(plan, requests, adapters)
+            reviewed = self.registry.load(plan.deployment_id)
+            if (
+                reviewed is not None
+                and reviewed.schema == MANAGED_DEPLOYMENT_SCHEMA_V2
+                and plan.desired is not None
+                and plan.desired.schema != MANAGED_DEPLOYMENT_SCHEMA_V2
+            ):
+                raise ManagedInstallerError(
+                    "managed deployment composition provenance cannot be discarded"
+                )
             executions: list[ManagedComponentExecution] = []
             recovery_pending = False
             for diff in sorted(plan.component_diffs, key=lambda item: item.component):
@@ -230,6 +241,12 @@ class ManagedDeploymentOperationCoordinator:
         if desired is None:
             raise ManagedInstallerError("managed deployment desired state is missing")
         current = self.registry.load(plan.deployment_id)
+        if (
+            current is not None
+            and current.schema == MANAGED_DEPLOYMENT_SCHEMA_V2
+            and desired.schema != MANAGED_DEPLOYMENT_SCHEMA_V2
+        ):
+            raise ManagedInstallerError("managed deployment composition provenance cannot be discarded")
         execution_by_component = {item.component: item for item in executions}
         current_by_component = {} if current is None else current.by_component
         final_components: list[ManagedComponentBinding] = []
@@ -266,6 +283,7 @@ class ManagedDeploymentOperationCoordinator:
         if current is None:
             final = ManagedDeployment(
                 desired.deployment_id, 1, desired.label, tuple(final_components), peer,
+                schema=desired.schema, composition_binding=desired.composition_binding,
             )
             self.registry.create(final)
             return 1
@@ -277,6 +295,8 @@ class ManagedDeploymentOperationCoordinator:
             desired.label,
             tuple(final_components),
             peer,
+            schema=desired.schema,
+            composition_binding=desired.composition_binding,
         )
         self.registry.replace(final, expected_revision=current.revision)
         return final.revision

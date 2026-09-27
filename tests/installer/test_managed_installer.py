@@ -17,11 +17,13 @@ from forge_platform.component_operations import (
 )
 from forge_platform.managed_deployments import (
     ManagedComponentBinding,
+    ManagedCompositionBinding,
     ManagedDeployment,
     ManagedDeploymentPlanner,
     ManagedDeploymentRegistry,
+    MANAGED_DEPLOYMENT_SCHEMA_V2,
 )
-from forge_platform.managed_installer import ManagedDeploymentOperationCoordinator
+from forge_platform.managed_installer import ManagedDeploymentOperationCoordinator, ManagedInstallerError
 
 
 ARTIFACT = QualifiedArtifact(
@@ -101,6 +103,28 @@ class Adapter:
 class ManagedInstallerTests(unittest.TestCase):
     def request(self, component: str, instance: str, operation: str) -> ComponentOperationRequest:
         return ComponentOperationRequest(operation, component, "install", ARTIFACT, instance, "server", {})
+
+    def test_v2_composition_provenance_cannot_downgrade_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            registry = ManagedDeploymentRegistry(root / "registry")
+            current = ManagedDeployment(
+                "production", 1, "Production", desired().components,
+                schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
+                composition_binding=ManagedCompositionBinding(
+                    "composition-a", "sha256:" + "e" * 64, "receipt:composition-a",
+                ),
+            )
+            registry.create(current)
+            plan = ManagedDeploymentPlanner.plan(current, desired())
+            coordinator = ManagedDeploymentOperationCoordinator(
+                operations_root=root / "deployments",
+                component_operations_root=root / "components",
+                registry=registry,
+            )
+            with self.assertRaisesRegex(ManagedInstallerError, "provenance"):
+                coordinator.execute("downgrade-1", plan, requests={}, adapters={})
+            self.assertEqual(registry.load("production"), current)
 
     def test_partial_deployment_resumes_same_component_operation_and_commits_registry_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
