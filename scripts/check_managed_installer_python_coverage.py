@@ -46,6 +46,7 @@ TARGETS = (
     "scripts/observe_composition_producer_releases.py",
     "scripts/package_macos_installer_app.py",
     "scripts/build_installer_product_worker.py",
+    "scripts/package_macos_installer_archive.py",
 )
 
 TESTS = (
@@ -72,6 +73,7 @@ TESTS = (
     "tests/installer/test_composition_producer_observer.py",
     "tests/installer/test_package_macos_installer_app.py",
     "tests/installer/test_build_installer_product_worker.py",
+    "tests/installer/test_package_macos_installer_archive.py",
 )
 
 
