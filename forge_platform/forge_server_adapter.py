@@ -542,6 +542,12 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
 
     def execute(self, request: ComponentOperationRequest) -> ProductOperationReceipt:
         self._validate_request(request)
+        evidence_reference = "forge-operation:" + _digest_json({
+            "operation_id": request.operation_id,
+            "kind": request.kind,
+            "instance_id": self.target.instance_id,
+            "artifact": request.artifact.correlation.__dict__,
+        })
         if request.kind in {"install", "repair"}:
             self.supervisor.register(self.target, self.forge_executable)
             self.supervisor.start(self.target)
@@ -549,7 +555,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         elif request.kind == "remove":
             return self._run_uninstall(request)
         elif request.kind == "update":
-            self._run_update(request)
+            evidence_reference = self._run_update(request)
             self.installed_artifact = request.artifact
             state = "COMPLETED"
         else:
@@ -560,12 +566,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             self.target.instance_id,
             request.artifact.correlation,
             state,
-            "forge-operation:" + _digest_json({
-                "operation_id": request.operation_id,
-                "kind": request.kind,
-                "instance_id": self.target.instance_id,
-                "artifact": request.artifact.correlation.__dict__,
-            }),
+            evidence_reference,
         )
 
     def removal_support(self) -> str:
@@ -704,20 +705,41 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         # after a crash; no installer-owned data cleanup is performed here.
         return self.execute(request)
 
-    def _run_update(self, request: ComponentOperationRequest) -> None:
+    def _run_update(self, request: ComponentOperationRequest) -> str:
         binding = self.update_binding
         if binding is None:
             raise ForgeServerAdapterError("Forge qualified external updater binding is unavailable")
         wheel = self.staged_artifacts.get(request.artifact.digest)
         if not isinstance(wheel, Path) or not wheel.is_absolute():
             raise ForgeServerAdapterError("Forge staged update wheel is unavailable")
+        selected = {
+            "operation_id": request.operation_id,
+            "version": request.artifact.version,
+            "product_source": request.artifact.source_revision,
+            "wheel": str(wheel),
+            "wheel_sha256": request.artifact.digest,
+            "qualification_receipt": str(binding.qualification_receipt),
+            "qualification_receipt_sha256": binding.qualification_receipt_sha256,
+            "controller_source": binding.controller_source,
+            "controller_sha256": binding.controller_sha256,
+            "data_root": str(self.target.data_root),
+            "runtime_root": str(binding.runtime_root),
+            "runtime_id": binding.runtime_id,
+            "installation_id": binding.installation_id,
+            "peer_configuration_digest": binding.peer_configuration_digest,
+            "resolver": str(binding.resolver),
+            "resolver_sha256": binding.resolver_sha256,
+            "existing_interpreter": str(binding.existing_interpreter),
+            "existing_version": binding.existing_version,
+            "base_python": str(binding.base_python),
+        }
         argv = (
             str(binding.updater_executable),
             "--operation-id", request.operation_id,
             "--version", request.artifact.version,
             "--product-source", request.artifact.source_revision,
             "--wheel", str(wheel),
-            "--wheel-sha256", request.artifact.digest.removeprefix("sha256:"),
+            "--wheel-sha256", request.artifact.digest,
             "--qualification-receipt", str(binding.qualification_receipt),
             "--qualification-receipt-sha256", binding.qualification_receipt_sha256,
             "--controller-source", binding.controller_source,
@@ -735,8 +757,36 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         )
         result = self.runner.run(argv)
         payload = self._json_result(result, "Forge installed updater")
-        if payload.get("state") not in {"COMPLETE", None} and payload.get("status") not in {"COMPLETE", "SUCCESS"}:
-            raise ForgeServerAdapterError("Forge installed updater did not complete")
+        if (
+            payload.get("contract_version") != "forge-installed-update/v1"
+            or payload.get("operation_id") != request.operation_id
+            or payload.get("request_digest") != _forge_product_digest(selected)
+            or payload.get("state") != "COMPLETE"
+            or payload.get("product") != "forge"
+            or payload.get("version") != request.artifact.version
+            or payload.get("product_source") != request.artifact.source_revision
+            or payload.get("wheel_sha256") != request.artifact.digest
+            or payload.get("controller_source") != binding.controller_source
+            or payload.get("controller_sha256") != binding.controller_sha256
+            or payload.get("runtime_id") != binding.runtime_id
+            or payload.get("installation_id") != binding.installation_id
+            or payload.get("data_root") != str(self.target.data_root)
+            or payload.get("credential_disposition") != "PRESERVED_UNCHANGED"
+            or payload.get("service_disposition") != "NOT_STARTED"
+            or payload.get("mission_disposition") != "NOT_STARTED_OR_RESUMED"
+            or payload.get("reset_disposition") != "NOT_EXECUTED"
+            or any(
+                not isinstance(payload.get(key), Mapping)
+                or payload[key].get("status") != "PASS"
+                for key in ("migration_qualification", "live_migration")
+            )
+            or not isinstance(payload.get("installed_readback"), Mapping)
+            or not isinstance(payload["installed_readback"].get("preservation"), Mapping)
+            or payload["installed_readback"]["preservation"].get("status") != "PASS"
+            or not isinstance(payload.get("backup"), Mapping)
+        ):
+            raise ForgeServerAdapterError("Forge installed updater lacks an exact terminal product receipt")
+        return "forge-update:" + _forge_product_digest(payload)
 
 
 def _digest_json(value: object) -> str:
