@@ -26,6 +26,10 @@ from .managed_product_operation_dispatch import (
     ResolvedManagedProductRoute,
 )
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
+from .released_product_routes import (
+    ReleasedManagedProductRouteBuilder,
+    ReleasedManagedProductRouteConfiguration,
+)
 from .universal_installer import (
     CompositionManifest,
     VerifiedCompositionSelection,
@@ -287,6 +291,32 @@ class ManagedProductOperationHelperBuilder:
     This prevents released wiring from accidentally giving admission and
     dispatch different registries or from substituting a caller-owned resolver.
     """
+
+    @staticmethod
+    def build_released(
+        *,
+        current_installer_context: VerifiedInstallerContext,
+        candidate_selections: Iterable[VerifiedCompositionSelection],
+        installed_selections: Iterable[VerifiedCompositionSelection] = (),
+        coordinator: ManagedForgeEPInstallationCoordinator,
+        route_configurations: Iterable[ReleasedManagedProductRouteConfiguration],
+    ) -> ManagedProductOperationHelperService:
+        """Construct concrete adapters and the closed helper service together."""
+
+        candidates = tuple(candidate_selections)
+        installed = tuple(installed_selections)
+        routes = ReleasedManagedProductRouteBuilder.build(
+            configurations=route_configurations,
+            candidate_selections=candidates,
+            installed_selections=installed,
+        )
+        return ManagedProductOperationHelperBuilder.build(
+            current_installer_context=current_installer_context,
+            candidate_selections=candidates,
+            installed_selections=installed,
+            coordinator=coordinator,
+            routes=routes,
+        )
 
     @staticmethod
     def build(
