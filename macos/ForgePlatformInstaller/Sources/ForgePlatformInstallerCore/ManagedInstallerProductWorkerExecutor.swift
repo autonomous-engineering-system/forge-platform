@@ -117,12 +117,16 @@ struct MacOSManagedInstallerProductWorkerRunner:
         _ invocation: ManagedInstallerProductWorkerInvocation,
         canonicalRequest: Data
     ) async -> Result<Data, ManagedInstallerProductWorkerFailure> {
+        let productRequest = try? ManagedInstallerProductOperationRequest.decodeJSON(
+            canonicalRequest
+        )
+        let removalRequest = try? ManagedInstallerProductRemovalRequest.decodeJSON(
+            canonicalRequest
+        )
         guard !canonicalRequest.isEmpty,
               canonicalRequest.count <= ManagedInstallerProductOperationRequest.maximumBytes,
-              let decoded = try? ManagedInstallerProductOperationRequest.decodeJSON(
-                  canonicalRequest
-              ),
-              decoded.canonicalJSONData() == canonicalRequest,
+              productRequest?.canonicalJSONData() == canonicalRequest
+                || removalRequest?.canonicalJSONData() == canonicalRequest,
               secureInterpreter(invocation),
               secureWorker(invocation) else {
             return .failure(.rejected)
@@ -158,7 +162,10 @@ struct MacOSManagedInstallerProductWorkerRunner:
         let holder = ManagedInstallerProductWorkerProcess(process)
         async let output = Self.readBounded(
             standardOutput.fileHandleForReading,
-            maximumBytes: ManagedInstallerProductOperationReceipt.maximumBytes
+            maximumBytes: max(
+                ManagedInstallerProductOperationReceipt.maximumBytes,
+                ManagedInstallerProductRemovalReceipt.maximumBytes
+            )
         )
         async let error = Self.readBounded(
             standardError.fileHandleForReading,
@@ -303,6 +310,7 @@ public actor ManagedInstallerPythonProductOperationExecutor:
     ManagedInstallerProductOperationHelperExecuting {
     private let resolver: any ManagedInstallerProductWorkerInvocationResolving
     private let runner: any ManagedInstallerProductWorkerRunning
+    private var inFlight = false
 
     public init() {
         resolver = FileManagedInstallerProductWorkerInvocationResolver()
@@ -323,6 +331,9 @@ public actor ManagedInstallerPythonProductOperationExecutor:
         ManagedInstallerProductOperationReceipt,
         ManagedInstallerProductOperationBridgeFailure
     > {
+        guard !inFlight else { return .failure(.rejected) }
+        inFlight = true
+        defer { inFlight = false }
         let invocation: ManagedInstallerProductWorkerInvocation
         switch resolver.resolveProductWorkerInvocation() {
         case .success(let resolved): invocation = resolved
@@ -344,6 +355,39 @@ public actor ManagedInstallerPythonProductOperationExecutor:
                   request: request
               ),
               receipt.canonicalJSONData() == response else {
+            return .failure(.rejected)
+        }
+        return .success(receipt)
+    }
+
+    public func executeProductRemoval(
+        _ request: ManagedInstallerProductRemovalRequest
+    ) async -> Result<
+        ManagedInstallerProductRemovalReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard !inFlight else { return .failure(.rejected) }
+        inFlight = true
+        defer { inFlight = false }
+        let invocation: ManagedInstallerProductWorkerInvocation
+        switch resolver.resolveProductWorkerInvocation() {
+        case .success(let resolved): invocation = resolved
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        let response: Data
+        switch await runner.runProductWorker(
+            invocation,
+            canonicalRequest: request.canonicalJSONData()
+        ) {
+        case .success(let completed): response = completed
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        guard response.count <= ManagedInstallerProductRemovalReceipt.maximumBytes,
+              let receipt = try? ManagedInstallerProductRemovalReceipt.decodeJSON(
+                  response, request: request
+              ), receipt.canonicalJSONData() == response else {
             return .failure(.rejected)
         }
         return .success(receipt)
