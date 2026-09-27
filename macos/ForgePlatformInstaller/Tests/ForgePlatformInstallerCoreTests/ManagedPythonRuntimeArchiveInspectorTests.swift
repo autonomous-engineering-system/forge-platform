@@ -89,6 +89,10 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
             .emptyInterpreter,
             .missingBinDirectory,
             .interpreterNotExecutable,
+            .setuidManifest,
+            .writableInterpreter,
+            .writableGenericFile,
+            .nonTraversableBinDirectory,
             .duplicateInterpreter,
             .unsafePath,
             .symbolicLink,
@@ -236,6 +240,7 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
 private enum ArchiveInspectionMutation: Equatable {
     case missingManifest, emptyManifest, missingInterpreter, emptyInterpreter
     case missingBinDirectory, interpreterNotExecutable, duplicateInterpreter
+    case setuidManifest, writableInterpreter, writableGenericFile, nonTraversableBinDirectory
     case unsafePath, symbolicLink, nonZeroPadding, badHeaderChecksum, badUSTARMagic
     case base256Size, malformedOctalTail, interruptedTrailer, nonZeroTrailer
     case badGZIPMagic, gzipOptionalHeader, gzipNonDeterministicTimestamp
@@ -309,17 +314,28 @@ private struct ArchiveInspectionFixture: Sendable {
         let manifestBody = mutation == .emptyManifest ? Data() : manifest
         var entries: [ArchiveTarEntry] = []
         if mutation != .missingManifest {
-            entries.append(.file(ManagedPythonRuntimeArchiveInspection.manifestPath, manifestBody, 0o644))
+            entries.append(.file(
+                ManagedPythonRuntimeArchiveInspection.manifestPath,
+                manifestBody,
+                mutation == .setuidManifest ? 0o4644 : 0o644
+            ))
         }
         if mutation != .missingBinDirectory {
-            entries.append(.directory("bin/", 0o755))
+            entries.append(.directory(
+                "bin/", mutation == .nonTraversableBinDirectory ? 0o644 : 0o755
+            ))
         }
         if mutation != .missingInterpreter {
             let path = mutation == .unsafePath ? "../bin/python3" : ManagedPythonRuntimeArchiveInspection.interpreterRelativePath
-            entries.append(.file(path, interpreter, mutation == .interpreterNotExecutable ? 0o644 : 0o755))
+            let interpreterMode: UInt64 = mutation == .interpreterNotExecutable ? 0o644
+                : mutation == .writableInterpreter ? 0o777 : 0o755
+            entries.append(.file(path, interpreter, interpreterMode))
         }
         entries.append(.directory("lib/", 0o755))
-        entries.append(.file("lib/runtime.txt", Data("runtime payload".utf8), 0o644))
+        entries.append(.file(
+            "lib/runtime.txt", Data("runtime payload".utf8),
+            mutation == .writableGenericFile ? 0o666 : 0o644
+        ))
         if mutation == .duplicateInterpreter {
             entries.append(.file(ManagedPythonRuntimeArchiveInspection.interpreterRelativePath, interpreter, 0o755))
         } else if mutation == .symbolicLink {
