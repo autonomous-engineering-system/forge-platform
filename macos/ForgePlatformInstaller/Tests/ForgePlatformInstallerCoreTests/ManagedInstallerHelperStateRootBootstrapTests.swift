@@ -17,6 +17,10 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
         for directory in [
             expected.deletingLastPathComponent(), expected,
             expected.appendingPathComponent("managed-python-runtime-slots", isDirectory: true),
+            expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
+                isDirectory: true
+            ),
         ] {
             let details = try FileManager.default.attributesOfItem(atPath: directory.path)
             XCTAssertEqual(details[.posixPermissions] as? Int, 0o700)
@@ -43,6 +47,31 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
             [.posixPermissions: 0o700], ofItemAtPath: outside.path
         )
         try FileManager.default.createSymbolicLink(at: slots, withDestinationURL: outside)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    func testRejectsUnsafeExistingProductVenvsRoot() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let bootstrap = testBootstrap(parent)
+        let root = try bootstrap.prepare()
+        let venvs = root.appendingPathComponent(
+            ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
+            isDirectory: true
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: venvs.path
+        )
+        XCTAssertThrowsError(try bootstrap.prepare())
+
+        try FileManager.default.removeItem(at: venvs)
+        let outside = parent.appendingPathComponent("outside-venvs", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: outside.path
+        )
+        try FileManager.default.createSymbolicLink(at: venvs, withDestinationURL: outside)
         XCTAssertThrowsError(try bootstrap.prepare())
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
