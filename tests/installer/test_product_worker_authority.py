@@ -89,6 +89,19 @@ def _authority() -> dict:
 
 
 class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
+    def test_native_publisher_fixture_is_accepted_by_python_worker(self) -> None:
+        fixture = (
+            Path(__file__).resolve().parents[2]
+            / "macos/ForgePlatformInstaller/Fixtures/product-worker-authority-v1.json"
+        )
+        raw = fixture.read_bytes()
+        self.assertEqual(raw, _canonical(json.loads(raw)))
+        self.path.write_bytes(raw)
+        self.path.chmod(0o600)
+        service = self.loader().load()
+        self.assertIsInstance(service, ManagedProductOperationHelperService)
+        self.assertIn("production", service.dispatcher.resolver._routes)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve() / "helper"
