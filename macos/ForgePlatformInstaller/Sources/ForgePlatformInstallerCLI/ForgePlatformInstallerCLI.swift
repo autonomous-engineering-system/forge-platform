@@ -205,8 +205,11 @@ enum ForgePlatformInstallerCLIApplication {
                     options: invocation.options,
                     confirm: confirm
                 )
-            case .deploymentRemove(let deployment):
-                result = await workflow.removeDeployment(deployment)
+            case .deploymentRemove(let deployment, let operationID, let component):
+                result = await workflow.removeDeployment(
+                    deployment, operationID: operationID, component: component,
+                    options: invocation.options, confirm: confirm
+                )
             case .deploymentRemovePlan(let deployment, let operationID, let component):
                 result = await workflow.planRemoval(
                     deploymentID: deployment,
