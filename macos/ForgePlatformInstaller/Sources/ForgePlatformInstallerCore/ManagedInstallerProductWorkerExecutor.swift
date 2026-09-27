@@ -123,10 +123,14 @@ struct MacOSManagedInstallerProductWorkerRunner:
         let removalRequest = try? ManagedInstallerProductRemovalRequest.decodeJSON(
             canonicalRequest
         )
+        let reviewIntent = try? ManagedInstallerProductRemovalReviewIntent.decodeJSON(
+            canonicalRequest
+        )
         guard !canonicalRequest.isEmpty,
               canonicalRequest.count <= ManagedInstallerProductOperationRequest.maximumBytes,
               productRequest?.canonicalJSONData() == canonicalRequest
-                || removalRequest?.canonicalJSONData() == canonicalRequest,
+                || removalRequest?.canonicalJSONData() == canonicalRequest
+                || reviewIntent?.canonicalJSONData() == canonicalRequest,
               secureInterpreter(invocation),
               secureWorker(invocation) else {
             return .failure(.rejected)
@@ -391,5 +395,38 @@ public actor ManagedInstallerPythonProductOperationExecutor:
             return .failure(.rejected)
         }
         return .success(receipt)
+    }
+
+    public func prepareProductRemovalReview(
+        _ intent: ManagedInstallerProductRemovalReviewIntent
+    ) async -> Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard !inFlight else { return .failure(.rejected) }
+        inFlight = true
+        defer { inFlight = false }
+        let invocation: ManagedInstallerProductWorkerInvocation
+        switch resolver.resolveProductWorkerInvocation() {
+        case .success(let resolved): invocation = resolved
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        let response: Data
+        switch await runner.runProductWorker(
+            invocation,
+            canonicalRequest: intent.canonicalJSONData()
+        ) {
+        case .success(let completed): response = completed
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        guard response.count <= ManagedInstallerProductRemovalReviewProposal.maximumBytes,
+              let proposal = try? ManagedInstallerProductRemovalReviewProposal.decodeJSON(
+                  response, intent: intent
+              ), proposal.canonicalJSONData() == response else {
+            return .failure(.rejected)
+        }
+        return .success(proposal)
     }
 }
