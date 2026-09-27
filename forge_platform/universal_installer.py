@@ -2483,6 +2483,35 @@ class CompositionManifest:
             raise ValueError("composition upgrade_from is invalid")
 
     @classmethod
+    def from_digest_bound_bytes(
+        cls,
+        raw_bytes: bytes,
+        *,
+        manifest_digest: str,
+    ) -> "CompositionManifest":
+        """Parse canonical manifest bytes already selected by trusted authority.
+
+        This boundary proves byte/digest identity and the complete typed
+        manifest grammar.  It deliberately does not claim catalog-signature or
+        freshness verification; callers must obtain ``manifest_digest`` from a
+        separate trusted authority such as the released helper snapshot.
+        """
+
+        expected = _digest(manifest_digest, "composition manifest_digest")
+        if (
+            not isinstance(raw_bytes, bytes)
+            or not raw_bytes
+            or "sha256:" + sha256(raw_bytes).hexdigest() != expected
+        ):
+            raise UniversalInstallerError(
+                "composition manifest bytes do not match trusted authority"
+            )
+        value = _strict_json_mapping(raw_bytes, "composition manifest")
+        if _canonical_json(value) != raw_bytes:
+            raise UniversalInstallerError("composition manifest bytes are not canonical")
+        return cls._from_verified_mapping(value, manifest_digest=expected)
+
+    @classmethod
     def from_catalog_bytes(
         cls,
         entry: CompositionCatalogEntry,

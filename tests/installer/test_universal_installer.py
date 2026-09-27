@@ -1537,6 +1537,28 @@ class UniversalInstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "venvs must bind"):
             CompositionManifest.from_catalog_bytes(entry, raw)
 
+    def test_digest_bound_manifest_parser_requires_exact_canonical_bytes(self) -> None:
+        raw = manifest_raw()
+        digest = "sha256:" + sha256(raw).hexdigest()
+
+        parsed = CompositionManifest.from_digest_bound_bytes(
+            raw,
+            manifest_digest=digest,
+        )
+
+        self.assertEqual(parsed, manifest())
+        with self.assertRaisesRegex(UniversalInstallerError, "trusted authority"):
+            CompositionManifest.from_digest_bound_bytes(
+                raw,
+                manifest_digest="sha256:" + "0" * 64,
+            )
+        noncanonical = json.dumps(manifest_payload(), indent=2).encode("utf-8")
+        with self.assertRaisesRegex(UniversalInstallerError, "not canonical"):
+            CompositionManifest.from_digest_bound_bytes(
+                noncanonical,
+                manifest_digest="sha256:" + sha256(noncanonical).hexdigest(),
+            )
+
     def test_dynamic_provider_gate_blocks_until_both_required_providers_verify(self) -> None:
         requirements = manifest().providers
         selections = {

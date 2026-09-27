@@ -27,6 +27,7 @@ from forge_platform.released_product_routes import (
 )
 from forge_platform.universal_installer import VerifiedCompositionSelection
 from tests.installer.test_managed_product_operation_dispatch import coordinator
+from tests.installer.test_managed_product_operation_admission import installer_release
 from tests.installer.test_universal_installer import (
     CATALOG_URL,
     COMPOSITION_CATALOG_SCHEMA,
@@ -189,6 +190,48 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
             service.authority_resolver.current_installer_release.version,
             "1.1.0",
         )
+
+    def test_pinned_worker_builder_uses_exact_typed_manifest_snapshot(self):
+        product_coordinator = coordinator(
+            self.root,
+            ManagedDeploymentRegistry(self.root / "registry"),
+        )
+
+        routes = ReleasedManagedProductRouteBuilder.build_from_manifests(
+            configurations=(self.config,),
+            candidate_manifests=(self.selection.manifest,),
+        )
+        service = ManagedProductOperationHelperBuilder.build_pinned(
+            current_installer_release=installer_release(),
+            candidate_manifests=(self.selection.manifest,),
+            coordinator=product_coordinator,
+            route_configurations=(self.config,),
+        )
+
+        self.assertEqual(tuple(routes), ("production",))
+        self.assertEqual(
+            service.authority_resolver.current_installer_release,
+            installer_release(),
+        )
+        self.assertIs(service.dispatcher.coordinator, product_coordinator)
+
+    def test_pinned_worker_builder_rejects_untyped_manifest_or_coordinator(self):
+        product_coordinator = coordinator(
+            self.root,
+            ManagedDeploymentRegistry(self.root / "registry"),
+        )
+        with self.assertRaises(TypeError):
+            ReleasedManagedProductRouteBuilder.build_from_manifests(
+                configurations=(self.config,),
+                candidate_manifests=(object(),),
+            )
+        with self.assertRaises(TypeError):
+            ManagedProductOperationHelperBuilder.build_pinned(
+                current_installer_release=installer_release(),
+                candidate_manifests=(self.selection.manifest,),
+                coordinator=object(),
+                route_configurations=(self.config,),
+            )
 
     def test_route_configuration_rejects_path_pairing_and_artifact_ambiguity(self):
         for changes, message in (

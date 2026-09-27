@@ -327,6 +327,15 @@ default released service loader deliberately remains unavailable until the
 fixed helper-owned authority reader is implemented; merely building the
 zipapp therefore cannot grant product-mutation authority.
 
+The worker composition path can now reconstruct a manifest only from exact
+canonical bytes plus a separately trusted matching digest, then pass the typed
+manifest snapshot and exact native installer-release binding to one pinned
+helper-service factory. That factory derives both concrete Forge/EP routes and
+request admission from the same immutable manifest objects and durable
+coordinator. The signed-catalog path still uses its stronger verified-selection
+constructor; the digest-bound constructor makes no signature or freshness
+claim and is reserved for the root-owned released authority reader.
+
 Behind that transport, the platform-neutral helper service now composes the
 strict decoder, helper-owned authority resolution, admission and durable
 dispatcher in one closed call. Candidate and installed manifests plus the

@@ -35,7 +35,7 @@ from .forge_server_adapter import (
 from .managed_deployments import ManagedComponentBinding
 from .managed_install_flow import EP_COMPONENT, FORGE_COMPONENT
 from .managed_product_operation_dispatch import ResolvedManagedProductRoute
-from .universal_installer import VerifiedCompositionSelection
+from .universal_installer import CompositionManifest, VerifiedCompositionSelection
 
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -128,11 +128,44 @@ class ReleasedManagedProductRouteBuilder:
         if len(deployment_ids) != len(set(deployment_ids)):
             raise ValueError("released product route deployment identities are ambiguous")
 
+        return ReleasedManagedProductRouteBuilder.build_from_manifests(
+            configurations=configs,
+            candidate_manifests=tuple(value.manifest for value in candidates),
+            installed_manifests=tuple(value.manifest for value in installed),
+        )
+
+    @staticmethod
+    def build_from_manifests(
+        *,
+        configurations: Iterable[ReleasedManagedProductRouteConfiguration],
+        candidate_manifests: Iterable[CompositionManifest],
+        installed_manifests: Iterable[CompositionManifest] = (),
+    ) -> Mapping[str, ResolvedManagedProductRoute]:
+        """Build routes from an already pinned helper-owned manifest snapshot."""
+
+        configs = tuple(configurations)
+        candidates = tuple(candidate_manifests)
+        installed = tuple(installed_manifests)
+        if not configs or any(
+            not isinstance(value, ReleasedManagedProductRouteConfiguration)
+            for value in configs
+        ):
+            raise TypeError("released product route configurations are required")
+        if not candidates or any(
+            not isinstance(value, CompositionManifest) for value in candidates
+        ):
+            raise TypeError("pinned candidate composition manifests are required")
+        if any(not isinstance(value, CompositionManifest) for value in installed):
+            raise TypeError("pinned installed composition manifests are invalid")
+        deployment_ids = [value.deployment_id for value in configs]
+        if len(deployment_ids) != len(set(deployment_ids)):
+            raise ValueError("released product route deployment identities are ambiguous")
+
         authorized = _authorized_artifacts(candidates + installed)
         required = {
             component.artifact.digest
-            for selection in candidates
-            for component in selection.manifest.components
+            for manifest in candidates
+            for component in manifest.components
             if component.identity in {FORGE_COMPONENT, EP_COMPONENT}
         }
         routes: dict[str, ResolvedManagedProductRoute] = {}
@@ -173,11 +206,11 @@ class ReleasedManagedProductRouteBuilder:
 
 
 def _authorized_artifacts(
-    selections: tuple[VerifiedCompositionSelection, ...],
+    manifests: tuple[CompositionManifest, ...],
 ) -> dict[str, tuple[str, QualifiedArtifact]]:
     authorized: dict[str, tuple[str, QualifiedArtifact]] = {}
-    for selection in selections:
-        for component in selection.manifest.components:
+    for manifest in manifests:
+        for component in manifest.components:
             if component.identity not in {FORGE_COMPONENT, EP_COMPONENT}:
                 continue
             existing = authorized.get(component.artifact.digest)

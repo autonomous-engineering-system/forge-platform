@@ -319,6 +319,40 @@ class ManagedProductOperationHelperBuilder:
         )
 
     @staticmethod
+    def build_pinned(
+        *,
+        current_installer_release: NativeInstallerReleaseBinding,
+        candidate_manifests: Iterable[CompositionManifest],
+        installed_manifests: Iterable[CompositionManifest] = (),
+        coordinator: ManagedForgeEPInstallationCoordinator,
+        route_configurations: Iterable[ReleasedManagedProductRouteConfiguration],
+    ) -> ManagedProductOperationHelperService:
+        """Compose a worker service from one immutable helper-owned snapshot.
+
+        The caller is responsible for establishing the trusted filesystem and
+        signed-catalog provenance of this already typed snapshot.  No request
+        value, locator, command, environment or credential is accepted here.
+        """
+
+        candidates = tuple(candidate_manifests)
+        installed = tuple(installed_manifests)
+        routes = ReleasedManagedProductRouteBuilder.build_from_manifests(
+            configurations=route_configurations,
+            candidate_manifests=candidates,
+            installed_manifests=installed,
+        )
+        authority_resolver = PinnedManagedProductOperationAuthorityResolver(
+            current_installer_release=current_installer_release,
+            manifests=candidates,
+            installed_manifests=installed,
+        )
+        return ManagedProductOperationHelperBuilder._compose(
+            authority_resolver=authority_resolver,
+            coordinator=coordinator,
+            routes=routes,
+        )
+
+    @staticmethod
     def build(
         *,
         current_installer_context: VerifiedInstallerContext,
@@ -327,13 +361,30 @@ class ManagedProductOperationHelperBuilder:
         coordinator: ManagedForgeEPInstallationCoordinator,
         routes: Mapping[str, ResolvedManagedProductRoute],
     ) -> ManagedProductOperationHelperService:
-        if not isinstance(coordinator, ManagedForgeEPInstallationCoordinator):
-            raise TypeError("managed Forge+EP coordinator is required")
         authority_resolver = ReleasedManagedProductOperationAuthorityLoader.load(
             current_installer_context=current_installer_context,
             candidate_selections=candidate_selections,
             installed_selections=installed_selections,
         )
+        return ManagedProductOperationHelperBuilder._compose(
+            authority_resolver=authority_resolver,
+            coordinator=coordinator,
+            routes=routes,
+        )
+
+    @staticmethod
+    def _compose(
+        *,
+        authority_resolver: PinnedManagedProductOperationAuthorityResolver,
+        coordinator: ManagedForgeEPInstallationCoordinator,
+        routes: Mapping[str, ResolvedManagedProductRoute],
+    ) -> ManagedProductOperationHelperService:
+        if not isinstance(coordinator, ManagedForgeEPInstallationCoordinator):
+            raise TypeError("managed Forge+EP coordinator is required")
+        if not isinstance(
+            authority_resolver, PinnedManagedProductOperationAuthorityResolver
+        ):
+            raise TypeError("pinned product-operation authority is required")
         route_resolver = PinnedManagedProductRouteResolver(routes)
         dispatcher = ManagedProductOperationDispatcher(
             coordinator=coordinator,
