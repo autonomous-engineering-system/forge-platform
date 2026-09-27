@@ -1,9 +1,78 @@
 import Compression
+import Darwin
 import Foundation
 import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
+    func testExtractsExactArchiveIntoEmptyPrivateSlotAndReadsBackTree() throws {
+        let fixture = try ArchiveInspectionFixture()
+        let slot = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: slot.deletingLastPathComponent()) }
+        let result = MacOSManagedPythonRuntimeArchiveExtractor(
+            destination: slot, expectedOwner: geteuid()
+        ).extract(archive: fixture.runtimeArchive, runtime: fixture.runtime)
+        guard case .success(let readback) = result else {
+            let contents = (try? FileManager.default.contentsOfDirectory(
+                atPath: slot.path
+            )) ?? []
+            return XCTFail("Exact archive extraction failed: \(result); contents: \(contents)")
+        }
+        XCTAssertEqual(readback.inspection.archiveSHA256, fixture.runtime.artifact.sha256)
+        XCTAssertTrue(readback.treeEvidenceReference.hasPrefix("receipt:managed-python-tree-"))
+        XCTAssertEqual(try Data(contentsOf: slot.appendingPathComponent("lib/runtime.txt")),
+                       Data("runtime payload".utf8))
+        XCTAssertEqual(MacOSManagedPythonRuntimeArchiveExtractor(
+            destination: slot, expectedOwner: geteuid()
+        ).extract(archive: fixture.runtimeArchive, runtime: fixture.runtime), .failure(.rejected))
+    }
+
+    func testExtractionRejectsArchiveTargetAndDestinationDrift() throws {
+        let fixture = try ArchiveInspectionFixture()
+        let other = try ArchiveInspectionFixture(sourceBody: Data("other source".utf8))
+        let slot = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: slot.deletingLastPathComponent()) }
+        let extractor = MacOSManagedPythonRuntimeArchiveExtractor(
+            destination: slot, expectedOwner: geteuid()
+        )
+        var altered = fixture.runtimeArchive
+        altered[0] ^= 1
+        XCTAssertEqual(extractor.extract(archive: altered, runtime: fixture.runtime),
+                       .failure(.rejected))
+        XCTAssertEqual(extractor.extract(archive: fixture.runtimeArchive, runtime: other.runtime),
+                       .failure(.rejected))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: slot.path), [])
+        XCTAssertEqual(MacOSManagedPythonRuntimeArchiveExtractor(
+            destination: slot, expectedOwner: geteuid() == 0 ? 1 : 0
+        ).extract(archive: fixture.runtimeArchive, runtime: fixture.runtime), .failure(.rejected))
+        try Data("occupied".utf8).write(to: slot.appendingPathComponent("unexpected"))
+        XCTAssertEqual(extractor.extract(archive: fixture.runtimeArchive, runtime: fixture.runtime),
+                       .failure(.rejected))
+        try FileManager.default.removeItem(at: slot.appendingPathComponent("unexpected"))
+        XCTAssertEqual(chmod(slot.path, 0o755), 0)
+        XCTAssertEqual(extractor.extract(archive: fixture.runtimeArchive, runtime: fixture.runtime),
+                       .failure(.rejected))
+        XCTAssertEqual(chmod(slot.path, 0o700), 0)
+        try FileManager.default.removeItem(at: slot)
+        let actual = slot.deletingLastPathComponent()
+            .appendingPathComponent("actual", isDirectory: true)
+        try FileManager.default.createDirectory(at: actual, withIntermediateDirectories: false)
+        XCTAssertEqual(chmod(actual.path, 0o700), 0)
+        try FileManager.default.createSymbolicLink(at: slot, withDestinationURL: actual)
+        XCTAssertEqual(extractor.extract(archive: fixture.runtimeArchive, runtime: fixture.runtime),
+                       .failure(.rejected))
+    }
+
+    private func extractionSlot() throws -> URL {
+        let parent = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("forge-python-extract-\(UUID().uuidString)", isDirectory: true)
+        let slot = parent.appendingPathComponent("slot", isDirectory: true)
+        try FileManager.default.createDirectory(at: slot, withIntermediateDirectories: true)
+        XCTAssertEqual(chmod(parent.path, 0o700), 0)
+        XCTAssertEqual(chmod(slot.path, 0o700), 0)
+        return slot
+    }
+
     func testExtractionInventoryCommitsEveryAcceptedEntryAndExactRuntime() throws {
         let fixture = try ArchiveInspectionFixture()
         let inventory = try MacOSManagedPythonRuntimeArchiveInspector
