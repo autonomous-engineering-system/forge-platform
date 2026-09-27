@@ -30,6 +30,16 @@ final class InstallerWizardViewModelTests: XCTestCase {
             return XCTFail("Repeat review should remain read-only")
         }
         XCTAssertEqual(repeated.operationID, session.operationID)
+
+        let restartedModel = InstallerWizardViewModel(
+            state: state, coordinator: coordinator
+        )
+        restartedModel.prepareRemovalReview(component: "forge-runtime")
+        await waitForRemovalReview(on: restartedModel)
+        guard case .prepared(let restarted) = restartedModel.removalReview else {
+            return XCTFail("Restarted review should resolve the same target")
+        }
+        XCTAssertEqual(restarted.operationID, session.operationID)
     }
 
     func testRemovalReviewFailsClosedWhenHelperInventoryIsUnavailable() async throws {

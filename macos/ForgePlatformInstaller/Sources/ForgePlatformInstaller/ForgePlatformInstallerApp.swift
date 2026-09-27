@@ -96,12 +96,20 @@ final class InstallerWizardViewModel: ObservableObject {
             return
         }
         let action = component == nil ? "REMOVE_DEPLOYMENT" : "REMOVE_COMPONENT"
-        let key = "\(deployment.id)|\(action)"
+        let key = "\(deployment.id)|\(action)|\(release.sha256)"
         if removalOperationKey != key {
             removalOperationKey = key
-            removalOperationID = UUID().uuidString.lowercased()
+            removalOperationID = try? ManagedInstallerRemovalOperationIdentity.derive(
+                target: deployment,
+                action: action,
+                targetComponent: component,
+                installerRelease: release
+            )
         }
-        guard let operationID = removalOperationID else { return }
+        guard let operationID = removalOperationID else {
+            removalReview = .blocked("De exacte verwijderidentiteit kon niet worden bepaald.")
+            return
+        }
         isRemovalReviewRequestInFlight = true
         removalReview = .loading
         let workflow = ManagedInstallerRemovalReviewWorkflow(
