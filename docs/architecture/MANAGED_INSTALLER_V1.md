@@ -317,6 +317,16 @@ The release workflow does not yet build or supply that worker, so the installed
 product route remains fail-closed until the executable worker and its
 helper-owned authority are supplied and qualified.
 
+The repository now also has a deterministic worker builder. It packages the
+complete dependency-closed `forge_platform` Python package with one generated
+`__main__.py`, fixed sorted regular `0644` ZIP entries, stored compression and
+a fixed timestamp. The bounded entrypoint reads one request, invokes only a
+typed `ManagedProductOperationHelperService`, emits one bounded receipt and
+maps every unavailable backend or pipe failure to a silent nonzero exit. Its
+default released service loader deliberately remains unavailable until the
+fixed helper-owned authority reader is implemented; merely building the
+zipapp therefore cannot grant product-mutation authority.
+
 Behind that transport, the platform-neutral helper service now composes the
 strict decoder, helper-owned authority resolution, admission and durable
 dispatcher in one closed call. Candidate and installed manifests plus the
