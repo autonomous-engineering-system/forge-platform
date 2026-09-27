@@ -150,6 +150,11 @@ The installer consumes the 2.7.35 assessment only from an explicitly bound
 and exact product instance/installation IDs. Missing or contradictory evidence
 remains `UNKNOWN` or fails closed. A positive assessment alone does not
 complete the reviewed-update, updater-resume, readiness or registry gates.
+The adapter accepts a completed external update only with Forge's exact
+`forge-installed-update/v1` operation/request digest, selected artifact and
+instance, migration evidence and installed preservation readback. A successful
+process exit without that terminal receipt is rejected.
+
 The Forge adapter binds the product-owned uninstall dispatcher to one exact
 instance and durable operation ID. It stops the selected LaunchDaemon, requires
 Forge's terminal receipt and matching status, then removes only the

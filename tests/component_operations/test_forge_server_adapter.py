@@ -793,27 +793,76 @@ class ForgeServerAdapterTests(unittest.TestCase):
         binding = ForgeUpdateBinding(
             updater_executable=Path("/opt/forge/bin/update-installed-forge"),
             qualification_receipt=root / "qualification.json",
-            qualification_receipt_sha256="q" * 64,
-            controller_source="controller-source",
-            controller_sha256="c" * 64,
+            qualification_receipt_sha256="sha256:" + "d" * 64,
+            controller_source="b" * 40,
+            controller_sha256="sha256:" + "c" * 64,
             resolver=root / "resolver.json",
-            resolver_sha256="r" * 64,
+            resolver_sha256="sha256:" + "a" * 64,
             runtime_root=root / "runtimes",
-            runtime_id="forge-runtime",
+            runtime_id=self.target.instance_id,
             installation_id="forge-installation",
             peer_configuration_digest="sha256:" + "e" * 64,
             existing_interpreter=Path("/opt/forge/2.7.34/bin/python"),
             existing_version="2.7.34",
             base_python=Path("/usr/bin/python3"),
         )
-        wheel = root / "forge-2.7.35.whl"
+        wheel = root / "forge_autonomy-2.7.35-py3-none-any.whl"
+
+        class ReceiptRunner(Runner):
+            overrides: dict[str, object] = {}
+
+            def run(self, argv):
+                args = tuple(argv)
+                if args[0] != "/opt/forge/bin/update-installed-forge":
+                    return super().run(args)
+                self.calls.append(args)
+                selected = {
+                    name.replace("-", "_"): args[args.index("--" + name) + 1]
+                    for name in (
+                        "operation-id", "version", "product-source", "wheel", "wheel-sha256",
+                        "qualification-receipt", "qualification-receipt-sha256",
+                        "controller-source", "controller-sha256", "data-root", "runtime-root",
+                        "runtime-id", "installation-id", "peer-configuration-digest",
+                        "resolver", "resolver-sha256", "existing-interpreter", "existing-version",
+                        "base-python",
+                    )
+                }
+                selected["request_digest"] = "sha256:" + hashlib.sha256(
+                    (json.dumps(selected, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+                ).hexdigest()
+                payload = {
+                    "contract_version": "forge-installed-update/v1",
+                    "operation_id": selected["operation_id"],
+                    "request_digest": selected["request_digest"],
+                    "state": "COMPLETE", "product": "forge",
+                    "version": selected["version"],
+                    "product_source": selected["product_source"],
+                    "wheel_sha256": selected["wheel_sha256"],
+                    "controller_source": selected["controller_source"],
+                    "controller_sha256": selected["controller_sha256"],
+                    "runtime_id": selected["runtime_id"],
+                    "installation_id": selected["installation_id"],
+                    "data_root": selected["data_root"],
+                    "backup": {"sha256": "sha256:" + "f" * 64},
+                    "migration_qualification": {"status": "PASS"},
+                    "live_migration": {"status": "PASS"},
+                    "installed_readback": {"preservation": {"status": "PASS"}},
+                    "credential_disposition": "PRESERVED_UNCHANGED",
+                    "service_disposition": "NOT_STARTED",
+                    "mission_disposition": "NOT_STARTED_OR_RESUMED",
+                    "reset_disposition": "NOT_EXECUTED",
+                }
+                payload.update(self.overrides)
+                return ForgeCommandResult(0, json.dumps(payload), "")
+
+        runner = ReceiptRunner()
         adapter = ForgeServerProductAdapter(
             forge_executable=Path("/opt/forge/bin/forge"),
             target=self.target,
             installed_artifact=ARTIFACT,
             staged_artifacts={candidate.digest: wheel},
             supervisor=self.supervisor,
-            runner=self.runner,
+            runner=runner,
             readiness_probe=Probe(),
             update_binding=binding,
         )
@@ -823,11 +872,31 @@ class ForgeServerAdapterTests(unittest.TestCase):
         )
         receipt = adapter.execute(req)
         self.assertEqual(receipt.state, "COMPLETED")
+        self.assertTrue(receipt.evidence_reference.startswith("forge-update:sha256:"))
         self.assertEqual(adapter.installed_artifact, candidate)
-        call = self.runner.calls[-1]
+        call = runner.calls[-1]
         self.assertEqual(call[0], "/opt/forge/bin/update-installed-forge")
         self.assertIn("--qualification-receipt", call)
         self.assertIn(str(wheel), call)
+        self.assertEqual(call[call.index("--wheel-sha256") + 1], candidate.digest)
+        for mismatch in (
+            {"operation_id": "foreign-operation"},
+            {"request_digest": "sha256:" + "0" * 64},
+            {"state": "RECOVERY_PENDING"},
+            {"installed_readback": {}},
+            {"credential_disposition": "UNKNOWN"},
+            {"contract_version": None},
+        ):
+            runner.overrides = mismatch
+            retry = ForgeServerProductAdapter(
+                forge_executable=Path("/opt/forge/bin/forge"), target=self.target,
+                installed_artifact=ARTIFACT, staged_artifacts={candidate.digest: wheel},
+                supervisor=self.supervisor, runner=runner, readiness_probe=Probe(),
+                update_binding=binding,
+            )
+            with self.assertRaisesRegex(ForgeServerAdapterError, "terminal product receipt"):
+                retry.execute(req)
+            self.assertEqual(retry.installed_artifact, ARTIFACT)
 
     def test_update_binding_paths_staged_wheel_and_terminal_state_are_validated(self) -> None:
         root = Path(self.temp.name).resolve()
@@ -865,7 +934,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
         class FailedUpdateRunner(Runner):
             def run(self, argv):
                 if tuple(argv)[0] == "/opt/updater":
-                    return ForgeCommandResult(0, '{"state":"FAILED"}', "")
+                    return ForgeCommandResult(0, '{"status":"COMPLETE"}', "")
                 return super().run(argv)
         adapter = ForgeServerProductAdapter(
             forge_executable=Path("/opt/forge/bin/forge"), target=self.target,
@@ -873,7 +942,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
             supervisor=self.supervisor, runner=FailedUpdateRunner(),
             readiness_probe=Probe(), update_binding=binding,
         )
-        with self.assertRaisesRegex(ForgeServerAdapterError, "did not complete"):
+        with self.assertRaisesRegex(ForgeServerAdapterError, "terminal product receipt"):
             adapter.execute(req)
 
 
