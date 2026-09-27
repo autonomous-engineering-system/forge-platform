@@ -3,7 +3,7 @@ import XCTest
 
 final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
     func testExactSnapshotBuildsPreflightReviewAndStablePlan() async throws {
-        let fixture = try Fixture()
+        let fixture = try ReleasedRouteFixture()
         let loader = ReleasedRouteLoader(snapshot: fixture.snapshot)
         let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
 
@@ -48,7 +48,7 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
     }
 
     func testReviewAndPlanRequirePreviouslyAdmittedExactSnapshot() async throws {
-        let fixture = try Fixture()
+        let fixture = try ReleasedRouteFixture()
         let coordinator = ManagedInstallerReleasedRouteCoordinator(
             loader: ReleasedRouteLoader(snapshot: fixture.snapshot)
         )
@@ -63,7 +63,7 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
     }
 
     func testSnapshotDriftInvalidatesReviewAndStablePlan() async throws {
-        let fixture = try Fixture()
+        let fixture = try ReleasedRouteFixture()
         let loader = ReleasedRouteLoader(snapshot: fixture.snapshot)
         let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
         _ = await coordinator.prepareHostPreflight(
@@ -97,7 +97,7 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
     }
 
     func testLoaderFailuresMapToClosedResultsAndClearAuthority() async throws {
-        let fixture = try Fixture()
+        let fixture = try ReleasedRouteFixture()
         let loader = ReleasedRouteLoader(snapshot: fixture.snapshot)
         let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
         await loader.setInventoryFailure(true)
@@ -125,7 +125,7 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
     }
 
     func testSnapshotRejectsIncompleteOrMutableRouteEvidence() throws {
-        let fixture = try Fixture()
+        let fixture = try ReleasedRouteFixture()
         var failedChecks = fixture.preflight.checks
         failedChecks[0].state = .failed("no")
         var acknowledged = fixture.review
@@ -193,18 +193,32 @@ private enum TestFailure: Error {
     case failed
 }
 
-private struct Fixture {
+struct ReleasedRouteFixture {
     let session: VerifiedCompositionSessionPlan
     let deployment: ManagedDeploymentTarget
     let inventory: ManagedDeploymentInventory
     let preflight: HostPreflight
     let review: CompositionReview
     let python: ManagedPythonRuntimeInstalledReadback
+    let managedToolActions: [ManagedToolOriginalPlanAction]
     let release: VerifiedInstallerRelease
     let snapshot: ManagedInstallerReleasedRouteSnapshot
     let operation: ReviewedManagedDeploymentOperation
 
-    init() throws {
+    init(includeManagedGit: Bool = false) throws {
+        let managedTools: [ManagedToolRequirement]
+        if includeManagedGit {
+            managedTools = [ManagedToolRequirement(
+                identity: .git,
+                version: try InstallerVersion("2.51.0"),
+                artifact: try ManagedPythonDownloadIdentity(
+                    url: "https://catalog.example.test/git.tar.zst",
+                    sha256: "sha256:" + String(repeating: "9", count: 64)
+                )
+            )]
+        } else {
+            managedTools = []
+        }
         session = try VerifiedCompositionSessionPlan(
             sessionID: "released-route-session",
             compositionIdentity: "forge-ep-managed-v3",
@@ -226,7 +240,8 @@ private struct Fixture {
             componentSelectionSequence: 4,
             managedPythonRuntime: managedPythonTestRuntime,
             productVirtualEnvironments: managedPythonTestVenvs,
-            providerRequirements: []
+            providerRequirements: [],
+            managedTools: managedTools
         )
         deployment = try ManagedDeploymentTarget(
             id: "released-route-deployment",
@@ -274,6 +289,9 @@ private struct Fixture {
             retainedRuntimeIdentitySHA256s: [],
             evidenceReference: "receipt:python-absent"
         )
+        managedToolActions = managedTools.map {
+            ManagedToolOriginalPlanAction(requirement: $0, action: .install)
+        }
         release = VerifiedInstallerRelease(
             version: try InstallerVersion("0.2.4"),
             releasePage: "https://github.com/autonomous-engineering-system/forge-platform/releases/tag/forge-platform-installer-v0.2.4",
@@ -288,7 +306,7 @@ private struct Fixture {
             preflight: preflight,
             review: review,
             initialPythonRuntime: python,
-            managedToolActions: [],
+            managedToolActions: managedToolActions,
             evidenceReference: "receipt:released-route"
         )
         operation = ReviewedManagedDeploymentOperation(
@@ -315,7 +333,7 @@ private struct Fixture {
             preflight: preflight ?? self.preflight,
             review: review ?? self.review,
             initialPythonRuntime: python,
-            managedToolActions: [],
+            managedToolActions: managedToolActions,
             evidenceReference: evidenceReference
         )
     }

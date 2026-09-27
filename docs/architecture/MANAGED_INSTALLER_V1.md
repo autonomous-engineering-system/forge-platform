@@ -188,6 +188,18 @@ mutation. Direct execution on this coordinator remains unavailable: the
 reviewed execution coordinator must wrap its stable-plan authority and the
 privileged mutation route.
 
+The helper transport for that loader is also source-qualified. It uses one
+fixed privileged Mach service and the same exact Developer ID Application/Team
+identity pair as the product-operation boundary. Inventory and route responses
+are bounded strict canonical JSON. The route request carries only session,
+manifest, deployment and inventory correlations; it accepts no path, command,
+URL, environment value or credential. The helper response reconstructs the
+typed inventory, exact passing preflight, Forge+EP review, managed-Python
+readback and catalog-declared managed-tool actions. Noncanonical bytes,
+unlisted deployments, correlation drift, partial responses and helper errors
+fail closed. This transport still requires the signed helper executable and
+its production backend to be installed before the released app can use it.
+
 The native core now also defines a canonical product-operation bridge for the
 exact Forge+EP pair. Its request is rebuilt from that stable plan and terminal
 runtime receipt and contains only reviewed identities, actions and evidence
