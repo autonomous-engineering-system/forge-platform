@@ -279,7 +279,8 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 operationLock: FileInstallerSelfUpdateOperationLock(rootDirectory: stateRoot),
                 compositionSessionPreparer: compositionSessionPreparer,
                 managedDeploymentRouteCoordinator: routeCoordinator,
-                removalReviewTransport: productTransport
+                removalReviewTransport: productTransport,
+                removalTransport: productTransport
             ))
         } catch {
             // Do not leak a filesystem location, architecture detail, network
