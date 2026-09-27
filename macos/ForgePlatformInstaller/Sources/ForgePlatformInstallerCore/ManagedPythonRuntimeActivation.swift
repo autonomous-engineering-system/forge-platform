@@ -278,6 +278,7 @@ public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
 
 public struct ManagedPythonProductVenvMutationRequest: Equatable, Sendable {
     public let operationID: String
+    public let deploymentID: String
     public let componentIdentity: String
     public let venvIdentity: String
     public let runtimeIdentitySHA256: String
@@ -285,10 +286,12 @@ public struct ManagedPythonProductVenvMutationRequest: Equatable, Sendable {
 
     init(
         operationID: String,
+        deploymentID: String,
         environment: ManagedProductVirtualEnvironmentIdentity,
         runtimeSlotIdentity: String
     ) {
         self.operationID = operationID
+        self.deploymentID = deploymentID
         componentIdentity = environment.componentIdentity
         venvIdentity = environment.venvIdentity
         runtimeIdentitySHA256 = environment.pythonRuntimeIdentitySHA256
@@ -300,6 +303,7 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
     public enum State: String, Equatable, Sendable { case ready = "READY" }
 
     public let operationID: String
+    public let deploymentID: String
     public let componentIdentity: String
     public let venvIdentity: String
     public let runtimeIdentitySHA256: String
@@ -309,6 +313,7 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
 
     public init(
         operationID: String,
+        deploymentID: String,
         componentIdentity: String,
         venvIdentity: String,
         runtimeIdentitySHA256: String,
@@ -317,6 +322,7 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
         evidenceReference: String
     ) throws {
         guard ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+              ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID),
               !componentIdentity.isEmpty,
               !venvIdentity.isEmpty,
               CompositionCatalogValidation.isTaggedSHA256(runtimeIdentitySHA256),
@@ -328,6 +334,7 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
             throw ManagedPythonRuntimeActivationFailure.invalidRequest
         }
         self.operationID = operationID
+        self.deploymentID = deploymentID
         self.componentIdentity = componentIdentity
         self.venvIdentity = venvIdentity
         self.runtimeIdentitySHA256 = runtimeIdentitySHA256
@@ -338,6 +345,7 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
 
     func matches(_ request: ManagedPythonProductVenvMutationRequest) -> Bool {
         operationID == request.operationID
+            && deploymentID == request.deploymentID
             && componentIdentity == request.componentIdentity
             && venvIdentity == request.venvIdentity
             && runtimeIdentitySHA256 == request.runtimeIdentitySHA256
@@ -630,6 +638,7 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
         for environment in request.productVirtualEnvironments {
             let venvRequest = ManagedPythonProductVenvMutationRequest(
                 operationID: request.operationID,
+                deploymentID: request.deploymentID,
                 environment: environment,
                 runtimeSlotIdentity: request.runtimeSlotIdentity
             )
@@ -740,6 +749,7 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
         for environment in request.productVirtualEnvironments {
             let venvRequest = ManagedPythonProductVenvMutationRequest(
                 operationID: request.operationID,
+                deploymentID: request.deploymentID,
                 environment: environment,
                 runtimeSlotIdentity: request.runtimeSlotIdentity
             )
