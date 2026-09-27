@@ -20,12 +20,23 @@ struct ForgePlatformInstallerApp: App {
 /// runtime selection, venv handling, or service mutation.
 @MainActor
 final class InstallerWizardViewModel: ObservableObject {
+    enum RemovalReviewState {
+        case idle
+        case loading
+        case prepared(ManagedInstallerRemovalReviewSession)
+        case blocked(String)
+    }
+
     @Published private(set) var state: InstallerWizardState
+    @Published private(set) var removalReview: RemovalReviewState = .idle
 
     private let coordinator: any InstallerWizardCoordinator
     @Published private(set) var isPreflightRequestInFlight = false
     @Published private(set) var isReviewRequestInFlight = false
     @Published private(set) var isExecutionRequestInFlight = false
+    @Published private(set) var isRemovalReviewRequestInFlight = false
+    private var removalOperationKey: String?
+    private var removalOperationID: String?
 
     init(
         state: InstallerWizardState,
@@ -59,6 +70,7 @@ final class InstallerWizardViewModel: ObservableObject {
         guard state.beginManagedDeploymentInventory() else {
             return
         }
+        resetRemovalReview()
         let coordinator = coordinator
         Task { @MainActor [weak self] in
             let result = await coordinator.prepareManagedDeploymentInventory()
@@ -67,7 +79,68 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func selectManagedDeployment(_ deploymentID: String) {
-        _ = state.selectManagedDeployment(deploymentID)
+        if state.selectManagedDeployment(deploymentID) {
+            resetRemovalReview()
+        }
+    }
+
+    func prepareRemovalReview(component: String? = nil) {
+        guard state.step == .deployment,
+              case .selected(let deployment, _) = state.deploymentSelection,
+              deployment.exists,
+              deployment.forgeInstanceID != nil,
+              case .current(let release) = state.selfUpdate,
+              !isRemovalReviewRequestInFlight,
+              (component == nil || component == "forge-runtime"
+                && deployment.engineeringPlatformInstanceID != nil) else {
+            return
+        }
+        let action = component == nil ? "REMOVE_DEPLOYMENT" : "REMOVE_COMPONENT"
+        let key = "\(deployment.id)|\(action)"
+        if removalOperationKey != key {
+            removalOperationKey = key
+            removalOperationID = UUID().uuidString.lowercased()
+        }
+        guard let operationID = removalOperationID else { return }
+        isRemovalReviewRequestInFlight = true
+        removalReview = .loading
+        let workflow = ManagedInstallerRemovalReviewWorkflow(
+            coordinator: coordinator, currentRelease: release
+        )
+        Task { @MainActor [weak self] in
+            let result = await workflow.prepare(
+                operationID: operationID,
+                deploymentID: deployment.id,
+                action: action,
+                targetComponent: component
+            )
+            guard let self,
+                  self.state.step == .deployment,
+                  case .selected(let current, _) = self.state.deploymentSelection,
+                  current == deployment,
+                  case .current(let currentRelease) = self.state.selfUpdate,
+                  currentRelease == release,
+                  self.removalOperationKey == key,
+                  self.removalOperationID == operationID else {
+                return
+            }
+            self.isRemovalReviewRequestInFlight = false
+            switch result {
+            case .success(let session):
+                self.removalReview = .prepared(session)
+            case .failure:
+                self.removalReview = .blocked(
+                    "Het exacte helpervoorstel is niet beschikbaar. Lees de inventaris opnieuw."
+                )
+            }
+        }
+    }
+
+    private func resetRemovalReview() {
+        removalReview = .idle
+        removalOperationKey = nil
+        removalOperationID = nil
+        isRemovalReviewRequestInFlight = false
     }
 
     /// The coordinator must return one typed, immutable composition session
@@ -172,6 +245,7 @@ final class InstallerWizardViewModel: ObservableObject {
 
     func goBack() {
         _ = state.goBack()
+        resetRemovalReview()
     }
 }
 
@@ -457,6 +531,9 @@ private struct ManagedDeploymentSelectionScreen: View {
                     systemImage: "checkmark.seal.fill"
                 )
                 .foregroundStyle(.green)
+                if deployment.exists, deployment.forgeInstanceID != nil {
+                    removalReviewPanel(for: deployment)
+                }
 
             case .unavailable(let failure):
                 FailureCallout(reason: failure.userFacingMessage)
@@ -485,6 +562,53 @@ private struct ManagedDeploymentSelectionScreen: View {
             }
         }
         .buttonStyle(.bordered)
+    }
+
+    @ViewBuilder
+    private func removalReviewPanel(for deployment: ManagedDeploymentTarget) -> some View {
+        GroupBox("Forge verwijderen — alleen beoordelen") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Button("Beoordeel deployment verwijderen") {
+                        viewModel.prepareRemovalReview()
+                    }
+                    .disabled(viewModel.isRemovalReviewRequestInFlight)
+                    if deployment.engineeringPlatformInstanceID != nil {
+                        Button("Beoordeel alleen Forge verwijderen") {
+                            viewModel.prepareRemovalReview(component: "forge-runtime")
+                        }
+                        .disabled(viewModel.isRemovalReviewRequestInFlight)
+                    }
+                }
+                switch viewModel.removalReview {
+                case .idle:
+                    Text("Er is nog geen helpervoorstel gelezen.")
+                        .foregroundStyle(.secondary)
+                case .loading:
+                    ProgressView("Exacte inventaris en helper-diff worden gelezen…")
+                case .blocked(let reason):
+                    FailureCallout(reason: reason)
+                case .prepared(let session):
+                    Text("Actie: \(session.proposal.request.action)")
+                    Text("Operation ID: \(session.operationID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Forge-instance: \(session.proposal.request.forgeInstanceID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Registry-revisie: \(session.proposal.request.reviewedRevision)")
+                        .font(.caption.monospaced())
+                    Text("Request-fingerprint: \(session.proposal.request.requestFingerprint)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    ForEach(Array(session.proposal.componentDiffs.enumerated()), id: \.offset) {
+                        _, diff in
+                        Text("\(diff.component) / \(diff.instanceID): \(diff.action)")
+                            .font(.caption)
+                    }
+                    Text("Dit voorstel voert geen productmutatie uit.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 
