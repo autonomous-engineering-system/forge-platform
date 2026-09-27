@@ -1,3 +1,5 @@
+import CryptoKit
+import Darwin
 import Foundation
 
 public enum ManagedInstallerReleasedRouteXPCFailure: Error, Equatable, Sendable {
@@ -296,6 +298,73 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         )
     }
 
+    static func validateStoredSnapshot(
+        _ data: Data,
+        request: ManagedInstallerReleasedRouteRequest,
+        inventory: ManagedDeploymentInventory
+    ) throws {
+        let fields = try root(data, schema: snapshotSchema, keys: [
+            "schema", "inventory", "session_id", "composition_identity",
+            "manifest_sha256", "deployment", "passed_preflight_ids", "review_status",
+            "review_acknowledged", "components", "python_runtime",
+            "managed_tool_actions", "evidence_reference",
+        ])
+        guard fields["session_id"]?.stringValue == request.sessionID,
+              fields["composition_identity"]?.stringValue == request.compositionIdentity,
+              fields["manifest_sha256"]?.stringValue == request.manifestSHA256,
+              let deploymentValue = fields["deployment"],
+              try ManagedInstallerReleasedRouteRequest.decodeTarget(deploymentValue)
+                == request.deployment,
+              let inventoryValue = fields["inventory"],
+              try decodeInventory(StrictSignedJSON.canonicalPayload(from: inventoryValue))
+                == inventory,
+              inventory.evidenceReference == request.inventoryEvidenceReference,
+              inventory.targets.contains(request.deployment),
+              let preflightValues = fields["passed_preflight_ids"]?.arrayValue,
+              fields["review_status"]?.stringValue == "COMPATIBLE",
+              case .boolean(false) = fields["review_acknowledged"],
+              let componentValues = fields["components"]?.arrayValue,
+              let pythonValue = fields["python_runtime"],
+              let actionValues = fields["managed_tool_actions"]?.arrayValue,
+              let evidence = fields["evidence_reference"]?.stringValue,
+              ManagedPythonRuntimeInstalledReadback.isEvidenceReference(evidence) else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+        let passedIDs = try preflightValues.map { value -> String in
+            guard let id = value.stringValue else {
+                throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+            }
+            return id
+        }
+        guard Set(passedIDs) == Set(HostPreflight.defaultChecks.map(\.id)),
+              passedIDs.count == HostPreflight.defaultChecks.count else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+        let components = try componentValues.map(decodeComponent)
+        guard Set(components.map(\.componentID)) == Set([
+                  ProviderOwnerComponent.forgeRuntime.rawValue,
+                  ProviderOwnerComponent.engineeringPlatformServer.rawValue,
+              ]), components.count == 2,
+              !components.contains(where: { $0.change == .blocked }) else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+        _ = try ManagedInstallerPostToolReadbackSnapshot.decodePython(pythonValue)
+        let identities = try actionValues.map { value -> ManagedToolRequirement.Identity in
+            guard let action = value.objectValue,
+                  Set(action.keys) == Set(["identity", "action"]),
+                  let identityRaw = action["identity"]?.stringValue,
+                  let identity = ManagedToolRequirement.Identity(rawValue: identityRaw),
+                  let actionRaw = action["action"]?.stringValue,
+                  ManagedToolOriginalPlanAction.Action(rawValue: actionRaw) != nil else {
+                throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+            }
+            return identity
+        }
+        guard Set(identities).count == identities.count else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+    }
+
     private static func inventoryValue(
         _ inventory: ManagedDeploymentInventory,
         schema: String
@@ -358,6 +427,159 @@ enum ManagedInstallerReleasedRouteXPCCodec {
             ),
             detail: detail
         )
+    }
+}
+
+/// Read-only XPC backend over helper-owned route evidence. The app can select
+/// only a correlation request; file names are derived inside the helper and
+/// every document is read through a private root descriptor without following
+/// links. A separate verified authority publisher owns creation of these files.
+public final class FileManagedInstallerReleasedRouteXPCService:
+    NSObject, ManagedInstallerReleasedRouteXPCService, @unchecked Sendable {
+    public static let inventoryFileName = "managed-deployment-inventory.json"
+    public static let productionRoot = URL(
+        fileURLWithPath:
+            "/Library/Application Support/AutonomousEngineeringSystem/ForgePlatformInstaller",
+        isDirectory: true
+    )
+
+    private let rootDirectory: URL
+    private let expectedOwner: uid_t
+
+    public convenience override init() {
+        self.init(rootDirectory: Self.productionRoot, expectedOwner: 0)
+    }
+
+    init(rootDirectory: URL, expectedOwner: uid_t) {
+        self.rootDirectory = Self.canonicalRoot(rootDirectory)
+        self.expectedOwner = expectedOwner
+        super.init()
+    }
+
+    public func loadManagedDeploymentInventory(withReply reply: @escaping (Data?) -> Void) {
+        reply(loadInventory()?.data)
+    }
+
+    public func loadReleasedRouteSnapshot(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        guard let request = try? ManagedInstallerReleasedRouteRequest.decodeJSON(canonicalRequest),
+              request.canonicalJSONData() == canonicalRequest,
+              let loaded = loadInventory(),
+              let data = try? readSecureFile(named: Self.routeFileName(for: canonicalRequest)),
+              (try? ManagedInstallerReleasedRouteXPCCodec.validateStoredSnapshot(
+                  data,
+                  request: request,
+                  inventory: loaded.inventory
+              )) != nil else {
+            reply(nil)
+            return
+        }
+        reply(data)
+    }
+
+    static func routeFileName(for canonicalRequest: Data) -> String {
+        let digest = SHA256.hash(data: canonicalRequest)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "released-route-\(digest).json"
+    }
+
+    private func loadInventory() -> (data: Data, inventory: ManagedDeploymentInventory)? {
+        guard let data = try? readSecureFile(named: Self.inventoryFileName),
+              let inventory = try? ManagedInstallerReleasedRouteXPCCodec.decodeInventory(data),
+              ManagedInstallerReleasedRouteXPCCodec.encodeInventory(inventory) == data else {
+            return nil
+        }
+        return (data, inventory)
+    }
+
+    private func readSecureFile(named name: String) throws -> Data {
+        guard !name.isEmpty, !name.contains("/"), rootDirectory.isFileURL,
+              rootDirectory.baseURL == nil, rootDirectory.path.hasPrefix("/") else {
+            throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+        }
+        let root = rootDirectory.path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard root >= 0 else { throw ManagedInstallerReleasedRouteXPCFailure.unavailable }
+        defer { Darwin.close(root) }
+        var rootBefore = stat()
+        guard Darwin.fstat(root, &rootBefore) == 0,
+              Self.isSecureDirectory(rootBefore, owner: expectedOwner) else {
+            throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+        }
+        let file = name.withCString {
+            Darwin.openat(root, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard file >= 0 else { throw ManagedInstallerReleasedRouteXPCFailure.unavailable }
+        defer { Darwin.close(file) }
+        var before = stat()
+        guard Darwin.fstat(file, &before) == 0,
+              Self.isSecureFile(before, owner: expectedOwner),
+              before.st_size > 0,
+              before.st_size <= ManagedInstallerReleasedRouteXPCCodec.maximumResponseBytes else {
+            throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+        }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 8_192)
+        while true {
+            let count = buffer.withUnsafeMutableBytes {
+                Darwin.read(file, $0.baseAddress, $0.count)
+            }
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+            }
+            data.append(contentsOf: buffer.prefix(Int(count)))
+            guard data.count <= ManagedInstallerReleasedRouteXPCCodec.maximumResponseBytes else {
+                throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+            }
+        }
+        var after = stat()
+        var rootAfter = stat()
+        guard Darwin.fstat(file, &after) == 0,
+              Darwin.fstat(root, &rootAfter) == 0,
+              Self.sameObject(before, after),
+              Self.sameObject(rootBefore, rootAfter),
+              data.count == Int(before.st_size) else {
+            throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+        }
+        return data
+    }
+
+    private static func isSecureDirectory(_ details: stat, owner: uid_t) -> Bool {
+        (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+            && details.st_uid == owner
+            && (details.st_mode & mode_t(0o7777)) == mode_t(0o700)
+    }
+
+    private static func canonicalRoot(_ input: URL) -> URL {
+        let standardized = input.standardizedFileURL
+        guard standardized.isFileURL, standardized.baseURL == nil,
+              let resolved = standardized.path.withCString({ Darwin.realpath($0, nil) }) else {
+            return standardized
+        }
+        defer { Darwin.free(resolved) }
+        return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+    }
+
+    private static func isSecureFile(_ details: stat, owner: uid_t) -> Bool {
+        (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
+            && details.st_uid == owner
+            && details.st_nlink == 1
+            && (details.st_mode & mode_t(0o7777)) == mode_t(0o600)
+    }
+
+    private static func sameObject(_ lhs: stat, _ rhs: stat) -> Bool {
+        lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino
+            && lhs.st_size == rhs.st_size
+            && lhs.st_mtimespec.tv_sec == rhs.st_mtimespec.tv_sec
+            && lhs.st_mtimespec.tv_nsec == rhs.st_mtimespec.tv_nsec
+            && lhs.st_ctimespec.tv_sec == rhs.st_ctimespec.tv_sec
+            && lhs.st_ctimespec.tv_nsec == rhs.st_ctimespec.tv_nsec
     }
 }
 
