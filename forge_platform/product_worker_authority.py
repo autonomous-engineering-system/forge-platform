@@ -20,7 +20,7 @@ from typing import Callable, Mapping
 
 from .engineering_platform_system_adapter import EPSystemInstanceTarget
 from .forge_ep_pairing_executor import ForgeEPProductPairingBinding
-from .forge_server_adapter import ForgeServerTarget
+from .forge_server_adapter import ForgeServerTarget, ForgeUninstallBinding
 from .managed_deployments import ManagedDeploymentRegistry
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
 from .managed_product_operation_admission import NativeInstallerReleaseBinding
@@ -32,7 +32,7 @@ from .released_product_routes import ReleasedManagedProductRouteConfiguration
 from .universal_installer import CompositionManifest, UniversalInstallerError
 
 
-PRODUCT_WORKER_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v1"
+PRODUCT_WORKER_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v2"
 PRODUCT_WORKER_ROOT = Path(
     "/Library/Application Support/AutonomousEngineeringSystem/ForgePlatformInstaller"
 )
@@ -48,7 +48,7 @@ _RELEASE_FIELDS = frozenset({
 _MANIFEST_FIELDS = frozenset({"digest", "payload"})
 _ROUTE_FIELDS = frozenset({
     "deployment_id", "forge_instance_id", "forge_service_account",
-    "forge_bind_port", "forge_artifact_sha256", "ep_instance_id",
+    "forge_bind_port", "forge_artifact_sha256", "forge_installation_id", "ep_instance_id",
     "ep_display_label", "ep_service_account", "ep_bind_port", "pairing",
 })
 _PAIRING_FIELDS = frozenset({
@@ -149,6 +149,13 @@ class ProductWorkerAuthorityLoader:
             )
         if len({port_value for _account_value, port_value in claims}) != len(claims):
             raise ProductWorkerAuthorityError("product routes reuse a bind port")
+        installation_ids = [
+            config.forge_uninstall_binding.installation_id
+            for config in configurations
+            if config.forge_uninstall_binding is not None
+        ]
+        if len(set(installation_ids)) != len(installation_ids):
+            raise ProductWorkerAuthorityError("product routes reuse a Forge installation id")
         registry = ManagedDeploymentRegistry(self.root / "state/deployments")
         coordinator = ManagedForgeEPInstallationCoordinator(
             operations_root=self.root / "state/product-operations",
@@ -224,6 +231,9 @@ class ProductWorkerAuthorityLoader:
         _exact_fields(wire, _ROUTE_FIELDS, "product route")
         deployment = _safe_id(wire["deployment_id"], "deployment id")
         forge_instance = _safe_id(wire["forge_instance_id"], "Forge instance id")
+        forge_installation = _safe_id(
+            wire["forge_installation_id"], "Forge installation id"
+        )
         ep_instance = _safe_id(wire["ep_instance_id"], "EP instance id")
         forge_account = _account(wire["forge_service_account"], "Forge account")
         ep_account = _account(wire["ep_service_account"], "EP account")
@@ -286,6 +296,10 @@ class ProductWorkerAuthorityLoader:
                 _pairing_string(pairing, "credential_reference"),
                 _pairing_string(pairing, "operator_id"),
                 True,
+            ),
+            forge_lifecycle_executable=venvs / "forge/bin/forge",
+            forge_uninstall_binding=ForgeUninstallBinding(
+                forge_instance, forge_installation
             ),
             launch_daemons_directory=self.launch_daemons_directory,
         )
