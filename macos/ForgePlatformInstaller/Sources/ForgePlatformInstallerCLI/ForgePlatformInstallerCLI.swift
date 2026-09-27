@@ -61,6 +61,8 @@ enum ForgePlatformInstallerCLIApplication {
         startup: any InstallerCLIStarting,
         versionReader: @Sendable () -> InstallerVersion?,
         confirm: Confirmation,
+        registerHelper: @escaping InstallerCLIHelperRegistration.Registrar =
+            InstallerCLIHelperRegistration.liveRegistrar,
         stdout: Writer,
         stderr: Writer
     ) async -> Int32 {
@@ -181,6 +183,15 @@ enum ForgePlatformInstallerCLIApplication {
             switch invocation.command {
             case .status:
                 result = await workflow.status()
+            case .helperRegister:
+                result = await InstallerCLIHelperRegistration.run(
+                    startup: startup,
+                    currentVersion: currentVersion,
+                    currentRelease: currentRelease,
+                    options: invocation.options,
+                    confirm: confirm,
+                    register: registerHelper
+                )
             case .deploymentList:
                 result = await workflow.listDeployments()
             case .deploymentPlan(let deployment):

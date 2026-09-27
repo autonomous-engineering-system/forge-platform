@@ -178,9 +178,15 @@ Released candidate packaging also requires
 LaunchDaemon plist under `Contents/Library/LaunchDaemons` binds that relative
 program to the three fixed Mach services. The protected signer signs the helper
 first with its fixed signing identifier and verifies that identity again after
-the final archive is extracted. The current helper process exports unavailable
-handlers, so these layout and identity controls grant no product-mutation
-authority until the production backend replaces that fail-closed boundary.
+the final archive is extracted. The helper's released-route handler is
+read-only; product mutation remains unavailable until its production backend
+is connected.
+
+The bundled CLI exposes `helper register --yes` only after trusted released
+startup. It asks for explicit confirmation without `--yes`, rechecks installer
+currency immediately before `SMAppService` registration, and reports native
+`ENABLED` or `REQUIRES_APPROVAL` separately. Registration never implies that
+the product-operation backend or reboot persistence is ready.
 
 That helper may additionally accept
 `--sealed-composition-catalog-trust-resource PATH`. It permits the separately

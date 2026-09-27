@@ -19,6 +19,10 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(try InstallerCLIParser.parse([]).command, .help)
         XCTAssertEqual(try InstallerCLIParser.parse(["version"]).command, .version)
         XCTAssertEqual(try InstallerCLIParser.parse(["status"]).command, .status)
+        XCTAssertEqual(
+            try InstallerCLIParser.parse(["helper", "register", "--yes"]).command,
+            .helperRegister
+        )
         XCTAssertEqual(try InstallerCLIParser.parse(["self-update", "check"]).command, .selfUpdateCheck)
         XCTAssertEqual(try InstallerCLIParser.parse(["self-update", "apply"]).command, .selfUpdateApply)
         XCTAssertEqual(try InstallerCLIParser.parse(["deployment", "list"]).command, .deploymentList)
@@ -35,6 +39,7 @@ final class InstallerCLITests: XCTestCase {
             "deployment", "apply", "--deployment", "a", "--deployment", "b",
         ]))
         XCTAssertThrowsError(try InstallerCLIParser.parse(["status", "--deployment", "a"]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse(["helper", "register", "--deployment", "a"]))
         XCTAssertThrowsError(try InstallerCLIParser.parse(["--unknown"]))
         XCTAssertThrowsError(
             try InstallerCLIParser.parse(["deployment", "remove", "--deployment", "new"])
