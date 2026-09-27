@@ -236,6 +236,13 @@ complete helper-backend evidence; verified route publication, product and
 post-tool backend wiring, live registration and cold reboot readback are still
 required.
 
+The bundled CLI now offers `helper register` only after trusted released
+startup. It requires explicit confirmation, repeats the installer-currency
+read immediately before the ServiceManagement mutation and returns
+`REQUIRES_APPROVAL` as a non-ready state. A changed release, missing service or
+status drift remains blocked. This call path is source-qualified; a live
+registration and reboot still require their own independent evidence.
+
 The native core now also defines a canonical product-operation bridge for the
 exact Forge+EP pair. Its request is rebuilt from that stable plan and terminal
 runtime receipt and contains only reviewed identities, actions and evidence

@@ -361,11 +361,116 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertTrue(remove.stderr.joined().contains("uninstall dispatcher"))
     }
 
+    func testHelperRegistrationRequiresConsentAndFreshCurrency() async throws {
+        let current = try release("1.2.3")
+        let registrar = CLIHelperRegistrarSpy(
+            result: .ready(try ManagedInstallerPrivilegedHelperRegistrationReceipt(status: .enabled))
+        )
+        let deniedStartup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator())
+        )
+        let denied = await run(
+            ["helper", "register", "--non-interactive"],
+            startup: deniedStartup,
+            version: "1.2.3",
+            registration: { await registrar.invoke() }
+        )
+        XCTAssertEqual(denied.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let deniedStarts = await deniedStartup.startCalls()
+        let deniedCalls = await registrar.calls()
+        XCTAssertEqual(deniedStarts, 1)
+        XCTAssertEqual(deniedCalls, 0)
+
+        let readyStartup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator())
+        )
+        let enabled = await run(
+            ["helper", "register", "--yes", "--non-interactive", "--json"],
+            startup: readyStartup,
+            version: "1.2.3",
+            registration: { await registrar.invoke() }
+        )
+        XCTAssertEqual(enabled.code, InstallerCLIExitCode.success.rawValue)
+        XCTAssertTrue(enabled.stdout.joined().contains("helper-enabled"))
+        XCTAssertTrue(enabled.stdout.joined().contains("ENABLED"))
+        let readyStarts = await readyStartup.startCalls()
+        let readyCalls = await registrar.calls()
+        XCTAssertEqual(readyStarts, 2)
+        XCTAssertEqual(readyCalls, 1)
+    }
+
+    func testHelperRegistrationPreservesApprovalFailureAndReleaseDrift() async throws {
+        let current = try release("1.2.3")
+        let next = try release("1.2.4")
+        let approval = CLIHelperRegistrarSpy(result: .requiresApproval(
+            try ManagedInstallerPrivilegedHelperRegistrationReceipt(status: .requiresApproval)
+        ))
+        let approved = await run(
+            ["helper", "register", "--yes"],
+            startup: CLIStartupSpy(outcome: .ready(
+                currentRelease: current, coordinator: CLIReadyCoordinator()
+            )),
+            version: "1.2.3",
+            registration: { await approval.invoke() }
+        )
+        XCTAssertEqual(approved.code, InstallerCLIExitCode.interactionRequired.rawValue)
+        XCTAssertTrue(approved.stderr.joined().contains("REQUIRES_APPROVAL"))
+
+        for failure in [
+            ManagedInstallerPrivilegedHelperRegistrationFailure.registrationFailed,
+            .serviceUnavailable,
+            .statusDrift,
+        ] {
+            let failed = await run(
+                ["helper", "register", "--yes"],
+                startup: CLIStartupSpy(outcome: .ready(
+                    currentRelease: current, coordinator: CLIReadyCoordinator()
+                )),
+                version: "1.2.3",
+                registration: { .failed(failure) }
+            )
+            XCTAssertEqual(failed.code, InstallerCLIExitCode.executionFailed.rawValue)
+            XCTAssertTrue(failed.stderr.joined().contains("helper-registration-failed"))
+        }
+
+        let recheck = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+            recheckOutcome: .updateRequired(next)
+        )
+        let denied = await run(
+            ["helper", "register", "--yes"],
+            startup: recheck,
+            version: "1.2.3",
+            registration: { await approval.invoke() }
+        )
+        XCTAssertEqual(denied.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        let recheckStarts = await recheck.startCalls()
+        let approvalCalls = await approval.calls()
+        XCTAssertEqual(recheckStarts, 2)
+        XCTAssertEqual(approvalCalls, 1)
+
+        let drift = await run(
+            ["helper", "register", "--yes"],
+            startup: CLIStartupSpy(
+                outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+                recheckOutcome: .ready(currentRelease: next, coordinator: CLIReadyCoordinator())
+            ),
+            version: "1.2.3",
+            registration: { await approval.invoke() }
+        )
+        XCTAssertEqual(drift.code, InstallerCLIExitCode.blocked.rawValue)
+        let driftCalls = await approval.calls()
+        XCTAssertEqual(driftCalls, 1)
+    }
+
     private func run(
         _ arguments: [String],
         startup: CLIStartupSpy,
         version: String?,
-        confirmation: Bool = true
+        confirmation: Bool = true,
+        registration: @escaping InstallerCLIHelperRegistration.Registrar = {
+            .failed(.serviceUnavailable)
+        }
     ) async -> (code: Int32, stdout: [String], stderr: [String]) {
         let output = LockedStrings()
         let errors = LockedStrings()
@@ -377,6 +482,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
                 return try? InstallerVersion(version)
             },
             confirm: { _ in confirmation },
+            registerHelper: registration,
             stdout: { output.append($0) },
             stderr: { errors.append($0) }
         )
@@ -413,21 +519,24 @@ private final class LockedStrings: @unchecked Sendable {
 
 private actor CLIStartupSpy: InstallerCLIStarting {
     private let outcome: InstallerCLIStartupOutcome
+    private let recheckOutcome: InstallerCLIStartupOutcome?
     private let confirmationOutcome: InstallerCLIStartupOutcome?
     private var starts = 0
     private var confirms = 0
 
     init(
         outcome: InstallerCLIStartupOutcome,
-        confirmationOutcome: InstallerCLIStartupOutcome? = nil
+        confirmationOutcome: InstallerCLIStartupOutcome? = nil,
+        recheckOutcome: InstallerCLIStartupOutcome? = nil
     ) {
         self.outcome = outcome
         self.confirmationOutcome = confirmationOutcome
+        self.recheckOutcome = recheckOutcome
     }
 
     func start(currentVersion: InstallerVersion) async -> InstallerCLIStartupOutcome {
         starts += 1
-        return outcome
+        return starts > 1 ? recheckOutcome ?? outcome : outcome
     }
 
     func confirmRequiredUpdate(
@@ -439,6 +548,22 @@ private actor CLIStartupSpy: InstallerCLIStarting {
 
     func startCalls() -> Int { starts }
     func confirmCalls() -> Int { confirms }
+}
+
+private actor CLIHelperRegistrarSpy {
+    private let result: ManagedInstallerPrivilegedHelperRegistrationResult
+    private var count = 0
+
+    init(result: ManagedInstallerPrivilegedHelperRegistrationResult) {
+        self.result = result
+    }
+
+    func invoke() -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        count += 1
+        return result
+    }
+
+    func calls() -> Int { count }
 }
 
 private actor CLITestTrustedRuntime: TrustedInstallerRuntime {
