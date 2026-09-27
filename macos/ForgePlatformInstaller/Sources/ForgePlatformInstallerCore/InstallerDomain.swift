@@ -1595,6 +1595,13 @@ public protocol InstallerWizardCoordinator: Sendable {
     /// Inventory existing managed deployments plus one coordinator-generated
     /// create target. This operation is read-only.
     func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult
+    /// Read-only exact-target removal proposal from the signed helper.
+    func prepareProductRemovalReview(
+        _ intent: ManagedInstallerProductRemovalReviewIntent
+    ) async -> Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    >
     /// Prepare exactly one verified composition session for the selected
     /// managed deployment after the mandatory self-update gate. Implementations
     /// must not return catalog bytes, URLs, commands, credentials, product
@@ -1634,6 +1641,16 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func prepareProductRemovalReview(
+        _ intent: ManagedInstallerProductRemovalReviewIntent
+    ) async -> Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = intent
+        return .failure(.rejected)
+    }
+
     func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
         .unavailable(.coordinatorUnavailable)
     }

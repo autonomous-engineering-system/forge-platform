@@ -545,6 +545,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     private let compositionSessionPreparer: any VerifiedCompositionSessionPreparing
     private let providerCoordinator: any ProviderActionCoordinating
     private let managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating
+    private let removalReviewTransport: (any ManagedInstallerProductRemovalReviewTransporting)?
 
     private var pendingUpdate: PendingUpdate?
     /// A release record observed during an update check is not yet authority
@@ -578,7 +579,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         operationLock: any InstallerSelfUpdateOperationLocking,
         compositionSessionPreparer: any VerifiedCompositionSessionPreparing = UnavailableVerifiedCompositionSessionPreparer(),
         providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator(),
-        managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator()
+        managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator(),
+        removalReviewTransport: (any ManagedInstallerProductRemovalReviewTransporting)? = nil
     ) {
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
@@ -590,6 +592,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.compositionSessionPreparer = compositionSessionPreparer
         self.providerCoordinator = providerCoordinator
         self.managedDeploymentRouteCoordinator = managedDeploymentRouteCoordinator
+        self.removalReviewTransport = removalReviewTransport
     }
 
     public func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
@@ -691,6 +694,39 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
 
     public func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
         await managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory()
+    }
+
+    public func prepareProductRemovalReview(
+        _ intent: ManagedInstallerProductRemovalReviewIntent
+    ) async -> Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard let currentVerifiedReleaseRecord,
+              currentVerifiedReleaseRecord.release == intent.installerRelease,
+              let removalReviewTransport else {
+            return .failure(.rejected)
+        }
+        let request = intent.canonicalJSONData()
+        guard let decoded = try? ManagedInstallerProductRemovalReviewIntent.decodeJSON(request),
+              decoded == intent else {
+            return .failure(.invalidRequest)
+        }
+        let result = await removalReviewTransport.prepareProductRemovalReview(request)
+        guard self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+            return .failure(.rejected)
+        }
+        switch result {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let response):
+            guard let proposal = try? ManagedInstallerProductRemovalReviewProposal.decodeJSON(
+                response, intent: intent
+            ), proposal.canonicalJSONData() == response else {
+                return .failure(.rejected)
+            }
+            return .success(proposal)
+        }
     }
 
     public func prepareHostPreflight(
