@@ -2938,6 +2938,10 @@ class ComponentDiff:
             or self.assessment.candidate_artifact != self.target_artifact
         ):
             raise ValueError("component diff update assessment does not match target")
+        if self.action == "UPDATE" and (
+            self.assessment is None or self.assessment.state != "UPDATE_AVAILABLE"
+        ):
+            raise ValueError("reviewed update requires exact product UPDATE_AVAILABLE evidence")
 
 
 @dataclass(frozen=True)
@@ -3096,7 +3100,14 @@ class CompositionPlan:
             ],
             "providers": [(action.identity, action.action) for action in self.provider_gate.actions],
             "components": [
-                (diff.component, diff.installation_identity, diff.action, None if diff.target_artifact is None else diff.target_artifact.digest)
+                {
+                    "component": diff.component,
+                    "installation_identity": diff.installation_identity,
+                    "action": diff.action,
+                    "target_artifact": None if diff.target_artifact is None else asdict(diff.target_artifact),
+                    "readback": asdict(diff.readback),
+                    "assessment": None if diff.assessment is None else asdict(diff.assessment),
+                }
                 for diff in self.component_diffs
             ],
         }
