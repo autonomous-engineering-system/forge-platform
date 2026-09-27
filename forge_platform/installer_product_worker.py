@@ -8,11 +8,18 @@ helper service remains a separate helper-owned authority boundary.
 from __future__ import annotations
 
 from typing import BinaryIO, Callable
+import json
 import sys
 
 from .managed_product_operation_admission import MAXIMUM_NATIVE_PRODUCT_OPERATION_REQUEST_BYTES
+from .managed_product_removal_admission import (
+    NATIVE_PRODUCT_REMOVAL_REQUEST_SCHEMA,
+    decode_native_product_removal_request,
+)
 from .managed_product_operation_service import (
     MAXIMUM_NATIVE_PRODUCT_OPERATION_RECEIPT_BYTES,
+    MAXIMUM_NATIVE_PRODUCT_REMOVAL_RECEIPT_BYTES,
+    NATIVE_PRODUCT_REMOVAL_RECEIPT_SCHEMA,
     ManagedProductOperationHelperService,
 )
 from .product_worker_authority import ProductWorkerAuthorityLoader
@@ -23,6 +30,22 @@ class InstallerProductWorkerUnavailable(RuntimeError):
 
 
 ServiceLoader = Callable[[], ManagedProductOperationHelperService]
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate worker receipt field")
+        result[key] = value
+    return result
 
 
 def load_released_product_service() -> ManagedProductOperationHelperService:
@@ -60,6 +83,110 @@ def execute_product_request(
     return response
 
 
+def execute_removal_request(
+    canonical_request: bytes,
+    *,
+    service_loader: ServiceLoader = load_released_product_service,
+) -> bytes:
+    """Run only the exact removal schema and independently bind its receipt."""
+
+    request = decode_native_product_removal_request(canonical_request)
+    service = service_loader()
+    if not isinstance(service, ManagedProductOperationHelperService):
+        raise InstallerProductWorkerUnavailable("product removal service is unavailable")
+    response = service.execute_removal(canonical_request)
+    if (
+        not isinstance(response, bytes) or not response
+        or len(response) > MAXIMUM_NATIVE_PRODUCT_REMOVAL_RECEIPT_BYTES
+    ):
+        raise InstallerProductWorkerUnavailable("product removal receipt is unavailable")
+    try:
+        payload = json.loads(
+            response.decode("utf-8"), object_pairs_hook=_unique_object,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("non-finite JSON")),
+        )
+        expected = {
+            "schema", "request_fingerprint", "operation_id", "deployment_id",
+            "action", "plan_fingerprint", "state", "registry_revision", "components",
+        }
+        if (
+            not isinstance(payload, dict) or set(payload) != expected
+            or _canonical(payload) != response
+            or payload["schema"] != NATIVE_PRODUCT_REMOVAL_RECEIPT_SCHEMA
+            or payload["request_fingerprint"] != request.request_fingerprint
+            or payload["operation_id"] != request.operation_id
+            or payload["deployment_id"] != request.deployment_id
+            or payload["action"] != request.action
+            or payload["plan_fingerprint"] != "sha256:" + request.reviewed_plan_sha256
+            or payload["state"] not in {"COMPLETE", "RECOVERY_PENDING"}
+            or not isinstance(payload["components"], list)
+            or not payload["components"]
+        ):
+            raise ValueError("removal receipt identity changed")
+        revision = payload["registry_revision"]
+        if (
+            payload["state"] == "RECOVERY_PENDING" and revision is not None
+            or payload["state"] == "COMPLETE" and (
+                isinstance(revision, bool) or not isinstance(revision, int)
+                or request.action == "REMOVE_DEPLOYMENT" and revision != 0
+                or request.action == "REMOVE_COMPONENT" and revision != request.reviewed_revision + 1
+            )
+        ):
+            raise ValueError("removal registry disposition changed")
+        components = payload["components"]
+        expected_components = (
+            {"forge-runtime", "engineering-platform-server"}
+            if request.engineering_platform_instance_id is not None
+            else {"forge-runtime"}
+        )
+        if (
+            len(components) != len(expected_components)
+            or [item.get("component") for item in components if isinstance(item, dict)]
+            != sorted(expected_components)
+        ):
+            raise ValueError("removal receipt component identities are ambiguous")
+        for item in components:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {
+                    "component", "instance_id", "action", "state", "product_receipt_digest",
+                }
+                or item["component"] not in {"forge-runtime", "engineering-platform-server"}
+                or item["instance_id"] != (
+                    request.forge_instance_id if item["component"] == "forge-runtime"
+                    else request.engineering_platform_instance_id
+                )
+                or item["action"] != (
+                    "NO_CHANGE" if request.action == "REMOVE_COMPONENT"
+                    and item["component"] == "engineering-platform-server"
+                    else "REMOVE_COMPONENT"
+                )
+                or item["state"] not in {
+                    "COMPLETE", "RECOVERY_PENDING", "PENDING", "FAILED", "UNCHANGED",
+                }
+                or item["action"] == "NO_CHANGE" and (
+                    item["state"] != "UNCHANGED" or item["product_receipt_digest"] is not None
+                )
+                or item["action"] == "REMOVE_COMPONENT" and (
+                    item["state"] == "UNCHANGED"
+                    or payload["state"] == "COMPLETE" and (
+                        item["state"] != "COMPLETE"
+                        or item["product_receipt_digest"] is None
+                    )
+                )
+                or item["product_receipt_digest"] is not None and (
+                    not isinstance(item["product_receipt_digest"], str)
+                    or len(item["product_receipt_digest"]) != 71
+                    or not item["product_receipt_digest"].startswith("sha256:")
+                    or any(character not in "0123456789abcdef" for character in item["product_receipt_digest"][7:])
+                )
+            ):
+                raise ValueError("removal receipt component changed")
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise InstallerProductWorkerUnavailable("product removal receipt was rejected") from error
+    return response
+
+
 def run(
     input_stream: BinaryIO,
     output_stream: BinaryIO,
@@ -68,7 +195,14 @@ def run(
 ) -> int:
     try:
         request = input_stream.read(MAXIMUM_NATIVE_PRODUCT_OPERATION_REQUEST_BYTES + 1)
-        response = execute_product_request(request, service_loader=service_loader)
+        try:
+            envelope = json.loads(request)
+        except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+            envelope = None
+        if isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REQUEST_SCHEMA:
+            response = execute_removal_request(request, service_loader=service_loader)
+        else:
+            response = execute_product_request(request, service_loader=service_loader)
         output_stream.write(response)
         output_stream.flush()
         return 0

@@ -7,9 +7,12 @@ import unittest
 from forge_platform.installer_product_worker import (
     InstallerProductWorkerUnavailable,
     execute_product_request,
+    execute_removal_request,
     load_released_product_service,
     run,
 )
+from forge_platform.managed_product_operation_service import NATIVE_PRODUCT_REMOVAL_RECEIPT_SCHEMA
+import tests.installer.test_managed_product_removal_admission as removal_fixtures
 from forge_platform.managed_product_operation_admission import (
     MAXIMUM_NATIVE_PRODUCT_OPERATION_REQUEST_BYTES,
 )
@@ -24,7 +27,9 @@ class _BrokenOutput(io.BytesIO):
         raise OSError("closed")
 
 
-def _service(response: bytes | Exception) -> ManagedProductOperationHelperService:
+def _service(
+    response: bytes | Exception, *, removal_response: bytes | Exception | None = None,
+) -> ManagedProductOperationHelperService:
     service = object.__new__(ManagedProductOperationHelperService)
 
     def execute(_request: bytes) -> bytes:
@@ -33,10 +38,76 @@ def _service(response: bytes | Exception) -> ManagedProductOperationHelperServic
         return response
 
     service.execute = execute
+    def execute_removal(_request: bytes) -> bytes:
+        result = removal_response if removal_response is not None else response
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    service.execute_removal = execute_removal
     return service
 
 
 class InstallerProductWorkerTests(unittest.TestCase):
+    def test_exact_removal_request_and_receipt_use_same_worker(self) -> None:
+        fixture = removal_fixtures.ManagedProductRemovalAdmissionTests(
+            "test_exact_paired_component_removal_retains_ep_and_other_deployment"
+        )
+        fixture.setUp()
+        try:
+            payload = fixture.payload()
+            request = removal_fixtures.canonical(payload)
+            receipt = {
+                "schema": NATIVE_PRODUCT_REMOVAL_RECEIPT_SCHEMA,
+                "request_fingerprint": payload["request_fingerprint"],
+                "operation_id": "remove-a",
+                "deployment_id": "deployment-a",
+                "action": "REMOVE_COMPONENT",
+                "plan_fingerprint": "sha256:" + payload["reviewed_plan_sha256"],
+                "state": "RECOVERY_PENDING",
+                "registry_revision": None,
+                "components": [
+                    {
+                        "component": "engineering-platform-server",
+                        "instance_id": "ep-a",
+                        "action": "NO_CHANGE",
+                        "state": "UNCHANGED",
+                        "product_receipt_digest": None,
+                    },
+                    {
+                        "component": "forge-runtime",
+                        "instance_id": "forge-a",
+                        "action": "REMOVE_COMPONENT",
+                        "state": "RECOVERY_PENDING",
+                        "product_receipt_digest": None,
+                    },
+                ],
+            }
+            response = removal_fixtures.canonical(receipt)
+            service = lambda: _service(b"unreachable", removal_response=response)
+            self.assertEqual(
+                execute_removal_request(request, service_loader=service), response,
+            )
+            output = io.BytesIO()
+            self.assertEqual(run(io.BytesIO(request), output, service_loader=service), 0)
+            self.assertEqual(output.getvalue(), response)
+            for changes in (
+                {"request_fingerprint": "0" * 64},
+                {"registry_revision": 2},
+                {"components": [{**receipt["components"][0], "instance_id": "ep-other"}, receipt["components"][1]]},
+                {"secret": "never"},
+            ):
+                changed = {**receipt, **changes}
+                with self.subTest(changes=changes), self.assertRaises(InstallerProductWorkerUnavailable):
+                    execute_removal_request(
+                        request,
+                        service_loader=lambda: _service(
+                            b"unreachable", removal_response=removal_fixtures.canonical(changed)
+                        ),
+                    )
+        finally:
+            fixture.tearDown()
+
     def test_executes_one_bounded_request_through_exact_service(self) -> None:
         request = b'{"request":"canonical"}'
         response = b'{"receipt":"canonical"}'
