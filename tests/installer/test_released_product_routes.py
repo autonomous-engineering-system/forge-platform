@@ -16,7 +16,7 @@ from forge_platform.forge_ep_pairing_executor import (
     ForgeEPProductPairingBinding,
     ForgeEPProductPairingExecutor,
 )
-from forge_platform.forge_server_adapter import ForgeServerProductAdapter, ForgeServerTarget
+from forge_platform.forge_server_adapter import ForgeServerProductAdapter, ForgeServerTarget, ForgeUninstallBinding
 from forge_platform.managed_deployments import ManagedDeploymentRegistry
 from forge_platform.managed_product_operation_service import (
     ManagedProductOperationHelperBuilder,
@@ -174,13 +174,24 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
 
     def test_lifecycle_executable_is_fixed_by_helper_route(self):
         lifecycle = self.root / "lifecycle/forge-2.7.35/bin/forge"
-        config = self.configuration(forge_lifecycle_executable=lifecycle)
+        uninstall = ForgeUninstallBinding("forge-prod", "installation-1")
+        config = self.configuration(
+            forge_lifecycle_executable=lifecycle, forge_uninstall_binding=uninstall,
+        )
         routes = ReleasedManagedProductRouteBuilder.build(
             configurations=(config,), candidate_selections=(self.selection,),
         )
         self.assertEqual(routes["production"].adapters["forge-runtime"].lifecycle_executable, lifecycle)
+        self.assertEqual(routes["production"].adapters["forge-runtime"].uninstall_binding, uninstall)
+        self.assertEqual(routes["production"].adapters["forge-runtime"].removal_support(), "SUPPORTED")
         with self.assertRaisesRegex(ValueError, "lifecycle executable must be absolute"):
             self.configuration(forge_lifecycle_executable=Path("relative/forge"))
+        with self.assertRaisesRegex(TypeError, "uninstall binding is invalid"):
+            self.configuration(forge_uninstall_binding="foreign")
+        with self.assertRaisesRegex(ValueError, "different instance"):
+            self.configuration(
+                forge_uninstall_binding=ForgeUninstallBinding("foreign", "installation-1")
+            )
 
     def test_closed_helper_builder_constructs_routes_and_authority_together(self):
         product_coordinator = coordinator(

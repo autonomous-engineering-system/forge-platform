@@ -150,9 +150,13 @@ The installer consumes the 2.7.35 assessment only from an explicitly bound
 and exact product instance/installation IDs. Missing or contradictory evidence
 remains `UNKNOWN` or fails closed. A positive assessment alone does not
 complete the reviewed-update, updater-resume, readiness or registry gates.
-Forge removal remains blocked in the installer until its product-owned
-dispatcher and deployment-owner service choreography are integrated and
-qualified; no installer-owned deletion of Forge data is allowed.
+The Forge adapter binds the product-owned uninstall dispatcher to one exact
+instance and durable operation ID. It stops the selected LaunchDaemon, requires
+Forge's terminal receipt and matching status, then removes only the
+deployment-owned service definition. A same-operation replay is idempotent;
+Forge alone removes verified mutable instance data. The higher-level managed
+deployment remove route and GUI/CLI confirmation remain blocked until their
+reviewed target, pairing and registry-commit gates are integrated and qualified.
 
 ## Durable execution
 
