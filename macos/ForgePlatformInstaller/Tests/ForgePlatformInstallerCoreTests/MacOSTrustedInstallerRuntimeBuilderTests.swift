@@ -4,6 +4,77 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
+    func testReleasedRuntimeReadsInventoryThroughSignedHelperRoute() async throws {
+        let root = try makeSecureTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = try makeConfiguration()
+        let provenance = try makeProvenance(configuration: configuration)
+        let inventory = try ManagedDeploymentInventory(
+            existing: [ManagedDeploymentTarget(
+                id: "deployment-one", exists: true, forgeInstanceID: "forge-one",
+                installedCompositionID: "forge-ep-qualified",
+                installedCompositionManifestSHA256: "sha256:" + String(repeating: "a", count: 64)
+            )],
+            createCandidate: ManagedDeploymentTarget(id: "deployment-new", exists: false),
+            evidenceReference: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let builder = try MacOSTrustedInstallerRuntimeBuilder(
+            stateRoot: root, platformFacts: supportedPlatformFacts(),
+            routeLoaderFactory: { identity in
+                BuilderRouteLoader(
+                    teamIdentifier: identity.teamIdentifier,
+                    expectedTeamIdentifier: configuration.expectedTeamIdentifier,
+                    inventory: inventory
+                )
+            }
+        )
+
+        let result = await builder.buildTrustedInstallerRuntime(
+            sealedTrustConfiguration: configuration,
+            sealedReleaseProvenance: provenance
+        )
+
+        guard case .success(let runtime) = result else {
+            return XCTFail("Sealed runtime should assemble the signed helper inventory route")
+        }
+        let readback = await runtime.prepareManagedDeploymentInventory()
+        XCTAssertEqual(readback, .available(inventory))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+    }
+
+    func testReleasedRuntimeFailsClosedWhenHelperInventoryIsUnavailable() async throws {
+        let root = try makeSecureTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = try makeConfiguration()
+        let provenance = try makeProvenance(configuration: configuration)
+        let inventory = try ManagedDeploymentInventory(
+            existing: [],
+            createCandidate: ManagedDeploymentTarget(id: "deployment-new", exists: false),
+            evidenceReference: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let builder = try MacOSTrustedInstallerRuntimeBuilder(
+            stateRoot: root, platformFacts: supportedPlatformFacts(),
+            routeLoaderFactory: { identity in
+                BuilderRouteLoader(
+                    teamIdentifier: identity.teamIdentifier,
+                    expectedTeamIdentifier: "WRONGTEAM",
+                    inventory: inventory
+                )
+            }
+        )
+
+        let result = await builder.buildTrustedInstallerRuntime(
+            sealedTrustConfiguration: configuration,
+            sealedReleaseProvenance: provenance
+        )
+
+        guard case .success(let runtime) = result else {
+            return XCTFail("Unavailable helper must not weaken sealed runtime assembly")
+        }
+        let readback = await runtime.prepareManagedDeploymentInventory()
+        XCTAssertEqual(readback, .unavailable(.inventoryUnavailable))
+    }
+
     func testAssemblesSelfUpdateAndReadOnlyCompositionAdaptersFromOnePrivateRoot() async throws {
         let root = try makeSecureTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -357,5 +428,27 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
             capabilities: capabilities,
             releaseTrustConfigurationSHA256: trustConfigurationSHA256
         )
+    }
+}
+
+private struct BuilderRouteLoader: ManagedInstallerReleasedRouteSnapshotLoading {
+    let teamIdentifier: String
+    let expectedTeamIdentifier: String
+    let inventory: ManagedDeploymentInventory
+
+    func loadManagedDeploymentInventory() async throws -> ManagedDeploymentInventory {
+        guard teamIdentifier == expectedTeamIdentifier else {
+            throw ManagedInstallerReleasedRouteSnapshotError.invalidSnapshot
+        }
+        return inventory
+    }
+
+    func loadReleasedRouteSnapshot(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async throws -> ManagedInstallerReleasedRouteSnapshot {
+        _ = session
+        _ = deployment
+        throw ManagedInstallerReleasedRouteSnapshotError.invalidSnapshot
     }
 }
