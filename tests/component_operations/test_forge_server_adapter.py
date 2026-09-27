@@ -401,7 +401,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
             self.prepared.instance_id, "server", {},
         )
         self.assertEqual(self.adapter.assess_update(req).state, "UNKNOWN")
-        with self.assertRaisesRegex(Exception, "updater binding"):
+        with self.assertRaisesRegex(Exception, "stale or unhealthy"):
             self.adapter.execute(req)
 
     def test_forge_2735_product_owned_update_assessment_binds_exact_identity(self) -> None:
@@ -751,6 +751,14 @@ class ForgeServerAdapterTests(unittest.TestCase):
         observed = self.adapter.readback(self.request("repair"))
         self.assertEqual(observed.state, "UNHEALTHY")
 
+        class WrongInstanceProbe:
+            def readiness(self, target):
+                return {"ready": True, "instance_id": "other-instance"}
+
+        self.adapter.readiness_probe = WrongInstanceProbe()
+        with self.assertRaisesRegex(ForgeServerAdapterError, "different instance"):
+            self.adapter.readback(self.request("repair"))
+
     def test_provider_guard_peer_loopback_flag_and_resume_identity(self) -> None:
         self.adapter.configure_provider_context(
             codex_executable=Path("/opt/forge/providers/codex/bin/codex"),
@@ -810,12 +818,47 @@ class ForgeServerAdapterTests(unittest.TestCase):
 
         class ReceiptRunner(Runner):
             overrides: dict[str, object] = {}
+            updated = False
+            assessment_state = "UPDATE_AVAILABLE"
 
             def run(self, argv):
                 args = tuple(argv)
+                if "update-assess" in args:
+                    self.calls.append(args)
+                    selected = {
+                        "runtime_id": args[args.index("--runtime-id") + 1],
+                        "installation_id": args[args.index("--installation-id") + 1],
+                        "version": args[args.index("--installed-version") + 1],
+                        "source_revision": args[args.index("--installed-source") + 1],
+                        "artifact_digest": args[args.index("--installed-artifact-digest") + 1],
+                    }
+                    candidate_value = {
+                        "version": args[args.index("--candidate-version") + 1],
+                        "source_revision": args[args.index("--candidate-source") + 1],
+                        "artifact_digest": args[args.index("--candidate-artifact-digest") + 1],
+                    }
+                    assessment = {
+                        "contract": "forge-server-runtime-lifecycle/v1",
+                        "operation": "UPDATE_ASSESSMENT", "state": self.assessment_state,
+                        "mutating": False, "selected_installation": selected,
+                        "candidate": candidate_value,
+                        "reason_codes": ["EXACT_SUPPORTED_TRANSITION"], "evidence": {},
+                    }
+                    assessment["assessment_digest"] = "sha256:" + hashlib.sha256(
+                        (json.dumps(assessment, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+                    ).hexdigest()
+                    return ForgeCommandResult(0, json.dumps(assessment), "")
+                if args[-2:] == ("server", "status"):
+                    observed = super().run(args)
+                    if self.updated:
+                        value = json.loads(observed.stdout)
+                        value["product_version"] = candidate.version
+                        return ForgeCommandResult(0, json.dumps(value), "")
+                    return observed
                 if args[0] != "/opt/forge/bin/update-installed-forge":
                     return super().run(args)
                 self.calls.append(args)
+                self.updated = True
                 selected = {
                     name.replace("-", "_"): args[args.index("--" + name) + 1]
                     for name in (
@@ -856,8 +899,11 @@ class ForgeServerAdapterTests(unittest.TestCase):
                 return ForgeCommandResult(0, json.dumps(payload), "")
 
         runner = ReceiptRunner()
+        runner.initialized = True
+        self.supervisor.running = True
         adapter = ForgeServerProductAdapter(
             forge_executable=Path("/opt/forge/bin/forge"),
+            lifecycle_executable=Path("/opt/forge/lifecycle-2.7.35/bin/forge"),
             target=self.target,
             installed_artifact=ARTIFACT,
             staged_artifacts={candidate.digest: wheel},
@@ -874,7 +920,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
         self.assertEqual(receipt.state, "COMPLETED")
         self.assertTrue(receipt.evidence_reference.startswith("forge-update:sha256:"))
         self.assertEqual(adapter.installed_artifact, candidate)
-        call = runner.calls[-1]
+        call = next(call for call in runner.calls if call[0] == "/opt/forge/bin/update-installed-forge")
         self.assertEqual(call[0], "/opt/forge/bin/update-installed-forge")
         self.assertIn("--qualification-receipt", call)
         self.assertIn(str(wheel), call)
@@ -888,8 +934,12 @@ class ForgeServerAdapterTests(unittest.TestCase):
             {"contract_version": None},
         ):
             runner.overrides = mismatch
+            runner.updated = False
+            self.supervisor.running = True
             retry = ForgeServerProductAdapter(
-                forge_executable=Path("/opt/forge/bin/forge"), target=self.target,
+                forge_executable=Path("/opt/forge/bin/forge"),
+                lifecycle_executable=Path("/opt/forge/lifecycle-2.7.35/bin/forge"),
+                target=self.target,
                 installed_artifact=ARTIFACT, staged_artifacts={candidate.digest: wheel},
                 supervisor=self.supervisor, runner=runner, readiness_probe=Probe(),
                 update_binding=binding,
@@ -897,6 +947,43 @@ class ForgeServerAdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(ForgeServerAdapterError, "terminal product receipt"):
                 retry.execute(req)
             self.assertEqual(retry.installed_artifact, ARTIFACT)
+        runner.overrides = {}
+        runner.updated = False
+        runner.assessment_state = "UNKNOWN"
+        self.supervisor.running = True
+        self.supervisor.calls.clear()
+        stale = ForgeServerProductAdapter(
+            forge_executable=Path("/opt/forge/bin/forge"),
+            lifecycle_executable=Path("/opt/forge/lifecycle-2.7.35/bin/forge"),
+            target=self.target, installed_artifact=ARTIFACT,
+            staged_artifacts={candidate.digest: wheel}, supervisor=self.supervisor,
+            runner=runner, readiness_probe=Probe(), update_binding=binding,
+        )
+        with self.assertRaisesRegex(ForgeServerAdapterError, "fresh update"):
+            stale.execute(req)
+        self.assertEqual(self.supervisor.calls, [])
+        runner.assessment_state = "UPDATE_AVAILABLE"
+        runner.updated = False
+        self.supervisor.running = True
+
+        class ReadinessLostAfterRestart:
+            def readiness(self, target):
+                return {
+                    "ready": "stop" not in self_supervisor.calls,
+                    "instance_id": target.instance_id,
+                }
+
+        self_supervisor = self.supervisor
+        not_ready = ForgeServerProductAdapter(
+            forge_executable=Path("/opt/forge/bin/forge"),
+            lifecycle_executable=Path("/opt/forge/lifecycle-2.7.35/bin/forge"),
+            target=self.target, installed_artifact=ARTIFACT,
+            staged_artifacts={candidate.digest: wheel}, supervisor=self.supervisor,
+            runner=runner, readiness_probe=ReadinessLostAfterRestart(),
+            update_binding=binding,
+        )
+        with self.assertRaisesRegex(ForgeServerAdapterError, "restore exact instance readiness"):
+            not_ready.execute(req)
 
     def test_update_binding_paths_staged_wheel_and_terminal_state_are_validated(self) -> None:
         root = Path(self.temp.name).resolve()
@@ -929,7 +1016,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
             self.prepared.instance_id, "server", {},
         )
         with self.assertRaisesRegex(ForgeServerAdapterError, "staged update wheel"):
-            adapter.execute(req)
+            adapter._run_update(req)
 
         class FailedUpdateRunner(Runner):
             def run(self, argv):
@@ -943,7 +1030,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
             readiness_probe=Probe(), update_binding=binding,
         )
         with self.assertRaisesRegex(ForgeServerAdapterError, "terminal product receipt"):
-            adapter.execute(req)
+            adapter._run_update(req)
 
 
 if __name__ == "__main__":

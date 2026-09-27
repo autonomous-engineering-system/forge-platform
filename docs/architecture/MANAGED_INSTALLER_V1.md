@@ -154,6 +154,11 @@ The adapter accepts a completed external update only with Forge's exact
 `forge-installed-update/v1` operation/request digest, selected artifact and
 instance, migration evidence and installed preservation readback. A successful
 process exit without that terminal receipt is rejected.
+For a fresh update dispatch the adapter rechecks exact product inventory and a
+new positive assessment before service mutation, stops the selected service,
+delegates to Forge's updater, registers the selected resolver, restarts the
+service and requires exact instance readiness. Interrupted post-updater
+recovery and reviewed-assessment equivalence remain separate open gates.
 
 The Forge adapter binds the product-owned uninstall dispatcher to one exact
 instance and durable operation ID. It stops the selected LaunchDaemon, requires
