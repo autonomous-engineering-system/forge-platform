@@ -358,7 +358,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             version: "1.2.3"
         )
         XCTAssertEqual(remove.code, InstallerCLIExitCode.executionFailed.rawValue)
-        XCTAssertTrue(remove.stderr.joined().contains("uninstall dispatcher"))
+        XCTAssertTrue(remove.stderr.joined().contains("nog niet verbonden"))
     }
 
     func testHelperRegistrationRequiresConsentAndFreshCurrency() async throws {

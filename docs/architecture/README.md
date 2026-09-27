@@ -55,14 +55,13 @@ The active Managed Installer V1 implementation adds
 a durable multi-instance deployment registry/saga, target-aware provider
 requirements and fan-out coordination, a native deployment-selection gate,
 target-aware manifest/session projection, an EP 2.3.102 system-provisioner
-adapter and the Forge 2.7.34 Server deployment adapter. See
+adapter and the Forge 2.7.35 Server deployment adapter. See
 [Managed Installer V1](MANAGED_INSTALLER_V1.md).
 
-The first signed/notarized installer publication and authorized fresh-Mac
-qualification remain separate evidence boundaries. Forge 2.7.34 also lacks a
-product-owned uninstall dispatcher and separate read-only update-availability
-surface; Forge Platform fails closed rather than inventing those product
-semantics. The executor's immutable slot, isolated-venv, interruption-resume
+The first functional installer publication and authorized fresh-Mac
+qualification remain separate evidence boundaries. Forge 2.7.35 supplies
+product-owned uninstall and read-only update assessment. Installer execution
+remains fail-closed until those exact routes are fully integrated. The executor's immutable slot, isolated-venv, interruption-resume
 and rollback boundary is defined in the
 [managed Python runtime execution contract](MANAGED_PYTHON_RUNTIME_EXECUTION_CONTRACT.md).
 No current source merge proves a live Mac installation.

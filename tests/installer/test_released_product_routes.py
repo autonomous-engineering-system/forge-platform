@@ -172,6 +172,16 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             routes["other"] = route
 
+    def test_lifecycle_executable_is_fixed_by_helper_route(self):
+        lifecycle = self.root / "lifecycle/forge-2.7.35/bin/forge"
+        config = self.configuration(forge_lifecycle_executable=lifecycle)
+        routes = ReleasedManagedProductRouteBuilder.build(
+            configurations=(config,), candidate_selections=(self.selection,),
+        )
+        self.assertEqual(routes["production"].adapters["forge-runtime"].lifecycle_executable, lifecycle)
+        with self.assertRaisesRegex(ValueError, "lifecycle executable must be absolute"):
+            self.configuration(forge_lifecycle_executable=Path("relative/forge"))
+
     def test_closed_helper_builder_constructs_routes_and_authority_together(self):
         product_coordinator = coordinator(
             self.root,

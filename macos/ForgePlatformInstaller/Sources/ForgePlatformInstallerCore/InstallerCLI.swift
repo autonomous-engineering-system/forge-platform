@@ -253,7 +253,7 @@ public struct InstallerCLIWorkflow: Sendable {
         return InstallerCLIResult(
             exitCode: .executionFailed,
             status: "producer-blocked",
-            message: "Forge 2.7.34 publiceert geen product-owned uninstall dispatcher; deployment remove blijft fail-closed."
+            message: "Forge 2.7.35 uninstall is nog niet verbonden met de installer; deployment remove blijft fail-closed."
         )
     }
 
