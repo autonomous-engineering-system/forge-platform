@@ -11,6 +11,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentPlan(String)
     case deploymentApply(String)
     case deploymentRemove(String)
+    case deploymentRemovePlan(String, operationID: String, component: String?)
 }
 
 public struct InstallerCLIOptions: Equatable, Sendable {
@@ -94,6 +95,7 @@ public enum InstallerCLIParser {
       forge-platform-installer deployment plan --deployment <id|new> [--non-interactive] [--json]
       forge-platform-installer deployment apply --deployment <id|new> [--yes] [--non-interactive] [--accept-installer-update] [--json]
       forge-platform-installer deployment remove --deployment <id> [--yes] [--json]
+      forge-platform-installer deployment remove plan --deployment <id> --operation-id <id> [--component forge-runtime] [--json]
 
     Security:
       --non-interactive never bypasses provider authentication, installer update
@@ -106,6 +108,8 @@ public enum InstallerCLIParser {
         var assumeYes = false
         var acceptInstallerUpdate = false
         var deployment: String?
+        var operationID: String?
+        var component: String?
         var positional: [String] = []
 
         var index = 0
@@ -135,6 +139,21 @@ public enum InstallerCLIParser {
                     throw InstallerCLIParseError.missingDeployment
                 }
                 deployment = value
+            case "--operation-id", "--component":
+                let isOperation = argument == "--operation-id"
+                guard (isOperation ? operationID : component) == nil else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                index += 1
+                guard index < arguments.count else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                let value = arguments[index]
+                guard !value.isEmpty, !value.hasPrefix("-") else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                if isOperation { operationID = value }
+                else { component = value }
             default:
                 guard !argument.hasPrefix("-") else {
                     throw InstallerCLIParseError.invalidArguments
@@ -175,15 +194,32 @@ public enum InstallerCLIParser {
                 throw InstallerCLIParseError.missingDeployment
             }
             command = .deploymentRemove(deployment)
+        case ["deployment", "remove", "plan"]:
+            guard let deployment, deployment != "new",
+                  let operationID,
+                  ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+                  component == nil || component == "forge-runtime",
+                  !assumeYes else {
+                throw InstallerCLIParseError.invalidArguments
+            }
+            command = .deploymentRemovePlan(
+                deployment, operationID: operationID, component: component
+            )
         default:
             throw InstallerCLIParseError.invalidArguments
         }
 
         if deployment != nil {
             switch command {
-            case .deploymentPlan, .deploymentApply, .deploymentRemove:
+            case .deploymentPlan, .deploymentApply, .deploymentRemove,
+                 .deploymentRemovePlan:
                 break
             default:
+                throw InstallerCLIParseError.invalidArguments
+            }
+        }
+        if operationID != nil || component != nil {
+            guard case .deploymentRemovePlan = command else {
                 throw InstallerCLIParseError.invalidArguments
             }
         }
@@ -255,6 +291,65 @@ public struct InstallerCLIWorkflow: Sendable {
             status: "producer-blocked",
             message: "Forge 2.7.35 uninstall is nog niet verbonden met de installer; deployment remove blijft fail-closed."
         )
+    }
+
+    public func planRemoval(
+        deploymentID: String,
+        operationID: String,
+        component: String?
+    ) async -> InstallerCLIResult {
+        let action = component == nil ? "REMOVE_DEPLOYMENT" : "REMOVE_COMPONENT"
+        let workflow = ManagedInstallerRemovalReviewWorkflow(
+            coordinator: coordinator,
+            currentRelease: currentRelease
+        )
+        switch await workflow.prepare(
+            operationID: operationID,
+            deploymentID: deploymentID,
+            action: action,
+            targetComponent: component
+        ) {
+        case .failure(let failure):
+            let reason: String
+            switch failure {
+            case .invalidRequest: reason = "invalid-request"
+            case .unavailable: reason = "helper-unavailable"
+            case .rejected: reason = "review-rejected"
+            }
+            return InstallerCLIResult(
+                exitCode: .blocked,
+                status: "removal-review-blocked",
+                message: "Het exacte verwijdervoorstel is niet beschikbaar.",
+                details: ["reason": reason]
+            )
+        case .success(let session):
+            let request = session.proposal.request
+            return InstallerCLIResult(
+                exitCode: .success,
+                status: "removal-planned",
+                message: "Het helpervoorstel is alleen gelezen; er is geen productmutatie uitgevoerd.",
+                details: [
+                    "operation_id": session.operationID,
+                    "deployment_id": session.deploymentID,
+                    "action": request.action,
+                    "target_component": request.targetComponent ?? "",
+                    "forge_instance_id": request.forgeInstanceID,
+                    "engineering_platform_instance_id":
+                        request.engineeringPlatformInstanceID ?? "",
+                    "reviewed_revision": String(request.reviewedRevision),
+                    "reviewed_plan_sha256": request.reviewedPlanSHA256,
+                    "request_fingerprint": request.requestFingerprint,
+                    "inventory_evidence_reference": session.inventoryEvidenceReference,
+                ],
+                records: session.proposal.componentDiffs.map { diff in
+                    [
+                        "component": diff.component,
+                        "instance_id": diff.instanceID,
+                        "action": diff.action,
+                    ]
+                }
+            )
+        }
     }
 
 
