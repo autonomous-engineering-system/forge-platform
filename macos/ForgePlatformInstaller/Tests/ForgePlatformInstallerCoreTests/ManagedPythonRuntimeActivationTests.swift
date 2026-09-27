@@ -226,6 +226,42 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         }
     }
 
+    func testCrossDeploymentVenvReceiptFailsBeforeMutation() async throws {
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: fixture.missingReadback())
+        let environment = try XCTUnwrap(request.productVirtualEnvironments.first)
+        let exactRequest = ManagedPythonProductVenvMutationRequest(
+            operationID: request.operationID,
+            deploymentID: request.deploymentID,
+            environment: environment,
+            runtimeSlotIdentity: request.runtimeSlotIdentity
+        )
+        let foreign = try ManagedPythonProductVenvReceipt(
+            operationID: request.operationID,
+            deploymentID: "another-deployment",
+            componentIdentity: environment.componentIdentity,
+            venvIdentity: environment.venvIdentity,
+            runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+            runtimeSlotIdentity: request.runtimeSlotIdentity,
+            state: .ready,
+            evidenceReference: "receipt:foreign-deployment-venv"
+        )
+        XCTAssertFalse(foreign.matches(exactRequest))
+        let mutation = ActivationMutation(
+            request: request,
+            initialVenvs: [environment.componentIdentity: foreign]
+        )
+        let result = await ManagedPythonRuntimeActivationCoordinator(
+            mutation: mutation,
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
+        ).activate(request)
+        XCTAssertEqual(result.failure, .rejected)
+        let observations = await mutation.snapshot()
+        XCTAssertEqual(observations.venvEnsures, 0)
+        XCTAssertEqual(observations.activations, 0)
+    }
+
     func testMapsActivationFailuresAndRejectsReadbackDrift() async throws {
         let fixture = try ActivationFixture()
         let request = try fixture.request(initial: fixture.missingReadback())
@@ -284,6 +320,17 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
 
         XCTAssertThrowsError(try ManagedPythonProductVenvReceipt(
             operationID: "Bad Operation",
+            deploymentID: fixture.deployment.id,
+            componentIdentity: "forge-runtime",
+            venvIdentity: "forge-test-v1",
+            runtimeIdentitySHA256: fixture.runtime.identitySHA256,
+            runtimeSlotIdentity: fixture.runtimeSlotIdentity,
+            state: .ready,
+            evidenceReference: "receipt:venv"
+        ))
+        XCTAssertThrowsError(try ManagedPythonProductVenvReceipt(
+            operationID: fixture.preparation.operationID,
+            deploymentID: "../other-deployment",
             componentIdentity: "forge-runtime",
             venvIdentity: "forge-test-v1",
             runtimeIdentitySHA256: fixture.runtime.identitySHA256,
@@ -489,6 +536,7 @@ struct ActivationFixture {
     ) throws -> ManagedPythonProductVenvReceipt {
         try ManagedPythonProductVenvReceipt(
             operationID: request.operationID,
+            deploymentID: request.deploymentID,
             componentIdentity: changed ? "workspace-server" : environment.componentIdentity,
             venvIdentity: environment.venvIdentity,
             runtimeIdentitySHA256: request.runtimeIdentitySHA256,

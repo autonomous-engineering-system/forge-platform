@@ -283,6 +283,7 @@ public struct ManagedPythonRuntimeTerminalReceiptCoordinator: Sendable {
         for environment in request.productVirtualEnvironments {
             let venvRequest = ManagedPythonProductVenvMutationRequest(
                 operationID: request.operationID,
+                deploymentID: request.deploymentID,
                 environment: environment,
                 runtimeSlotIdentity: request.runtimeSlotIdentity
             )
