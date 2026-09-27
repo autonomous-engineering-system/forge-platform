@@ -14,6 +14,7 @@ from forge_platform.managed_product_operation_dispatch import (
 )
 from forge_platform.managed_product_operation_service import (
     ManagedProductOperationAuthorities,
+    ManagedProductOperationHelperBuilder,
     ManagedProductOperationHelperService,
     ManagedProductOperationServiceError,
     PinnedManagedProductOperationAuthorityResolver,
@@ -58,6 +59,68 @@ class RouteResolver:
 
 
 class ManagedProductOperationHelperServiceTests(unittest.TestCase):
+    def test_builder_composes_one_closed_authority_route_and_registry(self) -> None:
+        context = current_context()
+        selected = selection(context=context, composition_id="forge-ep-current")
+        resolved = route()
+        routes = {"production": resolved}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            registry = ManagedDeploymentRegistry(root / "registry")
+            product_coordinator = coordinator(root, registry)
+
+            service = ManagedProductOperationHelperBuilder.build(
+                current_installer_context=context,
+                candidate_selections=(selected,),
+                coordinator=product_coordinator,
+                routes=routes,
+            )
+            routes.clear()
+
+            self.assertIs(service.dispatcher.coordinator, product_coordinator)
+            self.assertIs(service.dispatcher.coordinator.registry, registry)
+            _installed, request_candidate = manifests()
+            request = replace(
+                decoded(request_payload(request_candidate, installed=None, exists=False)),
+                composition_identity=selected.manifest.composition_id,
+                manifest_sha256=selected.manifest.manifest_digest,
+            )
+            authorities = service.authority_resolver.resolve(request)
+            self.assertIs(authorities.candidate_manifest, selected.manifest)
+
+    def test_builder_rejects_invalid_coordinator_authority_or_routes(self) -> None:
+        context = current_context()
+        selected = selection(context=context, composition_id="forge-ep-current")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            product_coordinator = coordinator(
+                root,
+                ManagedDeploymentRegistry(root / "registry"),
+            )
+            cases = (
+                {
+                    "current_installer_context": context,
+                    "candidate_selections": (selected,),
+                    "coordinator": object(),
+                    "routes": {"production": route()},
+                },
+                {
+                    "current_installer_context": context,
+                    "candidate_selections": (),
+                    "coordinator": product_coordinator,
+                    "routes": {"production": route()},
+                },
+                {
+                    "current_installer_context": context,
+                    "candidate_selections": (selected,),
+                    "coordinator": product_coordinator,
+                    "routes": {},
+                },
+            )
+            for index, arguments in enumerate(cases):
+                with self.subTest(index=index), self.assertRaises((TypeError, ValueError)):
+                    ManagedProductOperationHelperBuilder.build(**arguments)
+
     def test_pinned_authority_resolver_selects_only_exact_verified_manifests(self) -> None:
         installed, candidate = manifests()
         values = [installed, candidate]

@@ -248,7 +248,12 @@ routes, and allows an admitted request to select only its predeclared route.
 Existing deployments must match the route's exact Forge and EP instances.
 Construction of those adapters and the pairing executor from released helper
 configuration, helper-process registration and released-installer process
-wiring are still absent.
+wiring are still absent. A closed helper builder now composes the verified
+release/catalog authority loader and pinned route resolver around one exact
+`ManagedForgeEPInstallationCoordinator`; admission and dispatch therefore
+cannot be wired to different registries or replaced with caller-owned
+resolvers. This is still a source composition root rather than helper-process
+registration or a production route.
 
 The managed-deployment operation coordinator reuses
 `DurableComponentOperationCoordinator`. Each product mutation therefore keeps

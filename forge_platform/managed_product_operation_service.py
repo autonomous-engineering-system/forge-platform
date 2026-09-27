@@ -12,8 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Iterable
-from typing import Protocol
+from typing import Iterable, Mapping, Protocol
 
 from .managed_product_operation_admission import (
     NativeInstallerReleaseBinding,
@@ -23,7 +22,10 @@ from .managed_product_operation_admission import (
 )
 from .managed_product_operation_dispatch import (
     ManagedProductOperationDispatcher,
+    PinnedManagedProductRouteResolver,
+    ResolvedManagedProductRoute,
 )
+from .managed_install_flow import ManagedForgeEPInstallationCoordinator
 from .universal_installer import (
     CompositionManifest,
     VerifiedCompositionSelection,
@@ -275,3 +277,39 @@ class ManagedProductOperationHelperService:
             raise ManagedProductOperationServiceError(
                 "native product operation was rejected"
             ) from error
+
+
+class ManagedProductOperationHelperBuilder:
+    """Compose the closed helper service from already typed helper authority.
+
+    One builder creates the release/catalog authority resolver, immutable
+    product-route resolver and dispatcher around the exact supplied coordinator.
+    This prevents released wiring from accidentally giving admission and
+    dispatch different registries or from substituting a caller-owned resolver.
+    """
+
+    @staticmethod
+    def build(
+        *,
+        current_installer_context: VerifiedInstallerContext,
+        candidate_selections: Iterable[VerifiedCompositionSelection],
+        installed_selections: Iterable[VerifiedCompositionSelection] = (),
+        coordinator: ManagedForgeEPInstallationCoordinator,
+        routes: Mapping[str, ResolvedManagedProductRoute],
+    ) -> ManagedProductOperationHelperService:
+        if not isinstance(coordinator, ManagedForgeEPInstallationCoordinator):
+            raise TypeError("managed Forge+EP coordinator is required")
+        authority_resolver = ReleasedManagedProductOperationAuthorityLoader.load(
+            current_installer_context=current_installer_context,
+            candidate_selections=candidate_selections,
+            installed_selections=installed_selections,
+        )
+        route_resolver = PinnedManagedProductRouteResolver(routes)
+        dispatcher = ManagedProductOperationDispatcher(
+            coordinator=coordinator,
+            resolver=route_resolver,
+        )
+        return ManagedProductOperationHelperService(
+            authority_resolver=authority_resolver,
+            dispatcher=dispatcher,
+        )
