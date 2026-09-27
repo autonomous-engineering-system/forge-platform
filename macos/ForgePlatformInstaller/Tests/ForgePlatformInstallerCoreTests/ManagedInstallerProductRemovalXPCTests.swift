@@ -5,6 +5,86 @@ import XCTest
 final class ManagedInstallerProductRemovalXPCTests: XCTestCase {
     private let digest = String(repeating: "a", count: 64)
 
+    func testAuthenticatedXPCReviewRoundTripUsesOneCanonicalIntent() async throws {
+        let intent = try makeReviewIntent()
+        let proposal = try makeReviewProposal(for: intent)
+        let executor = RemovalXPCExecutor(
+            results: [], reviewResults: [.success(proposal)]
+        )
+        let handler = ManagedInstallerProductOperationXPCServiceHandler(executor: executor)
+        let identity = try ManagedInstallerProductOperationXPCCallerIdentity(
+            bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
+            teamIdentifier: "ZEML4LPXH4"
+        )
+        let listener = MacOSManagedInstallerProductOperationXPCListener(
+            listener: .anonymous(), callerIdentity: identity,
+            serviceHandler: handler,
+            installCodeSigningRequirement: { _, _ in }
+        )
+        listener.activate()
+        defer { listener.invalidate() }
+        let transport = MacOSManagedInstallerProductOperationXPCTransport(
+            endpoint: listener.endpoint
+        )
+
+        let response = try await transport.prepareProductRemovalReview(
+            intent.canonicalJSONData()
+        ).get()
+
+        XCTAssertEqual(response, proposal.canonicalJSONData())
+        let calls = await executor.reviewCalls()
+        XCTAssertEqual(calls, [intent])
+        await transport.invalidate()
+    }
+
+    func testReviewTransportRejectsIntentAndProposalDrift() async throws {
+        let intent = try makeReviewIntent()
+        let other = try makeReviewIntent(forge: "forge-other")
+        let wrongProposal = try makeReviewProposal(for: other).canonicalJSONData()
+        let service = RawProductOperationXPCService(responses: [nil, wrongProposal])
+        let transport = MacOSManagedInstallerProductOperationXPCTransport(
+            endpoint: service.endpoint
+        )
+        let noncanonical = Data((" " + String(decoding: intent.canonicalJSONData(),
+            as: UTF8.self)).utf8)
+
+        let invalid = await transport.prepareProductRemovalReview(Data("{}".utf8))
+        let changedEncoding = await transport.prepareProductRemovalReview(noncanonical)
+        XCTAssertEqual(invalid.failure, .invalidRequest)
+        XCTAssertEqual(changedEncoding.failure, .invalidRequest)
+        XCTAssertTrue(service.capturedRequests().isEmpty)
+        let unavailable = await transport.prepareProductRemovalReview(intent.canonicalJSONData())
+        let rejected = await transport.prepareProductRemovalReview(intent.canonicalJSONData())
+        XCTAssertEqual(unavailable.failure, .unavailable)
+        XCTAssertEqual(rejected.failure, .rejected)
+        XCTAssertEqual(service.capturedRequests(), [
+            intent.canonicalJSONData(), intent.canonicalJSONData(),
+        ])
+        await transport.invalidate()
+    }
+
+    func testReviewHandlerRejectsMalformedFailedAndWrongProposal() async throws {
+        let intent = try makeReviewIntent()
+        let other = try makeReviewIntent(forge: "forge-other")
+        let executor = RemovalXPCExecutor(results: [], reviewResults: [
+            .failure(.rejected), .success(try makeReviewProposal(for: other)),
+        ])
+        let handler = ManagedInstallerProductOperationXPCServiceHandler(executor: executor)
+        let noncanonical = Data((" " + String(decoding: intent.canonicalJSONData(),
+            as: UTF8.self)).utf8)
+
+        let invalid = await callReview(handler, intent: Data("{}".utf8))
+        let changedEncoding = await callReview(handler, intent: noncanonical)
+        let failed = await callReview(handler, intent: intent.canonicalJSONData())
+        let drifted = await callReview(handler, intent: intent.canonicalJSONData())
+        let calls = await executor.reviewCalls()
+        XCTAssertNil(invalid)
+        XCTAssertNil(changedEncoding)
+        XCTAssertNil(failed)
+        XCTAssertNil(drifted)
+        XCTAssertEqual(calls, [intent, intent])
+    }
+
     func testAuthenticatedXPCRemovalRoundTripUsesOneCanonicalRequest() async throws {
         let request = try makeRequest()
         let receipt = try makeReceipt(for: request)
@@ -94,6 +174,67 @@ final class ManagedInstallerProductRemovalXPCTests: XCTestCase {
         }
     }
 
+    private func callReview(
+        _ service: ManagedInstallerProductOperationXPCService,
+        intent: Data
+    ) async -> Data? {
+        await withCheckedContinuation { continuation in
+            service.prepareProductRemovalReview(intent) { response in
+                continuation.resume(returning: response)
+            }
+        }
+    }
+
+    private func makeReviewIntent(
+        forge: String = "forge-one"
+    ) throws -> ManagedInstallerProductRemovalReviewIntent {
+        try ManagedInstallerProductRemovalReviewIntent(
+            operationID: "remove-one", deploymentID: "deployment-one",
+            action: "REMOVE_DEPLOYMENT", targetComponent: nil,
+            forgeInstanceID: forge, engineeringPlatformInstanceID: nil,
+            installedCompositionIdentity: "forge-ep-qualified",
+            installedManifestSHA256: "sha256:" + digest,
+            installerRelease: VerifiedInstallerRelease(
+                version: try InstallerVersion("0.2.4"),
+                releasePage: "https://github.com/autonomous-engineering-system/forge-platform/releases/tag/installer-v0.2.4",
+                assetName: "forge-platform-installer-0.2.4-arm64.zip",
+                sha256: digest, signingKeyID: "installer-release-key"
+            )
+        )
+    }
+
+    private func makeReviewProposal(
+        for intent: ManagedInstallerProductRemovalReviewIntent
+    ) throws -> ManagedInstallerProductRemovalReviewProposal {
+        let request = try ManagedInstallerProductRemovalRequest(
+            operationID: intent.operationID, deploymentID: intent.deploymentID,
+            action: intent.action, targetComponent: intent.targetComponent,
+            reviewedRevision: 3, reviewedDeploymentSHA256: digest,
+            reviewedPlanSHA256: digest, forgeInstanceID: intent.forgeInstanceID,
+            engineeringPlatformInstanceID: intent.engineeringPlatformInstanceID,
+            installedCompositionIdentity: intent.installedCompositionIdentity,
+            installedManifestSHA256: intent.installedManifestSHA256,
+            installerRelease: intent.installerRelease
+        )
+        var reader = try StrictJSONResourceReader(data: request.canonicalJSONData())
+        let requestValue = try reader.parseDocument()
+        let data = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerProductRemovalReviewProposal.schema),
+            "intent_fingerprint": .string(intent.intentFingerprint),
+            "request": requestValue,
+            "deployment_action": .string("REMOVE_DEPLOYMENT"),
+            "component_diffs": .array([.object([
+                "component": .string("forge-runtime"),
+                "instance_id": .string(intent.forgeInstanceID),
+                "action": .string("REMOVE_COMPONENT"),
+            ])]),
+            "resulting_components": .array([]),
+        ]))
+        return try ManagedInstallerProductRemovalReviewProposal.decodeJSON(
+            data, intent: intent
+        )
+    }
+
     private func makeRequest(
         forge: String = "forge-one"
     ) throws -> ManagedInstallerProductRemovalRequest {
@@ -146,12 +287,21 @@ private actor RemovalXPCExecutor: ManagedInstallerProductOperationHelperExecutin
         ManagedInstallerProductOperationBridgeFailure
     >]
     private var requests: [ManagedInstallerProductRemovalRequest] = []
+    private var reviewResults: [Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    >]
+    private var reviewIntents: [ManagedInstallerProductRemovalReviewIntent] = []
 
     init(results: [Result<
         ManagedInstallerProductRemovalReceipt,
         ManagedInstallerProductOperationBridgeFailure
-    >]) {
+    >], reviewResults: [Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    >] = []) {
         self.results = results
+        self.reviewResults = reviewResults
     }
 
     func executeProductOperation(
@@ -175,6 +325,18 @@ private actor RemovalXPCExecutor: ManagedInstallerProductOperationHelperExecutin
     }
 
     func calls() -> [ManagedInstallerProductRemovalRequest] { requests }
+
+    func prepareProductRemovalReview(
+        _ intent: ManagedInstallerProductRemovalReviewIntent
+    ) async -> Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        reviewIntents.append(intent)
+        return reviewResults.removeFirst()
+    }
+
+    func reviewCalls() -> [ManagedInstallerProductRemovalReviewIntent] { reviewIntents }
 }
 
 private extension Result where Failure == ManagedInstallerProductOperationBridgeFailure {
