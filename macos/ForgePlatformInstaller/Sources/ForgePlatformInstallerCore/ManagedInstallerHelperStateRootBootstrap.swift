@@ -5,7 +5,7 @@ public enum ManagedInstallerHelperStateRootBootstrapFailure: Error, Equatable, S
     case unavailable
 }
 
-/// Creates only the fixed, private helper-owned state root. Every directory is
+/// Creates the fixed private helper state and managed-runtime slots roots. Every directory is
 /// opened by descriptor without following links and checked before the next
 /// component is created. No caller-selected path crosses an XPC boundary.
 public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
@@ -55,8 +55,14 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
         defer { Darwin.close(vendor) }
         let installer = try createPrivateChild(Self.installerName, in: vendor)
         defer { Darwin.close(installer) }
+        let runtimeSlots = try createPrivateChild(
+            FileManagedInstallerProductWorkerInvocationResolver.runtimeSlotsDirectoryName,
+            in: installer
+        )
+        defer { Darwin.close(runtimeSlots) }
         guard Self.isPrivateDirectory(vendor, owner: expectedOwner),
               Self.isPrivateDirectory(installer, owner: expectedOwner),
+              Self.isPrivateDirectory(runtimeSlots, owner: expectedOwner),
               Self.isSecureParent(parent, owner: expectedOwner) else {
             throw ManagedInstallerHelperStateRootBootstrapFailure.unavailable
         }

@@ -14,12 +14,37 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
 
         XCTAssertEqual(try bootstrap.prepare(), expected)
         XCTAssertEqual(try bootstrap.prepare(), expected)
-        for directory in [expected.deletingLastPathComponent(), expected] {
+        for directory in [
+            expected.deletingLastPathComponent(), expected,
+            expected.appendingPathComponent("managed-python-runtime-slots", isDirectory: true),
+        ] {
             let details = try FileManager.default.attributesOfItem(atPath: directory.path)
             XCTAssertEqual(details[.posixPermissions] as? Int, 0o700)
             XCTAssertEqual(details[.ownerAccountID] as? NSNumber,
                            NSNumber(value: Darwin.geteuid()))
         }
+    }
+
+    func testRejectsUnsafeExistingManagedRuntimeSlotsRoot() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let bootstrap = testBootstrap(parent)
+        let root = try bootstrap.prepare()
+        let slots = root.appendingPathComponent("managed-python-runtime-slots", isDirectory: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: slots.path
+        )
+        XCTAssertThrowsError(try bootstrap.prepare())
+
+        try FileManager.default.removeItem(at: slots)
+        let outside = parent.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: outside.path
+        )
+        try FileManager.default.createSymbolicLink(at: slots, withDestinationURL: outside)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
 
     func testRejectsWrongEffectiveUIDBeforeCreatingAnything() throws {
