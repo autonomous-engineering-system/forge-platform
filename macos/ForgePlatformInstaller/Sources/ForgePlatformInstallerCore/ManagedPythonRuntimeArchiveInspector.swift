@@ -374,6 +374,7 @@ private struct ManagedPythonTarInspector {
     private var state: State = .header
     private var buffer = Data()
     private var paths = Set<String>()
+    private var directories = Set<String>()
     private var manifest: Data?
     private var interpreter: Data?
     private var entryCount = 0
@@ -496,7 +497,9 @@ private struct ManagedPythonTarInspector {
         let name = try text(header[0..<100])
         let prefix = try text(header[345..<500])
         let path = prefix.isEmpty ? name : "\(prefix)/\(name)"
-        guard isSafePath(path), paths.insert(path).inserted else {
+        guard isSafePath(path),
+              parentDirectory(for: path).map({ directories.contains($0) }) ?? true,
+              paths.insert(path).inserted else {
             throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
         }
         let mode = try octal(header[100..<108])
@@ -538,6 +541,7 @@ private struct ManagedPythonTarInspector {
                 throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
             }
             if path == "bin/" { sawBinDirectory = true }
+            directories.insert(path)
             state = .padding(0)
         default:
             throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
@@ -569,6 +573,12 @@ private struct ManagedPythonTarInspector {
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
         let effective = path.hasSuffix("/") ? components.dropLast() : components[...]
         return !effective.isEmpty && effective.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
+    private func parentDirectory(for path: String) -> String? {
+        let name = path.hasSuffix("/") ? String(path.dropLast()) : path
+        guard let separator = name.lastIndex(of: "/") else { return nil }
+        return String(name[...separator])
     }
 
     private func text(_ bytes: Data.SubSequence) throws -> String {

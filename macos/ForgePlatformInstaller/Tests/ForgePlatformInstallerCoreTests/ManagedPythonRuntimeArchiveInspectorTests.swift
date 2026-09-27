@@ -93,6 +93,8 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
             .writableInterpreter,
             .writableGenericFile,
             .nonTraversableBinDirectory,
+            .missingGenericParent,
+            .outOfOrderParent,
             .duplicateInterpreter,
             .unsafePath,
             .symbolicLink,
@@ -241,6 +243,7 @@ private enum ArchiveInspectionMutation: Equatable {
     case missingManifest, emptyManifest, missingInterpreter, emptyInterpreter
     case missingBinDirectory, interpreterNotExecutable, duplicateInterpreter
     case setuidManifest, writableInterpreter, writableGenericFile, nonTraversableBinDirectory
+    case missingGenericParent, outOfOrderParent
     case unsafePath, symbolicLink, nonZeroPadding, badHeaderChecksum, badUSTARMagic
     case base256Size, malformedOctalTail, interruptedTrailer, nonZeroTrailer
     case badGZIPMagic, gzipOptionalHeader, gzipNonDeterministicTimestamp
@@ -331,11 +334,15 @@ private struct ArchiveInspectionFixture: Sendable {
                 : mutation == .writableInterpreter ? 0o777 : 0o755
             entries.append(.file(path, interpreter, interpreterMode))
         }
-        entries.append(.directory("lib/", 0o755))
-        entries.append(.file(
+        let libraryFile = ArchiveTarEntry.file(
             "lib/runtime.txt", Data("runtime payload".utf8),
             mutation == .writableGenericFile ? 0o666 : 0o644
-        ))
+        )
+        if mutation == .outOfOrderParent { entries.append(libraryFile) }
+        if mutation != .missingGenericParent {
+            entries.append(.directory("lib/", 0o755))
+        }
+        if mutation != .outOfOrderParent { entries.append(libraryFile) }
         if mutation == .duplicateInterpreter {
             entries.append(.file(ManagedPythonRuntimeArchiveInspection.interpreterRelativePath, interpreter, 0o755))
         } else if mutation == .symbolicLink {
