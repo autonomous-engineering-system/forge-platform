@@ -12,13 +12,17 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from hashlib import sha256
+import io
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 import plistlib
 import re
 import shutil
 import stat
 import sys
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +61,12 @@ _HELPER_MACH_SERVICES = (
     f"{_HELPER_LABEL}.product-operations",
     f"{_HELPER_LABEL}.released-route",
 )
+_PRODUCT_WORKER_RESOURCE_NAME = "forge-platform-product-worker.pyz"
+_PRODUCT_WORKER_DIGEST_INFO_KEY = "ForgePlatformProductWorkerSHA256"
+_PRODUCT_WORKER_MAXIMUM_BYTES = 16 * 1_024 * 1_024
+_PRODUCT_WORKER_MAXIMUM_UNCOMPRESSED_BYTES = 64 * 1_024 * 1_024
+_PRODUCT_WORKER_MAXIMUM_ENTRIES = 4_096
+_PRODUCT_WORKER_ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 
 
 @dataclass(frozen=True)
@@ -119,6 +129,15 @@ class SealedCompositionCatalogTrustResource:
     installer_release_trust_configuration_sha256: str
     signature_threshold: int
     signature_key_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SealedProductWorkerResource:
+    """Exact deterministic Python worker bytes bound into ``Info.plist``."""
+
+    source: Path
+    contents: bytes
+    sha256: str
 
 
 def _read_regular_non_symlink_file(value: str, *, description: str, maximum_bytes: int) -> tuple[Path, bytes]:
@@ -185,6 +204,81 @@ def _normalized_non_symlink_leaf(value: str, *, description: str) -> Path:
     if source.is_symlink():
         raise ValueError(f"{description} must not be selected through a symlink")
     return source
+
+
+def _sealed_product_worker_resource(value: str) -> SealedProductWorkerResource:
+    supplied = Path(value).expanduser()
+    if supplied.suffix != ".pyz":
+        raise ValueError("product worker resource must have a .pyz filename")
+    source, contents = _read_regular_non_symlink_file(
+        value,
+        description="product worker resource",
+        maximum_bytes=_PRODUCT_WORKER_MAXIMUM_BYTES,
+    )
+    return _validated_product_worker_resource(source, contents)
+
+
+def _validated_product_worker_resource(
+    source: Path,
+    contents: bytes,
+) -> SealedProductWorkerResource:
+    """Require the worker to be one canonical, bounded, deterministic zipapp."""
+
+    if not contents:
+        raise ValueError("product worker resource is empty")
+    try:
+        with zipfile.ZipFile(io.BytesIO(contents), "r") as archive:
+            entries = archive.infolist()
+            names = [entry.filename for entry in entries]
+            if not entries or len(entries) > _PRODUCT_WORKER_MAXIMUM_ENTRIES:
+                raise ValueError("product worker resource entry count is invalid")
+            if names != sorted(names) or len(names) != len(set(names)):
+                raise ValueError("product worker resource entries are not canonical")
+            if "__main__.py" not in names:
+                raise ValueError("product worker resource has no __main__.py")
+            total = 0
+            payloads: list[tuple[str, bytes]] = []
+            for entry in entries:
+                path = PurePosixPath(entry.filename)
+                mode = entry.external_attr >> 16
+                if (
+                    entry.filename.endswith("/")
+                    or entry.filename.startswith("/")
+                    or "\\" in entry.filename
+                    or not path.parts
+                    or any(part in {"", ".", ".."} for part in path.parts)
+                    or entry.date_time != _PRODUCT_WORKER_ZIP_DATE_TIME
+                    or entry.create_system != 3
+                    or stat.S_IFMT(mode) != stat.S_IFREG
+                    or stat.S_IMODE(mode) != 0o644
+                    or entry.flag_bits != 0
+                    or entry.compress_type != zipfile.ZIP_STORED
+                    or entry.extra
+                    or entry.comment
+                ):
+                    raise ValueError("product worker resource entry is unsafe")
+                total += entry.file_size
+                if total > _PRODUCT_WORKER_MAXIMUM_UNCOMPRESSED_BYTES:
+                    raise ValueError("product worker resource expands beyond its maximum size")
+                payloads.append((entry.filename, archive.read(entry)))
+            if archive.comment:
+                raise ValueError("product worker resource entry is unsafe")
+    except (OSError, zipfile.BadZipFile) as error:
+        raise ValueError("product worker resource is not a valid zipapp") from error
+    canonical = io.BytesIO()
+    with zipfile.ZipFile(canonical, "w", compression=zipfile.ZIP_STORED) as archive:
+        for name, payload in payloads:
+            entry = zipfile.ZipInfo(name, date_time=_PRODUCT_WORKER_ZIP_DATE_TIME)
+            entry.create_system = 3
+            entry.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(entry, payload)
+    if canonical.getvalue() != contents:
+        raise ValueError("product worker resource bytes are not canonical")
+    return SealedProductWorkerResource(
+        source=source,
+        contents=contents,
+        sha256="sha256:" + sha256(contents).hexdigest(),
+    )
 
 
 def _source_executable(value: str, *, description: str = "installer executable") -> Path:
@@ -376,6 +470,7 @@ def package(
     executable: Path,
     cli_executable: Path,
     helper_executable: Path | None = None,
+    product_worker: SealedProductWorkerResource | None = None,
     output: Path,
     bundle_identifier: str,
     sealed_release_trust: SealedReleaseTrustResource | None = None,
@@ -423,6 +518,11 @@ def package(
         sealed_composition_catalog_trust = _validated_sealed_composition_catalog_trust_resource(
             sealed_composition_catalog_trust.source,
             sealed_composition_catalog_trust.contents,
+        )
+    if product_worker is not None:
+        product_worker = _validated_product_worker_resource(
+            product_worker.source,
+            product_worker.contents,
         )
 
     if sealed_composition_catalog_trust is not None and (
@@ -490,6 +590,7 @@ def package(
     destination = macos / "ForgePlatformInstaller"
     cli_destination = macos / "forge-platform-installer"
     helper_destination = resources / "forge-platform-installer-helper"
+    product_worker_destination = resources / _PRODUCT_WORKER_RESOURCE_NAME
     helper_plist = launch_daemons / _HELPER_PLIST_NAME
     info_plist = contents / "Info.plist"
     output_owned = False
@@ -541,6 +642,8 @@ def package(
             "LSMinimumSystemVersion": _MINIMUM_MACOS,
             "NSHighResolutionCapable": True,
         }
+        if product_worker is not None:
+            metadata[_PRODUCT_WORKER_DIGEST_INFO_KEY] = product_worker.sha256
         with info_plist.open("wb") as stream:
             plistlib.dump(metadata, stream, fmt=plistlib.FMT_XML, sort_keys=True)
         info_plist.chmod(0o644)
@@ -548,8 +651,13 @@ def package(
             sealed_release_trust is not None
             or sealed_release_provenance is not None
             or sealed_composition_catalog_trust is not None
+            or product_worker is not None
         ):
             resources.mkdir(mode=0o755, exist_ok=helper_executable is not None)
+        if product_worker is not None:
+            with product_worker_destination.open("xb") as stream:
+                stream.write(product_worker.contents)
+            product_worker_destination.chmod(0o644)
         if sealed_release_trust is not None:
             trust_destination = resources / INSTALLER_RELEASE_TRUST_RESOURCE_NAME
             with trust_destination.open("xb") as stream:
@@ -582,6 +690,14 @@ def main() -> None:
         help=(
             "optional thin arm64 privileged helper copied to "
             f"{_HELPER_BUNDLE_PROGRAM}; released candidates require this input"
+        ),
+    )
+    parser.add_argument(
+        "--product-worker",
+        help=(
+            "optional deterministic Python zipapp copied to "
+            f"Contents/Resources/{_PRODUCT_WORKER_RESOURCE_NAME} and bound by "
+            f"the {_PRODUCT_WORKER_DIGEST_INFO_KEY} Info.plist value"
         ),
     )
     parser.add_argument("--output", required=True)
@@ -624,6 +740,11 @@ def main() -> None:
             if args.helper_executable is not None
             else None
         )
+        product_worker = (
+            _sealed_product_worker_resource(args.product_worker)
+            if args.product_worker is not None
+            else None
+        )
         output = _output_bundle(args.output)
         bundle_identifier = _bundle_identifier(args.bundle_identifier)
         sealed_release_trust = (
@@ -647,6 +768,7 @@ def main() -> None:
             executable=executable,
             cli_executable=cli_executable,
             helper_executable=helper_executable,
+            product_worker=product_worker,
             output=output,
             bundle_identifier=bundle_identifier,
             sealed_release_trust=sealed_release_trust,
@@ -659,6 +781,7 @@ def main() -> None:
             f" bundle_identifier={bundle_identifier}"
             " cli=PACKAGED"
             f" privileged_helper={'PACKAGED' if helper_executable is not None else 'ABSENT_FAIL_CLOSED'}"
+            f" product_worker={'PACKAGED' if product_worker is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_release_trust={'PACKAGED_V2' if sealed_release_trust is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_release_provenance={'PACKAGED_V1' if sealed_release_provenance is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_composition_catalog_trust={'PACKAGED_V1' if sealed_composition_catalog_trust is not None else 'ABSENT_FAIL_CLOSED'}"

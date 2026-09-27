@@ -42,6 +42,7 @@ TARGETS = (
     "scripts/finalize_signed_composition_catalog.py",
     "scripts/verify_local_catalog_authorization.py",
     "scripts/observe_composition_producer_releases.py",
+    "scripts/package_macos_installer_app.py",
 )
 
 TESTS = (
@@ -64,6 +65,7 @@ TESTS = (
     "tests/installer/test_provider_fanout.py",
     "tests/installer/test_composition_catalog_release.py",
     "tests/installer/test_composition_producer_observer.py",
+    "tests/installer/test_package_macos_installer_app.py",
 )
 
 

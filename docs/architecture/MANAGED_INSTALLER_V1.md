@@ -308,9 +308,14 @@ shell, `PATH` or inherited environment: the argument vector is fixed to
 isolated Python, the environment is a five-key constant, the working directory
 is `/var/empty`, request and response pipes are bounded, a fixed timeout is
 enforced, and the response is decoded again against the exact request before
-XPC replies. The release packager does not yet build or embed that worker
-resource, so the installed product route remains fail-closed until that next
-boundary is supplied and qualified.
+XPC replies. The deterministic app packager can now admit one bounded canonical
+Python zipapp, copy its captured bytes to the fixed worker resource name and
+bind their exact `sha256:` digest into `Info.plist`. It rejects leaf symlinks,
+non-zipapps, duplicate or unordered entries, traversal names, non-regular or
+non-`0644` entries, variable timestamps, encryption and oversized expansion.
+The release workflow does not yet build or supply that worker, so the installed
+product route remains fail-closed until the executable worker and its
+helper-owned authority are supplied and qualified.
 
 Behind that transport, the platform-neutral helper service now composes the
 strict decoder, helper-owned authority resolution, admission and durable
