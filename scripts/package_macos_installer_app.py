@@ -49,6 +49,14 @@ from forge_platform.macos_platform_contract import (
 
 _BUNDLE_IDENTIFIER = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
 _MINIMUM_MACOS = MINIMUM_MACOS_VERSION
+_HELPER_LABEL = "com.autonomous-engineering-system.forge-platform-installer.helper"
+_HELPER_PLIST_NAME = f"{_HELPER_LABEL}.plist"
+_HELPER_BUNDLE_PROGRAM = "Contents/Resources/forge-platform-installer-helper"
+_HELPER_MACH_SERVICES = (
+    _HELPER_LABEL,
+    f"{_HELPER_LABEL}.product-operations",
+    f"{_HELPER_LABEL}.released-route",
+)
 
 
 @dataclass(frozen=True)
@@ -179,13 +187,13 @@ def _normalized_non_symlink_leaf(value: str, *, description: str) -> Path:
     return source
 
 
-def _source_executable(value: str) -> Path:
-    candidate = _normalized_non_symlink_leaf(value, description="installer executable")
+def _source_executable(value: str, *, description: str = "installer executable") -> Path:
+    candidate = _normalized_non_symlink_leaf(value, description=description)
     if not candidate.is_file():
-        raise ValueError("installer executable must be a regular non-symlink file")
+        raise ValueError(f"{description} must be a regular non-symlink file")
     if not os.access(candidate, os.X_OK):
-        raise ValueError("installer executable must be executable")
-    _require_arm64_macho_file(candidate, label="installer executable")
+        raise ValueError(f"{description} must be executable")
+    _require_arm64_macho_file(candidate, label=description)
     return candidate
 
 
@@ -367,6 +375,7 @@ def package(
     *,
     executable: Path,
     cli_executable: Path,
+    helper_executable: Path | None = None,
     output: Path,
     bundle_identifier: str,
     sealed_release_trust: SealedReleaseTrustResource | None = None,
@@ -380,15 +389,23 @@ def package(
     rule merely by constructing ``Path`` or resource dataclasses directly.
     """
 
-    executable = _source_executable(str(executable))
-    cli_executable = _source_executable(str(cli_executable))
-    main_details = executable.stat()
-    cli_details = cli_executable.stat()
-    if (
-        main_details.st_dev == cli_details.st_dev
-        and main_details.st_ino == cli_details.st_ino
-    ):
-        raise ValueError("installer GUI and CLI executables must be distinct files")
+    executable = _source_executable(str(executable), description="installer GUI executable")
+    cli_executable = _source_executable(
+        str(cli_executable), description="installer CLI executable"
+    )
+    helper_executable = (
+        _source_executable(
+            str(helper_executable), description="installer privileged helper executable"
+        )
+        if helper_executable is not None
+        else None
+    )
+    executables = [executable, cli_executable]
+    if helper_executable is not None:
+        executables.append(helper_executable)
+    identities = {(item.stat().st_dev, item.stat().st_ino) for item in executables}
+    if len(identities) != len(executables):
+        raise ValueError("installer GUI, CLI and helper executables must be distinct files")
     output = _output_bundle(str(output))
     bundle_identifier = _bundle_identifier(bundle_identifier)
 
@@ -469,8 +486,11 @@ def package(
     contents = output / "Contents"
     macos = contents / "MacOS"
     resources = contents / "Resources"
+    launch_daemons = contents / "Library" / "LaunchDaemons"
     destination = macos / "ForgePlatformInstaller"
     cli_destination = macos / "forge-platform-installer"
+    helper_destination = resources / "forge-platform-installer-helper"
+    helper_plist = launch_daemons / _HELPER_PLIST_NAME
     info_plist = contents / "Info.plist"
     output_owned = False
     try:
@@ -490,6 +510,25 @@ def package(
         cli_source_mode = stat.S_IMODE(cli_executable.stat().st_mode)
         cli_destination.chmod(cli_source_mode | stat.S_IXUSR)
         _require_arm64_macho_file(cli_destination, label="packaged installer CLI executable")
+        if helper_executable is not None:
+            resources.mkdir(mode=0o755)
+            launch_daemons.mkdir(parents=True, mode=0o755)
+            shutil.copyfile(helper_executable, helper_destination, follow_symlinks=False)
+            helper_source_mode = stat.S_IMODE(helper_executable.stat().st_mode)
+            helper_destination.chmod(helper_source_mode | stat.S_IXUSR)
+            _require_arm64_macho_file(
+                helper_destination,
+                label="packaged installer privileged helper executable",
+            )
+            helper_metadata = {
+                "AssociatedBundleIdentifiers": bundle_identifier,
+                "BundleProgram": _HELPER_BUNDLE_PROGRAM,
+                "Label": _HELPER_LABEL,
+                "MachServices": {name: True for name in _HELPER_MACH_SERVICES},
+            }
+            with helper_plist.open("xb") as stream:
+                plistlib.dump(helper_metadata, stream, fmt=plistlib.FMT_XML, sort_keys=True)
+            helper_plist.chmod(0o644)
         metadata = {
             "CFBundleDevelopmentRegion": "en",
             "CFBundleExecutable": "ForgePlatformInstaller",
@@ -510,7 +549,7 @@ def package(
             or sealed_release_provenance is not None
             or sealed_composition_catalog_trust is not None
         ):
-            resources.mkdir(mode=0o755)
+            resources.mkdir(mode=0o755, exist_ok=helper_executable is not None)
         if sealed_release_trust is not None:
             trust_destination = resources / INSTALLER_RELEASE_TRUST_RESOURCE_NAME
             with trust_destination.open("xb") as stream:
@@ -538,6 +577,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", required=True)
     parser.add_argument("--cli-executable", required=True)
+    parser.add_argument(
+        "--helper-executable",
+        help=(
+            "optional thin arm64 privileged helper copied to "
+            f"{_HELPER_BUNDLE_PROGRAM}; released candidates require this input"
+        ),
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--bundle-identifier", required=True)
     parser.add_argument(
@@ -564,8 +610,20 @@ def main() -> None:
     )
     args = parser.parse_args()
     try:
-        executable = _source_executable(args.executable)
-        cli_executable = _source_executable(args.cli_executable)
+        executable = _source_executable(
+            args.executable, description="installer GUI executable"
+        )
+        cli_executable = _source_executable(
+            args.cli_executable, description="installer CLI executable"
+        )
+        helper_executable = (
+            _source_executable(
+                args.helper_executable,
+                description="installer privileged helper executable",
+            )
+            if args.helper_executable is not None
+            else None
+        )
         output = _output_bundle(args.output)
         bundle_identifier = _bundle_identifier(args.bundle_identifier)
         sealed_release_trust = (
@@ -588,6 +646,7 @@ def main() -> None:
         package(
             executable=executable,
             cli_executable=cli_executable,
+            helper_executable=helper_executable,
             output=output,
             bundle_identifier=bundle_identifier,
             sealed_release_trust=sealed_release_trust,
@@ -599,6 +658,7 @@ def main() -> None:
             f" version={load_manifest()['version']}"
             f" bundle_identifier={bundle_identifier}"
             " cli=PACKAGED"
+            f" privileged_helper={'PACKAGED' if helper_executable is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_release_trust={'PACKAGED_V2' if sealed_release_trust is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_release_provenance={'PACKAGED_V1' if sealed_release_provenance is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_composition_catalog_trust={'PACKAGED_V1' if sealed_composition_catalog_trust is not None else 'ABSENT_FAIL_CLOSED'}"

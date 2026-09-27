@@ -52,6 +52,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             self.assertIn("sealed_release_trust=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertIn("sealed_release_provenance=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertIn("sealed_composition_catalog_trust=ABSENT_FAIL_CLOSED", result.stdout)
+            self.assertIn("privileged_helper=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertEqual(
                 (app_bundle / "Contents" / "MacOS" / "ForgePlatformInstaller").read_bytes(),
                 executable.read_bytes(),
@@ -90,6 +91,94 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                     / "ForgePlatformInstallerCompositionCatalogTrust.json"
                 ).exists()
             )
+
+    def test_packages_fixed_privileged_helper_and_launchdaemon_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            helper = self._helper_executable(workspace)
+            app_bundle = workspace / "ForgePlatformInstaller.app"
+
+            result = self._run(
+                executable,
+                app_bundle,
+                helper_executable=helper,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("privileged_helper=PACKAGED", result.stdout)
+            packaged_helper = (
+                app_bundle
+                / "Contents"
+                / "Resources"
+                / "forge-platform-installer-helper"
+            )
+            self.assertEqual(packaged_helper.read_bytes(), helper.read_bytes())
+            self.assertTrue(packaged_helper.stat().st_mode & stat.S_IXUSR)
+            plist_path = (
+                app_bundle
+                / "Contents"
+                / "Library"
+                / "LaunchDaemons"
+                / "com.autonomous-engineering-system.forge-platform-installer.helper.plist"
+            )
+            with plist_path.open("rb") as stream:
+                helper_plist = plistlib.load(stream)
+            label = "com.autonomous-engineering-system.forge-platform-installer.helper"
+            self.assertEqual(
+                helper_plist,
+                {
+                    "AssociatedBundleIdentifiers": "com.example.forge-platform-installer",
+                    "BundleProgram": "Contents/Resources/forge-platform-installer-helper",
+                    "Label": label,
+                    "MachServices": {
+                        label: True,
+                        f"{label}.product-operations": True,
+                        f"{label}.released-route": True,
+                    },
+                },
+            )
+            self.assertEqual(stat.S_IMODE(plist_path.stat().st_mode), 0o644)
+
+    def test_rejects_unsafe_or_aliased_privileged_helper_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+
+            linked = workspace / "linked-helper"
+            linked.symlink_to(self._helper_executable(workspace))
+            linked_output = workspace / "linked.app"
+            linked_result = self._run(
+                executable,
+                linked_output,
+                helper_executable=linked,
+            )
+            self.assertNotEqual(linked_result.returncode, 0)
+            self.assertIn("must not be selected through a symlink", linked_result.stderr)
+            self.assertFalse(linked_output.exists())
+
+            aliased_output = workspace / "aliased.app"
+            aliased_result = self._run(
+                executable,
+                aliased_output,
+                helper_executable=executable,
+            )
+            self.assertNotEqual(aliased_result.returncode, 0)
+            self.assertIn("must be distinct files", aliased_result.stderr)
+            self.assertFalse(aliased_output.exists())
+
+            invalid = workspace / "invalid-helper"
+            invalid.write_bytes(bytes.fromhex("cffaedfe070000010300000002000000") + bytes(16))
+            invalid.chmod(0o755)
+            invalid_output = workspace / "invalid.app"
+            invalid_result = self._run(
+                executable,
+                invalid_output,
+                helper_executable=invalid,
+            )
+            self.assertNotEqual(invalid_result.returncode, 0)
+            self.assertIn("thin arm64 Mach-O executable", invalid_result.stderr)
+            self.assertFalse(invalid_output.exists())
 
     def test_copies_an_explicit_validated_v2_resource_verbatim_from_paths_with_spaces(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -724,6 +813,15 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         return executable
 
     @staticmethod
+    def _helper_executable(workspace: Path) -> Path:
+        executable = workspace / "forge-platform-installer-helper"
+        executable.write_bytes(
+            thin_arm64_macho_test_bytes(b"native privileged helper candidate bytes\n")
+        )
+        executable.chmod(0o755)
+        return executable
+
+    @staticmethod
     def _public_keys() -> list[tuple[str, str]]:
         return [
             ("descriptor-key-a", base64.b64encode(bytes(range(32))).decode("ascii")),
@@ -972,6 +1070,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         trust_resource: Path | None = None,
         provenance_resource: Path | None = None,
         catalog_trust_resource: Path | None = None,
+        helper_executable: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         cli_executable = PackageMacOSInstallerAppTests._cli_executable(executable.parent)
         command = [
@@ -988,6 +1087,8 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         ]
         if trust_resource is not None:
             command.extend(("--sealed-release-trust-resource", str(trust_resource)))
+        if helper_executable is not None:
+            command.extend(("--helper-executable", str(helper_executable)))
         if provenance_resource is not None:
             command.extend(("--sealed-release-provenance-resource", str(provenance_resource)))
         if catalog_trust_resource is not None:

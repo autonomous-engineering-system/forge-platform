@@ -59,6 +59,9 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
                         "Forge Platform Installer.app/Contents/Info.plist",
                         "Forge Platform Installer.app/Contents/MacOS/ForgePlatformInstaller",
                         "Forge Platform Installer.app/Contents/MacOS/forge-platform-installer",
+                        "Forge Platform Installer.app/Contents/Resources/forge-platform-installer-helper",
+                        "Forge Platform Installer.app/Contents/Library/LaunchDaemons/",
+                        "Forge Platform Installer.app/Contents/Library/LaunchDaemons/com.autonomous-engineering-system.forge-platform-installer.helper.plist",
                         "Forge Platform Installer.app/Contents/Resources/Read Me.txt",
                     }.issubset(names)
                 )
@@ -217,6 +220,32 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
                 self.assertIn("thin arm64 Mach-O executable", result.stderr)
                 self.assertFalse(output.exists())
 
+    def test_requires_privileged_helper_and_launchdaemon_plist(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            missing_helper = self._app_bundle(workspace, name="Missing Helper.app")
+            (
+                missing_helper
+                / "Contents"
+                / "Resources"
+                / "forge-platform-installer-helper"
+            ).unlink()
+            helper_result = self._run(missing_helper, workspace / "missing-helper.zip")
+            self.assertNotEqual(helper_result.returncode, 0)
+            self.assertIn("no regular privileged helper executable", helper_result.stderr)
+
+            missing_plist = self._app_bundle(workspace, name="Missing Plist.app")
+            (
+                missing_plist
+                / "Contents"
+                / "Library"
+                / "LaunchDaemons"
+                / "com.autonomous-engineering-system.forge-platform-installer.helper.plist"
+            ).unlink()
+            plist_result = self._run(missing_plist, workspace / "missing-plist.zip")
+            self.assertNotEqual(plist_result.returncode, 0)
+            self.assertIn("no regular privileged helper LaunchDaemon plist", plist_result.stderr)
+
     def test_refuses_to_remove_a_replacement_output_after_a_write_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -247,9 +276,18 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
         app_bundle = workspace / name
         macos = app_bundle / "Contents" / "MacOS"
         resources = app_bundle / "Contents" / "Resources"
+        launch_daemons = app_bundle / "Contents" / "Library" / "LaunchDaemons"
         macos.mkdir(parents=True)
         resources.mkdir()
-        for directory in (app_bundle, app_bundle / "Contents", macos, resources):
+        launch_daemons.mkdir(parents=True)
+        for directory in (
+            app_bundle,
+            app_bundle / "Contents",
+            macos,
+            resources,
+            app_bundle / "Contents" / "Library",
+            launch_daemons,
+        ):
             directory.chmod(0o755)
         (app_bundle / "Contents" / "Info.plist").write_bytes(plistlib.dumps({
             "CFBundleExecutable": "ForgePlatformInstaller",
@@ -262,6 +300,19 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
         cli_binary = macos / "forge-platform-installer"
         cli_binary.write_bytes(thin_arm64_macho_test_bytes(b"native installer cli candidate bytes\n"))
         cli_binary.chmod(0o755)
+        helper_binary = resources / "forge-platform-installer-helper"
+        helper_binary.write_bytes(
+            thin_arm64_macho_test_bytes(b"native privileged helper candidate bytes\n")
+        )
+        helper_binary.chmod(0o755)
+        helper_plist = launch_daemons / (
+            "com.autonomous-engineering-system.forge-platform-installer.helper.plist"
+        )
+        helper_plist.write_bytes(plistlib.dumps({
+            "Label": "com.autonomous-engineering-system.forge-platform-installer.helper",
+            "BundleProgram": "Contents/Resources/forge-platform-installer-helper",
+        }))
+        helper_plist.chmod(0o644)
         readme = resources / "Read Me.txt"
         readme.write_bytes(b"strict archive input\n")
         readme.chmod(0o644)

@@ -39,6 +39,9 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("check_managed_installer_swift_coverage.py", self.workflow)
         self.assertIn("--product ForgePlatformInstaller", self.workflow)
         self.assertIn("--product forge-platform-installer", self.workflow)
+        self.assertIn("--product forge-platform-installer-helper", self.workflow)
+        self.assertIn("--helper-executable", self.workflow)
+        self.assertIn("Contents/Library/LaunchDaemons/com.autonomous-engineering-system.forge-platform-installer.helper.plist", self.workflow)
         self.assertIn("scripts/prepare_offline_installer_resources.py", self.workflow)
         self.assertIn("--sealed-release-trust-resource", self.workflow)
         self.assertIn("--sealed-release-provenance-resource", self.workflow)
@@ -82,6 +85,13 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("git rev-parse origin/main", self.local_release)
         self.assertIn("exclusive-offline-signing", self.local_release)
         self.assertIn("OfflineInstallerDescriptorKeyTool.swift", self.local_release)
+        self.assertIn("unsigned-helper-missing", self.local_release)
+        self.assertIn(
+            '--identifier "com.autonomous-engineering-system.forge-platform-installer.helper"',
+            self.local_release,
+        )
+        self.assertIn("signed-helper-identity-invalid", self.local_release)
+        self.assertIn("final-archive-helper-identity-invalid", self.local_release)
         self.assertNotIn("DESCRIPTOR_SIGNING_KEY_PATHS", self.local_release)
 
 

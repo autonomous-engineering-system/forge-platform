@@ -80,6 +80,15 @@ for binary in ForgePlatformInstaller forge-platform-installer; do
   test -x "$APP/Contents/MacOS/$binary" || fail unsigned-binary-missing
   codesign --force --options runtime --timestamp     --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP/Contents/MacOS/$binary"
 done
+HELPER="$APP/Contents/Resources/forge-platform-installer-helper"
+test -x "$HELPER" || fail unsigned-helper-missing
+test -f "$APP/Contents/Library/LaunchDaemons/com.autonomous-engineering-system.forge-platform-installer.helper.plist" ||
+  fail unsigned-helper-plist-missing
+codesign --force --options runtime --timestamp \
+  --identifier "com.autonomous-engineering-system.forge-platform-installer.helper" \
+  --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$HELPER"
+HELPER_REQUIREMENT="anchor apple generic and certificate leaf[subject.OU] = \"$TEAM_IDENTIFIER\" and identifier \"com.autonomous-engineering-system.forge-platform-installer.helper\""
+codesign --verify --strict "-R=$HELPER_REQUIREMENT" "$HELPER" || fail signed-helper-identity-invalid
 codesign --force --options runtime --timestamp   --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP"
 codesign --verify --strict --deep "$APP"
 codesign --display --verbose=6 "$APP" >"$WORK/metadata/codesign.txt" 2>&1
@@ -116,6 +125,9 @@ test -d "$CARRIER_APP" || fail final-archive-app-layout-invalid
 xcrun stapler validate -v "$CARRIER_APP" || fail final-archive-lost-stapled-ticket
 spctl --assess --type execute --verbose=4 "$CARRIER_APP" || fail final-archive-gatekeeper-rejected
 codesign --verify --strict --deep "$CARRIER_APP" || fail final-archive-signature-invalid
+CARRIER_HELPER="$CARRIER_APP/Contents/Resources/forge-platform-installer-helper"
+codesign --verify --strict "-R=$HELPER_REQUIREMENT" "$CARRIER_HELPER" ||
+  fail final-archive-helper-identity-invalid
 
 codesign --display --verbose=6 "$APP" >"$WORK/metadata/codesign-final.txt" 2>&1
 CODE_DIRECTORY_SHA256="$(python3 - "$WORK/metadata/codesign-final.txt" <<'PY'
