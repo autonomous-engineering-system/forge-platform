@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+
+from forge_platform.managed_product_operation_service import (
+    ManagedProductOperationHelperService,
+)
+from forge_platform.product_worker_authority import (
+    PRODUCT_WORKER_AUTHORITY_FILE,
+    PRODUCT_WORKER_AUTHORITY_SCHEMA,
+    ProductWorkerAuthorityError,
+    ProductWorkerAuthorityLoader,
+)
+from tests.installer.test_managed_product_operation_admission import installer_release
+from tests.installer.test_universal_installer import manifest_payload
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _manifest_payload() -> dict:
+    payload = manifest_payload(composition_id="forge-ep-current")
+    ep = payload["components"][0]
+    forge = json.loads(json.dumps(ep))
+    forge["identity"] = "forge-runtime"
+    forge["artifact"] = {
+        "version": "2.7.34",
+        "source_revision": "f" * 40,
+        "source": "https://registry.example.invalid/forge-runtime.whl",
+        "digest": "sha256:" + "4" * 64,
+        "qualification": "https://evidence.example.invalid/forge-runtime",
+    }
+    forge["service"]["product_service_reference"] = "forge-server-service-v1"
+    payload["components"].append(forge)
+    payload["product_venvs"].append({
+        "component_identity": "forge-runtime",
+        "venv_identity": "forge-runtime-primary",
+        "python_runtime_identity": payload["python_runtime"]["identity_digest"],
+    })
+    return payload
+
+
+def _authority() -> dict:
+    manifest = _manifest_payload()
+    release = installer_release()
+    return {
+        "schema": PRODUCT_WORKER_AUTHORITY_SCHEMA,
+        "installer_release": {
+            "version": release.version,
+            "release_page": release.release_page,
+            "asset_name": release.asset_name,
+            "sha256": release.sha256,
+            "signing_key_id": release.signing_key_id,
+        },
+        "candidate_manifests": [{
+            "digest": "sha256:" + sha256(_canonical(manifest)).hexdigest(),
+            "payload": manifest,
+        }],
+        "installed_manifests": [],
+        "routes": [{
+            "deployment_id": "production",
+            "forge_instance_id": "forge-prod",
+            "forge_service_account": "_forge_prod",
+            "forge_bind_port": 8875,
+            "forge_artifact_sha256": "sha256:" + "4" * 64,
+            "ep_instance_id": "ep-prod",
+            "ep_display_label": "Production",
+            "ep_service_account": "_ep_prod",
+            "ep_bind_port": 8876,
+            "pairing": {
+                "binding_id": "ep-primary",
+                "consumer_id": "forge-consumer",
+                "host_id": "engineering-platform",
+                "project_id": "forge-project",
+                "repository_id": "forge-repository",
+                "repository_identity": "pcvantol:forge",
+                "credential_reference": "keychain://forge.ep/consumer",
+                "operator_id": "installer",
+            },
+        }],
+    }
+
+
+class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name).resolve() / "helper"
+        self.root.mkdir(mode=0o700)
+        self.path = self.root / PRODUCT_WORKER_AUTHORITY_FILE
+        self.owner = os.geteuid()
+        self.launchd = self.root / "LaunchDaemons"
+        self.write(_authority())
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def write(self, payload: object, *, canonical: bool = True) -> None:
+        raw = _canonical(payload) if canonical else json.dumps(payload, indent=2).encode()
+        self.path.write_bytes(raw)
+        self.path.chmod(0o600)
+
+    def loader(self) -> ProductWorkerAuthorityLoader:
+        return ProductWorkerAuthorityLoader(
+            root=self.root,
+            expected_owner_uid=self.owner,
+            launch_daemons_directory=self.launchd,
+        )
+
+    def test_loads_closed_service_and_derives_every_path_from_fixed_root(self) -> None:
+        service = self.loader().load()
+
+        self.assertIsInstance(service, ManagedProductOperationHelperService)
+        route = service.dispatcher.resolver._routes["production"]
+        forge = route.adapters["forge-runtime"]
+        ep = route.adapters["engineering-platform-server"]
+        self.assertEqual(
+            forge.forge_executable,
+            self.root / "product-venvs/production/forge/bin/forge",
+        )
+        self.assertEqual(
+            forge.target.data_root,
+            self.root / "instances/forge/forge-prod",
+        )
+        self.assertEqual(
+            forge.target.api_credential_file,
+            self.root / "credentials/forge/forge-prod.token",
+        )
+        self.assertEqual(
+            ep.provisioner_executable,
+            self.root
+            / "product-venvs/production/engineering-platform/bin/engineering-platform-system-provisioner",
+        )
+        self.assertEqual(ep.product_root, self.root / "products/engineering-platform")
+        self.assertEqual(service.dispatcher.coordinator.registry.root, self.root / "state/deployments")
+        self.assertEqual(route.pairing_executor.binding.endpoint, "http://127.0.0.1:8876")
+        self.assertEqual(
+            set(forge.staged_artifacts),
+            {"sha256:" + "4" * 64, "sha256:" + "3" * 64},
+        )
+
+    def test_currency_guard_rechecks_exact_file_before_each_mutation(self) -> None:
+        service = self.loader().load()
+        guard = service.dispatcher.coordinator.currency_guard
+        reference = guard.require_current(
+            deployment_id="production",
+            mutation="product-install",
+            component="forge-runtime",
+            instance_id="forge-prod",
+            operation_id="operation-1",
+        )
+        self.assertRegex(reference, r"^currency:[0-9a-f]{64}$")
+
+        changed = _authority()
+        changed["routes"][0]["ep_display_label"] = "Changed"
+        self.write(changed)
+        with self.assertRaisesRegex(ProductWorkerAuthorityError, "changed before mutation"):
+            guard.require_current(
+                deployment_id="production",
+                mutation="product-install",
+                component="forge-runtime",
+                instance_id="forge-prod",
+                operation_id="operation-1",
+            )
+
+    def test_rejects_noncanonical_duplicate_wrong_digest_and_shape(self) -> None:
+        cases = []
+        cases.append((json.dumps(_authority(), indent=2).encode(), "canonical"))
+        cases.append((b'{"schema":"x","schema":"y"}', "strict JSON"))
+        wrong_digest = _authority()
+        wrong_digest["candidate_manifests"][0]["digest"] = "sha256:" + "0" * 64
+        cases.append((_canonical(wrong_digest), "manifest authority"))
+        extra_path = _authority()
+        extra_path["routes"][0]["forge_executable"] = "/tmp/forge"
+        cases.append((_canonical(extra_path), "shape"))
+        for raw, message in cases:
+            with self.subTest(message=message):
+                self.path.write_bytes(raw)
+                self.path.chmod(0o600)
+                with self.assertRaisesRegex(ProductWorkerAuthorityError, message):
+                    self.loader().load()
+
+    def test_rejects_unsafe_accounts_ports_artifacts_and_empty_routes(self) -> None:
+        for mutate, message in (
+            (lambda value: value["routes"][0].__setitem__("forge_service_account", "root"), "account"),
+            (lambda value: value["routes"][0].__setitem__("ep_bind_port", 8875), "ambiguous"),
+            (lambda value: value["routes"][0].__setitem__("forge_artifact_sha256", "sha256:" + "9" * 64), "manifest"),
+            (lambda value: value.__setitem__("routes", []), "unavailable"),
+        ):
+            payload = _authority()
+            mutate(payload)
+            self.write(payload)
+            with self.subTest(message=message), self.assertRaisesRegex(
+                ProductWorkerAuthorityError, message
+            ):
+                self.loader().load()
+
+    def test_rejects_cross_route_account_and_port_reuse(self) -> None:
+        for field, value, message in (
+            ("forge_service_account", "_forge_prod", "service account"),
+            ("forge_bind_port", 8875, "bind port"),
+        ):
+            payload = _authority()
+            second = json.loads(json.dumps(payload["routes"][0]))
+            second.update({
+                "deployment_id": "staging",
+                "forge_instance_id": "forge-staging",
+                "forge_service_account": "_forge_staging",
+                "forge_bind_port": 8975,
+                "ep_instance_id": "ep-staging",
+                "ep_service_account": "_ep_staging",
+                "ep_bind_port": 8976,
+            })
+            second["pairing"]["binding_id"] = "ep-staging"
+            second[field] = value
+            payload["routes"].append(second)
+            self.write(payload)
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ProductWorkerAuthorityError, message
+            ):
+                self.loader().load()
+
+    def test_rejects_unsafe_root_file_mode_and_symlink(self) -> None:
+        self.root.chmod(0o755)
+        with self.assertRaisesRegex(ProductWorkerAuthorityError, "root is unsafe"):
+            self.loader().load()
+        self.root.chmod(0o700)
+        self.path.chmod(0o644)
+        with self.assertRaisesRegex(ProductWorkerAuthorityError, "file is unsafe"):
+            self.loader().load()
+        self.path.unlink()
+        target = self.root / "target.json"
+        target.write_bytes(_canonical(_authority()))
+        target.chmod(0o600)
+        self.path.symlink_to(target)
+        with self.assertRaisesRegex(ProductWorkerAuthorityError, "unreadable"):
+            self.loader().load()
+
+    def test_rejects_invalid_loader_configuration_and_missing_authority(self) -> None:
+        for kwargs in (
+            {"root": Path("relative")},
+            {"root": self.root, "expected_owner_uid": -1},
+            {"root": self.root, "launch_daemons_directory": Path("relative")},
+        ):
+            with self.assertRaises(ValueError):
+                ProductWorkerAuthorityLoader(**kwargs)
+        self.path.unlink()
+        with self.assertRaisesRegex(ProductWorkerAuthorityError, "unreadable"):
+            self.loader().load()
+
+
+if __name__ == "__main__":
+    unittest.main()

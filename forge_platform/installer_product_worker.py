@@ -15,6 +15,7 @@ from .managed_product_operation_service import (
     MAXIMUM_NATIVE_PRODUCT_OPERATION_RECEIPT_BYTES,
     ManagedProductOperationHelperService,
 )
+from .product_worker_authority import ProductWorkerAuthorityLoader
 
 
 class InstallerProductWorkerUnavailable(RuntimeError):
@@ -25,11 +26,14 @@ ServiceLoader = Callable[[], ManagedProductOperationHelperService]
 
 
 def load_released_product_service() -> ManagedProductOperationHelperService:
-    """Fail closed until the fixed helper-owned authority loader is supplied."""
+    """Load only the fixed root-owned released product authority."""
 
-    raise InstallerProductWorkerUnavailable(
-        "released product-worker authority is unavailable"
-    )
+    try:
+        return ProductWorkerAuthorityLoader().load()
+    except Exception as error:
+        raise InstallerProductWorkerUnavailable(
+            "released product-worker authority is unavailable"
+        ) from error
 
 
 def execute_product_request(

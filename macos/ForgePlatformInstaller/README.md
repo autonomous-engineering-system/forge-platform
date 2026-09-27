@@ -195,14 +195,27 @@ workflow does not yet construct or pass a production worker.
 deterministic zipapp form accepted above. It includes only the repository's
 top-level `forge_platform/*.py` modules plus a fixed entrypoint, uses no network
 or installed Python packages, refuses linked or changing inputs and never
-overwrites an output. The entrypoint remains fail-closed until its released
-helper-authority loader is supplied.
+overwrites an output. The entrypoint loads only the fixed root-owned
+`product-worker-authority.json`; an absent or unsafe file fails closed without
+worker output.
 
 The worker backend exposes a pinned typed-service constructor for that loader:
 canonical manifest bytes must match the separately trusted digest, and the
 same resulting manifest objects authorize both request admission and concrete
 Forge/EP routes. This constructor does not itself turn arbitrary bytes into
 signed-catalog authority.
+
+The fixed loader requires an owner-only helper root and one root-owned,
+single-link, no-follow `0600` canonical authority file. It accepts no path or
+command fields. Product executables, venvs, staged artifacts, state roots,
+credentials, instances and operation journals are derived from the helper
+layout; the system LaunchDaemon directory remains compiled configuration.
+Routes cannot share service accounts, ports or product instances. Every
+coordinator mutation reopens and rehashes the immutable local snapshot. The
+native reviewed execution remains responsible for the signed online currency
+check immediately before runtime/product execution. Native publication of the
+authority file is not yet wired, so this source path does not claim a live
+product install.
 
 The bundled CLI exposes `helper register --yes` only after trusted released
 startup. It asks for explicit confirmation without `--yes`, rechecks installer

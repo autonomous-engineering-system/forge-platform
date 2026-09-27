@@ -314,8 +314,8 @@ bind their exact `sha256:` digest into `Info.plist`. It rejects leaf symlinks,
 non-zipapps, duplicate or unordered entries, traversal names, non-regular or
 non-`0644` entries, variable timestamps, encryption and oversized expansion.
 The release workflow does not yet build or supply that worker, so the installed
-product route remains fail-closed until the executable worker and its
-helper-owned authority are supplied and qualified.
+product route remains fail-closed until the executable worker and its native
+published authority are supplied and qualified.
 
 The repository now also has a deterministic worker builder. It packages the
 complete dependency-closed `forge_platform` Python package with one generated
@@ -323,9 +323,11 @@ complete dependency-closed `forge_platform` Python package with one generated
 a fixed timestamp. The bounded entrypoint reads one request, invokes only a
 typed `ManagedProductOperationHelperService`, emits one bounded receipt and
 maps every unavailable backend or pipe failure to a silent nonzero exit. Its
-default released service loader deliberately remains unavailable until the
-fixed helper-owned authority reader is implemented; merely building the
-zipapp therefore cannot grant product-mutation authority.
+default released service loader now reads only the fixed helper-owned authority
+file described below. Absence or unsafe ownership, permissions, links, size,
+encoding, JSON shape or byte instability remains a silent fail-closed worker
+failure; merely building the zipapp therefore cannot grant product-mutation
+authority.
 
 The worker composition path can now reconstruct a manifest only from exact
 canonical bytes plus a separately trusted matching digest, then pass the typed
@@ -335,6 +337,21 @@ request admission from the same immutable manifest objects and durable
 coordinator. The signed-catalog path still uses its stronger verified-selection
 constructor; the digest-bound constructor makes no signature or freshness
 claim and is reserved for the root-owned released authority reader.
+
+That released reader is fixed to
+`/Library/Application Support/AutonomousEngineeringSystem/ForgePlatformInstaller/product-worker-authority.json`.
+The root must be owner-only `0700`; the authority must be one root-owned,
+single-link, no-follow regular `0600` file and canonical strict JSON read
+through a stable descriptor. It carries no executable, state, artifact,
+credential or LaunchDaemon path. Those locations are derived from the fixed
+root and safe deployment/instance IDs. It binds exact installer release data,
+digest-matched candidate/historical manifest payloads and public route,
+account, port and pairing identities. Service accounts and ports cannot be
+reused across deployments. The worker reopens and rehashes the exact authority
+immediately before every coordinator mutation; the native reviewed-execution
+gate remains responsible for the preceding signed online installer-currentness
+decision. A changed local snapshot fails closed. The native atomic publisher
+for this file and a real released snapshot are still required.
 
 Behind that transport, the platform-neutral helper service now composes the
 strict decoder, helper-owned authority resolution, admission and durable
@@ -364,14 +381,15 @@ readback into non-secret terminal pairing evidence. A released product-route
 builder now freezes exact helper-owned paths, targets, staged catalog-authorized
 artifacts and pairing configuration, constructs the concrete Forge/EP adapters,
 macOS LaunchDaemon supervisor and pairing executor, and composes those routes
-with release/catalog authority in the closed helper builder. Helper-process
-registration and released-installer process wiring are still absent. That
+with release/catalog authority in the closed helper builder. Native helper
+registration exists, but approval and a released authority publication remain
+live prerequisites. That
 closed builder places the verified release/catalog authority loader and pinned
 route resolver around one exact
 `ManagedForgeEPInstallationCoordinator`; admission and dispatch therefore
 cannot be wired to different registries or replaced with caller-owned
-resolvers. This is still a source composition root rather than helper-process
-registration or a production route.
+resolvers. This is still source-qualified wiring rather than a live production
+route.
 
 The managed-deployment operation coordinator reuses
 `DurableComponentOperationCoordinator`. Each product mutation therefore keeps
