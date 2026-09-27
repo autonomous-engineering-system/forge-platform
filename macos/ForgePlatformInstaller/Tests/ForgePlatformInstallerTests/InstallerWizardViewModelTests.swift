@@ -55,6 +55,82 @@ final class InstallerWizardViewModelTests: XCTestCase {
         XCTAssertFalse(model.isRemovalReviewRequestInFlight)
     }
 
+    func testConfirmedRemovalUsesExactReviewedSessionAndTerminalReceipt() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = RemovalReviewGUICoordinator(inventory: inventory)
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.prepareRemovalReview(component: "forge-runtime")
+        await waitForRemovalReview(on: model)
+        guard case .prepared(let session) = model.removalReview else {
+            return XCTFail("Expected exact helper review")
+        }
+        model.executeReviewedRemoval(
+            operationID: session.operationID,
+            requestFingerprint: String(repeating: "b", count: 64)
+        )
+        let deniedCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(deniedCalls, 0)
+        model.executeReviewedRemoval(
+            operationID: session.operationID,
+            requestFingerprint: session.proposal.request.requestFingerprint
+        )
+        await waitForRemovalExecution(on: model)
+        guard case .completed(let receipt) = model.removalReview else {
+            return XCTFail("Terminal product receipt should be visible")
+        }
+        XCTAssertEqual(receipt.operationID, session.operationID)
+        XCTAssertEqual(receipt.registryRevision, 4)
+        let executionCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(executionCalls, 1)
+    }
+
+    func testRecoveryPendingRetainsExactOperationForResume() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = RemovalReviewGUICoordinator(
+            inventory: inventory, removalState: "RECOVERY_PENDING"
+        )
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.prepareRemovalReview(component: "forge-runtime")
+        await waitForRemovalReview(on: model)
+        guard case .prepared(let session) = model.removalReview else {
+            return XCTFail("Expected exact helper review")
+        }
+        model.executeReviewedRemoval(
+            operationID: session.operationID,
+            requestFingerprint: session.proposal.request.requestFingerprint
+        )
+        await waitForRemovalExecution(on: model)
+        guard case .recoveryPending(let recovering) = model.removalReview else {
+            return XCTFail("Pending product receipt must remain nonterminal")
+        }
+        XCTAssertEqual(recovering.operationID, session.operationID)
+    }
+
+    func testFullSelectedDeploymentRemovalRequiresBothProductReceipts() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = RemovalReviewGUICoordinator(inventory: inventory)
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.prepareRemovalReview()
+        await waitForRemovalReview(on: model)
+        guard case .prepared(let session) = model.removalReview else {
+            return XCTFail("Expected full-deployment helper review")
+        }
+        XCTAssertEqual(session.proposal.request.action, "REMOVE_DEPLOYMENT")
+        XCTAssertEqual(session.proposal.componentDiffs.map(\.action), [
+            "REMOVE_COMPONENT", "REMOVE_COMPONENT",
+        ])
+        model.executeReviewedRemoval(
+            operationID: session.operationID,
+            requestFingerprint: session.proposal.request.requestFingerprint
+        )
+        await waitForRemovalExecution(on: model)
+        guard case .completed(let receipt) = model.removalReview else {
+            return XCTFail("Both product receipts and removed registry are required")
+        }
+        XCTAssertEqual(receipt.registryRevision, 0)
+        XCTAssertEqual(receipt.components.map(\.state), ["COMPLETE", "COMPLETE"])
+    }
+
     func testViewModelAcceptsOneCoordinatorPreparedSessionBeforePreflight() async throws {
         let state = try compositionSelectionState()
         let plan = try makeSessionPlan(sessionID: "ui-session-1")
@@ -143,10 +219,22 @@ final class InstallerWizardViewModelTests: XCTestCase {
         for _ in 0..<400 {
             switch model.removalReview {
             case .idle, .loading: try? await Task.sleep(for: .milliseconds(5))
-            case .prepared, .blocked: return
+            case .prepared, .executing, .recoveryPending, .completed, .blocked: return
             }
         }
         XCTFail("The view model did not receive the removal review result")
+    }
+
+    private func waitForRemovalExecution(on model: InstallerWizardViewModel) async {
+        for _ in 0..<400 {
+            switch model.removalReview {
+            case .executing: try? await Task.sleep(for: .milliseconds(5))
+            case .completed, .recoveryPending, .blocked: return
+            case .idle, .loading, .prepared:
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        XCTFail("The view model did not receive the removal execution result")
     }
 
     private func makeSessionPlan(sessionID: String) throws -> VerifiedCompositionSessionPlan {
@@ -236,10 +324,13 @@ private actor WizardCoordinatorSpy: InstallerWizardCoordinator {
 
 private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
     private let inventory: ManagedDeploymentInventory
+    private let removalState: String
     private var intents: [ManagedInstallerProductRemovalReviewIntent] = []
+    private var executionCalls = 0
 
-    init(inventory: ManagedDeploymentInventory) {
+    init(inventory: ManagedDeploymentInventory, removalState: String = "COMPLETE") {
         self.inventory = inventory
+        self.removalState = removalState
     }
 
     func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
@@ -281,12 +372,14 @@ private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
                 "schema": .string(ManagedInstallerProductRemovalReviewProposal.schema),
                 "intent_fingerprint": .string(intent.intentFingerprint),
                 "request": requestValue,
-                "deployment_action": .string("CREATE_OR_UPDATE"),
+                "deployment_action": .string(intent.action == "REMOVE_COMPONENT"
+                    ? "CREATE_OR_UPDATE" : "REMOVE_DEPLOYMENT"),
                 "component_diffs": .array([
                     .object([
                         "component": .string("engineering-platform-server"),
                         "instance_id": .string("ep-prod"),
-                        "action": .string("NO_CHANGE"),
+                        "action": .string(intent.action == "REMOVE_COMPONENT"
+                            ? "NO_CHANGE" : "REMOVE_COMPONENT"),
                     ]),
                     .object([
                         "component": .string("forge-runtime"),
@@ -294,9 +387,8 @@ private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
                         "action": .string("REMOVE_COMPONENT"),
                     ]),
                 ]),
-                "resulting_components": .array([
-                    .string("engineering-platform-server"),
-                ]),
+                "resulting_components": .array(intent.action == "REMOVE_COMPONENT"
+                    ? [.string("engineering-platform-server")] : []),
             ]))
             return .success(try ManagedInstallerProductRemovalReviewProposal.decodeJSON(
                 data, intent: intent
@@ -304,6 +396,52 @@ private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
         } catch {
             return .failure(.rejected)
         }
+    }
+
+    func executeReviewedProductRemoval(
+        _ session: ManagedInstallerRemovalReviewSession
+    ) async -> Result<
+        ManagedInstallerProductRemovalReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        executionCalls += 1
+        let request = session.proposal.request
+        let complete = removalState == "COMPLETE"
+        let digest = "sha256:" + String(repeating: "a", count: 64)
+        let data = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerProductRemovalReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "operation_id": .string(request.operationID),
+            "deployment_id": .string(request.deploymentID),
+            "action": .string(request.action),
+            "plan_fingerprint": .string("sha256:" + request.reviewedPlanSHA256),
+            "state": .string(removalState),
+            "registry_revision": complete
+                ? .integer(request.action == "REMOVE_DEPLOYMENT" ? "0" : "4") : .null,
+            "components": .array([
+                .object([
+                    "component": .string("engineering-platform-server"),
+                    "instance_id": .string("ep-prod"),
+                    "action": .string(request.action == "REMOVE_COMPONENT"
+                        ? "NO_CHANGE" : "REMOVE_COMPONENT"),
+                    "state": .string(request.action == "REMOVE_COMPONENT"
+                        ? "UNCHANGED" : removalState),
+                    "product_receipt_digest": request.action == "REMOVE_COMPONENT" || !complete
+                        ? .null : .string(digest),
+                ]),
+                .object([
+                    "component": .string("forge-runtime"),
+                    "instance_id": .string("forge-prod"),
+                    "action": .string("REMOVE_COMPONENT"),
+                    "state": .string(removalState),
+                    "product_receipt_digest": complete ? .string(digest) : .null,
+                ]),
+            ]),
+        ]))
+        guard let receipt = try? ManagedInstallerProductRemovalReceipt.decodeJSON(
+            data, request: request
+        ) else { return .failure(.rejected) }
+        return .success(receipt)
     }
 
     func performProviderAction(
@@ -316,4 +454,5 @@ private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
     }
 
     func reviewCalls() -> [ManagedInstallerProductRemovalReviewIntent] { intents }
+    func executionCallCount() -> Int { executionCalls }
 }
