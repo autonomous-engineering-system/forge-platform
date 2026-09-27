@@ -89,6 +89,10 @@ file "$cli" | grep -Fq 'arm64' || fail cli-not-arm64
 file "$helper" | grep -Fq 'arm64' || fail helper-not-arm64
 
 provenance="$private/ForgePlatformInstallerReleaseProvenance.json"
+product_worker="$private/forge-platform-product-worker.pyz"
+python3 scripts/build_installer_product_worker.py \
+  --output "$product_worker" >"$private/product-worker.log" 2>&1 \
+  || fail product-worker-build-failed
 python3 scripts/prepare_offline_installer_resources.py \
   --release-trust-resource "$FORGE_PLATFORM_RELEASE_TRUST_RESOURCE" \
   --catalog-trust-resource "$FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE" \
@@ -102,12 +106,14 @@ python3 scripts/package_macos_installer_app.py \
   --executable "$gui" \
   --cli-executable "$cli" \
   --helper-executable "$helper" \
+  --product-worker "$product_worker" \
   --sealed-release-trust-resource "$FORGE_PLATFORM_RELEASE_TRUST_RESOURCE" \
   --sealed-release-provenance-resource "$provenance" \
   --sealed-composition-catalog-trust-resource "$FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE" \
   --output "$app" \
   --bundle-identifier "$(python3 scripts/validate_installer_release_identity.py --field bundle_identifier)" \
   >"$private/package-app.log" 2>&1 || fail final-app-packaging-failed
+[[ -f "$app/Contents/Resources/forge-platform-product-worker.pyz" ]] || fail product-worker-not-packaged
 
 # Resolve exactly one reviewed Developer ID identity from public certificate metadata.
 security find-identity -v -p codesigning >"$private/identities.txt" 2>"$private/identity-error.txt" || fail identity-read-failed
