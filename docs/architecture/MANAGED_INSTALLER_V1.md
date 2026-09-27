@@ -200,6 +200,16 @@ unlisted deployments, correlation drift, partial responses and helper errors
 fail closed. This transport still requires the signed helper executable and
 its production backend to be installed before the released app can use it.
 
+The native ServiceManagement registration boundary is now explicit as well.
+It fixes one `SMAppService` LaunchDaemon plist name, bundle-relative helper
+program and the exact three Mach services at compile time. Registration is
+followed by an independent status readback; only `ENABLED` is ready,
+`REQUIRES_APPROVAL` remains visible and non-ready, and missing, failed or
+drifted registration fails closed. This boundary neither manufactures a plist
+nor treats a successful registration API return as reboot or helper-backend
+evidence. The helper binary, signed bundle layout and live reboot readback are
+still required.
+
 The native core now also defines a canonical product-operation bridge for the
 exact Forge+EP pair. Its request is rebuilt from that stable plan and terminal
 runtime receipt and contains only reviewed identities, actions and evidence
