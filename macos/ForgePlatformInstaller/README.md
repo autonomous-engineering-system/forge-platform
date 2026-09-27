@@ -182,6 +182,15 @@ the final archive is extracted. The helper's released-route handler is
 read-only; product mutation remains unavailable until its production backend
 is connected.
 
+The layout helper also accepts an optional `--product-worker PATH` only for a
+bounded deterministic `.pyz`. It requires canonical sorted regular `0644`
+entries, a fixed ZIP timestamp, safe relative names and `__main__.py`, copies
+the captured bytes to
+`Contents/Resources/forge-platform-product-worker.pyz`, and writes their exact
+tagged SHA-256 to `ForgePlatformProductWorkerSHA256` in `Info.plist`. This binds
+the helper's fixed worker lookup to the later app signature. The release
+workflow does not yet construct or pass a production worker.
+
 The bundled CLI exposes `helper register --yes` only after trusted released
 startup. It asks for explicit confirmation without `--yes`, rechecks installer
 currency immediately before `SMAppService` registration, and reports native

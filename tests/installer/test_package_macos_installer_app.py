@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import base64
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
+import io
 import json
 import plistlib
 from pathlib import Path
@@ -13,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,8 +27,10 @@ from forge_platform.composition_catalog_trust import (  # noqa: E402
     canonical_composition_catalog_trust_configuration_sha256,
 )
 from forge_platform.macos_platform_contract import thin_arm64_macho_test_bytes  # noqa: E402
+import package_macos_installer_app as packager  # noqa: E402
 from package_macos_installer_app import (  # noqa: E402
     SealedCompositionCatalogTrustResource,
+    SealedProductWorkerResource,
     SealedReleaseProvenanceResource,
     SealedReleaseTrustResource,
     package,
@@ -53,6 +59,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             self.assertIn("sealed_release_provenance=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertIn("sealed_composition_catalog_trust=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertIn("privileged_helper=ABSENT_FAIL_CLOSED", result.stdout)
+            self.assertIn("product_worker=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertEqual(
                 (app_bundle / "Contents" / "MacOS" / "ForgePlatformInstaller").read_bytes(),
                 executable.read_bytes(),
@@ -77,6 +84,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             self.assertEqual(info["CFBundleVersion"], _INSTALLER_VERSION)
             self.assertEqual(info["CFBundlePackageType"], "APPL")
             self.assertEqual(info["LSMinimumSystemVersion"], "26.0")
+            self.assertNotIn("ForgePlatformProductWorkerSHA256", info)
             self.assertFalse(
                 (app_bundle / "Contents" / "Resources" / "ForgePlatformInstallerReleaseTrust.json").exists()
             )
@@ -139,6 +147,104 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                 },
             )
             self.assertEqual(stat.S_IMODE(plist_path.stat().st_mode), 0o644)
+
+    def test_packages_exact_deterministic_product_worker_and_binds_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            worker, worker_bytes = self._product_worker(workspace)
+            app_bundle = workspace / "ForgePlatformInstaller.app"
+
+            result = self._run(
+                executable,
+                app_bundle,
+                product_worker=worker,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("product_worker=PACKAGED", result.stdout)
+            packaged = (
+                app_bundle
+                / "Contents"
+                / "Resources"
+                / "forge-platform-product-worker.pyz"
+            )
+            self.assertEqual(packaged.read_bytes(), worker_bytes)
+            self.assertEqual(stat.S_IMODE(packaged.stat().st_mode), 0o644)
+            with (app_bundle / "Contents" / "Info.plist").open("rb") as stream:
+                info = plistlib.load(stream)
+            self.assertEqual(
+                info["ForgePlatformProductWorkerSHA256"],
+                "sha256:" + hashlib.sha256(worker_bytes).hexdigest(),
+            )
+
+    def test_rejects_unsafe_noncanonical_or_aliased_product_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            valid, valid_bytes = self._product_worker(workspace)
+
+            linked = workspace / "linked-worker.pyz"
+            linked.symlink_to(valid)
+            linked_output = workspace / "linked.app"
+            linked_result = self._run(
+                executable,
+                linked_output,
+                product_worker=linked,
+            )
+            self.assertNotEqual(linked_result.returncode, 0)
+            self.assertIn("must not be selected through a symlink", linked_result.stderr)
+            self.assertFalse(linked_output.exists())
+
+            wrong_suffix = workspace / "worker.zip"
+            wrong_suffix.write_bytes(valid_bytes)
+            suffix_output = workspace / "suffix.app"
+            suffix_result = self._run(
+                executable,
+                suffix_output,
+                product_worker=wrong_suffix,
+            )
+            self.assertNotEqual(suffix_result.returncode, 0)
+            self.assertIn("must have a .pyz filename", suffix_result.stderr)
+            self.assertFalse(suffix_output.exists())
+
+            unsafe = workspace / "unsafe.pyz"
+            self._write_product_worker(unsafe, [("../escape.py", b"pass\n"), ("__main__.py", b"pass\n")])
+            unsafe_output = workspace / "unsafe.app"
+            unsafe_result = self._run(
+                executable,
+                unsafe_output,
+                product_worker=unsafe,
+            )
+            self.assertNotEqual(unsafe_result.returncode, 0)
+            self.assertIn("entry is unsafe", unsafe_result.stderr)
+            self.assertFalse(unsafe_output.exists())
+
+            trailing = workspace / "trailing.pyz"
+            trailing.write_bytes(valid_bytes + b"unsealed trailing bytes")
+            trailing_output = workspace / "trailing.app"
+            trailing_result = self._run(
+                executable,
+                trailing_output,
+                product_worker=trailing,
+            )
+            self.assertNotEqual(trailing_result.returncode, 0)
+            self.assertIn("bytes are not canonical", trailing_result.stderr)
+            self.assertFalse(trailing_output.exists())
+
+            with self.assertRaisesRegex(ValueError, "not a valid zipapp"):
+                package(
+                    executable=executable,
+                    cli_executable=self._cli_executable(workspace),
+                    product_worker=SealedProductWorkerResource(
+                        source=valid,
+                        contents=b"not a zipapp",
+                        sha256="sha256:" + "0" * 64,
+                    ),
+                    output=workspace / "library.app",
+                    bundle_identifier="com.example.forge-platform-installer",
+                )
+            self.assertFalse((workspace / "library.app").exists())
 
     def test_rejects_unsafe_or_aliased_privileged_helper_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -821,6 +927,31 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         executable.chmod(0o755)
         return executable
 
+    @classmethod
+    def _product_worker(cls, workspace: Path) -> tuple[Path, bytes]:
+        worker = workspace / "forge-platform-product-worker.pyz"
+        cls._write_product_worker(
+            worker,
+            [
+                ("__main__.py", b"from forge_platform.worker import main\nmain()\n"),
+                ("forge_platform/__init__.py", b""),
+                ("forge_platform/worker.py", b"def main():\n    return None\n"),
+            ],
+        )
+        return worker, worker.read_bytes()
+
+    @staticmethod
+    def _write_product_worker(
+        path: Path,
+        entries: list[tuple[str, bytes]],
+    ) -> None:
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name, contents in entries:
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.create_system = 3
+                info.external_attr = (stat.S_IFREG | 0o644) << 16
+                archive.writestr(info, contents)
+
     @staticmethod
     def _public_keys() -> list[tuple[str, str]]:
         return [
@@ -1071,6 +1202,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         provenance_resource: Path | None = None,
         catalog_trust_resource: Path | None = None,
         helper_executable: Path | None = None,
+        product_worker: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         cli_executable = PackageMacOSInstallerAppTests._cli_executable(executable.parent)
         command = [
@@ -1089,16 +1221,29 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             command.extend(("--sealed-release-trust-resource", str(trust_resource)))
         if helper_executable is not None:
             command.extend(("--helper-executable", str(helper_executable)))
+        if product_worker is not None:
+            command.extend(("--product-worker", str(product_worker)))
         if provenance_resource is not None:
             command.extend(("--sealed-release-provenance-resource", str(provenance_resource)))
         if catalog_trust_resource is not None:
             command.extend(("--sealed-composition-catalog-trust-resource", str(catalog_trust_resource)))
-        return subprocess.run(
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        returncode = 0
+        with (
+            patch.object(sys, "argv", [str(SCRIPT), *command[2:]]),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            try:
+                packager.main()
+            except SystemExit as error:
+                returncode = int(error.code or 0)
+        return subprocess.CompletedProcess(
             command,
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
+            returncode,
+            stdout.getvalue(),
+            stderr.getvalue(),
         )
 
 
