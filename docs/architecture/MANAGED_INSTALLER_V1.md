@@ -175,6 +175,19 @@ stable plan, runtime failure or receipt from another plan stops before product
 dispatch. A product completion is admitted only with nonempty passed stages and
 nonempty readiness summary items.
 
+The released-route coordinator now implements the read-only front half of that
+chain. A helper-backed loader must return one immutable typed snapshot that
+binds the exact deployment inventory, verified composition session, selected
+deployment, all required passing host-preflight checks, the unacknowledged
+Forge+EP review, initial managed-Python readback, original managed-tool actions
+and a non-secret evidence reference. Inventory access clears prior authority;
+preflight admits one exact snapshot; review and stable-plan preparation each
+reload it and require equality before proceeding. Session, manifest,
+deployment, inventory and component drift therefore fail closed before any
+mutation. Direct execution on this coordinator remains unavailable: the
+reviewed execution coordinator must wrap its stable-plan authority and the
+privileged mutation route.
+
 The native core now also defines a canonical product-operation bridge for the
 exact Forge+EP pair. Its request is rebuilt from that stable plan and terminal
 runtime receipt and contains only reviewed identities, actions and evidence
@@ -190,10 +203,10 @@ components. Substituted, partial, malformed or noncanonical responses fail
 closed before the GUI or CLI can show completion.
 
 This is source-level composition only. The released runtime continues to inject
-the unavailable route until concrete catalog, host, managed-tool and product
-adapters plus the released privileged-helper wiring are qualified and
-explicitly installed. It does not establish live install, signing,
-notarization or product-readiness evidence.
+the unavailable route until the snapshot loader, concrete host and managed-tool
+adapters, reviewed execution coordinator and released privileged-helper wiring
+are composed, qualified and explicitly installed. It does not establish live
+install, signing, notarization or product-readiness evidence.
 
 The platform-neutral helper boundary now independently admits request v2 before
 any product dispatcher can be selected. It accepts only bounded strict canonical
