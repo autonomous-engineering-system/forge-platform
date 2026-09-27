@@ -159,7 +159,8 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
 
 enum ManagedInstallerReleasedRouteXPCCodec {
     static let inventorySchema = "forge-platform.managed-deployment-inventory/v1"
-    static let snapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v1"
+    static let snapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v2"
+    static let legacySnapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v1"
     static let maximumResponseBytes = 128 * 1_024
 
     static func encodeInventory(_ inventory: ManagedDeploymentInventory) -> Data {
@@ -191,6 +192,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
                 "installed_version": $0.installedVersion.map(StrictJSONResourceValue.string) ?? .null,
                 "candidate_version": $0.candidateVersion.map(StrictJSONResourceValue.string) ?? .null,
                 "artifact_digest": $0.artifactDigest.map(StrictJSONResourceValue.string) ?? .null,
+                "update_assessment_reference": $0.updateAssessmentReference.map(
+                    StrictJSONResourceValue.string
+                ) ?? .null,
                 "detail": .string($0.detail),
             ])
         }
@@ -226,12 +230,7 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         session: VerifiedCompositionSessionPlan,
         deployment: ManagedDeploymentTarget
     ) throws -> ManagedInstallerReleasedRouteSnapshot {
-        let fields = try root(data, schema: snapshotSchema, keys: [
-            "schema", "inventory", "session_id", "composition_identity",
-            "manifest_sha256", "deployment", "passed_preflight_ids", "review_status",
-            "review_acknowledged", "components", "python_runtime",
-            "managed_tool_actions", "evidence_reference",
-        ])
+        let (fields, legacy) = try snapshotFields(data)
         guard fields["session_id"]?.stringValue == request.sessionID,
               fields["composition_identity"]?.stringValue == request.compositionIdentity,
               fields["manifest_sha256"]?.stringValue == request.manifestSHA256,
@@ -289,7 +288,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
             review: CompositionReview(
                 manifestIdentity: session.compositionIdentity,
                 status: .compatible,
-                components: try componentValues.map(decodeComponent),
+                components: try componentValues.map {
+                    try decodeComponent($0, legacy: legacy)
+                },
                 isAcknowledged: false
             ),
             initialPythonRuntime: ManagedInstallerPostToolReadbackSnapshot.decodePython(pythonValue),
@@ -303,12 +304,7 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         request: ManagedInstallerReleasedRouteRequest,
         inventory: ManagedDeploymentInventory
     ) throws {
-        let fields = try root(data, schema: snapshotSchema, keys: [
-            "schema", "inventory", "session_id", "composition_identity",
-            "manifest_sha256", "deployment", "passed_preflight_ids", "review_status",
-            "review_acknowledged", "components", "python_runtime",
-            "managed_tool_actions", "evidence_reference",
-        ])
+        let (fields, legacy) = try snapshotFields(data)
         guard fields["session_id"]?.stringValue == request.sessionID,
               fields["composition_identity"]?.stringValue == request.compositionIdentity,
               fields["manifest_sha256"]?.stringValue == request.manifestSHA256,
@@ -340,7 +336,7 @@ enum ManagedInstallerReleasedRouteXPCCodec {
               passedIDs.count == HostPreflight.defaultChecks.count else {
             throw ManagedInstallerReleasedRouteXPCFailure.rejected
         }
-        let components = try componentValues.map(decodeComponent)
+        let components = try componentValues.map { try decodeComponent($0, legacy: legacy) }
         guard Set(components.map(\.componentID)) == Set([
                   ProviderOwnerComponent.forgeRuntime.rawValue,
                   ProviderOwnerComponent.engineeringPlatformServer.rawValue,
@@ -399,17 +395,64 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         return fields
     }
 
-    private static func decodeComponent(_ value: StrictJSONResourceValue) throws -> ComponentDiff {
+    private static func snapshotFields(
+        _ data: Data
+    ) throws -> ([String: StrictJSONResourceValue], Bool) {
+        let keys: Set<String> = [
+            "schema", "inventory", "session_id", "composition_identity",
+            "manifest_sha256", "deployment", "passed_preflight_ids", "review_status",
+            "review_acknowledged", "components", "python_runtime",
+            "managed_tool_actions", "evidence_reference",
+        ]
+        if let current = try? root(data, schema: snapshotSchema, keys: keys) {
+            return (current, false)
+        }
+        return (try root(data, schema: legacySnapshotSchema, keys: keys), true)
+    }
+
+    private static func decodeComponent(
+        _ value: StrictJSONResourceValue, legacy: Bool
+    ) throws -> ComponentDiff {
+        var requiredKeys: Set<String> = [
+            "id", "title", "change", "installed_version", "candidate_version",
+            "artifact_digest", "detail",
+        ]
+        if !legacy { requiredKeys.insert("update_assessment_reference") }
         guard let fields = value.objectValue,
-              Set(fields.keys) == Set([
-                "id", "title", "change", "installed_version", "candidate_version",
-                "artifact_digest", "detail",
-              ]),
+              Set(fields.keys) == requiredKeys,
               let id = fields["id"]?.stringValue,
               let title = fields["title"]?.stringValue,
               let changeValue = fields["change"]?.stringValue,
               let change = ComponentChange(rawValue: changeValue),
               let detail = fields["detail"]?.stringValue else {
+            throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+        }
+        let assessment = legacy ? nil : try ManagedInstallerReleasedRouteRequest.optionalString(
+            fields["update_assessment_reference"]
+        )
+        if legacy && change == .update {
+            throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+        }
+        if let assessment {
+            guard change == .update, assessment.utf8.count <= 256,
+                  assessment.unicodeScalars.allSatisfy({ scalar in
+                      (48...57).contains(scalar.value)
+                        || (65...90).contains(scalar.value)
+                        || (97...122).contains(scalar.value)
+                        || [45, 46, 58, 95].contains(scalar.value)
+                  }) else {
+                throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+            }
+            if id == ProviderOwnerComponent.forgeRuntime.rawValue {
+                let prefix = "forge-update-assess:"
+                guard assessment.hasPrefix(prefix),
+                      CompositionCatalogValidation.isTaggedSHA256(
+                          String(assessment.dropFirst(prefix.count))
+                      ) else {
+                    throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+                }
+            }
+        } else if change == .update && !legacy {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
         }
         return ComponentDiff(
@@ -425,6 +468,7 @@ enum ManagedInstallerReleasedRouteXPCCodec {
             artifactDigest: try ManagedInstallerReleasedRouteRequest.optionalString(
                 fields["artifact_digest"]
             ),
+            updateAssessmentReference: assessment,
             detail: detail
         )
     }

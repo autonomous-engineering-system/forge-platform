@@ -872,6 +872,7 @@ public struct ComponentDiff: Equatable, Sendable, Identifiable {
     public let installedVersion: String?
     public let candidateVersion: String?
     public let artifactDigest: String?
+    public let updateAssessmentReference: String?
     public let detail: String
 
     public var id: String { componentID }
@@ -883,6 +884,7 @@ public struct ComponentDiff: Equatable, Sendable, Identifiable {
         installedVersion: String? = nil,
         candidateVersion: String? = nil,
         artifactDigest: String? = nil,
+        updateAssessmentReference: String? = nil,
         detail: String
     ) {
         self.componentID = componentID
@@ -891,6 +893,7 @@ public struct ComponentDiff: Equatable, Sendable, Identifiable {
         self.installedVersion = installedVersion
         self.candidateVersion = candidateVersion
         self.artifactDigest = artifactDigest
+        self.updateAssessmentReference = updateAssessmentReference
         self.detail = detail
     }
 }
