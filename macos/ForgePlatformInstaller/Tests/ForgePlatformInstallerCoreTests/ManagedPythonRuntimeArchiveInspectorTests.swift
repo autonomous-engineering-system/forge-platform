@@ -5,6 +5,113 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
+    func testPublishesExactRuntimeSlotAtomicallyAndReusesVerifiedSlot() throws {
+        let fixture = try ArchiveInspectionFixture()
+        let root = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let request = try slotRequest(fixture)
+        let publisher = MacOSManagedPythonRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        )
+        let first = publisher.publish(
+            archive: fixture.runtimeArchive, runtime: fixture.runtime, request: request
+        )
+        guard case .success(let receipt) = first else {
+            return XCTFail("Exact runtime slot must publish: \(first)")
+        }
+        XCTAssertEqual(receipt.runtimeSlotIdentity, request.runtimeSlotIdentity)
+        XCTAssertEqual(receipt.state, .ready)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path),
+                       [request.runtimeSlotIdentity])
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.runtimeArchive, runtime: fixture.runtime, request: request
+        ), first)
+        let slot = root.appendingPathComponent(request.runtimeSlotIdentity)
+        try Data("drift".utf8).write(to: slot.appendingPathComponent("lib/runtime.txt"))
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.runtimeArchive, runtime: fixture.runtime, request: request
+        ), .failure(.rejected))
+    }
+
+    func testSlotPublicationRejectsWrongRuntimeAndUntrustedRoot() throws {
+        let fixture = try ArchiveInspectionFixture()
+        let other = try ArchiveInspectionFixture(sourceBody: Data("different source".utf8))
+        let root = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let publisher = MacOSManagedPythonRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        )
+        let request = try slotRequest(fixture)
+        let otherRequest = try slotRequest(other)
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.runtimeArchive, runtime: fixture.runtime, request: otherRequest
+        ), .failure(.invalidRequest))
+        var damaged = fixture.runtimeArchive
+        damaged[0] ^= 1
+        XCTAssertEqual(publisher.publish(
+            archive: damaged, runtime: fixture.runtime, request: request
+        ), .failure(.rejected))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+        XCTAssertEqual(chmod(root.path, 0o755), 0)
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.runtimeArchive, runtime: fixture.runtime, request: request
+        ), .failure(.rejected))
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        try FileManager.default.removeItem(at: root)
+        let actual = root.deletingLastPathComponent()
+            .appendingPathComponent("actual", isDirectory: true)
+        try FileManager.default.createDirectory(at: actual, withIntermediateDirectories: false)
+        XCTAssertEqual(chmod(actual.path, 0o700), 0)
+        try FileManager.default.createSymbolicLink(at: root, withDestinationURL: actual)
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.runtimeArchive, runtime: fixture.runtime, request: request
+        ), .failure(.rejected))
+    }
+
+    func testPublishingSecondRuntimeDoesNotMutateFirstSlot() throws {
+        let first = try ArchiveInspectionFixture()
+        let second = try ArchiveInspectionFixture(sourceBody: Data("second source".utf8))
+        let firstRequest = try slotRequest(first)
+        let secondRequest = try slotRequest(second)
+        XCTAssertNotEqual(firstRequest.runtimeSlotIdentity, secondRequest.runtimeSlotIdentity)
+        let root = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let publisher = MacOSManagedPythonRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        )
+        let firstResult = publisher.publish(
+            archive: first.runtimeArchive, runtime: first.runtime, request: firstRequest
+        )
+        guard case .success = firstResult else { return XCTFail("First slot failed") }
+        let firstBytes = try Data(contentsOf: root
+            .appendingPathComponent(firstRequest.runtimeSlotIdentity)
+            .appendingPathComponent("lib/runtime.txt"))
+        let secondResult = publisher.publish(
+            archive: second.runtimeArchive, runtime: second.runtime, request: secondRequest
+        )
+        guard case .success = secondResult else { return XCTFail("Second slot failed") }
+        XCTAssertEqual(try Data(contentsOf: root
+            .appendingPathComponent(firstRequest.runtimeSlotIdentity)
+            .appendingPathComponent("lib/runtime.txt")), firstBytes)
+        XCTAssertEqual(publisher.publish(
+            archive: first.runtimeArchive, runtime: first.runtime, request: firstRequest
+        ), firstResult)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: root.path)),
+                       Set([firstRequest.runtimeSlotIdentity, secondRequest.runtimeSlotIdentity]))
+    }
+
+    private func slotRequest(
+        _ fixture: ArchiveInspectionFixture
+    ) throws -> ManagedPythonRuntimeSlotMutationRequest {
+        let inspection = try MacOSManagedPythonRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.runtimeArchive, for: fixture.runtime)
+        return try ManagedPythonRuntimeSlotMutationRequest(
+            stagedAssets: fixture.stagedAssets,
+            runtime: fixture.runtime,
+            inspection: inspection.inspection
+        )
+    }
+
     func testExtractsExactArchiveIntoEmptyPrivateSlotAndReadsBackTree() throws {
         let fixture = try ArchiveInspectionFixture()
         let slot = try extractionSlot()
