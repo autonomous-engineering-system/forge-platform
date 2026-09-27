@@ -207,6 +207,20 @@ no authority until their production backends are composed and qualified. The
 separate verified publisher that creates route evidence is also still absent,
 so a fresh host remains fail-closed rather than accepting app-supplied state.
 
+The durable publication primitive for that future producer is now
+source-qualified. It accepts only a fully typed
+`ManagedInstallerReleasedRouteSnapshot` in-process; it is not exported over
+XPC and accepts no raw document, path, command, environment value or
+credential. Under one non-blocking helper-owned file lease, it validates any
+existing canonical state, writes `0600` temporary files with `fsync`, commits
+the digest-derived route first and the inventory pointer last, then synchronizes
+the private `0700` root. A crash can therefore leave an unreachable route but
+cannot make inventory point at an incomplete route. Existing corrupt,
+permissive, linked or noncanonical state is never silently repaired. The
+catalog/registry/preflight producer that constructs the typed snapshot remains
+to be composed inside the helper before this publisher grants a fresh host any
+route.
+
 The native ServiceManagement registration boundary is now explicit as well.
 It fixes one `SMAppService` LaunchDaemon plist name, bundle-relative helper
 program and the exact three Mach services at compile time. Registration is
