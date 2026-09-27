@@ -10,11 +10,30 @@ public enum ManagedInstallerProductWorkerFailure: Error, Equatable, Sendable {
 
 struct ManagedInstallerProductWorkerInvocation: Equatable, Sendable {
     let interpreterURL: URL
+    let trustedStateRootURL: URL?
     let workerURL: URL
     let workerSHA256: String
     let expectedInterpreterOwner: uid_t
     let requireSingleInterpreterLink: Bool
     let timeoutNanoseconds: UInt64
+
+    init(
+        interpreterURL: URL,
+        trustedStateRootURL: URL? = nil,
+        workerURL: URL,
+        workerSHA256: String,
+        expectedInterpreterOwner: uid_t,
+        requireSingleInterpreterLink: Bool,
+        timeoutNanoseconds: UInt64
+    ) {
+        self.interpreterURL = interpreterURL
+        self.trustedStateRootURL = trustedStateRootURL
+        self.workerURL = workerURL
+        self.workerSHA256 = workerSHA256
+        self.expectedInterpreterOwner = expectedInterpreterOwner
+        self.requireSingleInterpreterLink = requireSingleInterpreterLink
+        self.timeoutNanoseconds = timeoutNanoseconds
+    }
 }
 
 protocol ManagedInstallerProductWorkerInvocationResolving: Sendable {
@@ -40,6 +59,7 @@ struct FileManagedInstallerProductWorkerInvocationResolver:
     static let interpreterRelativePath = "bin/python3"
 
     private let hostStateReader: FileManagedInstallerManagedPythonHostReader
+    private let stateRoot: URL
     private let runtimeSlotsRoot: URL
     private let workerURL: URL?
     private let workerSHA256: String?
@@ -59,6 +79,7 @@ struct FileManagedInstallerProductWorkerInvocationResolver:
         expectedInterpreterOwner: uid_t = 0,
         timeoutNanoseconds: UInt64 = 120_000_000_000
     ) {
+        self.stateRoot = stateRoot
         hostStateReader = FileManagedInstallerManagedPythonHostReader(
             rootDirectory: stateRoot
         )
@@ -81,11 +102,15 @@ struct FileManagedInstallerProductWorkerInvocationResolver:
               let workerSHA256,
               CompositionCatalogValidation.isTaggedSHA256(workerSHA256),
               case .success(let hostState) = hostStateReader.readManagedPythonHostState(),
+              let identity = hostState.activeRuntimeIdentitySHA256,
               let slot = hostState.activeRuntimeSlotIdentity else {
             return .failure(.unavailable)
         }
         let expectedPrefix = "sha256-"
-        guard slot.hasPrefix(expectedPrefix),
+        guard slot == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+                  for: identity
+              ),
+              slot.hasPrefix(expectedPrefix),
               slot.count == expectedPrefix.count + 64,
               slot.dropFirst(expectedPrefix.count).allSatisfy({ $0.isHexDigit }),
               slot == slot.lowercased() else {
@@ -96,6 +121,7 @@ struct FileManagedInstallerProductWorkerInvocationResolver:
             .appendingPathComponent(Self.interpreterRelativePath, isDirectory: false)
         return .success(ManagedInstallerProductWorkerInvocation(
             interpreterURL: interpreter,
+            trustedStateRootURL: stateRoot,
             workerURL: workerURL,
             workerSHA256: workerSHA256,
             expectedInterpreterOwner: expectedInterpreterOwner,
@@ -191,12 +217,89 @@ struct MacOSManagedInstallerProductWorkerRunner:
     func secureInterpreter(
         _ invocation: ManagedInstallerProductWorkerInvocation
     ) -> Bool {
-        secureRegularFile(
+        if invocation.requireSingleInterpreterLink {
+            guard secureManagedInterpreterDirectories(invocation) else { return false }
+        }
+        return secureRegularFile(
             invocation.interpreterURL,
             expectedOwner: invocation.expectedInterpreterOwner,
             requireExecutable: true,
             requireSingleLink: invocation.requireSingleInterpreterLink
         ) != nil
+    }
+
+    private func secureManagedInterpreterDirectories(
+        _ invocation: ManagedInstallerProductWorkerInvocation
+    ) -> Bool {
+        guard let rootURL = invocation.trustedStateRootURL,
+              rootURL.isFileURL, rootURL.baseURL == nil,
+              rootURL.path.hasPrefix("/"), rootURL.path != "/",
+              invocation.interpreterURL.isFileURL,
+              invocation.interpreterURL.baseURL == nil else { return false }
+        let slot = invocation.interpreterURL.deletingLastPathComponent()
+            .deletingLastPathComponent().lastPathComponent
+        guard
+              slot.hasPrefix("sha256-"), slot.count == 71,
+              slot.dropFirst(7).allSatisfy({ $0.isHexDigit }),
+              slot == slot.lowercased(),
+              invocation.interpreterURL == rootURL
+                .appendingPathComponent(
+                    FileManagedInstallerProductWorkerInvocationResolver
+                        .runtimeSlotsDirectoryName,
+                    isDirectory: true
+                )
+                .appendingPathComponent(slot, isDirectory: true)
+                .appendingPathComponent("bin", isDirectory: true)
+                .appendingPathComponent("python3", isDirectory: false) else {
+            return false
+        }
+
+        let root = rootURL.path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard root >= 0 else { return false }
+        defer { _ = Darwin.close(root) }
+        guard secureDirectory(root, owner: invocation.expectedInterpreterOwner,
+                              requirePrivate: true) else { return false }
+        var parent = root
+        for name in [
+            FileManagedInstallerProductWorkerInvocationResolver.runtimeSlotsDirectoryName,
+            slot,
+            "bin",
+        ] {
+            let child = name.withCString {
+                Darwin.openat(
+                    parent, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY
+                )
+            }
+            guard child >= 0 else {
+                if parent != root { _ = Darwin.close(parent) }
+                return false
+            }
+            if parent != root { _ = Darwin.close(parent) }
+            parent = child
+            guard secureDirectory(child, owner: invocation.expectedInterpreterOwner,
+                                  requirePrivate: name == FileManagedInstallerProductWorkerInvocationResolver.runtimeSlotsDirectoryName) else {
+                _ = Darwin.close(child)
+                return false
+            }
+        }
+        _ = Darwin.close(parent)
+        return true
+    }
+
+    private func secureDirectory(
+        _ descriptor: Int32,
+        owner: uid_t,
+        requirePrivate: Bool
+    ) -> Bool {
+        var details = stat()
+        guard Darwin.fstat(descriptor, &details) == 0,
+              (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+              details.st_uid == owner else { return false }
+        let permissions = details.st_mode & mode_t(0o7777)
+        return requirePrivate ? permissions == mode_t(0o700)
+            : (permissions & mode_t(0o022)) == 0
     }
 
     func secureWorker(_ invocation: ManagedInstallerProductWorkerInvocation) -> Bool {

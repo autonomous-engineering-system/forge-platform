@@ -1050,6 +1050,7 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(invocation.workerURL, worker)
         XCTAssertEqual(invocation.timeoutNanoseconds, 99)
         XCTAssertEqual(invocation.expectedInterpreterOwner, geteuid())
+        XCTAssertEqual(invocation.trustedStateRootURL, root)
 
         XCTAssertEqual(
             FileManagedInstallerProductWorkerInvocationResolver(
@@ -1070,6 +1071,56 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             ).resolveProductWorkerInvocation().workerFailure,
             .unavailable
         )
+    }
+
+    func testProductWorkerRejectsUnsafeManagedInterpreterDirectoryChain() throws {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let slot = "sha256-" + String(repeating: "a", count: 64)
+        let slots = root.appendingPathComponent("managed-python-runtime-slots", isDirectory: true)
+        let slotURL = slots.appendingPathComponent(slot, isDirectory: true)
+        let bin = slotURL.appendingPathComponent("bin", isDirectory: true)
+        let interpreter = bin.appendingPathComponent("python3")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for directory in [root, slots, slotURL, bin] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: directory.path
+            )
+        }
+        try Data("#!/bin/sh\n".utf8).write(to: interpreter)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: interpreter.path
+        )
+        let invocation = ManagedInstallerProductWorkerInvocation(
+            interpreterURL: interpreter,
+            trustedStateRootURL: root,
+            workerURL: root.appendingPathComponent("worker.pyz"),
+            workerSHA256: "sha256:" + String(repeating: "b", count: 64),
+            expectedInterpreterOwner: geteuid(),
+            requireSingleInterpreterLink: true,
+            timeoutNanoseconds: 1
+        )
+        let runner = MacOSManagedInstallerProductWorkerRunner()
+        XCTAssertTrue(runner.secureInterpreter(invocation))
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o777], ofItemAtPath: bin.path
+        )
+        XCTAssertFalse(runner.secureInterpreter(invocation))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: bin.path
+        )
+
+        try FileManager.default.removeItem(at: bin)
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: outside.path
+        )
+        try Data("#!/bin/sh\n".utf8).write(to: outside.appendingPathComponent("python3"))
+        try FileManager.default.createSymbolicLink(at: bin, withDestinationURL: outside)
+        XCTAssertFalse(runner.secureInterpreter(invocation))
     }
 
     func testPythonProductExecutorSerializesCanonicalWorkerReceipt() async throws {
