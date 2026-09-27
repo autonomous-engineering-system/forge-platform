@@ -14,6 +14,7 @@ struct ManagedInstallerProductWorkerManifestAuthority: Equatable, Sendable {
     let canonicalPayload: Data
     let compositionIdentity: String
     let forgeArtifactSHA256: String
+    let engineeringPlatformArtifactSHA256: String
 
     init(digest: String, canonicalPayload: Data) throws {
         guard CompositionCatalogValidation.isTaggedSHA256(digest),
@@ -31,13 +32,17 @@ struct ManagedInstallerProductWorkerManifestAuthority: Equatable, Sendable {
               let compositionIdentity = fields["composition_id"]?.stringValue,
               CompositionCatalogValidation.isCompositionIdentity(compositionIdentity),
               let components = fields["components"]?.arrayValue,
-              let forgeDigest = Self.forgeDigest(components) else {
+              let forgeDigest = Self.artifactDigest(components, identity: "forge-runtime"),
+              let epDigest = Self.artifactDigest(
+                components, identity: "engineering-platform-server"
+              ) else {
             throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
         }
         self.digest = digest
         self.canonicalPayload = canonicalPayload
         self.compositionIdentity = compositionIdentity
         forgeArtifactSHA256 = forgeDigest
+        engineeringPlatformArtifactSHA256 = epDigest
     }
 
     var value: StrictJSONResourceValue {
@@ -45,12 +50,12 @@ struct ManagedInstallerProductWorkerManifestAuthority: Equatable, Sendable {
         return try! reader.parseDocument()
     }
 
-    private static func forgeDigest(
-        _ components: [StrictJSONResourceValue]
+    private static func artifactDigest(
+        _ components: [StrictJSONResourceValue], identity: String
     ) -> String? {
         let matches = components.compactMap { component -> String? in
             guard let fields = component.objectValue,
-                  fields["identity"]?.stringValue == "forge-runtime",
+                  fields["identity"]?.stringValue == identity,
                   let artifact = fields["artifact"]?.objectValue,
                   let digest = artifact["digest"]?.stringValue,
                   CompositionCatalogValidation.isTaggedSHA256(digest) else {
@@ -128,6 +133,7 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
     let forgeServiceAccount: String
     let forgeBindPort: Int
     let forgeArtifactSHA256: String
+    let engineeringPlatformArtifactSHA256: String
     let engineeringPlatformInstanceID: String
     let engineeringPlatformDisplayLabel: String
     let engineeringPlatformServiceAccount: String
@@ -141,6 +147,7 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
         forgeServiceAccount: String,
         forgeBindPort: Int,
         forgeArtifactSHA256: String,
+        engineeringPlatformArtifactSHA256: String,
         engineeringPlatformInstanceID: String,
         engineeringPlatformDisplayLabel: String,
         engineeringPlatformServiceAccount: String,
@@ -157,6 +164,9 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
               (1...65_535).contains(engineeringPlatformBindPort),
               forgeBindPort != engineeringPlatformBindPort,
               CompositionCatalogValidation.isTaggedSHA256(forgeArtifactSHA256),
+              CompositionCatalogValidation.isTaggedSHA256(
+                engineeringPlatformArtifactSHA256
+              ),
               !engineeringPlatformDisplayLabel.isEmpty,
               engineeringPlatformDisplayLabel.utf8.count <= 128,
               engineeringPlatformDisplayLabel.unicodeScalars.allSatisfy({
@@ -170,6 +180,7 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
         self.forgeServiceAccount = forgeServiceAccount
         self.forgeBindPort = forgeBindPort
         self.forgeArtifactSHA256 = forgeArtifactSHA256
+        self.engineeringPlatformArtifactSHA256 = engineeringPlatformArtifactSHA256
         self.engineeringPlatformInstanceID = engineeringPlatformInstanceID
         self.engineeringPlatformDisplayLabel = engineeringPlatformDisplayLabel
         self.engineeringPlatformServiceAccount = engineeringPlatformServiceAccount
@@ -206,7 +217,7 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
 }
 
 struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
-    static let schema = "forge-platform.product-worker-authority/v2"
+    static let schema = "forge-platform.product-worker-authority/v3"
     static let maximumBytes = 4 * 1_024 * 1_024
 
     let installerRelease: VerifiedInstallerRelease
@@ -240,7 +251,13 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
         let forgeDigests = Set((candidateManifests + installedManifests).map(
             \.forgeArtifactSHA256
         ))
-        guard routes.allSatisfy({ forgeDigests.contains($0.forgeArtifactSHA256) }) else {
+        let epDigests = Set((candidateManifests + installedManifests).map(
+            \.engineeringPlatformArtifactSHA256
+        ))
+        guard routes.allSatisfy({
+            forgeDigests.contains($0.forgeArtifactSHA256)
+                && epDigests.contains($0.engineeringPlatformArtifactSHA256)
+        }) else {
             throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
         }
         self.installerRelease = installerRelease
@@ -288,6 +305,7 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
             "forge_service_account": .string(route.forgeServiceAccount),
             "forge_bind_port": .integer(String(route.forgeBindPort)),
             "forge_artifact_sha256": .string(route.forgeArtifactSHA256),
+            "ep_artifact_sha256": .string(route.engineeringPlatformArtifactSHA256),
             "ep_instance_id": .string(route.engineeringPlatformInstanceID),
             "ep_display_label": .string(route.engineeringPlatformDisplayLabel),
             "ep_service_account": .string(route.engineeringPlatformServiceAccount),

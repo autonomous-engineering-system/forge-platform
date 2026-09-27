@@ -90,6 +90,26 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
             routes: snapshot.routes + snapshot.routes
         ))
         let original = try XCTUnwrap(snapshot.routes.first)
+        let wrongEP = try ManagedInstallerProductWorkerRouteAuthority(
+            deploymentID: original.deploymentID,
+            forgeInstanceID: original.forgeInstanceID,
+            forgeInstallationID: original.forgeInstallationID,
+            forgeServiceAccount: original.forgeServiceAccount,
+            forgeBindPort: original.forgeBindPort,
+            forgeArtifactSHA256: original.forgeArtifactSHA256,
+            engineeringPlatformArtifactSHA256:
+                "sha256:" + String(repeating: "9", count: 64),
+            engineeringPlatformInstanceID: original.engineeringPlatformInstanceID,
+            engineeringPlatformDisplayLabel: original.engineeringPlatformDisplayLabel,
+            engineeringPlatformServiceAccount: original.engineeringPlatformServiceAccount,
+            engineeringPlatformBindPort: original.engineeringPlatformBindPort,
+            pairing: original.pairing
+        )
+        XCTAssertThrowsError(try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: snapshot.installerRelease,
+            candidateManifests: [manifest],
+            routes: [wrongEP]
+        ))
         func secondRoute(
             consumerID: String, credentialReference: String
         ) throws -> ManagedInstallerProductWorkerRouteAuthority {
@@ -110,6 +130,8 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
                 forgeServiceAccount: "_forge_secondary",
                 forgeBindPort: 8975,
                 forgeArtifactSHA256: original.forgeArtifactSHA256,
+                engineeringPlatformArtifactSHA256:
+                    original.engineeringPlatformArtifactSHA256,
                 engineeringPlatformInstanceID: "ep-secondary",
                 engineeringPlatformDisplayLabel: "Secondary",
                 engineeringPlatformServiceAccount: "_ep_secondary",
@@ -165,7 +187,7 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
     private func fixture() throws -> (ManagedInstallerProductWorkerAuthoritySnapshot, Data) {
         let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Fixtures/product-worker-authority-v2.json")
+            .appendingPathComponent("Fixtures/product-worker-authority-v3.json")
         let expected = try Data(contentsOf: source)
         let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: expected) as? [String: Any])
         let release = try XCTUnwrap(wire["installer_release"] as? [String: Any])
@@ -190,6 +212,8 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
                 forgeServiceAccount: try XCTUnwrap(item["forge_service_account"] as? String),
                 forgeBindPort: try XCTUnwrap(item["forge_bind_port"] as? Int),
                 forgeArtifactSHA256: try XCTUnwrap(item["forge_artifact_sha256"] as? String),
+                engineeringPlatformArtifactSHA256:
+                    try XCTUnwrap(item["ep_artifact_sha256"] as? String),
                 engineeringPlatformInstanceID: try XCTUnwrap(item["ep_instance_id"] as? String),
                 engineeringPlatformDisplayLabel: try XCTUnwrap(item["ep_display_label"] as? String),
                 engineeringPlatformServiceAccount: try XCTUnwrap(item["ep_service_account"] as? String),

@@ -50,6 +50,7 @@ class ReleasedManagedProductRouteConfiguration:
     forge_executable: Path
     forge_target: ForgeServerTarget
     forge_installed_artifact: QualifiedArtifact
+    engineering_platform_installed_artifact: QualifiedArtifact
     engineering_platform_provisioner: Path
     engineering_platform_product_root: Path
     engineering_platform_target: EPSystemInstanceTarget
@@ -66,6 +67,8 @@ class ReleasedManagedProductRouteConfiguration:
             raise TypeError("released route requires a Forge target")
         if not isinstance(self.forge_installed_artifact, QualifiedArtifact):
             raise TypeError("released route requires the exact installed Forge artifact")
+        if not isinstance(self.engineering_platform_installed_artifact, QualifiedArtifact):
+            raise TypeError("released route requires the exact installed EP artifact")
         if not isinstance(self.engineering_platform_target, EPSystemInstanceTarget):
             raise TypeError("released route requires an EP target")
         if not isinstance(self.pairing_binding, ForgeEPProductPairingBinding):
@@ -197,6 +200,13 @@ class ReleasedManagedProductRouteBuilder:
                 or forge_authority[1] != config.forge_installed_artifact
             ):
                 raise ValueError("released route installed Forge artifact lacks catalog authority")
+            ep_authority = authorized.get(config.engineering_platform_installed_artifact.digest)
+            if (
+                ep_authority is None
+                or ep_authority[0] != EP_COMPONENT
+                or ep_authority[1] != config.engineering_platform_installed_artifact
+            ):
+                raise ValueError("released route installed EP artifact lacks catalog authority")
             forge = ForgeServerProductAdapter(
                 forge_executable=config.forge_executable,
                 target=config.forge_target,

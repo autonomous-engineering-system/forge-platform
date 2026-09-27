@@ -47,11 +47,13 @@ FORGE_DIGEST = "sha256:" + "4" * 64
 def verified_forge_ep_selection(context, composition_id="forge-ep-current"):
     payload = manifest_payload(composition_id=composition_id)
     ep = payload["components"][0]
+    ep["artifact"]["version"] = "2.3.102"
+    ep["artifact"]["source_revision"] = "cab85a84a6a8b5b574c796713e4363781fc05519"
     forge = json.loads(json.dumps(ep))
     forge["identity"] = "forge-runtime"
     forge["artifact"] = {
-        "version": "2.7.34",
-        "source_revision": "f" * 40,
+        "version": "2.7.35",
+        "source_revision": "ff4c0d45f51161376104250cd6efcfb6f045b8ac",
         "source": "https://registry.example.invalid/forge-runtime.whl",
         "digest": FORGE_DIGEST,
         "qualification": "https://evidence.example.invalid/forge-runtime",
@@ -129,6 +131,9 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
             "forge_executable": self.root / "venvs/forge/bin/forge",
             "forge_target": forge_target,
             "forge_installed_artifact": self.components["forge-runtime"].artifact,
+            "engineering_platform_installed_artifact": self.components[
+                "engineering-platform-server"
+            ].artifact,
             "engineering_platform_provisioner": self.root / "venvs/ep/bin/engineering-platform-system-provisioner",
             "engineering_platform_product_root": self.root / "products/ep",
             "engineering_platform_target": ep_target,
