@@ -210,6 +210,12 @@ class ForgeUpdateIntentStore:
                 if not existing.same_selection(intent):
                     raise ForgeUpdateIntentError("Forge update operation identity changed")
                 return existing
+            for entry in self.root.iterdir():
+                if not entry.name.endswith(".json"):
+                    continue
+                other = self.read(entry.name[:-5])
+                if other is not None and other.instance_id == intent.instance_id and other.phase != "COMPLETE":
+                    raise ForgeUpdateIntentError("Forge instance has another pending update operation")
             self._write(intent, create=True)
             observed = self.read(intent.operation_id)
             if observed != intent:
