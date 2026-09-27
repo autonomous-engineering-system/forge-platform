@@ -1407,6 +1407,34 @@ class UniversalInstallerTests(unittest.TestCase):
         )
         self.assertTrue(compatible.permits_product_operation_dispatch)
         self.assertEqual(compatible.component_diffs[0].action, "UPDATE")
+        reviewed = compatible.component_diffs[0]
+        self.assertIsNotNone(reviewed.assessment)
+        changed_assessment = replace(
+            reviewed,
+            assessment=replace(reviewed.assessment, evidence_reference="evidence:ep-update-fresh"),
+        )
+        self.assertNotEqual(
+            compatible.fingerprint(),
+            replace(compatible, component_diffs=(changed_assessment,)).fingerprint(),
+        )
+        self.assertNotEqual(
+            InstallerOperationRecord.create("reviewed-update", compatible).plan_fingerprint,
+            InstallerOperationRecord.create(
+                "reviewed-update", replace(compatible, component_diffs=(changed_assessment,))
+            ).plan_fingerprint,
+        )
+        changed_inventory = replace(
+            reviewed,
+            readback=replace(reviewed.readback, evidence_reference="evidence:ep-inventory-changed"),
+        )
+        self.assertNotEqual(
+            compatible.fingerprint(),
+            replace(compatible, component_diffs=(changed_inventory,)).fingerprint(),
+        )
+        with self.assertRaisesRegex(ValueError, "UPDATE_AVAILABLE"):
+            replace(reviewed, assessment=None)
+        with self.assertRaisesRegex(ValueError, "UPDATE_AVAILABLE"):
+            replace(reviewed, assessment=replace(reviewed.assessment, state="UNKNOWN"))
         blocked = CompositionPlanner.plan(
             selection(),
             host_facts=host_facts(),
