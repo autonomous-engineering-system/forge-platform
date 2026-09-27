@@ -25,6 +25,7 @@ from .managed_product_operation_dispatch import (
     PinnedManagedProductRouteResolver,
     ResolvedManagedProductRoute,
 )
+from .managed_product_removal_admission import NativeProductRemovalRequest
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
 from .released_product_routes import (
     ReleasedManagedProductRouteBuilder,
@@ -148,6 +149,27 @@ class PinnedManagedProductOperationAuthorityResolver:
             self.current_installer_release,
             installed,
         )
+
+    def resolve_installed_removal(
+        self, request: NativeProductRemovalRequest
+    ) -> CompositionManifest:
+        """Select only an already pinned installed composition for removal."""
+
+        if not isinstance(request, NativeProductRemovalRequest):
+            raise TypeError("decoded native removal request is required")
+        if request.installer_release != self.current_installer_release:
+            raise ManagedProductOperationServiceError(
+                "installer release authority changed for removal"
+            )
+        installed = self._installed_manifests.get((
+            request.installed_composition_identity,
+            request.installed_manifest_sha256,
+        ))
+        if installed is None:
+            raise ManagedProductOperationServiceError(
+                "installed removal composition authority is unavailable"
+            )
+        return installed
 
 
 class ReleasedManagedProductOperationAuthorityLoader:
