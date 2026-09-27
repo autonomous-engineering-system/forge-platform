@@ -4,6 +4,53 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
+    func testExtractionInventoryCommitsEveryAcceptedEntryAndExactRuntime() throws {
+        let fixture = try ArchiveInspectionFixture()
+        let inventory = try MacOSManagedPythonRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.runtimeArchive, for: fixture.runtime)
+
+        XCTAssertEqual(inventory.inspection.runtimeIdentitySHA256, fixture.runtime.identitySHA256)
+        XCTAssertEqual(inventory.inspection.archiveSHA256, fixture.runtime.artifact.sha256)
+        XCTAssertEqual(inventory.members.map(\.path), [
+            ManagedPythonRuntimeArchiveInspection.manifestPath,
+            "bin/", "bin/python3", "lib/", "lib/runtime.txt",
+        ])
+        XCTAssertEqual(inventory.members.map(\.kind), [
+            .file, .directory, .file, .directory, .file,
+        ])
+        XCTAssertEqual(inventory.members[1].mode, 0o755)
+        XCTAssertEqual(inventory.members[1].byteCount, 0)
+        XCTAssertNil(inventory.members[1].sha256)
+        XCTAssertEqual(inventory.members[4].byteCount, UInt64("runtime payload".utf8.count))
+        XCTAssertEqual(inventory.members[4].sha256,
+            "sha256:" + GitHubInstallerReleaseDescriptor.sha256(
+                of: Data("runtime payload".utf8)
+            ))
+
+        var tampered = fixture.runtimeArchive
+        tampered[0] ^= 1
+        XCTAssertThrowsError(try MacOSManagedPythonRuntimeArchiveInspector
+            .inspectArchiveForExtraction(tampered, for: fixture.runtime))
+        let other = try ArchiveInspectionFixture(sourceBody: Data("other source".utf8))
+        XCTAssertThrowsError(try MacOSManagedPythonRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.runtimeArchive, for: other.runtime))
+
+        for (mutation, body) in [
+            (ArchiveInspectionMutation.emptyGenericFile, Data()),
+            (ArchiveInspectionMutation.largeGenericFile, Data(repeating: 0x78, count: 200_000)),
+        ] {
+            let variant = try ArchiveInspectionFixture(mutation: mutation)
+            let extracted = try MacOSManagedPythonRuntimeArchiveInspector
+                .inspectArchiveForExtraction(variant.runtimeArchive, for: variant.runtime)
+            let member = try XCTUnwrap(extracted.members.first {
+                $0.path == "lib/runtime.txt"
+            })
+            XCTAssertEqual(member.byteCount, UInt64(body.count))
+            XCTAssertEqual(member.sha256,
+                "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: body))
+        }
+    }
+
     func testInspectsExactGZIPUSTARRuntimeWithoutExtractionOrExecution() async throws {
         let fixture = try ArchiveInspectionFixture()
         let staging = ArchiveInspectionStaging(fixture: fixture)
@@ -244,6 +291,7 @@ private enum ArchiveInspectionMutation: Equatable {
     case missingBinDirectory, interpreterNotExecutable, duplicateInterpreter
     case setuidManifest, writableInterpreter, writableGenericFile, nonTraversableBinDirectory
     case missingGenericParent, outOfOrderParent
+    case emptyGenericFile, largeGenericFile
     case unsafePath, symbolicLink, nonZeroPadding, badHeaderChecksum, badUSTARMagic
     case base256Size, malformedOctalTail, interruptedTrailer, nonZeroTrailer
     case badGZIPMagic, gzipOptionalHeader, gzipNonDeterministicTimestamp
@@ -334,8 +382,11 @@ private struct ArchiveInspectionFixture: Sendable {
                 : mutation == .writableInterpreter ? 0o777 : 0o755
             entries.append(.file(path, interpreter, interpreterMode))
         }
+        let libraryBody: Data = mutation == .emptyGenericFile ? Data()
+            : mutation == .largeGenericFile ? Data(repeating: 0x78, count: 200_000)
+            : Data("runtime payload".utf8)
         let libraryFile = ArchiveTarEntry.file(
-            "lib/runtime.txt", Data("runtime payload".utf8),
+            "lib/runtime.txt", libraryBody,
             mutation == .writableGenericFile ? 0o666 : 0o644
         )
         if mutation == .outOfOrderParent { entries.append(libraryFile) }
