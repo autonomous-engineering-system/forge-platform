@@ -16,6 +16,7 @@ from types import MappingProxyType
 from typing import Mapping, Protocol
 
 from .component_operations import ComponentOperationRequest, ProductOperationAdapter
+from .ep_consumer_revocation import EPConsumerRevocationAdapter
 from .managed_deployments import (
     ManagedComponentBinding,
     ManagedDeployment,
@@ -63,6 +64,7 @@ class ResolvedManagedProductRoute:
     engineering_platform_instance_id: str
     adapters: Mapping[str, ProductOperationAdapter]
     pairing_executor: ForgeEPPairingExecutor
+    ep_consumer_revoker: EPConsumerRevocationAdapter | None = None
 
     def __post_init__(self) -> None:
         adapters = MappingProxyType(dict(self.adapters))
@@ -80,6 +82,19 @@ class ResolvedManagedProductRoute:
             raise ValueError("resolved product route contains an invalid adapter")
         if not _is_pairer(self.pairing_executor):
             raise ValueError("resolved product route requires a pairing executor")
+        if self.ep_consumer_revoker is not None:
+            revoker = self.ep_consumer_revoker
+            binding = getattr(self.pairing_executor, "binding", None)
+            if (
+                not isinstance(revoker, EPConsumerRevocationAdapter)
+                or revoker.provisioner is not adapters[EP_COMPONENT]
+                or revoker.provisioner.target.instance_id != self.engineering_platform_instance_id
+                or binding is None
+                or revoker.scope.consumer_id != binding.consumer_id
+                or revoker.scope.project_id != binding.project_id
+                or revoker.expected_artifact.digest not in revoker.provisioner.staged_artifacts
+            ):
+                raise ValueError("resolved EP consumer revocation authority is inconsistent")
 
 
 class ManagedProductRouteResolver(Protocol):

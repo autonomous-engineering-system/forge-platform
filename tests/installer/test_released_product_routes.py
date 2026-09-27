@@ -12,6 +12,7 @@ from forge_platform.engineering_platform_system_adapter import (
     EPSystemInstanceTarget,
     EngineeringPlatformSystemProvisionerAdapter,
 )
+from forge_platform.ep_consumer_revocation import EPConsumerRevocationAdapter, EPConsumerScope
 from forge_platform.forge_ep_pairing_executor import (
     ForgeEPProductPairingBinding,
     ForgeEPProductPairingExecutor,
@@ -172,6 +173,19 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
             EngineeringPlatformSystemProvisionerAdapter,
         )
         self.assertIsInstance(route.pairing_executor, ForgeEPProductPairingExecutor)
+        self.assertIsInstance(route.ep_consumer_revoker, EPConsumerRevocationAdapter)
+        self.assertIs(
+            route.ep_consumer_revoker.provisioner,
+            route.adapters["engineering-platform-server"],
+        )
+        self.assertEqual(
+            route.ep_consumer_revoker.scope,
+            EPConsumerScope("forge-consumer", "forge-project"),
+        )
+        self.assertEqual(
+            route.ep_consumer_revoker.expected_artifact,
+            self.components["engineering-platform-server"].artifact,
+        )
         self.assertEqual(route.forge_instance_id, "forge-prod")
         self.assertEqual(route.engineering_platform_instance_id, "ep-prod")
         with self.assertRaises(TypeError):
@@ -324,6 +338,23 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "deployment identities"):
             ReleasedManagedProductRouteBuilder.build(
                 configurations=(self.config, self.config),
+                candidate_selections=(self.selection,),
+            )
+
+    def test_routes_reject_shared_ep_consumer_scope_across_deployments(self):
+        other = self.configuration(
+            deployment_id="production-other",
+            forge_target=replace(self.config.forge_target, instance_id="forge-other"),
+            engineering_platform_target=replace(
+                self.config.engineering_platform_target, instance_id="ep-other"
+            ),
+            pairing_binding=replace(
+                self.config.pairing_binding, expected_ep_instance_id="ep-other"
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "scope is shared"):
+            ReleasedManagedProductRouteBuilder.build(
+                configurations=(self.config, other),
                 candidate_selections=(self.selection,),
             )
 
