@@ -80,6 +80,7 @@ TESTS = (
     "tests/installer/test_managed_product_removal_dispatch.py",
     "tests/installer/test_managed_product_removal_review.py",
     "tests/installer/test_managed_product_removal_proposal.py",
+    "tests/installer/test_managed_product_removal_review_worker.py",
     "tests/installer/test_managed_product_operation_dispatch.py",
     "tests/installer/test_managed_product_operation_service.py",
     "tests/installer/test_managed_pairing.py",

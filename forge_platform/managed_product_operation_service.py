@@ -30,6 +30,11 @@ from .managed_product_operation_dispatch import (
 from .managed_product_removal_admission import (
     NativeProductRemovalRequest, decode_native_product_removal_request,
 )
+from .managed_product_removal_proposal import (
+    NativeProductRemovalReviewIntent,
+    decode_native_product_removal_review_intent,
+    prepare_native_product_removal_review,
+)
 from .managed_product_removal_dispatch import ManagedProductRemovalDispatcher
 from .managed_installer import ManagedDeploymentExecutionRecord
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
@@ -176,6 +181,27 @@ class PinnedManagedProductOperationAuthorityResolver:
         if installed is None:
             raise ManagedProductOperationServiceError(
                 "installed removal composition authority is unavailable"
+            )
+        return installed
+
+    def resolve_installed_review(
+        self, intent: NativeProductRemovalReviewIntent
+    ) -> CompositionManifest:
+        """Select one pinned installed composition for read-only review."""
+
+        if not isinstance(intent, NativeProductRemovalReviewIntent):
+            raise TypeError("decoded native removal review intent is required")
+        if intent.installer_release != self.current_installer_release:
+            raise ManagedProductOperationServiceError(
+                "installer release authority changed for removal review"
+            )
+        installed = self._installed_manifests.get((
+            intent.installed_composition_identity,
+            intent.installed_manifest_sha256,
+        ))
+        if installed is None:
+            raise ManagedProductOperationServiceError(
+                "installed removal review composition authority is unavailable"
             )
         return installed
 
@@ -405,6 +431,27 @@ class ManagedProductOperationHelperService:
         except Exception as error:
             raise ManagedProductOperationServiceError(
                 "native product removal was rejected"
+            ) from error
+
+    def prepare_removal_review(self, canonical_intent: bytes) -> bytes:
+        """Produce one read-only proposal from the dispatcher's exact registry."""
+
+        try:
+            if (
+                not isinstance(self.authority_resolver, PinnedManagedProductOperationAuthorityResolver)
+                or not isinstance(self.removal_dispatcher, ManagedProductRemovalDispatcher)
+            ):
+                raise TypeError("released removal review authority is unavailable")
+            intent = decode_native_product_removal_review_intent(canonical_intent)
+            manifest = self.authority_resolver.resolve_installed_review(intent)
+            return prepare_native_product_removal_review(
+                canonical_intent, installed_manifest=manifest,
+                registry=self.removal_dispatcher.coordinator.registry,
+                current_installer_release=self.authority_resolver.current_installer_release,
+            )
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "native product removal review was rejected"
             ) from error
 
 
