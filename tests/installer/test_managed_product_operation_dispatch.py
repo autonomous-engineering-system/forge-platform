@@ -16,6 +16,7 @@ from forge_platform.managed_product_operation_dispatch import (
     ManagedProductOperationDispatcher,
     PinnedManagedProductRouteResolver,
     ResolvedManagedProductRoute,
+    _component_request,
 )
 from tests.installer.test_managed_install_flow import Adapter, Guard, Pairer
 from tests.installer.test_managed_product_operation_admission import (
@@ -86,6 +87,21 @@ def route(*, forge="forge-new", ep="ep-new", pending_ep=False, degrade_ep=False)
 
 
 class ManagedProductOperationDispatchTests(unittest.TestCase):
+    def test_update_component_request_binds_reviewed_product_assessment(self) -> None:
+        installed, candidate = manifests()
+        native = decoded(request_payload(candidate, installed=installed))
+        selected = route(forge="forge-prod", ep="ep-prod")
+        artifacts = {component.identity: component.artifact for component in candidate.components}
+        for operation in native.components:
+            product = _component_request(
+                native.request_fingerprint, operation, artifacts[operation.identity],
+                "server", selected, readback=False,
+            )
+            self.assertEqual(product.product_request, {
+                "reviewed_update_assessment_reference": operation.update_assessment_reference,
+            })
+            self.assertEqual(product.kind, "update")
+
     def test_pinned_resolver_snapshots_exact_helper_owned_route(self) -> None:
         _installed, candidate = manifests()
         with tempfile.TemporaryDirectory() as directory:

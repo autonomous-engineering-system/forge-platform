@@ -354,7 +354,10 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             raise ForgeServerAdapterError("Forge adapter supports only the Forge Server runtime role")
         if request.installation_identity != self.target.instance_id:
             raise ForgeServerAdapterError("Forge request does not target the initialized product instance")
-        if request.product_request:
+        if request.product_request and (
+            request.kind != "update"
+            or set(request.product_request) != {"reviewed_update_assessment_reference"}
+        ):
             raise ForgeServerAdapterError("Forge adapter accepts no generic product_request extension")
 
     def configure_provider_context(
@@ -577,6 +580,13 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         )
 
     def _execute_update(self, request: ComponentOperationRequest) -> str:
+        reviewed_assessment = request.product_request.get("reviewed_update_assessment_reference")
+        if (
+            not isinstance(reviewed_assessment, str)
+            or not reviewed_assessment.startswith("forge-update-assess:sha256:")
+            or re.fullmatch(r"[0-9a-f]{64}", reviewed_assessment.removeprefix("forge-update-assess:sha256:")) is None
+        ):
+            raise ForgeServerAdapterError("Forge update lacks reviewed product assessment evidence")
         binding = self.update_binding
         if (
             binding is None or binding.intent_root is None
@@ -586,6 +596,8 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         store = ForgeUpdateIntentStore(binding.intent_root)
         existing = store.read(request.operation_id)
         if existing is not None:
+            if existing.assessment_reference != reviewed_assessment:
+                raise ForgeServerAdapterError("Forge update retry changed reviewed assessment evidence")
             if (
                 self.installed_artifact.version != binding.existing_version
                 and self.installed_artifact != request.artifact
@@ -619,6 +631,8 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         assessment = self.assess_update(request)
         if assessment.state != "UPDATE_AVAILABLE":
             raise ForgeServerAdapterError("Forge product did not authorize the fresh update")
+        if assessment.evidence_reference != reviewed_assessment:
+            raise ForgeServerAdapterError("Forge update assessment drifted after review")
         if existing is not None and existing.assessment_reference != assessment.evidence_reference:
             raise ForgeServerAdapterError("Forge update assessment changed before mutation")
         intended = ForgeUpdateIntent(

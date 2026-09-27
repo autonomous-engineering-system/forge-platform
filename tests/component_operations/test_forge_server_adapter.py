@@ -403,7 +403,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
             self.prepared.instance_id, "server", {},
         )
         self.assertEqual(self.adapter.assess_update(req).state, "UNKNOWN")
-        with self.assertRaisesRegex(Exception, "durable update binding"):
+        with self.assertRaisesRegex(Exception, "reviewed product assessment"):
             self.adapter.execute(req)
 
     def test_forge_2735_product_owned_update_assessment_binds_exact_identity(self) -> None:
@@ -922,10 +922,13 @@ class ForgeServerAdapterTests(unittest.TestCase):
             readiness_probe=Probe(),
             update_binding=binding,
         )
-        req = ComponentOperationRequest(
+        draft_req = ComponentOperationRequest(
             "forge-update-0001", "forge-runtime", "update", candidate,
             self.prepared.instance_id, "server", {},
         )
+        req = replace(draft_req, product_request={
+            "reviewed_update_assessment_reference": adapter.assess_update(draft_req).evidence_reference,
+        })
         receipt = adapter.execute(req)
         self.assertEqual(receipt.state, "COMPLETED")
         self.assertTrue(receipt.evidence_reference.startswith("forge-update:sha256:"))
@@ -958,7 +961,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
         )
         other_request = ComponentOperationRequest(
             req.operation_id, "forge-runtime", "update", candidate,
-            other_target.instance_id, "server", {},
+            other_target.instance_id, "server", req.product_request,
         )
         with self.assertRaisesRegex(ForgeServerAdapterError, "exact operation selection"):
             other_adapter.execute(other_request)
@@ -967,9 +970,36 @@ class ForgeServerAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ForgeServerAdapterError, "installed artifact changed"):
             adapter.execute(replace(req, artifact=changed_candidate))
 
+        wrong_review_root = root / "update-intents-wrong-review"
+        wrong_review_root.mkdir(mode=0o700)
+        runner.updated = False
+        self.supervisor.running = True
+        wrong_review_adapter = ForgeServerProductAdapter(
+            forge_executable=Path("/opt/forge/bin/forge"),
+            lifecycle_executable=Path("/opt/forge/lifecycle-2.7.35/bin/forge"),
+            target=self.target, installed_artifact=ARTIFACT,
+            staged_artifacts={candidate.digest: wheel}, supervisor=self.supervisor,
+            runner=runner, readiness_probe=Probe(),
+            update_binding=replace(binding, intent_root=wrong_review_root),
+        )
+        before_wrong_review = tuple(self.supervisor.calls)
+        with self.assertRaisesRegex(ForgeServerAdapterError, "drifted after review"):
+            wrong_review_adapter.execute(replace(
+                req, operation_id="forge-update-wrong-review",
+                product_request={
+                    "reviewed_update_assessment_reference": "forge-update-assess:sha256:" + "0" * 64,
+                },
+            ))
+        self.assertEqual(tuple(self.supervisor.calls), before_wrong_review)
+
         prepared_root = root / "update-intents-prepared"
         prepared_root.mkdir(mode=0o700)
-        prepared_request = replace(req, operation_id="forge-update-prepared")
+        prepared_request = replace(
+            req, operation_id="forge-update-prepared",
+            product_request={
+                "reviewed_update_assessment_reference": "forge-update-assess:sha256:" + "0" * 64,
+            },
+        )
         prepared_store = ForgeUpdateIntentStore(prepared_root)
         prepared_store.prepare(ForgeUpdateIntent(
             prepared_request.operation_id, prepared_request.fingerprint(),
@@ -987,7 +1017,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
             update_binding=replace(binding, intent_root=prepared_root),
         )
         pre_drift_calls = tuple(self.supervisor.calls)
-        with self.assertRaisesRegex(ForgeServerAdapterError, "assessment changed"):
+        with self.assertRaisesRegex(ForgeServerAdapterError, "assessment drifted after review"):
             prepared_adapter.execute(prepared_request)
         self.assertEqual(tuple(self.supervisor.calls), pre_drift_calls)
         call = next(call for call in runner.calls if call[0] == "/opt/forge/bin/update-installed-forge")
@@ -1018,7 +1048,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
             )
             retry_req = ComponentOperationRequest(
                 f"forge-update-bad-{index}", "forge-runtime", "update", candidate,
-                self.prepared.instance_id, "server", {},
+                self.prepared.instance_id, "server", req.product_request,
             )
             with self.assertRaisesRegex(ForgeServerAdapterError, "terminal product receipt"):
                 retry.execute(retry_req)
@@ -1052,7 +1082,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ForgeServerAdapterError, "fresh update"):
             stale.execute(ComponentOperationRequest(
                 "forge-update-stale", "forge-runtime", "update", candidate,
-                self.prepared.instance_id, "server", {},
+                self.prepared.instance_id, "server", req.product_request,
             ))
         self.assertEqual(self.supervisor.calls, [])
         runner.assessment_state = "UPDATE_AVAILABLE"
@@ -1078,7 +1108,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ForgeServerAdapterError, "restore exact instance readiness"):
             not_ready_request = ComponentOperationRequest(
                 "forge-update-not-ready", "forge-runtime", "update", candidate,
-                self.prepared.instance_id, "server", {},
+                self.prepared.instance_id, "server", req.product_request,
             )
             not_ready.execute(not_ready_request)
         self.assertEqual(ForgeUpdateIntentStore(intent_root).read(not_ready_request.operation_id).phase, "PRODUCT_COMPLETE")
