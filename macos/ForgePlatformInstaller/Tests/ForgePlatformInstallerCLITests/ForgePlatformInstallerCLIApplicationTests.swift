@@ -359,7 +359,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
-    func testReadySelfUpdateApplyIsNoOpCurrentAndRemoveSurfacesProducerBlocker() async throws {
+    func testReadySelfUpdateApplyIsNoOpCurrentAndRemoveRequiresExactOperation() async throws {
         let coordinator = CLIReadyCoordinator()
         let current = try release("1.2.3")
         let currentStartup = CLIStartupSpy(
@@ -378,8 +378,18 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             startup: currentStartup,
             version: "1.2.3"
         )
-        XCTAssertEqual(remove.code, InstallerCLIExitCode.executionFailed.rawValue)
-        XCTAssertTrue(remove.stderr.joined().contains("nog niet verbonden"))
+        XCTAssertEqual(remove.code, InstallerCLIExitCode.usage.rawValue)
+        XCTAssertTrue(remove.stderr.joined().contains("Usage"))
+
+        let reviewedRoute = await run(
+            ["deployment", "remove", "--deployment", "production",
+             "--operation-id", "remove-one", "--component", "forge-runtime",
+             "--yes", "--non-interactive", "--json"],
+            startup: currentStartup,
+            version: "1.2.3"
+        )
+        XCTAssertEqual(reviewedRoute.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(reviewedRoute.stdout.joined().contains("removal-review-blocked"))
     }
 
     func testHelperRegistrationRequiresConsentAndFreshCurrency() async throws {
