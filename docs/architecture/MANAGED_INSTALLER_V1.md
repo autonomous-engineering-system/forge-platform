@@ -198,8 +198,14 @@ typed inventory, exact passing preflight, Forge+EP review, managed-Python
 readback and catalog-declared managed-tool actions. Noncanonical bytes,
 unlisted deployments, correlation drift, partial responses and helper errors
 fail closed. The release bundle now carries a distinct helper executable code
-object and exact LaunchDaemon plist, but its exported handlers deliberately
-return no authority until the production backend is composed and qualified.
+object and exact LaunchDaemon plist. Its released-route listener reads only
+canonical evidence from one fixed helper-owned machine root. It opens that
+root and each digest-derived route file without following links and requires
+root ownership, `0700`/`0600` modes, one file link and stable descriptor
+identity before replying. Product mutation and post-tool handlers still return
+no authority until their production backends are composed and qualified. The
+separate verified publisher that creates route evidence is also still absent,
+so a fresh host remains fail-closed rather than accepting app-supplied state.
 
 The native ServiceManagement registration boundary is now explicit as well.
 It fixes one `SMAppService` LaunchDaemon plist name, bundle-relative helper
@@ -212,8 +218,9 @@ arm64 helper under `Contents/Resources`, and the signer signs that nested code
 object first with the exact helper identifier before sealing the app. The
 strict archive producer rejects a missing helper or plist. These source and
 bundle controls do not treat a successful registration API return as reboot or
-helper-backend evidence; production backend wiring, live registration and cold
-reboot readback are still required.
+complete helper-backend evidence; verified route publication, product and
+post-tool backend wiring, live registration and cold reboot readback are still
+required.
 
 The native core now also defines a canonical product-operation bridge for the
 exact Forge+EP pair. Its request is rebuilt from that stable plan and terminal

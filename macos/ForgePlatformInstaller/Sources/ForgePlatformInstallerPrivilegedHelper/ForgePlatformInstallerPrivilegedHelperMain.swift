@@ -18,9 +18,9 @@ protocol ManagedInstallerPrivilegedHelperRuntimeRunning: AnyObject {
     func invalidate()
 }
 
-/// This first executable boundary deliberately exports only fail-closed
-/// handlers. The signed helper can be packaged and registered without granting
-/// product-mutation authority before its released backend is composed.
+/// Product mutation and post-tool observation remain fail-closed until their
+/// released backends are composed. Released-route reads use a separate
+/// helper-owned store and never enter this fallback.
 final class UnavailableManagedInstallerPrivilegedHelperBackend:
     NSObject,
     ManagedInstallerProductOperationXPCService,
@@ -75,6 +75,7 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
                 .appleTeamIdentifier
         )
         let backend = UnavailableManagedInstallerPrivilegedHelperBackend()
+        let releasedRouteBackend = FileManagedInstallerReleasedRouteXPCService()
         let postToolListener = MacOSManagedInstallerPostToolObservationXPCListener(
             callerIdentity: postToolIdentity,
             serviceHandler: backend
@@ -85,7 +86,7 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
         )
         let routeListener = MacOSManagedInstallerReleasedRouteXPCListener(
             callerIdentity: productIdentity,
-            serviceHandler: backend
+            serviceHandler: releasedRouteBackend
         )
         self.init(
             activateListeners: [
