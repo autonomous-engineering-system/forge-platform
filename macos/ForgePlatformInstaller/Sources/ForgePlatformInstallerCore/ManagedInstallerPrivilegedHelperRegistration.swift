@@ -114,21 +114,28 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
             return receipt(for: .enabled)
         case .requiresApproval:
             return receipt(for: .requiresApproval)
-        case .notFound:
-            return .failed(.serviceUnavailable)
-        case .notRegistered:
+        case .notRegistered, .notFound:
+            // On a fresh Mac ServiceManagement can report notFound before it
+            // has ever seen the bundled daemon. Registration is the only
+            // native way to distinguish that state from a missing service.
+            let registrationFailed: Bool
             do {
                 try service.register()
+                registrationFailed = false
             } catch {
-                return .failed(.registrationFailed)
+                // macOS may return operation-not-permitted while awaiting the
+                // administrator's approval. The fresh native status decides.
+                registrationFailed = true
             }
             switch service.readStatus() {
             case .enabled:
                 return receipt(for: .enabled)
             case .requiresApproval:
                 return receipt(for: .requiresApproval)
-            case .notRegistered, .notFound:
-                return .failed(.statusDrift)
+            case .notRegistered:
+                return .failed(registrationFailed ? .registrationFailed : .statusDrift)
+            case .notFound:
+                return .failed(.serviceUnavailable)
             }
         }
     }

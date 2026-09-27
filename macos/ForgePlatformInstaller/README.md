@@ -187,6 +187,10 @@ startup. It asks for explicit confirmation without `--yes`, rechecks installer
 currency immediately before `SMAppService` registration, and reports native
 `ENABLED` or `REQUIRES_APPROVAL` separately. Registration never implies that
 the product-operation backend or reboot persistence is ready.
+On a Mac where the service has never been seen, native status can initially be
+`NOT_FOUND`; the fixed bundled service is registered once and its status read
+again. A registration error accompanied by native `REQUIRES_APPROVAL` remains
+non-ready until macOS authorization, while a still-missing service fails closed.
 
 That helper may additionally accept
 `--sealed-composition-catalog-trust-resource PATH`. It permits the separately

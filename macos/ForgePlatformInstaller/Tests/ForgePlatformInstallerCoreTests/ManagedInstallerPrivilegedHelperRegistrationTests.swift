@@ -25,20 +25,26 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
     }
 
     func testNotRegisteredServiceMustRegisterAndReadBackEnabled() async {
-        let service = HelperServiceController(statuses: [.notRegistered, .enabled])
-        let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
-            service: service
-        ).ensureRegistered()
+        for initial in [
+            ManagedInstallerPrivilegedHelperStatus.notRegistered,
+            .notFound,
+        ] {
+            let service = HelperServiceController(statuses: [initial, .enabled])
+            let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+                service: service
+            ).ensureRegistered()
 
-        XCTAssertNotNil(result.readyReceipt)
-        XCTAssertEqual(service.registerCount(), 1)
-        XCTAssertEqual(service.statusReadCount(), 2)
+            XCTAssertNotNil(result.readyReceipt)
+            XCTAssertEqual(service.registerCount(), 1)
+            XCTAssertEqual(service.statusReadCount(), 2)
+        }
     }
 
     func testApprovalIsExplicitlyNonReadyBeforeOrAfterRegistration() async throws {
         for statuses in [
             [ManagedInstallerPrivilegedHelperStatus.requiresApproval],
             [.notRegistered, .requiresApproval],
+            [.notFound, .requiresApproval],
         ] {
             let service = HelperServiceController(statuses: statuses)
             let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
@@ -46,16 +52,31 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
             ).ensureRegistered()
             let receipt = try XCTUnwrap(result.approvalReceipt)
             XCTAssertEqual(receipt.status, .requiresApproval)
+            XCTAssertEqual(service.registerCount(), statuses.count == 1 ? 0 : 1)
         }
+    }
+
+    func testRegistrationErrorStillReadsNativeApprovalStatus() async throws {
+        let service = HelperServiceController(
+            statuses: [.notFound, .requiresApproval],
+            registrationFails: true
+        )
+        let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: service
+        ).ensureRegistered()
+
+        XCTAssertEqual(try XCTUnwrap(result.approvalReceipt).status, .requiresApproval)
+        XCTAssertEqual(service.registerCount(), 1)
+        XCTAssertEqual(service.statusReadCount(), 2)
     }
 
     func testMissingFailedAndDriftedRegistrationFailClosed() async {
         let cases: [(HelperServiceController, ManagedInstallerPrivilegedHelperRegistrationFailure)] = [
-            (HelperServiceController(statuses: [.notFound]), .serviceUnavailable),
+            (HelperServiceController(statuses: [.notFound, .notFound]), .serviceUnavailable),
             (HelperServiceController(statuses: [.notRegistered], registrationFails: true),
              .registrationFailed),
             (HelperServiceController(statuses: [.notRegistered, .notRegistered]), .statusDrift),
-            (HelperServiceController(statuses: [.notRegistered, .notFound]), .statusDrift),
+            (HelperServiceController(statuses: [.notRegistered, .notFound]), .serviceUnavailable),
         ]
         for (service, expected) in cases {
             let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
