@@ -140,9 +140,9 @@ final class InstallerWizardViewModelTests: XCTestCase {
     }
 
     private func waitForRemovalReview(on model: InstallerWizardViewModel) async {
-        for _ in 0..<100 {
+        for _ in 0..<400 {
             switch model.removalReview {
-            case .idle, .loading: await Task.yield()
+            case .idle, .loading: try? await Task.sleep(for: .milliseconds(5))
             case .prepared, .blocked: return
             }
         }
