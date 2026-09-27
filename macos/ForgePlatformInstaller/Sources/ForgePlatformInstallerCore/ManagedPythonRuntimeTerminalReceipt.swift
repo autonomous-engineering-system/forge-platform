@@ -285,7 +285,8 @@ public struct ManagedPythonRuntimeTerminalReceiptCoordinator: Sendable {
                 operationID: request.operationID,
                 deploymentID: request.deploymentID,
                 environment: environment,
-                runtimeSlotIdentity: request.runtimeSlotIdentity
+                runtimeSlotIdentity: request.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: request.preparationReceipt.slotEvidenceReference
             )
             switch await readback.readProductVenv(venvRequest) {
             case .success(let receipt?) where receipt.matches(venvRequest):
