@@ -303,7 +303,14 @@ def _validate_minimum_app_layout(entries: Iterable[BundleEntry]) -> None:
     entries = tuple(entries)
     root = entries[0].archive_path.split("/", 1)[0]
     by_path = {entry.archive_path: entry for entry in entries}
-    required_directories = (root, f"{root}/Contents", f"{root}/Contents/MacOS")
+    required_directories = (
+        root,
+        f"{root}/Contents",
+        f"{root}/Contents/MacOS",
+        f"{root}/Contents/Resources",
+        f"{root}/Contents/Library",
+        f"{root}/Contents/Library/LaunchDaemons",
+    )
     if any(by_path.get(path) is None or by_path[path].kind != "directory" for path in required_directories):
         raise ValueError("installer app bundle has no supported macOS app layout")
     info_plist = by_path.get(f"{root}/Contents/Info.plist")
@@ -315,6 +322,21 @@ def _validate_minimum_app_layout(entries: Iterable[BundleEntry]) -> None:
     cli_executable = by_path.get(f"{root}/Contents/MacOS/forge-platform-installer")
     if cli_executable is None or cli_executable.kind != "file" or not cli_executable.permissions & stat.S_IXUSR:
         raise ValueError("installer app bundle has no regular executable forge-platform-installer")
+    helper_executable = by_path.get(
+        f"{root}/Contents/Resources/forge-platform-installer-helper"
+    )
+    if (
+        helper_executable is None
+        or helper_executable.kind != "file"
+        or not helper_executable.permissions & stat.S_IXUSR
+    ):
+        raise ValueError("installer app bundle has no regular privileged helper executable")
+    helper_plist = by_path.get(
+        f"{root}/Contents/Library/LaunchDaemons/"
+        "com.autonomous-engineering-system.forge-platform-installer.helper.plist"
+    )
+    if helper_plist is None or helper_plist.kind != "file":
+        raise ValueError("installer app bundle has no regular privileged helper LaunchDaemon plist")
 
 
 def _zip_info(entry: BundleEntry) -> zipfile.ZipInfo:
@@ -363,7 +385,13 @@ def _write_regular_file(archive: zipfile.ZipFile, entry: BundleEntry) -> None:
         with os.fdopen(descriptor, "rb", closefd=False) as source, archive.open(
             _zip_info(entry), "w", force_zip64=False
         ) as destination:
-            if entry.archive_path.endswith("/Contents/MacOS/ForgePlatformInstaller") or entry.archive_path.endswith("/Contents/MacOS/forge-platform-installer"):
+            if (
+                entry.archive_path.endswith("/Contents/MacOS/ForgePlatformInstaller")
+                or entry.archive_path.endswith("/Contents/MacOS/forge-platform-installer")
+                or entry.archive_path.endswith(
+                    "/Contents/Resources/forge-platform-installer-helper"
+                )
+            ):
                 require_thin_arm64_macho_header(
                     source.read(32),
                     "installer archive executable",

@@ -76,14 +76,17 @@ sh scripts/validate.sh >"$private/repository-validation.log" 2>&1 || fail reposi
   swift test >"$private/swift-tests.log" 2>&1
   swift build -c release --product ForgePlatformInstaller >"$private/swift-build-gui.log" 2>&1
   swift build -c release --product forge-platform-installer >"$private/swift-build-cli.log" 2>&1
+  swift build -c release --product forge-platform-installer-helper >"$private/swift-build-helper.log" 2>&1
 ) || fail native-build-or-tests-failed
 
 bin_dir="$(cd macos/ForgePlatformInstaller && swift build -c release --show-bin-path)"
 gui="$bin_dir/ForgePlatformInstaller"
 cli="$bin_dir/forge-platform-installer"
-[[ -x "$gui" && -x "$cli" ]] || fail release-binaries-missing
+helper="$bin_dir/forge-platform-installer-helper"
+[[ -x "$gui" && -x "$cli" && -x "$helper" ]] || fail release-binaries-missing
 file "$gui" | grep -Fq 'arm64' || fail gui-not-arm64
 file "$cli" | grep -Fq 'arm64' || fail cli-not-arm64
+file "$helper" | grep -Fq 'arm64' || fail helper-not-arm64
 
 provenance="$private/ForgePlatformInstallerReleaseProvenance.json"
 python3 scripts/prepare_offline_installer_resources.py \
@@ -98,6 +101,7 @@ app="$work/ForgePlatformInstaller.app"
 python3 scripts/package_macos_installer_app.py \
   --executable "$gui" \
   --cli-executable "$cli" \
+  --helper-executable "$helper" \
   --sealed-release-trust-resource "$FORGE_PLATFORM_RELEASE_TRUST_RESOURCE" \
   --sealed-release-provenance-resource "$provenance" \
   --sealed-composition-catalog-trust-resource "$FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE" \
@@ -148,10 +152,13 @@ PY
 }
 
 # Sign every executable code object explicitly, then seal the app bundle.
+bounded "$private/codesign-helper.log" codesign --force --options runtime --timestamp --identifier "com.autonomous-engineering-system.forge-platform-installer.helper" --sign "$selected_hash" "$app/Contents/Resources/forge-platform-installer-helper" || fail helper-signing-failed
 bounded "$private/codesign-cli.log" codesign --force --options runtime --timestamp --sign "$selected_hash" "$app/Contents/MacOS/forge-platform-installer" || fail cli-signing-failed
 bounded "$private/codesign-gui.log" codesign --force --options runtime --timestamp --sign "$selected_hash" "$app/Contents/MacOS/ForgePlatformInstaller" || fail gui-signing-failed
 bounded "$private/codesign-app.log" codesign --force --options runtime --timestamp --sign "$selected_hash" "$app" || fail app-signing-failed
 bounded "$private/codesign-verify.log" codesign --verify --strict --deep "$app" || fail signed-app-verification-failed
+helper_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"com.autonomous-engineering-system.forge-platform-installer.helper\""
+bounded "$private/codesign-helper-requirement.log" codesign --verify --strict "-R=$helper_requirement" "$app/Contents/Resources/forge-platform-installer-helper" || fail signed-helper-identity-failed
 requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"$(python3 scripts/validate_installer_release_identity.py --field bundle_identifier)\""
 bounded "$private/codesign-requirement.log" codesign --verify --strict "-R=$requirement" "$app" || fail signed-app-identity-failed
 

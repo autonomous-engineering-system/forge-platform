@@ -197,18 +197,23 @@ URL, environment value or credential. The helper response reconstructs the
 typed inventory, exact passing preflight, Forge+EP review, managed-Python
 readback and catalog-declared managed-tool actions. Noncanonical bytes,
 unlisted deployments, correlation drift, partial responses and helper errors
-fail closed. This transport still requires the signed helper executable and
-its production backend to be installed before the released app can use it.
+fail closed. The release bundle now carries a distinct helper executable code
+object and exact LaunchDaemon plist, but its exported handlers deliberately
+return no authority until the production backend is composed and qualified.
 
 The native ServiceManagement registration boundary is now explicit as well.
 It fixes one `SMAppService` LaunchDaemon plist name, bundle-relative helper
 program and the exact three Mach services at compile time. Registration is
 followed by an independent status readback; only `ENABLED` is ready,
 `REQUIRES_APPROVAL` remains visible and non-ready, and missing, failed or
-drifted registration fails closed. This boundary neither manufactures a plist
-nor treats a successful registration API return as reboot or helper-backend
-evidence. The helper binary, signed bundle layout and live reboot readback are
-still required.
+drifted registration fails closed. The deterministic packager writes that
+exact plist under `Contents/Library/LaunchDaemons`, places the separate thin
+arm64 helper under `Contents/Resources`, and the signer signs that nested code
+object first with the exact helper identifier before sealing the app. The
+strict archive producer rejects a missing helper or plist. These source and
+bundle controls do not treat a successful registration API return as reboot or
+helper-backend evidence; production backend wiring, live registration and cold
+reboot readback are still required.
 
 The native core now also defines a canonical product-operation bridge for the
 exact Forge+EP pair. Its request is rebuilt from that stable plan and terminal

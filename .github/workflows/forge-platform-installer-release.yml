@@ -185,10 +185,12 @@ jobs:
           python3 ../../scripts/check_managed_installer_swift_coverage.py "$COVERAGE_PATH" --minimum 80.2 --base-ref "$COVERAGE_BASE_SHA"
           swift build -c release --product ForgePlatformInstaller
           swift build -c release --product forge-platform-installer
+          swift build -c release --product forge-platform-installer-helper
           BINARY_DIRECTORY="$(swift build -c release --show-bin-path)"
           cd ../..
           test -x "$BINARY_DIRECTORY/ForgePlatformInstaller"
           test -x "$BINARY_DIRECTORY/forge-platform-installer"
+          test -x "$BINARY_DIRECTORY/forge-platform-installer-helper"
           mkdir release-input
           python3 scripts/prepare_offline_installer_resources.py \
             --release-trust-resource release-trust/ForgePlatformInstallerReleaseTrust.json \
@@ -201,6 +203,7 @@ jobs:
           python3 scripts/package_macos_installer_app.py \
             --executable "$BINARY_DIRECTORY/ForgePlatformInstaller" \
             --cli-executable "$BINARY_DIRECTORY/forge-platform-installer" \
+            --helper-executable "$BINARY_DIRECTORY/forge-platform-installer-helper" \
             --output release-input/ForgePlatformInstaller.app \
             --bundle-identifier "$BUNDLE_IDENTIFIER" \
             --sealed-release-trust-resource release-trust/ForgePlatformInstallerReleaseTrust.json \
@@ -209,6 +212,8 @@ jobs:
           test -f release-input/ForgePlatformInstaller.app/Contents/Info.plist
           test -x release-input/ForgePlatformInstaller.app/Contents/MacOS/ForgePlatformInstaller
           test -x release-input/ForgePlatformInstaller.app/Contents/MacOS/forge-platform-installer
+          test -x release-input/ForgePlatformInstaller.app/Contents/Resources/forge-platform-installer-helper
+          test -f release-input/ForgePlatformInstaller.app/Contents/Library/LaunchDaemons/com.autonomous-engineering-system.forge-platform-installer.helper.plist
           ARCHIVE="$ASSET_PREFIX$ARCHITECTURE.zip"
           python3 scripts/package_macos_installer_archive.py \
             --app-bundle release-input/ForgePlatformInstaller.app \
