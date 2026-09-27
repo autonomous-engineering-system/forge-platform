@@ -2,11 +2,23 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from hashlib import sha256
+import json
 import unittest
 from unittest.mock import patch
 
 from forge_platform.forge_server_adapter import ForgeUninstallBinding
 from forge_platform.managed_install_flow import ManagedForgeEPInstallationCoordinator
+from forge_platform.managed_installer import (
+    ManagedComponentExecution, ManagedDeploymentExecutionRecord,
+)
+from forge_platform.managed_product_operation_dispatch import (
+    ManagedProductOperationDispatcher, PinnedManagedProductRouteResolver,
+)
+from forge_platform.managed_product_operation_service import (
+    ManagedProductOperationHelperService, ManagedProductOperationServiceError,
+    PinnedManagedProductOperationAuthorityResolver,
+)
 from forge_platform.managed_product_removal_dispatch import (
     ManagedProductRemovalDispatcher, ManagedProductRemovalDispatchError,
 )
@@ -185,6 +197,98 @@ class ManagedProductRemovalDispatchTests(unittest.TestCase):
             dispatcher.admit_or_restore(
                 admitted.request, installed_manifest=admitted.installed_manifest,
             )
+    def test_helper_service_emits_bounded_secret_free_terminal_receipt(self):
+        payload = self.admission.payload()
+        admitted = self.admission.admit(payload)
+        route = self.route()
+        dispatcher = self.dispatcher(route)
+        resolver = PinnedManagedProductOperationAuthorityResolver(
+            current_installer_release=self.admission.release,
+            manifests=(self.admission.manifest,),
+        )
+        product_dispatcher = ManagedProductOperationDispatcher(
+            coordinator=self.coordinator,
+            resolver=PinnedManagedProductRouteResolver({"deployment-a": route}),
+        )
+        service = ManagedProductOperationHelperService(
+            authority_resolver=resolver, dispatcher=product_dispatcher,
+            removal_dispatcher=dispatcher,
+        )
+        components = tuple(
+            ManagedComponentExecution(
+                diff.component, diff.instance_id, diff.action,
+                None if diff.action == "NO_CHANGE" else "child-forge",
+                "UNCHANGED" if diff.action == "NO_CHANGE" else "COMPLETE",
+                None if diff.action == "NO_CHANGE" else "private-product-receipt",
+            )
+            for diff in admitted.plan.component_diffs
+        )
+        record = ManagedDeploymentExecutionRecord(
+            "remove-a", "deployment-a",
+            "sha256:" + admitted.request.reviewed_plan_sha256,
+            1, components, "COMPLETE", 2,
+        )
+        def complete(*_args, **_kwargs):
+            if self.admission.registry.load("deployment-a").revision == 1:
+                self.admission.registry.replace(
+                    replace(admitted.plan.desired, revision=2), expected_revision=1,
+                )
+            return record
+
+        with patch(
+            "forge_platform.managed_product_removal_dispatch.ManagedPairedForgeComponentRemovalCoordinator"
+        ) as coordinator:
+            coordinator.return_value.remove.side_effect = complete
+            response = service.execute_removal(admission_fixtures.canonical(payload))
+            replay = service.execute_removal(admission_fixtures.canonical(payload))
+        self.assertEqual(replay, response)
+        self.assertNotIn(b"private-product-receipt", response)
+        decoded = json.loads(response)
+        self.assertEqual(decoded["state"], "COMPLETE")
+        self.assertEqual(decoded["registry_revision"], 2)
+        self.assertEqual(decoded["request_fingerprint"], payload["request_fingerprint"])
+        self.assertEqual(
+            decoded["components"][1]["product_receipt_digest"],
+            "sha256:" + sha256(b"private-product-receipt").hexdigest(),
+        )
+
+    def test_helper_service_pending_receipt_never_claims_terminal_completion(self):
+        payload = self.admission.payload(action="REMOVE_DEPLOYMENT")
+        admitted = self.admission.admit(payload)
+        route = self.route()
+        dispatcher = self.dispatcher(route)
+        service = ManagedProductOperationHelperService(
+            authority_resolver=PinnedManagedProductOperationAuthorityResolver(
+                current_installer_release=self.admission.release,
+                manifests=(self.admission.manifest,),
+            ),
+            dispatcher=ManagedProductOperationDispatcher(
+                coordinator=self.coordinator,
+                resolver=PinnedManagedProductRouteResolver({"deployment-a": route}),
+            ),
+            removal_dispatcher=dispatcher,
+        )
+        components = tuple(
+            ManagedComponentExecution(
+                diff.component, diff.instance_id, diff.action,
+                "child-" + diff.component, "RECOVERY_PENDING", None,
+            )
+            for diff in admitted.plan.component_diffs
+        )
+        pending = ManagedDeploymentExecutionRecord(
+            "remove-a", "deployment-a",
+            "sha256:" + admitted.request.reviewed_plan_sha256,
+            1, components, "RECOVERY_PENDING", None,
+        )
+        with patch.object(dispatcher, "dispatch", return_value=pending):
+            response = service.execute_removal(admission_fixtures.canonical(payload))
+        self.assertEqual(json.loads(response)["state"], "RECOVERY_PENDING")
+        self.assertEqual(self.admission.registry.load("deployment-a"), admitted.reviewed_current)
+        with patch.object(dispatcher, "dispatch", return_value=replace(
+            pending, plan_fingerprint="sha256:" + "0" * 64,
+        )):
+            with self.assertRaisesRegex(ManagedProductOperationServiceError, "rejected"):
+                service.execute_removal(admission_fixtures.canonical(payload))
 
 
 if __name__ == "__main__":

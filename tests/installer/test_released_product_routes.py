@@ -22,6 +22,7 @@ from forge_platform.managed_deployments import ManagedDeploymentRegistry
 from forge_platform.managed_product_operation_service import (
     ManagedProductOperationHelperBuilder,
 )
+from forge_platform.managed_product_removal_dispatch import ManagedProductRemovalDispatcher
 from forge_platform.released_product_routes import (
     ReleasedManagedProductRouteBuilder,
     ReleasedManagedProductRouteConfiguration,
@@ -226,6 +227,8 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
         )
 
         self.assertIs(service.dispatcher.coordinator, product_coordinator)
+        self.assertIsInstance(service.removal_dispatcher, ManagedProductRemovalDispatcher)
+        self.assertIs(service.removal_dispatcher.coordinator, product_coordinator)
         self.assertEqual(
             service.authority_resolver.current_installer_release.version,
             "1.1.0",
