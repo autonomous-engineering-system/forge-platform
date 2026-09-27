@@ -502,17 +502,22 @@ private struct ManagedPythonTarInspector {
         let mode = try octal(header[100..<108])
         let size = try octal(header[124..<136])
         let type = header[156]
+        guard mode <= 0o777,
+              mode & 0o022 == 0 else {
+            throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
+        }
         entryCount += 1
         switch type {
         case 0, 0x30:
-            guard !path.hasSuffix("/"), size <= maximumExpandedBytes else {
+            guard !path.hasSuffix("/"), size <= maximumExpandedBytes,
+                  mode & 0o400 != 0 else {
                 throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
             }
             let limit: UInt64?
             if path == ManagedPythonRuntimeArchiveInspection.manifestPath {
                 limit = maximumManifestBytes
             } else if path == ManagedPythonRuntimeArchiveInspection.interpreterRelativePath {
-                guard mode & 0o111 != 0 else {
+                guard mode & 0o100 != 0 else {
                     throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
                 }
                 limit = maximumInterpreterBytes
@@ -529,7 +534,7 @@ private struct ManagedPythonTarInspector {
                 collected: limit == nil ? nil : Data()
             )
         case 0x35:
-            guard size == 0, path.hasSuffix("/") else {
+            guard size == 0, path.hasSuffix("/"), mode & 0o500 == 0o500 else {
                 throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
             }
             if path == "bin/" { sawBinDirectory = true }
