@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import sys
@@ -176,9 +177,20 @@ class EPSystemAdapterTests(unittest.TestCase):
     def test_update_assessment_and_execute_keep_exact_target(self) -> None:
         assessment = self.adapter.assess_update(request("update"))
         self.assertEqual(assessment.state, "UPDATE_AVAILABLE")
-        receipt = self.adapter.execute(request("update"))
+        reviewed = replace(request("update"), product_request={
+            "reviewed_update_assessment_reference": assessment.evidence_reference,
+        })
+        receipt = self.adapter.execute(reviewed)
         self.assertEqual(receipt.state, "COMPLETED")
         self.assertIn("update-execute", self.runner.calls[-1])
+        prior_updates = len([call for call in self.runner.calls if "update-execute" in call])
+        with self.assertRaisesRegex(EngineeringPlatformAdapterError, "drifted after review"):
+            self.adapter.execute(replace(reviewed, product_request={
+                "reviewed_update_assessment_reference": "ep-update-assess:sha256:" + "0" * 64,
+            }))
+        self.assertEqual(
+            len([call for call in self.runner.calls if "update-execute" in call]), prior_updates,
+        )
 
     def test_remove_confirms_exact_instance_and_post_readback_is_absent(self) -> None:
         self.runner.inventory_instances = [{

@@ -14,6 +14,7 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
     public let installedVersion: String?
     public let candidateVersion: String
     public let artifactSHA256: String
+    public let updateAssessmentReference: String?
 
     init(component: ComponentDiff) throws {
         try self.init(
@@ -21,7 +22,8 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
             change: component.change,
             installedVersion: component.installedVersion,
             candidateVersion: component.candidateVersion,
-            artifactSHA256: component.artifactDigest
+            artifactSHA256: component.artifactDigest,
+            updateAssessmentReference: component.updateAssessmentReference
         )
     }
 
@@ -30,7 +32,8 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
         change: ComponentChange,
         installedVersion: String?,
         candidateVersion: String?,
-        artifactSHA256: String?
+        artifactSHA256: String?,
+        updateAssessmentReference: String? = nil
     ) throws {
         guard ManagedPythonRuntimeStagingValidation.isOperationID(componentID),
               change != .blocked,
@@ -44,11 +47,25 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
               CompositionCatalogValidation.isTaggedSHA256(artifactSHA256) else {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
         }
+        if change == .update {
+            let prefix = componentID == "forge-runtime"
+                ? "forge-update-assess:" : "ep-update-assess:"
+            guard let updateAssessmentReference,
+                  updateAssessmentReference.hasPrefix(prefix),
+                  CompositionCatalogValidation.isTaggedSHA256(
+                      String(updateAssessmentReference.dropFirst(prefix.count))
+                  ) else {
+                throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
+            }
+        } else if updateAssessmentReference != nil {
+            throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
+        }
         self.componentID = componentID
         self.change = change
         self.installedVersion = installedVersion
         self.candidateVersion = candidateVersion
         self.artifactSHA256 = artifactSHA256
+        self.updateAssessmentReference = updateAssessmentReference
     }
 
     private static func isBoundedVersion(_ value: String) -> Bool {
@@ -66,7 +83,7 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
 /// reviewed actions and evidence references already bound by one reconstructed
 /// terminal `MANAGED_TOOLS` receipt.
 public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
-    public static let schema = "forge-platform.native-product-operation-request/v2"
+    public static let schema = "forge-platform.native-product-operation-request/v3"
     static let maximumBytes = 128 * 1_024
 
     public let stablePlanFingerprint: String
@@ -480,6 +497,9 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             } ?? .null,
             "candidate_version": .string(component.candidateVersion),
             "artifact_sha256": .string(component.artifactSHA256),
+            "update_assessment_reference": component.updateAssessmentReference.map {
+                .string($0)
+            } ?? .null,
         ])
     }
 
@@ -489,14 +509,15 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         guard let fields = value.objectValue,
               Set(fields.keys) == Set([
                   "identity", "change", "installed_version", "candidate_version",
-                  "artifact_sha256",
+                  "artifact_sha256", "update_assessment_reference",
               ]),
               let identity = fields["identity"]?.stringValue,
               let changeValue = fields["change"]?.stringValue,
               let change = ComponentChange(rawValue: changeValue),
               let installedVersionValue = fields["installed_version"],
               let candidateVersion = fields["candidate_version"]?.stringValue,
-              let artifactSHA256 = fields["artifact_sha256"]?.stringValue else {
+              let artifactSHA256 = fields["artifact_sha256"]?.stringValue,
+              let assessmentValue = fields["update_assessment_reference"] else {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
         }
         return try ManagedInstallerProductComponentOperation(
@@ -504,7 +525,8 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             change: change,
             installedVersion: try optionalString(installedVersionValue),
             candidateVersion: candidateVersion,
-            artifactSHA256: artifactSHA256
+            artifactSHA256: artifactSHA256,
+            updateAssessmentReference: try optionalString(assessmentValue)
         )
     }
 

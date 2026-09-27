@@ -23,7 +23,7 @@ from .universal_installer import CompositionManifest
 
 
 NATIVE_PRODUCT_OPERATION_REQUEST_SCHEMA = (
-    "forge-platform.native-product-operation-request/v2"
+    "forge-platform.native-product-operation-request/v3"
 )
 MAXIMUM_NATIVE_PRODUCT_OPERATION_REQUEST_BYTES = 128 * 1_024
 _COMPONENTS = frozenset({"forge-runtime", "engineering-platform-server"})
@@ -42,7 +42,7 @@ _INSTALLER_FIELDS = frozenset({
 })
 _COMPONENT_FIELDS = frozenset({
     "identity", "change", "installed_version", "candidate_version",
-    "artifact_sha256",
+    "artifact_sha256", "update_assessment_reference",
 })
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _PROVIDER_TARGET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,383}$")
@@ -95,6 +95,7 @@ class NativeProductComponentOperation:
     installed_version: str | None
     candidate_version: str
     artifact_sha256: str
+    update_assessment_reference: str | None
 
     def __post_init__(self) -> None:
         if self.identity not in _COMPONENTS or self.change not in _CHANGES:
@@ -103,6 +104,16 @@ class NativeProductComponentOperation:
             _bounded_text(self.installed_version, "installed version", maximum=128)
         _bounded_text(self.candidate_version, "candidate version", maximum=128)
         _digest(self.artifact_sha256, "candidate artifact sha256")
+        if self.change == "update":
+            prefix = (
+                "forge-update-assess:" if self.identity == "forge-runtime"
+                else "ep-update-assess:"
+            )
+            if not isinstance(self.update_assessment_reference, str) or not self.update_assessment_reference.startswith(prefix):
+                raise ValueError("update requires exact product assessment evidence")
+            _digest(self.update_assessment_reference[len(prefix):], "product assessment digest")
+        elif self.update_assessment_reference is not None:
+            raise ValueError("non-update action cannot carry product assessment evidence")
         if self.change == "install" and self.installed_version is not None:
             raise ValueError("install cannot carry an installed version")
         if self.change != "install" and self.installed_version is None:
@@ -377,6 +388,7 @@ def _decode_component(value: object) -> NativeProductComponentOperation:
         installed,
         _typed_string(fields["candidate_version"], "candidate version"),
         _typed_string(fields["artifact_sha256"], "artifact sha256"),
+        fields["update_assessment_reference"],
     )
 
 

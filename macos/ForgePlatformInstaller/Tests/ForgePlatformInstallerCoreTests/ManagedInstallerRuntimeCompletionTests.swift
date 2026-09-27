@@ -547,6 +547,10 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(decoded.components.map(\.installedVersion), ["2.0.0", "1.0.0"])
         XCTAssertEqual(decoded.components.map(\.candidateVersion), ["2.0.0", "1.1.0"])
         XCTAssertEqual(
+            decoded.components.map(\.updateAssessmentReference),
+            [nil, "forge-update-assess:sha256:" + String(repeating: "a", count: 64)]
+        )
+        XCTAssertEqual(
             decoded.components.map(\.artifactSHA256),
             [
                 "sha256:" + String(repeating: "7", count: 64),
@@ -564,6 +568,13 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         )
         XCTAssertEqual(decoded.requestFingerprint.count, 64)
         XCTAssertEqual(decoded.canonicalJSONData(), bytes)
+        XCTAssertThrowsError(try ManagedInstallerProductComponentOperation(
+            componentID: "forge-runtime",
+            change: .update,
+            installedVersion: "1.0.0",
+            candidateVersion: "1.1.0",
+            artifactSHA256: "sha256:" + String(repeating: "8", count: 64)
+        ))
         XCTAssertThrowsError(try ManagedInstallerProductComponentOperation(
             componentID: "forge-runtime",
             change: .remove,

@@ -123,10 +123,14 @@ def request_payload(
             "installed_version": None if previous is None else previous.artifact.version,
             "candidate_version": artifact.version,
             "artifact_sha256": artifact.digest,
+            "update_assessment_reference": (
+                ("forge-update-assess:" if identity == "forge-runtime" else "ep-update-assess:")
+                + "sha256:" + ("a" if identity == "forge-runtime" else "b") * 64
+            ) if exists else None,
         })
     release = installer_release()
     payload: dict[str, object] = {
-        "schema": "forge-platform.native-product-operation-request/v2",
+        "schema": "forge-platform.native-product-operation-request/v3",
         "stable_plan_fingerprint": "1" * 64,
         "operation_id": "operation-one",
         "session_id": "session-one",
@@ -210,6 +214,23 @@ class ManagedProductOperationRequestDecodingTests(unittest.TestCase):
             tuple(component.identity for component in request.components),
             ("engineering-platform-server", "forge-runtime"),
         )
+        self.assertEqual(
+            request.components[1].update_assessment_reference,
+            "forge-update-assess:sha256:" + "a" * 64,
+        )
+
+    def test_update_requires_exact_reviewed_product_assessment(self) -> None:
+        for changed in (None, "forge-update-assess:unavailable", "ep-update-assess:sha256:" + "a" * 64):
+            payload = request_payload(self.candidate, installed=self.installed)
+            payload["components"][1]["update_assessment_reference"] = changed
+            with self.subTest(changed=changed), self.assertRaises(ManagedProductOperationAdmissionError):
+                decoded(_refingerprint(payload))
+        legacy = request_payload(self.candidate, installed=self.installed)
+        legacy["schema"] = "forge-platform.native-product-operation-request/v2"
+        for component in legacy["components"]:
+            component.pop("update_assessment_reference")
+        with self.assertRaises(ManagedProductOperationAdmissionError):
+            decoded(_refingerprint(legacy))
 
     def test_rejects_duplicate_noncanonical_oversized_and_changed_requests(self) -> None:
         payload = request_payload(self.candidate, installed=self.installed)
@@ -416,6 +437,7 @@ class ManagedProductOperationAuthorityTests(unittest.TestCase):
                 )
             payload = request_payload(self.candidate, installed=self.installed)
             payload["components"][0]["change"] = "retain"
+            payload["components"][0]["update_assessment_reference"] = None
             with self.assertRaisesRegex(ManagedProductOperationAdmissionError, "non-update"):
                 admit_native_product_operation(
                     decoded(_refingerprint(payload)),

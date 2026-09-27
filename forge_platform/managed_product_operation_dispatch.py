@@ -331,7 +331,10 @@ def _component_request(
         artifact,
         instance,
         role,
-        {},
+        (
+            {"reviewed_update_assessment_reference": operation.update_assessment_reference}
+            if operation.change == "update" else {}
+        ),
     )
 
 

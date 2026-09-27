@@ -52,6 +52,8 @@ func managedInstallerTestStablePlan(
             installedVersion: "1.0.0",
             candidateVersion: "1.1.0",
             artifactDigest: "sha256:" + String(repeating: "8", count: 64),
+            updateAssessmentReference: "forge-update-assess:sha256:"
+                + String(repeating: "a", count: 64),
             detail: "Exact reviewed Forge update"
         ),
         ComponentDiff(
