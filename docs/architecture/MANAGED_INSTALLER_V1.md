@@ -313,9 +313,10 @@ Python zipapp, copy its captured bytes to the fixed worker resource name and
 bind their exact `sha256:` digest into `Info.plist`. It rejects leaf symlinks,
 non-zipapps, duplicate or unordered entries, traversal names, non-regular or
 non-`0644` entries, variable timestamps, encryption and oversized expansion.
-The release workflow does not yet build or supply that worker, so the installed
-product route remains fail-closed until the executable worker and its native
-published authority are supplied and qualified.
+The unsigned candidate workflow and local offline signer now build and supply
+that worker. The strict archive producer rejects a missing or empty worker
+resource. The installed product route remains fail-closed until a native
+published authority and managed Python runtime are independently qualified.
 
 The repository now also has a deterministic worker builder. It packages the
 complete dependency-closed `forge_platform` Python package with one generated

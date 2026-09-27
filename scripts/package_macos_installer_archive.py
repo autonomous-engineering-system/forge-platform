@@ -331,6 +331,16 @@ def _validate_minimum_app_layout(entries: Iterable[BundleEntry]) -> None:
         or not helper_executable.permissions & stat.S_IXUSR
     ):
         raise ValueError("installer app bundle has no regular privileged helper executable")
+    product_worker = by_path.get(
+        f"{root}/Contents/Resources/forge-platform-product-worker.pyz"
+    )
+    if (
+        product_worker is None
+        or product_worker.kind != "file"
+        or product_worker.size < 1
+        or product_worker.permissions != 0o644
+    ):
+        raise ValueError("installer app bundle has no sealed product-worker resource")
     helper_plist = by_path.get(
         f"{root}/Contents/Library/LaunchDaemons/"
         "com.autonomous-engineering-system.forge-platform-installer.helper.plist"
