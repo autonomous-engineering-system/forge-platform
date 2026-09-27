@@ -1602,6 +1602,14 @@ public protocol InstallerWizardCoordinator: Sendable {
         ManagedInstallerProductRemovalReviewProposal,
         ManagedInstallerProductOperationBridgeFailure
     >
+    /// Executes only a previously reviewed exact helper proposal after a
+    /// fresh installer currency and helper proposal check.
+    func executeReviewedProductRemoval(
+        _ session: ManagedInstallerRemovalReviewSession
+    ) async -> Result<
+        ManagedInstallerProductRemovalReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    >
     /// Prepare exactly one verified composition session for the selected
     /// managed deployment after the mandatory self-update gate. Implementations
     /// must not return catalog bytes, URLs, commands, credentials, product
@@ -1641,6 +1649,16 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func executeReviewedProductRemoval(
+        _ session: ManagedInstallerRemovalReviewSession
+    ) async -> Result<
+        ManagedInstallerProductRemovalReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = session
+        return .failure(.rejected)
+    }
+
     func prepareProductRemovalReview(
         _ intent: ManagedInstallerProductRemovalReviewIntent
     ) async -> Result<

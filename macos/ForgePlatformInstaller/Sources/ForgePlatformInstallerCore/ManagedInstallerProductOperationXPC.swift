@@ -103,7 +103,8 @@ public struct ManagedInstallerProductOperationXPCCallerIdentity: Equatable, Send
 /// used by the post-tool service; this endpoint has its own fixed Mach name.
 public actor MacOSManagedInstallerProductOperationXPCTransport:
     ManagedInstallerProductOperationTransporting,
-    ManagedInstallerProductRemovalReviewTransporting {
+    ManagedInstallerProductRemovalReviewTransporting,
+    ManagedInstallerProductRemovalTransporting {
     public static let machServiceName =
         "com.autonomous-engineering-system.forge-platform-installer.helper.product-operations"
 

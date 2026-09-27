@@ -1,5 +1,13 @@
 import Foundation
 
+/// Fixed signed helper mutation route. Only a previously reviewed canonical
+/// removal request may reach this transport through the released runtime.
+public protocol ManagedInstallerProductRemovalTransporting: Sendable {
+    func executeProductRemoval(
+        _ canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure>
+}
+
 public struct ManagedInstallerProductRemovalComponentReceipt: Equatable, Sendable {
     public let component: String
     public let instanceID: String
