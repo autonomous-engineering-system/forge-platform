@@ -7,21 +7,27 @@ coordinators; those coordinators own the final currency and terminal readback.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 from types import MappingProxyType
 from typing import Mapping
 
 from .component_operations import ComponentOperationRequest
+from .managed_deployments import ManagedDeploymentPlanner
 from .managed_forge_removal import ManagedForgeOnlyRemovalCoordinator
 from .managed_install_flow import EP_COMPONENT, FORGE_COMPONENT, ManagedForgeEPInstallationCoordinator
 from .managed_pairing_revocation import ManagedPairingRevocationCoordinator
+from .managed_installer import ManagedDeploymentOperationCoordinator
 from .managed_paired_deployment_removal import ManagedPairedDeploymentRemovalCoordinator
 from .managed_paired_forge_removal import ManagedPairedForgeComponentRemovalCoordinator
 from .managed_product_operation_admission import NativeInstallerReleaseBinding
 from .managed_product_operation_dispatch import ResolvedManagedProductRoute
 from .managed_product_removal_admission import (
-    AdmittedNativeProductRemoval, admit_native_product_removal,
+    AdmittedNativeProductRemoval, ManagedProductRemovalAdmissionError,
+    NativeProductRemovalRequest, admit_native_product_removal,
 )
+from .managed_product_removal_review import ManagedProductRemovalReviewJournal
+from .universal_installer import CompositionManifest
 
 
 class ManagedProductRemovalDispatchError(RuntimeError):
@@ -79,18 +85,100 @@ class ManagedProductRemovalDispatcher:
             scope_claims=scopes,
             expected_owner_uid=expected_owner_uid,
         ) if scopes else None
+        self.review_journal = ManagedProductRemovalReviewJournal(
+            root=coordinator.operations_root / "removal" / "reviews",
+            registry=coordinator.registry,
+            expected_owner_uid=expected_owner_uid,
+        )
+
+    def admit_or_restore(
+        self, request: NativeProductRemovalRequest,
+        *, installed_manifest: CompositionManifest,
+    ) -> AdmittedNativeProductRemoval:
+        """Admit fresh state or recover only the exact terminal reviewed state."""
+
+        try:
+            return admit_native_product_removal(
+                request, installed_manifest=installed_manifest,
+                registry=self.coordinator.registry,
+                current_installer_release=self.current_installer_release,
+            )
+        except ManagedProductRemovalAdmissionError as error:
+            snapshot = self.review_journal.load(
+                request, installed_manifest=installed_manifest,
+                current_installer_release=self.current_installer_release,
+            )
+            if snapshot is None:
+                raise ManagedProductRemovalDispatchError(
+                    "terminal removal has no durable reviewed snapshot"
+                ) from error
+        reviewed = snapshot.reviewed_current
+        by_component = reviewed.by_component
+        artifacts = {component.identity: component.artifact for component in installed_manifest.components}
+        forge = artifacts.get(FORGE_COMPONENT)
+        ep = artifacts.get(EP_COMPONENT)
+        if (
+            reviewed.revision != request.reviewed_revision
+            or by_component.get(FORGE_COMPONENT) is None
+            or by_component[FORGE_COMPONENT].instance_id != request.forge_instance_id
+            or (by_component.get(EP_COMPONENT).instance_id if EP_COMPONENT in by_component else None)
+            != request.engineering_platform_instance_id
+            or forge is None or forge.version != "2.7.35"
+            or forge.source_revision != "ff4c0d45f51161376104250cd6efcfb6f045b8ac"
+            or EP_COMPONENT in by_component and (
+                ep is None or ep.version != "2.3.102"
+                or ep.source_revision != "cab85a84a6a8b5b574c796713e4363781fc05519"
+            )
+        ):
+            raise ManagedProductRemovalDispatchError("reviewed product authority changed")
+        desired = None
+        if request.action == "REMOVE_COMPONENT":
+            if EP_COMPONENT not in by_component or reviewed.peer_binding is None:
+                raise ManagedProductRemovalDispatchError("reviewed paired topology is unavailable")
+            desired = replace(
+                reviewed, components=(by_component[EP_COMPONENT],), peer_binding=None,
+            )
+        plan = ManagedDeploymentPlanner.plan(reviewed, desired)
+        if (
+            ManagedDeploymentOperationCoordinator._plan_fingerprint(plan)
+            != "sha256:" + request.reviewed_plan_sha256
+        ):
+            raise ManagedProductRemovalDispatchError("reviewed removal plan changed")
+        current = self.coordinator.registry.load(request.deployment_id)
+        if request.action == "REMOVE_DEPLOYMENT":
+            if current is not None:
+                raise ManagedProductRemovalDispatchError("removed deployment changed after review")
+        elif (
+            current is None or desired is None
+            or current != replace(desired, revision=reviewed.revision + 1)
+        ):
+            raise ManagedProductRemovalDispatchError("retained EP deployment changed after review")
+        removed_claims = {
+            (diff.component, diff.instance_id)
+            for diff in plan.component_diffs if diff.action == "REMOVE_COMPONENT"
+        }
+        if any(
+            removed_claims.intersection(
+                (component, item.instance_id)
+                for component, item in deployment.by_component.items()
+            )
+            for deployment in self.coordinator.registry.inventory()
+        ):
+            raise ManagedProductRemovalDispatchError("removed instance was reassigned")
+        return AdmittedNativeProductRemoval(request, reviewed, plan, installed_manifest)
 
     def dispatch(self, admitted: AdmittedNativeProductRemoval):
         if not isinstance(admitted, AdmittedNativeProductRemoval):
             raise TypeError("admitted native product removal is required")
-        fresh = admit_native_product_removal(
-            admitted.request,
-            installed_manifest=admitted.installed_manifest,
-            registry=self.coordinator.registry,
-            current_installer_release=self.current_installer_release,
+        fresh = self.admit_or_restore(
+            admitted.request, installed_manifest=admitted.installed_manifest,
         )
         if fresh != admitted:
             raise ManagedProductRemovalDispatchError("reviewed removal changed before dispatch")
+        if self.coordinator.registry.load(admitted.request.deployment_id) == admitted.reviewed_current:
+            self.review_journal.prepare(
+                admitted, current_installer_release=self.current_installer_release,
+            )
         request = fresh.request
         current = fresh.reviewed_current
         route = self.routes.get(request.deployment_id)
