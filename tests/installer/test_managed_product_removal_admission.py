@@ -19,6 +19,10 @@ from forge_platform.managed_product_removal_admission import (
     ManagedProductRemovalAdmissionError, NATIVE_PRODUCT_REMOVAL_REQUEST_SCHEMA,
     admit_native_product_removal, decode_native_product_removal_request,
 )
+from forge_platform.managed_product_operation_service import (
+    ManagedProductOperationServiceError,
+    PinnedManagedProductOperationAuthorityResolver,
+)
 from tests.installer.test_managed_product_operation_admission import (
     canonical, installer_release,
 )
@@ -185,6 +189,24 @@ class ManagedProductRemovalAdmissionTests(unittest.TestCase):
         with patch.object(self.registry, "inventory", return_value=(self.paired, collision)):
             with self.assertRaisesRegex(ManagedProductRemovalAdmissionError, "shared"):
                 self.admit(payload)
+
+    def test_installed_removal_manifest_is_selected_only_from_pinned_authority(self):
+        resolver = PinnedManagedProductOperationAuthorityResolver(
+            current_installer_release=self.release,
+            manifests=(self.manifest,),
+        )
+        request = decode_native_product_removal_request(canonical(self.payload()))
+        self.assertIs(resolver.resolve_installed_removal(request), self.manifest)
+        with self.assertRaisesRegex(ManagedProductOperationServiceError, "unavailable"):
+            resolver.resolve_installed_removal(replace(
+                request, installed_manifest_sha256="sha256:" + "0" * 64,
+            ))
+        with self.assertRaisesRegex(ManagedProductOperationServiceError, "release"):
+            resolver.resolve_installed_removal(replace(
+                request, installer_release=replace(self.release, version="9.9.9"),
+            ))
+        with self.assertRaises(TypeError):
+            resolver.resolve_installed_removal(object())
 
 
 if __name__ == "__main__":
