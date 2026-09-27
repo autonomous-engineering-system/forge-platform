@@ -192,6 +192,8 @@ jobs:
           test -x "$BINARY_DIRECTORY/forge-platform-installer"
           test -x "$BINARY_DIRECTORY/forge-platform-installer-helper"
           mkdir release-input
+          python3 scripts/build_installer_product_worker.py \
+            --output release-input/forge-platform-product-worker.pyz
           python3 scripts/prepare_offline_installer_resources.py \
             --release-trust-resource release-trust/ForgePlatformInstallerReleaseTrust.json \
             --catalog-trust-resource release-trust/ForgePlatformInstallerCompositionCatalogTrust.json \
@@ -204,6 +206,7 @@ jobs:
             --executable "$BINARY_DIRECTORY/ForgePlatformInstaller" \
             --cli-executable "$BINARY_DIRECTORY/forge-platform-installer" \
             --helper-executable "$BINARY_DIRECTORY/forge-platform-installer-helper" \
+            --product-worker release-input/forge-platform-product-worker.pyz \
             --output release-input/ForgePlatformInstaller.app \
             --bundle-identifier "$BUNDLE_IDENTIFIER" \
             --sealed-release-trust-resource release-trust/ForgePlatformInstallerReleaseTrust.json \
@@ -213,6 +216,7 @@ jobs:
           test -x release-input/ForgePlatformInstaller.app/Contents/MacOS/ForgePlatformInstaller
           test -x release-input/ForgePlatformInstaller.app/Contents/MacOS/forge-platform-installer
           test -x release-input/ForgePlatformInstaller.app/Contents/Resources/forge-platform-installer-helper
+          test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-platform-product-worker.pyz
           test -f release-input/ForgePlatformInstaller.app/Contents/Library/LaunchDaemons/com.autonomous-engineering-system.forge-platform-installer.helper.plist
           ARCHIVE="$ASSET_PREFIX$ARCHITECTURE.zip"
           python3 scripts/package_macos_installer_archive.py \

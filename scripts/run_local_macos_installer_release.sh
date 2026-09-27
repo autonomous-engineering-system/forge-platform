@@ -82,6 +82,8 @@ for binary in ForgePlatformInstaller forge-platform-installer; do
 done
 HELPER="$APP/Contents/Resources/forge-platform-installer-helper"
 test -x "$HELPER" || fail unsigned-helper-missing
+test -f "$APP/Contents/Resources/forge-platform-product-worker.pyz" ||
+  fail unsigned-product-worker-missing
 test -f "$APP/Contents/Library/LaunchDaemons/com.autonomous-engineering-system.forge-platform-installer.helper.plist" ||
   fail unsigned-helper-plist-missing
 codesign --force --options runtime --timestamp \

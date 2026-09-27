@@ -8,12 +8,14 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/forge-platform-installer-release.yml"
 LOCAL_RELEASE = ROOT / "scripts/run_local_macos_installer_release.sh"
+OFFLINE_RELEASE = ROOT / "scripts/ci/offline_macos_installer_sign_and_notarize.sh"
 
 
 class InstallerReleaseWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = WORKFLOW.read_text(encoding="utf-8")
         self.local_release = LOCAL_RELEASE.read_text(encoding="utf-8")
+        self.offline_release = OFFLINE_RELEASE.read_text(encoding="utf-8")
 
     def test_exact_protected_main_and_credentialless_org_runner_group(self) -> None:
         for guard in (
@@ -41,6 +43,13 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("--product forge-platform-installer", self.workflow)
         self.assertIn("--product forge-platform-installer-helper", self.workflow)
         self.assertIn("--helper-executable", self.workflow)
+        self.assertIn("scripts/build_installer_product_worker.py", self.workflow)
+        self.assertIn("--product-worker release-input/forge-platform-product-worker.pyz", self.workflow)
+        self.assertLess(
+            self.workflow.index("scripts/build_installer_product_worker.py"),
+            self.workflow.index("--product-worker release-input/forge-platform-product-worker.pyz"),
+        )
+        self.assertIn("Contents/Resources/forge-platform-product-worker.pyz", self.workflow)
         self.assertIn("Contents/Library/LaunchDaemons/com.autonomous-engineering-system.forge-platform-installer.helper.plist", self.workflow)
         self.assertIn("scripts/prepare_offline_installer_resources.py", self.workflow)
         self.assertIn("--sealed-release-trust-resource", self.workflow)
@@ -86,6 +95,7 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("exclusive-offline-signing", self.local_release)
         self.assertIn("OfflineInstallerDescriptorKeyTool.swift", self.local_release)
         self.assertIn("unsigned-helper-missing", self.local_release)
+        self.assertIn("unsigned-product-worker-missing", self.local_release)
         self.assertIn(
             '--identifier "com.autonomous-engineering-system.forge-platform-installer.helper"',
             self.local_release,
@@ -93,6 +103,14 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("signed-helper-identity-invalid", self.local_release)
         self.assertIn("final-archive-helper-identity-invalid", self.local_release)
         self.assertNotIn("DESCRIPTOR_SIGNING_KEY_PATHS", self.local_release)
+
+    def test_offline_signer_packages_worker_before_apple_signing(self) -> None:
+        builder = self.offline_release.index("scripts/build_installer_product_worker.py")
+        packager = self.offline_release.index("--product-worker \"$product_worker\"")
+        signing = self.offline_release.index("codesign --force")
+        self.assertLess(builder, packager)
+        self.assertLess(packager, signing)
+        self.assertIn("product-worker-not-packaged", self.offline_release)
 
 
 if __name__ == "__main__":
