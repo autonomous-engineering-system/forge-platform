@@ -53,6 +53,13 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
     private let invalidateListeners: [() -> Void]
 
     convenience init() throws {
+        try self.init(prepareStateRoot: {
+            try ManagedInstallerHelperStateRootBootstrap().prepare()
+        })
+    }
+
+    convenience init(prepareStateRoot: () throws -> Void) throws {
+        try prepareStateRoot()
         let postToolIdentity = try ManagedInstallerPostToolXPCCallerIdentity(
             bundleIdentifier: ManagedInstallerPrivilegedHelperProcessContract
                 .installerBundleIdentifier,

@@ -11,7 +11,17 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
             ManagedInstallerPrivilegedHelperProcessContract.appleTeamIdentifier,
             "ZEML4LPXH4"
         )
-        XCTAssertNoThrow(try MacOSManagedInstallerPrivilegedHelperRuntime())
+        XCTAssertNoThrow(try MacOSManagedInstallerPrivilegedHelperRuntime(
+            prepareStateRoot: {}
+        ))
+    }
+
+    func testProductionRuntimeFailsClosedWhenPrivateStateRootIsUnavailable() {
+        XCTAssertThrowsError(try MacOSManagedInstallerPrivilegedHelperRuntime(
+            prepareStateRoot: {
+                throw ManagedInstallerPrivilegedHelperBootstrapError.backendUnavailable
+            }
+        ))
     }
 
     func testInjectedRuntimeActivatesParksAndInvalidatesInOrder() {
