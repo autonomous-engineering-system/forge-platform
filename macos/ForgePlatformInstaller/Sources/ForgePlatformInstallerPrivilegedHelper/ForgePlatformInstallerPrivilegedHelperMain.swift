@@ -18,23 +18,14 @@ protocol ManagedInstallerPrivilegedHelperRuntimeRunning: AnyObject {
     func invalidate()
 }
 
-/// Product mutation and post-tool observation remain fail-closed until their
-/// released backends are composed. Released-route reads use a separate
-/// helper-owned store and never enter this fallback.
+/// Post-tool observation remains fail-closed until its released backend is
+/// composed. Released-route reads and product execution use separate concrete
+/// helper-owned services and never enter this fallback.
 final class UnavailableManagedInstallerPrivilegedHelperBackend:
     NSObject,
-    ManagedInstallerProductOperationXPCService,
     ManagedInstallerPostToolObservationXPCService,
     ManagedInstallerReleasedRouteXPCService,
     @unchecked Sendable {
-    func executeProductOperation(
-        _ canonicalRequest: Data,
-        withReply reply: @escaping (Data?) -> Void
-    ) {
-        _ = canonicalRequest
-        reply(nil)
-    }
-
     func capturePostToolObservation(
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
@@ -75,6 +66,9 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
                 .appleTeamIdentifier
         )
         let backend = UnavailableManagedInstallerPrivilegedHelperBackend()
+        let productBackend = ManagedInstallerProductOperationXPCServiceHandler(
+            executor: ManagedInstallerPythonProductOperationExecutor()
+        )
         let releasedRouteBackend = FileManagedInstallerReleasedRouteXPCService()
         let postToolListener = MacOSManagedInstallerPostToolObservationXPCListener(
             callerIdentity: postToolIdentity,
@@ -82,7 +76,7 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
         )
         let productListener = MacOSManagedInstallerProductOperationXPCListener(
             callerIdentity: productIdentity,
-            serviceHandler: backend
+            serviceHandler: productBackend
         )
         let routeListener = MacOSManagedInstallerReleasedRouteXPCListener(
             callerIdentity: productIdentity,

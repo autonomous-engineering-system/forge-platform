@@ -85,6 +85,13 @@ public struct FileManagedInstallerManagedPythonHostReader:
         ManagedPythonRuntimeTerminalReceiptFailure
     > {
         _ = request
+        return readManagedPythonHostState()
+    }
+
+    public func readManagedPythonHostState() -> Result<
+        ManagedPythonRuntimeInstalledReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    > {
         do {
             let root = try openSecureRoot()
             defer { _ = Darwin.close(root) }
