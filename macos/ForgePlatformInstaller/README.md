@@ -198,6 +198,12 @@ or installed Python packages, refuses linked or changing inputs and never
 overwrites an output. The entrypoint remains fail-closed until its released
 helper-authority loader is supplied.
 
+The worker backend exposes a pinned typed-service constructor for that loader:
+canonical manifest bytes must match the separately trusted digest, and the
+same resulting manifest objects authorize both request admission and concrete
+Forge/EP routes. This constructor does not itself turn arbitrary bytes into
+signed-catalog authority.
+
 The bundled CLI exposes `helper register --yes` only after trusted released
 startup. It asks for explicit confirmation without `--yes`, rechecks installer
 currency immediately before `SMAppService` registration, and reports native
