@@ -18,6 +18,7 @@ from typing import Iterable, Mapping
 from urllib.parse import urlparse
 
 from .component_operations import QualifiedArtifact
+from .ep_consumer_revocation import EPConsumerRevocationAdapter, EPConsumerScope
 from .engineering_platform_system_adapter import (
     EPSystemInstanceTarget,
     EngineeringPlatformSystemProvisionerAdapter,
@@ -189,7 +190,14 @@ class ReleasedManagedProductRouteBuilder:
             if component.identity in {FORGE_COMPONENT, EP_COMPONENT}
         }
         routes: dict[str, ResolvedManagedProductRoute] = {}
+        claimed_scopes: set[EPConsumerScope] = set()
         for config in configs:
+            scope = EPConsumerScope(
+                config.pairing_binding.consumer_id, config.pairing_binding.project_id
+            )
+            if scope in claimed_scopes:
+                raise ValueError("released EP consumer scope is shared across deployments")
+            claimed_scopes.add(scope)
             staged = set(config.staged_artifacts)
             if not required.issubset(staged) or not staged.issubset(authorized):
                 raise ValueError("released route staged artifacts do not match catalog authority")
@@ -230,6 +238,11 @@ class ReleasedManagedProductRouteBuilder:
                 config.engineering_platform_target.instance_id,
                 {FORGE_COMPONENT: forge, EP_COMPONENT: ep},
                 ForgeEPProductPairingExecutor(config.pairing_binding),
+                EPConsumerRevocationAdapter(
+                    provisioner=ep,
+                    scope=scope,
+                    expected_artifact=config.engineering_platform_installed_artifact,
+                ),
             )
         return MappingProxyType(routes)
 
