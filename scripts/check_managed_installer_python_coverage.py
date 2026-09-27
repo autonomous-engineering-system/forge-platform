@@ -35,6 +35,7 @@ TARGETS = (
     "forge_platform/managed_pairing.py",
     "forge_platform/forge_ep_pairing_executor.py",
     "forge_platform/released_product_routes.py",
+    "forge_platform/installer_product_worker.py",
     "forge_platform/provider_fanout.py",
     "forge_platform/engineering_platform_system_adapter.py",
     "forge_platform/forge_server_adapter.py",
@@ -43,6 +44,7 @@ TARGETS = (
     "scripts/verify_local_catalog_authorization.py",
     "scripts/observe_composition_producer_releases.py",
     "scripts/package_macos_installer_app.py",
+    "scripts/build_installer_product_worker.py",
 )
 
 TESTS = (
@@ -61,11 +63,13 @@ TESTS = (
     "tests/installer/test_managed_pairing.py",
     "tests/installer/test_forge_ep_pairing_executor.py",
     "tests/installer/test_released_product_routes.py",
+    "tests/installer/test_installer_product_worker.py",
     "tests/installer/test_provider_targets.py",
     "tests/installer/test_provider_fanout.py",
     "tests/installer/test_composition_catalog_release.py",
     "tests/installer/test_composition_producer_observer.py",
     "tests/installer/test_package_macos_installer_app.py",
+    "tests/installer/test_build_installer_product_worker.py",
 )
 
 

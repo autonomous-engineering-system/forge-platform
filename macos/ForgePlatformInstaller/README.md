@@ -191,6 +191,13 @@ tagged SHA-256 to `ForgePlatformProductWorkerSHA256` in `Info.plist`. This binds
 the helper's fixed worker lookup to the later app signature. The release
 workflow does not yet construct or pass a production worker.
 
+`scripts/build_installer_product_worker.py --output PATH.pyz` builds the exact
+deterministic zipapp form accepted above. It includes only the repository's
+top-level `forge_platform/*.py` modules plus a fixed entrypoint, uses no network
+or installed Python packages, refuses linked or changing inputs and never
+overwrites an output. The entrypoint remains fail-closed until its released
+helper-authority loader is supplied.
+
 The bundled CLI exposes `helper register --yes` only after trusted released
 startup. It asks for explicit confirmation without `--yes`, rechecks installer
 currency immediately before `SMAppService` registration, and reports native
