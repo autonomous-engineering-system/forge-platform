@@ -32,7 +32,7 @@ from .released_product_routes import ReleasedManagedProductRouteConfiguration
 from .universal_installer import CompositionManifest, UniversalInstallerError
 
 
-PRODUCT_WORKER_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v2"
+PRODUCT_WORKER_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v3"
 PRODUCT_WORKER_ROOT = Path(
     "/Library/Application Support/AutonomousEngineeringSystem/ForgePlatformInstaller"
 )
@@ -49,6 +49,7 @@ _MANIFEST_FIELDS = frozenset({"digest", "payload"})
 _ROUTE_FIELDS = frozenset({
     "deployment_id", "forge_instance_id", "forge_service_account",
     "forge_bind_port", "forge_artifact_sha256", "forge_installation_id", "ep_instance_id",
+    "ep_artifact_sha256",
     "ep_display_label", "ep_service_account", "ep_bind_port", "pairing",
 })
 _PAIRING_FIELDS = frozenset({
@@ -255,6 +256,9 @@ class ProductWorkerAuthorityLoader:
         artifact_digest = _digest(
             wire["forge_artifact_sha256"], "Forge artifact sha256"
         )
+        ep_artifact_digest = _digest(
+            wire["ep_artifact_sha256"], "EP artifact sha256"
+        )
         artifacts = {
             component.artifact.digest: component.artifact
             for manifest in candidates + installed
@@ -264,6 +268,9 @@ class ProductWorkerAuthorityLoader:
         forge_artifact = artifacts.get(artifact_digest)
         if forge_artifact is None:
             raise ProductWorkerAuthorityError("Forge artifact lacks manifest authority")
+        ep_artifact = artifacts.get(ep_artifact_digest)
+        if ep_artifact is None or ep_artifact_digest == artifact_digest:
+            raise ProductWorkerAuthorityError("EP artifact lacks manifest authority")
         pairing = _mapping(wire["pairing"], "pairing authority")
         _exact_fields(pairing, _PAIRING_FIELDS, "pairing authority")
         instances = self.root / "instances/forge"
@@ -284,6 +291,7 @@ class ProductWorkerAuthorityLoader:
                 self.root / "credentials/forge" / f"{forge_instance}.token",
             ),
             forge_installed_artifact=forge_artifact,
+            engineering_platform_installed_artifact=ep_artifact,
             engineering_platform_provisioner=(
                 venvs / "engineering-platform/bin/engineering-platform-system-provisioner"
             ),

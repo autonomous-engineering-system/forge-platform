@@ -28,11 +28,13 @@ def _canonical(value: object) -> bytes:
 def _manifest_payload() -> dict:
     payload = manifest_payload(composition_id="forge-ep-current")
     ep = payload["components"][0]
+    ep["artifact"]["version"] = "2.3.102"
+    ep["artifact"]["source_revision"] = "cab85a84a6a8b5b574c796713e4363781fc05519"
     forge = json.loads(json.dumps(ep))
     forge["identity"] = "forge-runtime"
     forge["artifact"] = {
-        "version": "2.7.34",
-        "source_revision": "f" * 40,
+        "version": "2.7.35",
+        "source_revision": "ff4c0d45f51161376104250cd6efcfb6f045b8ac",
         "source": "https://registry.example.invalid/forge-runtime.whl",
         "digest": "sha256:" + "4" * 64,
         "qualification": "https://evidence.example.invalid/forge-runtime",
@@ -71,6 +73,7 @@ def _authority() -> dict:
             "forge_service_account": "_forge_prod",
             "forge_bind_port": 8875,
             "forge_artifact_sha256": "sha256:" + "4" * 64,
+            "ep_artifact_sha256": "sha256:" + "3" * 64,
             "ep_instance_id": "ep-prod",
             "ep_display_label": "Production",
             "ep_service_account": "_ep_prod",
@@ -93,7 +96,7 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
     def test_native_publisher_fixture_is_accepted_by_python_worker(self) -> None:
         fixture = (
             Path(__file__).resolve().parents[2]
-            / "macos/ForgePlatformInstaller/Fixtures/product-worker-authority-v2.json"
+            / "macos/ForgePlatformInstaller/Fixtures/product-worker-authority-v3.json"
         )
         raw = fixture.read_bytes()
         self.assertEqual(raw, _canonical(json.loads(raw)))
@@ -161,6 +164,12 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
             / "product-venvs/production/engineering-platform/bin/engineering-platform-system-provisioner",
         )
         self.assertEqual(ep.product_root, self.root / "products/engineering-platform")
+        self.assertEqual(
+            service.dispatcher.resolver._routes["production"].adapters[
+                "engineering-platform-server"
+            ].target.instance_id,
+            "ep-prod",
+        )
         self.assertEqual(service.dispatcher.coordinator.registry.root, self.root / "state/deployments")
         self.assertEqual(route.pairing_executor.binding.endpoint, "http://127.0.0.1:8876")
         self.assertEqual(
@@ -194,6 +203,9 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
 
     def test_rejects_noncanonical_duplicate_wrong_digest_and_shape(self) -> None:
         cases = []
+        legacy = _authority()
+        legacy["schema"] = "forge-platform.product-worker-authority/v2"
+        cases.append((_canonical(legacy), "unsupported"))
         cases.append((json.dumps(_authority(), indent=2).encode(), "canonical"))
         cases.append((b'{"schema":"x","schema":"y"}', "strict JSON"))
         wrong_digest = _authority()
@@ -214,6 +226,7 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
             (lambda value: value["routes"][0].__setitem__("forge_service_account", "root"), "account"),
             (lambda value: value["routes"][0].__setitem__("ep_bind_port", 8875), "ambiguous"),
             (lambda value: value["routes"][0].__setitem__("forge_artifact_sha256", "sha256:" + "9" * 64), "manifest"),
+            (lambda value: value["routes"][0].__setitem__("ep_artifact_sha256", "sha256:" + "9" * 64), "EP artifact"),
             (lambda value: value["routes"][0].__setitem__("forge_installation_id", "../other"), "installation id"),
             (lambda value: value.__setitem__("routes", []), "unavailable"),
         ):
