@@ -252,7 +252,7 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
         ), .failure(.rejected))
     }
 
-    func testCachedRuntimeVerifierReconstructsInventoryAfterStagingAndRejectsDrift() throws {
+    func testCachedRuntimeVerifierReconstructsInventoryAfterStagingAndRejectsDrift() async throws {
         let fixture = try ArchiveInspectionFixture()
         let root = try extractionSlot()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
@@ -277,6 +277,21 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
         let interpreter = root.appendingPathComponent(receipt.runtimeSlotIdentity)
             .appendingPathComponent(ManagedPythonRuntimeArchiveInspection.interpreterRelativePath)
         XCTAssertEqual(verifier.verifiedInterpreter(for: venvRequest), .success(interpreter))
+        let venvRoot = root.deletingLastPathComponent().appendingPathComponent("venvs")
+        try FileManager.default.createDirectory(at: venvRoot, withIntermediateDirectories: false)
+        XCTAssertEqual(chmod(venvRoot.path, 0o700), 0)
+        let layout = MacOSManagedPythonProductVenvSlotLayout(
+            root: venvRoot, expectedOwner: geteuid()
+        )
+        let readback = MacOSManagedPythonProductVenvReadback(
+            layout: layout, runtimeVerifier: verifier, expectedOwner: geteuid()
+        )
+        let creator = MacOSManagedPythonProductVenvCreator(
+            layout: layout, runtimeVerifier: verifier, readback: readback
+        )
+        XCTAssertNil(try readback.readPublished(venvRequest).get())
+        let initialVenv = await creator.readProductVenv(venvRequest)
+        XCTAssertNil(try initialVenv.get())
 
         let wrongRuntimeRequest = ManagedPythonProductVenvMutationRequest(
             operationID: "venv-cache-1", deploymentID: "deployment-a",
@@ -294,6 +309,9 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
         )
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: cache.path)
         XCTAssertEqual(verifier.verifiedInterpreter(for: venvRequest), .failure(.rejected))
+        XCTAssertEqual(readback.readPublished(venvRequest), .failure(.rejected))
+        let rejectedVenv = await creator.readProductVenv(venvRequest)
+        XCTAssertEqual(rejectedVenv, .failure(.rejected))
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cache.path)
         try Data("drift".utf8).write(to: interpreter)
         XCTAssertEqual(verifier.verifiedInterpreter(for: venvRequest), .failure(.rejected))

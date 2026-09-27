@@ -7,12 +7,12 @@ import Foundation
 /// directory, isolated configuration and Python's own prefix report must agree.
 struct MacOSManagedPythonProductVenvReadback: Sendable {
     private let layout: MacOSManagedPythonProductVenvSlotLayout
-    private let runtimeVerifier: MacOSManagedPythonProductVenvRuntimeVerifier
+    private let runtimeVerifier: any ManagedPythonProductVenvRuntimeVerifying
     private let expectedOwner: uid_t
 
     init(
         layout: MacOSManagedPythonProductVenvSlotLayout,
-        runtimeVerifier: MacOSManagedPythonProductVenvRuntimeVerifier,
+        runtimeVerifier: any ManagedPythonProductVenvRuntimeVerifying,
         expectedOwner: uid_t = 0
     ) {
         self.layout = layout
