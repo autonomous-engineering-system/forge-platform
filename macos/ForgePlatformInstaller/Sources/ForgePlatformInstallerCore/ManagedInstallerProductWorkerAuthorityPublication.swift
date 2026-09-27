@@ -124,6 +124,7 @@ struct ManagedInstallerProductWorkerPairingAuthority: Equatable, Sendable {
 struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
     let deploymentID: String
     let forgeInstanceID: String
+    let forgeInstallationID: String
     let forgeServiceAccount: String
     let forgeBindPort: Int
     let forgeArtifactSHA256: String
@@ -136,6 +137,7 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
     init(
         deploymentID: String,
         forgeInstanceID: String,
+        forgeInstallationID: String,
         forgeServiceAccount: String,
         forgeBindPort: Int,
         forgeArtifactSHA256: String,
@@ -145,7 +147,8 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
         engineeringPlatformBindPort: Int,
         pairing: ManagedInstallerProductWorkerPairingAuthority
     ) throws {
-        guard [deploymentID, forgeInstanceID, engineeringPlatformInstanceID]
+        guard [deploymentID, forgeInstanceID, forgeInstallationID,
+               engineeringPlatformInstanceID]
                 .allSatisfy(Self.isSafeIdentity),
               Self.isServiceAccount(forgeServiceAccount),
               Self.isServiceAccount(engineeringPlatformServiceAccount),
@@ -163,6 +166,7 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
         }
         self.deploymentID = deploymentID
         self.forgeInstanceID = forgeInstanceID
+        self.forgeInstallationID = forgeInstallationID
         self.forgeServiceAccount = forgeServiceAccount
         self.forgeBindPort = forgeBindPort
         self.forgeArtifactSHA256 = forgeArtifactSHA256
@@ -202,7 +206,7 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
 }
 
 struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
-    static let schema = "forge-platform.product-worker-authority/v1"
+    static let schema = "forge-platform.product-worker-authority/v2"
     static let maximumBytes = 4 * 1_024 * 1_024
 
     let installerRelease: VerifiedInstallerRelease
@@ -280,6 +284,7 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
         .object([
             "deployment_id": .string(route.deploymentID),
             "forge_instance_id": .string(route.forgeInstanceID),
+            "forge_installation_id": .string(route.forgeInstallationID),
             "forge_service_account": .string(route.forgeServiceAccount),
             "forge_bind_port": .integer(String(route.forgeBindPort)),
             "forge_artifact_sha256": .string(route.forgeArtifactSHA256),
@@ -313,11 +318,13 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
         let instances = values.flatMap {
             [$0.forgeInstanceID, $0.engineeringPlatformInstanceID]
         }
+        let installations = values.map(\.forgeInstallationID)
         let accounts = values.flatMap {
             [$0.forgeServiceAccount, $0.engineeringPlatformServiceAccount]
         }
         let ports = values.flatMap { [$0.forgeBindPort, $0.engineeringPlatformBindPort] }
         return Set(instances).count == instances.count
+            && Set(installations).count == installations.count
             && Set(accounts).count == accounts.count
             && Set(ports).count == ports.count
     }

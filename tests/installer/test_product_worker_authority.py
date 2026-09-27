@@ -67,6 +67,7 @@ def _authority() -> dict:
         "routes": [{
             "deployment_id": "production",
             "forge_instance_id": "forge-prod",
+            "forge_installation_id": "forge-installation-prod",
             "forge_service_account": "_forge_prod",
             "forge_bind_port": 8875,
             "forge_artifact_sha256": "sha256:" + "4" * 64,
@@ -92,7 +93,7 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
     def test_native_publisher_fixture_is_accepted_by_python_worker(self) -> None:
         fixture = (
             Path(__file__).resolve().parents[2]
-            / "macos/ForgePlatformInstaller/Fixtures/product-worker-authority-v1.json"
+            / "macos/ForgePlatformInstaller/Fixtures/product-worker-authority-v2.json"
         )
         raw = fixture.read_bytes()
         self.assertEqual(raw, _canonical(json.loads(raw)))
@@ -101,6 +102,15 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
         service = self.loader().load()
         self.assertIsInstance(service, ManagedProductOperationHelperService)
         self.assertIn("production", service.dispatcher.resolver._routes)
+        forge = service.dispatcher.resolver._routes["production"].adapters[
+            "forge-runtime"
+        ]
+        self.assertEqual(forge.removal_support(), "SUPPORTED")
+        self.assertEqual(forge.uninstall_binding.installation_id, "forge-installation-prod")
+        self.assertEqual(
+            forge.lifecycle_executable,
+            self.root / "product-venvs/production/forge/bin/forge",
+        )
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -204,6 +214,7 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
             (lambda value: value["routes"][0].__setitem__("forge_service_account", "root"), "account"),
             (lambda value: value["routes"][0].__setitem__("ep_bind_port", 8875), "ambiguous"),
             (lambda value: value["routes"][0].__setitem__("forge_artifact_sha256", "sha256:" + "9" * 64), "manifest"),
+            (lambda value: value["routes"][0].__setitem__("forge_installation_id", "../other"), "installation id"),
             (lambda value: value.__setitem__("routes", []), "unavailable"),
         ):
             payload = _authority()
@@ -218,12 +229,14 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
         for field, value, message in (
             ("forge_service_account", "_forge_prod", "service account"),
             ("forge_bind_port", 8875, "bind port"),
+            ("forge_installation_id", "forge-installation-prod", "installation id"),
         ):
             payload = _authority()
             second = json.loads(json.dumps(payload["routes"][0]))
             second.update({
                 "deployment_id": "staging",
                 "forge_instance_id": "forge-staging",
+                "forge_installation_id": "forge-installation-staging",
                 "forge_service_account": "_forge_staging",
                 "forge_bind_port": 8975,
                 "ep_instance_id": "ep-staging",
@@ -238,6 +251,14 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
                 ProductWorkerAuthorityError, message
             ):
                 self.loader().load()
+
+    def test_legacy_authority_cannot_authorize_forge_removal(self) -> None:
+        payload = _authority()
+        payload["schema"] = "forge-platform.product-worker-authority/v1"
+        del payload["routes"][0]["forge_installation_id"]
+        self.write(payload)
+        with self.assertRaisesRegex(ProductWorkerAuthorityError, "schema is unsupported"):
+            self.loader().load()
 
     def test_rejects_unsafe_root_file_mode_and_symlink(self) -> None:
         self.root.chmod(0o755)

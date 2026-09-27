@@ -113,7 +113,7 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
     private func fixture() throws -> (ManagedInstallerProductWorkerAuthoritySnapshot, Data) {
         let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Fixtures/product-worker-authority-v1.json")
+            .appendingPathComponent("Fixtures/product-worker-authority-v2.json")
         let expected = try Data(contentsOf: source)
         let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: expected) as? [String: Any])
         let release = try XCTUnwrap(wire["installer_release"] as? [String: Any])
@@ -134,6 +134,7 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
             return try ManagedInstallerProductWorkerRouteAuthority(
                 deploymentID: try XCTUnwrap(item["deployment_id"] as? String),
                 forgeInstanceID: try XCTUnwrap(item["forge_instance_id"] as? String),
+                forgeInstallationID: try XCTUnwrap(item["forge_installation_id"] as? String),
                 forgeServiceAccount: try XCTUnwrap(item["forge_service_account"] as? String),
                 forgeBindPort: try XCTUnwrap(item["forge_bind_port"] as? Int),
                 forgeArtifactSHA256: try XCTUnwrap(item["forge_artifact_sha256"] as? String),
