@@ -5,6 +5,122 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
+    func testConcreteSlotAdapterReadsStagesPublishesAndRechecksExactRuntime() async throws {
+        let fixture = try ArchiveInspectionFixture()
+        let root = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let staging = ArchiveSlotStaging(fixture: fixture)
+        let adapter = MacOSManagedPythonRuntimeSlotAdapter(
+            runtime: fixture.runtime, staging: staging,
+            publisher: MacOSManagedPythonRuntimeSlotPublisher(
+                slotsRoot: root, expectedOwner: geteuid()
+            )
+        )
+        let request = try slotRequest(fixture)
+        let before = await adapter.readRuntimeSlot(request)
+        XCTAssertEqual(before, .success(nil))
+        let installed = await adapter.installRuntimeSlot(request)
+        guard case .success(let receipt) = installed else {
+            return XCTFail("Concrete helper slot adapter failed: \(installed)")
+        }
+        let after = await adapter.readRuntimeSlot(request)
+        let repeatInstall = await adapter.installRuntimeSlot(request)
+        XCTAssertEqual(after, .success(receipt))
+        XCTAssertEqual(repeatInstall, installed)
+    }
+
+    func testSlotCoordinatorUsesConcreteAdapterAndIndependentFinalReadback() async throws {
+        let fixture = try ArchiveInspectionFixture()
+        let root = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let staging = ArchiveSlotStaging(fixture: fixture)
+        let adapter = MacOSManagedPythonRuntimeSlotAdapter(
+            runtime: fixture.runtime,
+            staging: staging,
+            publisher: MacOSManagedPythonRuntimeSlotPublisher(
+                slotsRoot: root, expectedOwner: geteuid()
+            )
+        )
+        let inspection = try MacOSManagedPythonRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.runtimeArchive, for: fixture.runtime)
+        let coordinator = ManagedPythonRuntimeSlotMutationCoordinator(
+            staging: staging, mutation: adapter
+        )
+        let first = await coordinator.ensureRuntimeSlot(
+            stagedAssets: fixture.stagedAssets,
+            runtime: fixture.runtime,
+            inspection: inspection.inspection
+        )
+        guard case .success(let receipt) = first else {
+            return XCTFail("Concrete coordinator slot mutation failed: \(first)")
+        }
+        XCTAssertEqual(receipt.state, .ready)
+        let repeated = await coordinator.ensureRuntimeSlot(
+            stagedAssets: fixture.stagedAssets,
+            runtime: fixture.runtime,
+            inspection: inspection.inspection
+        )
+        XCTAssertEqual(repeated, first)
+        let slot = root.appendingPathComponent(receipt.runtimeSlotIdentity)
+        try Data("unexpected drift".utf8).write(
+            to: slot.appendingPathComponent("lib/runtime.txt")
+        )
+        let stale = await coordinator.ensureRuntimeSlot(
+            stagedAssets: fixture.stagedAssets,
+            runtime: fixture.runtime,
+            inspection: inspection.inspection
+        )
+        XCTAssertEqual(stale, .failure(.rejected))
+    }
+
+    func testConcreteSlotAdapterRejectsStagedArchiveDriftAndWrongRuntime() async throws {
+        let fixture = try ArchiveInspectionFixture()
+        let other = try ArchiveInspectionFixture(sourceBody: Data("other".utf8))
+        let root = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let publisher = MacOSManagedPythonRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        )
+        let request = try slotRequest(fixture)
+        let wrongRuntime = MacOSManagedPythonRuntimeSlotAdapter(
+            runtime: other.runtime,
+            staging: ArchiveSlotStaging(fixture: fixture), publisher: publisher
+        )
+        let wrongRead = await wrongRuntime.readRuntimeSlot(request)
+        let wrongInstall = await wrongRuntime.installRuntimeSlot(request)
+        XCTAssertEqual(wrongRead, .failure(.invalidRequest))
+        XCTAssertEqual(wrongInstall, .failure(.invalidRequest))
+        let corrupt = MacOSManagedPythonRuntimeSlotAdapter(
+            runtime: fixture.runtime,
+            staging: ArchiveSlotStaging(fixture: fixture, corrupt: true),
+            publisher: publisher
+        )
+        let corruptRead = await corrupt.readRuntimeSlot(request)
+        let corruptInstall = await corrupt.installRuntimeSlot(request)
+        XCTAssertEqual(corruptRead, .failure(.rejected))
+        XCTAssertEqual(corruptInstall, .failure(.rejected))
+        for failure in [
+            ManagedPythonRuntimeStagingFailure.invalidRequest,
+            .unavailable, .rejected,
+        ] {
+            let unavailable = MacOSManagedPythonRuntimeSlotAdapter(
+                runtime: fixture.runtime,
+                staging: ArchiveSlotStaging(fixture: fixture, failure: failure),
+                publisher: publisher
+            )
+            let expected: ManagedPythonRuntimeSlotMutationFailure = switch failure {
+            case .invalidRequest: .invalidRequest
+            case .unavailable: .unavailable
+            case .rejected: .rejected
+            }
+            let read = await unavailable.readRuntimeSlot(request)
+            let install = await unavailable.installRuntimeSlot(request)
+            XCTAssertEqual(read, .failure(expected))
+            XCTAssertEqual(install, .failure(expected))
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+    }
+
     func testPublishesExactRuntimeSlotAtomicallyAndReusesVerifiedSlot() throws {
         let fixture = try ArchiveInspectionFixture()
         let root = try extractionSlot()
@@ -474,6 +590,45 @@ private enum ArchiveInspectionMutation: Equatable {
     case gzipBadCRC, gzipBadSize, gzipTruncated
     case wrongMachOMagic, wrongMachOCPU, wrongMachOFileType, missingBuildVersion
     case duplicateBuildVersion, malformedLoadCommand, malformedBuildVersionTools, macOS25Deployment
+}
+
+private struct ArchiveSlotStaging: ManagedPythonRuntimeAssetStaging {
+    let fixture: ArchiveInspectionFixture
+    var corrupt = false
+    var failure: ManagedPythonRuntimeStagingFailure? = nil
+
+    func reconcileUnrecordedStagingOperations()
+        async -> Result<Void, ManagedPythonRuntimeStagingFailure> { .success(()) }
+
+    func stageAssets(
+        operationID: String,
+        runtime: ManagedPythonRuntimeIdentity
+    ) async -> Result<ManagedPythonStagedAssetSet, ManagedPythonRuntimeStagingFailure> {
+        .failure(.rejected)
+    }
+
+    func readStagedAsset(
+        _ asset: ManagedPythonStagedAsset,
+        for runtime: ManagedPythonRuntimeIdentity
+    ) async -> Result<ManagedPythonRuntimeAssetReadback, ManagedPythonRuntimeStagingFailure> {
+        if let failure { return .failure(failure) }
+        guard asset == fixture.stagedAssets.asset(.runtimeArchive),
+              runtime.identitySHA256 == fixture.runtime.identitySHA256 else {
+            return .failure(.invalidRequest)
+        }
+        var bytes = fixture.runtimeArchive
+        if corrupt { bytes[0] ^= 1 }
+        return .success(ManagedPythonRuntimeAssetReadback(
+            runtimeIdentitySHA256: runtime.identitySHA256,
+            kind: .runtimeArchive,
+            downloadIdentity: runtime.artifact,
+            bytes: bytes
+        ))
+    }
+
+    func discardStagedAssets(
+        _ assets: ManagedPythonStagedAssetSet
+    ) async -> Result<Void, ManagedPythonRuntimeStagingFailure> { .failure(.rejected) }
 }
 
 private struct ArchiveInspectionFixture: Sendable {

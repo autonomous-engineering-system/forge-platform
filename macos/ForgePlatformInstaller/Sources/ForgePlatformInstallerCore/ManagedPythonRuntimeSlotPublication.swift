@@ -4,13 +4,35 @@ import Foundation
 /// Publishes one exact runtime under its content-bound slot name. A private
 /// pending directory remains unreferenced after any interrupted attempt;
 /// neither a partial extraction nor an ambiguous existing slot is adopted.
-struct MacOSManagedPythonRuntimeSlotPublisher {
+struct MacOSManagedPythonRuntimeSlotPublisher: Sendable {
     private let slotsRoot: URL
     private let expectedOwner: uid_t
 
     init(slotsRoot: URL, expectedOwner: uid_t = 0) {
         self.slotsRoot = slotsRoot
         self.expectedOwner = expectedOwner
+    }
+
+    func readPublishedSlot(
+        archive: Data,
+        runtime: ManagedPythonRuntimeIdentity,
+        request: ManagedPythonRuntimeSlotMutationRequest
+    ) -> Result<ManagedPythonRuntimeSlotReceipt?, ManagedPythonRuntimeSlotMutationFailure> {
+        let inventory: ManagedPythonRuntimeArchiveExtractionInventory
+        do {
+            inventory = try MacOSManagedPythonRuntimeArchiveInspector
+                .inspectArchiveForExtraction(archive, for: runtime)
+        } catch { return .failure(.rejected) }
+        guard requestMatches(request, runtime: runtime, inspection: inventory.inspection) else {
+            return .failure(.invalidRequest)
+        }
+        do {
+            let root = try openPrivateSlotsRoot()
+            defer { _ = Darwin.close(root) }
+            return .success(try readSlot(request, members: inventory.members, root: root))
+        } catch let failure as ManagedPythonRuntimeSlotMutationFailure {
+            return .failure(failure)
+        } catch { return .failure(.rejected) }
     }
 
     func publish(
@@ -23,17 +45,7 @@ struct MacOSManagedPythonRuntimeSlotPublisher {
             inventory = try MacOSManagedPythonRuntimeArchiveInspector
                 .inspectArchiveForExtraction(archive, for: runtime)
         } catch { return .failure(.rejected) }
-        guard request.runtimeIdentitySHA256 == runtime.identitySHA256,
-              request.runtimeSlotIdentity
-                == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
-                    for: runtime.identitySHA256
-                ),
-              request.archiveSHA256 == runtime.artifact.sha256,
-              request.archiveLayout == inventory.inspection.archiveLayout,
-              request.interpreterRelativePath == inventory.inspection.interpreterPath,
-              request.executableArchitectures == inventory.inspection.executableArchitectures,
-              request.minimumMacOSVersion == inventory.inspection.minimumMacOSVersion,
-              request.inspectionEvidenceReference == inventory.inspection.evidenceReference else {
+        guard requestMatches(request, runtime: runtime, inspection: inventory.inspection) else {
             return .failure(.invalidRequest)
         }
         do {
@@ -74,6 +86,24 @@ struct MacOSManagedPythonRuntimeSlotPublisher {
         } catch let failure as ManagedPythonRuntimeSlotMutationFailure {
             return .failure(failure)
         } catch { return .failure(.rejected) }
+    }
+
+    private func requestMatches(
+        _ request: ManagedPythonRuntimeSlotMutationRequest,
+        runtime: ManagedPythonRuntimeIdentity,
+        inspection: ManagedPythonRuntimeArchiveInspection
+    ) -> Bool {
+        request.runtimeIdentitySHA256 == runtime.identitySHA256
+            && request.runtimeSlotIdentity
+                == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+                    for: runtime.identitySHA256
+                )
+            && request.archiveSHA256 == runtime.artifact.sha256
+            && request.archiveLayout == inspection.archiveLayout
+            && request.interpreterRelativePath == inspection.interpreterPath
+            && request.executableArchitectures == inspection.executableArchitectures
+            && request.minimumMacOSVersion == inspection.minimumMacOSVersion
+            && request.inspectionEvidenceReference == inspection.evidenceReference
     }
 
     private func openPrivateSlotsRoot() throws -> Int32 {
