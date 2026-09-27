@@ -3751,7 +3751,7 @@ class CompositionPlanner:
                 continue
             action = "BLOCKED"
             reason = (
-                "unselected product installation reports removal support, but no product-owned uninstall dispatcher is published"
+                "unselected product installation reports removal support, but no exact selected removal target is authorized"
                 if installation.removal_support == "SUPPORTED"
                 else "unselected product installation lacks a product-owned removal contract"
             )

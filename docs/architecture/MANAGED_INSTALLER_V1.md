@@ -2,7 +2,7 @@
 
 **Assignment:** `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923`  
 **Owning repository:** `autonomous-engineering-system/forge-platform`
-**Producer baselines:** Forge 2.7.34 and Engineering Platform 2.3.102  
+**Producer baselines for first functional release:** Forge 2.7.35 and Engineering Platform 2.3.102
 **Status:** source implementation under protected qualification; no live installation claim.
 
 ## Purpose
@@ -127,7 +127,7 @@ component request.
 
 ## Forge adapter
 
-Forge 2.7.34 has a deliberately different frozen boundary.
+Forge 2.7.35 has a deliberately different frozen boundary from EP.
 
 Forge itself owns:
 
@@ -136,23 +136,23 @@ Forge itself owns:
 - EP execution-host configuration/preflight;
 - health/readiness;
 - the qualified external installed updater.
+- the read-only, exact-instance/candidate `server update-assess` decision;
+- the durable exact-instance `server uninstall` and `server uninstall-status`
+  dispatcher.
 
 Forge Platform owns the macOS system LaunchDaemon and installed filesystem
 layout assigned to it by the Forge deployment contract. The LaunchDaemon uses
 an exact absolute Forge executable, exact data root, non-root service account,
 loopback endpoint and private bearer-file reference.
 
-Two important fail-closed limitations remain on the 2.7.34 producer contract:
-
-1. **Update:** Forge publishes a durable updater but no separate product-owned
-   read-only `UPDATE_AVAILABLE` assessment. Forge Platform therefore does not
-   infer update authorization merely because an updater exists.
-2. **Remove:** Forge 2.7.34 publishes no product-owned uninstall dispatcher.
-   Forge component/deployment removal remains unsupported rather than deleting
-   a Forge data root as an installer invention.
-
-Those are producer-contract gaps, not permission for Forge Platform to
-duplicate Forge lifecycle logic.
+The installer consumes the 2.7.35 assessment only from an explicitly bound
+2.7.35 lifecycle executable, exact installed artifact, qualified staged wheel
+and exact product instance/installation IDs. Missing or contradictory evidence
+remains `UNKNOWN` or fails closed. A positive assessment alone does not
+complete the reviewed-update, updater-resume, readiness or registry gates.
+Forge removal remains blocked in the installer until its product-owned
+dispatcher and deployment-owner service choreography are integrated and
+qualified; no installer-owned deletion of Forge data is allowed.
 
 ## Durable execution
 

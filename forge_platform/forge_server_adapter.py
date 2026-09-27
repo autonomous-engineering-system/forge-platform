@@ -1,4 +1,4 @@
-"""Forge 2.7.34 Server adapter for one managed Forge instance.
+"""Forge Server adapter for one exact managed instance.
 
 Forge owns instance initialization, provider/peer configuration, Server
 readiness and update semantics. Forge Platform owns the surrounding system
@@ -266,9 +266,12 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         runner: ForgeCommandRunner | None = None,
         readiness_probe: ForgeReadinessProbe | None = None,
         update_binding: ForgeUpdateBinding | None = None,
+        lifecycle_executable: Path | None = None,
     ) -> None:
         if not forge_executable.is_absolute():
             raise ValueError("Forge executable must be absolute")
+        if lifecycle_executable is not None and not lifecycle_executable.is_absolute():
+            raise ValueError("Forge lifecycle executable must be absolute")
         self.forge_executable = forge_executable
         self.target = target
         self.installed_artifact = installed_artifact
@@ -277,6 +280,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self.runner = runner or SubprocessForgeCommandRunner()
         self.readiness_probe = readiness_probe or ForgeHTTPReadinessProbe()
         self.update_binding = update_binding
+        self.lifecycle_executable = lifecycle_executable
 
     @staticmethod
     def prepare_instance(
@@ -435,27 +439,73 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self._validate_request(request)
         if request.kind != "update":
             raise ForgeServerAdapterError("Forge update assessment requires update kind")
+        binding = self.update_binding
+        executable = self.lifecycle_executable
+        wheel = self.staged_artifacts.get(request.artifact.digest)
+        if binding is None or executable is None or not isinstance(wheel, Path) or not wheel.is_absolute():
+            return ProductUpdateAssessment(
+                FORGE_COMPONENT, self.target.instance_id, request.artifact.correlation,
+                "UNKNOWN", "forge-update-assess:unavailable",
+            )
+        if binding.runtime_id != self.target.instance_id:
+            raise ForgeServerAdapterError("Forge lifecycle runtime identity does not match the selected instance")
+        if binding.existing_version != self.installed_artifact.version:
+            raise ForgeServerAdapterError("Forge lifecycle installed version does not match the selected artifact")
+        argv = (
+            str(executable), "--data-root", str(self.target.data_root),
+            "server", "update-assess",
+            "--runtime-id", binding.runtime_id,
+            "--installation-id", binding.installation_id,
+            "--installed-version", self.installed_artifact.version,
+            "--installed-source", self.installed_artifact.source_revision,
+            "--installed-artifact-digest", self.installed_artifact.digest,
+            "--candidate-version", request.artifact.version,
+            "--candidate-source", request.artifact.source_revision,
+            "--candidate-wheel", str(wheel),
+            "--candidate-artifact-digest", request.artifact.digest,
+        )
+        result = self.runner.run(argv)
+        payload = self._json_result(result, "Forge update assessment")
+        expected_selected = {
+            "runtime_id": binding.runtime_id,
+            "installation_id": binding.installation_id,
+            "version": self.installed_artifact.version,
+            "source_revision": self.installed_artifact.source_revision,
+            "artifact_digest": self.installed_artifact.digest,
+        }
+        expected_candidate = {
+            "version": request.artifact.version,
+            "source_revision": request.artifact.source_revision,
+            "artifact_digest": request.artifact.digest,
+        }
+        state = payload.get("state")
+        digest = payload.get("assessment_digest")
+        unsigned = dict(payload)
+        unsigned.pop("assessment_digest", None)
         if (
-            request.artifact.version == self.installed_artifact.version
-            and request.artifact.digest == self.installed_artifact.digest
-            and request.artifact.source_revision == self.installed_artifact.source_revision
+            payload.get("contract") != "forge-server-runtime-lifecycle/v1"
+            or payload.get("operation") != "UPDATE_ASSESSMENT"
+            or payload.get("mutating") is not False
+            or payload.get("selected_installation") != expected_selected
+            or payload.get("candidate") != expected_candidate
+            or state not in {"UPDATE_AVAILABLE", "UP_TO_DATE", "INCOMPATIBLE", "UNKNOWN"}
+            or digest != _digest_json(unsigned)
         ):
-            state = "UP_TO_DATE"
-        else:
-            # Forge 2.7.34 publishes the durable updater but not a separate
-            # read-only UPDATE_AVAILABLE decision. The installer must not turn
-            # "an updater exists" into product authorization.
-            state = "UNKNOWN"
+            raise ForgeServerAdapterError("Forge update assessment is not bound to the exact product target and artifact")
+        same_artifact = all(
+            expected_selected[key] == expected_candidate[key]
+            for key in ("version", "source_revision", "artifact_digest")
+        )
+        if state == "UP_TO_DATE" and not same_artifact:
+            raise ForgeServerAdapterError("Forge update assessment reports a mismatched installed artifact as current")
+        if state == "UPDATE_AVAILABLE" and same_artifact:
+            raise ForgeServerAdapterError("Forge update assessment reports the installed artifact as an update")
         return ProductUpdateAssessment(
             FORGE_COMPONENT,
             self.target.instance_id,
             request.artifact.correlation,
             state,
-            "forge-update-assess:" + _digest_json({
-                "instance_id": self.target.instance_id,
-                "candidate": request.artifact.correlation.__dict__,
-                "updater_bound": self.update_binding is not None,
-            }),
+            "forge-update-assess:" + digest,
         )
 
     def execute(self, request: ComponentOperationRequest) -> ProductOperationReceipt:

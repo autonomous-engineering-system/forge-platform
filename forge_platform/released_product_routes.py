@@ -56,6 +56,7 @@ class ReleasedManagedProductRouteConfiguration:
     pairing_binding: ForgeEPProductPairingBinding
     launch_daemons_directory: Path = Path("/Library/LaunchDaemons")
     forge_update_binding: ForgeUpdateBinding | None = None
+    forge_lifecycle_executable: Path | None = None
 
     def __post_init__(self) -> None:
         ManagedComponentBinding(FORGE_COMPONENT, self.deployment_id, "receipt:route")
@@ -71,6 +72,11 @@ class ReleasedManagedProductRouteConfiguration:
             self.forge_update_binding, ForgeUpdateBinding
         ):
             raise TypeError("released route Forge update binding is invalid")
+        if self.forge_lifecycle_executable is not None and (
+            not isinstance(self.forge_lifecycle_executable, Path)
+            or not self.forge_lifecycle_executable.is_absolute()
+        ):
+            raise ValueError("released route Forge lifecycle executable must be absolute")
         for label, path in (
             ("Forge executable", self.forge_executable),
             ("EP provisioner", self.engineering_platform_provisioner),
@@ -189,6 +195,7 @@ class ReleasedManagedProductRouteBuilder:
                     config.launch_daemons_directory
                 ),
                 update_binding=config.forge_update_binding,
+                lifecycle_executable=config.forge_lifecycle_executable,
             )
             ep = EngineeringPlatformSystemProvisionerAdapter(
                 provisioner_executable=config.engineering_platform_provisioner,
