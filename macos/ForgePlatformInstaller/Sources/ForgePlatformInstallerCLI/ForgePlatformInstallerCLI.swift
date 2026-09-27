@@ -207,6 +207,12 @@ enum ForgePlatformInstallerCLIApplication {
                 )
             case .deploymentRemove(let deployment):
                 result = await workflow.removeDeployment(deployment)
+            case .deploymentRemovePlan(let deployment, let operationID, let component):
+                result = await workflow.planRemoval(
+                    deploymentID: deployment,
+                    operationID: operationID,
+                    component: component
+                )
             case .help, .version, .selfUpdateCheck, .selfUpdateApply:
                 result = InstallerCLIResult(
                     exitCode: .usage,

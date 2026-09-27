@@ -34,6 +34,15 @@ final class InstallerCLITests: XCTestCase {
             try InstallerCLIParser.parse(["deployment", "remove", "--deployment", "production"]).command,
             .deploymentRemove("production")
         )
+        XCTAssertEqual(
+            try InstallerCLIParser.parse([
+                "deployment", "remove", "plan", "--deployment", "production",
+                "--operation-id", "remove-one", "--component", "forge-runtime",
+            ]).command,
+            .deploymentRemovePlan(
+                "production", operationID: "remove-one", component: "forge-runtime"
+            )
+        )
         XCTAssertThrowsError(try InstallerCLIParser.parse(["deployment", "apply"]))
         XCTAssertThrowsError(try InstallerCLIParser.parse([
             "deployment", "apply", "--deployment", "a", "--deployment", "b",
@@ -44,6 +53,44 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertThrowsError(
             try InstallerCLIParser.parse(["deployment", "remove", "--deployment", "new"])
         )
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "remove", "plan", "--deployment", "production",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "remove", "plan", "--deployment", "production",
+            "--operation-id", "remove-one", "--yes",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "remove", "plan", "--deployment", "production",
+            "--operation-id", "bad/id",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "remove", "--deployment", "production",
+            "--operation-id", "remove-one",
+        ]))
+    }
+
+    func testRemovalPlanDisplaysExactHelperDiffWithoutExecuting() async throws {
+        let coordinator = CLIWizardCoordinator(
+            session: try session(), removalInventory: true
+        )
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        ).planRemoval(
+            deploymentID: "production", operationID: "remove-one",
+            component: "forge-runtime"
+        )
+
+        XCTAssertEqual(result.exitCode, .success)
+        XCTAssertEqual(result.status, "removal-planned")
+        XCTAssertEqual(result.details["operation_id"], "remove-one")
+        XCTAssertEqual(result.details["action"], "REMOVE_COMPONENT")
+        XCTAssertEqual(result.details["forge_instance_id"], "forge-prod")
+        XCTAssertEqual(result.records.map { $0["action"] }, ["NO_CHANGE", "REMOVE_COMPONENT"])
+        let calls = await coordinator.calls()
+        XCTAssertEqual(calls, ["inventory", "removal-review", "inventory"])
+        let executions = await coordinator.executionCallCount()
+        XCTAssertEqual(executions, 0)
     }
 
     func testStatusAndListUseOnlyReadOnlyDeploymentInventory() async throws {
@@ -326,6 +373,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private let currency: InstallerCurrencyCheckResult?
     private let execution: ManagedDeploymentExecutionResult
     private let inventoryUnavailable: Bool
+    private let removalInventory: Bool
     private var recordedCalls: [String] = []
     private var recordedProviderActions: [ProviderAction] = []
     private var executions = 0
@@ -337,12 +385,14 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         providerAuthenticationRequired: Bool = false,
         currency: InstallerCurrencyCheckResult? = nil,
         execution: ManagedDeploymentExecutionResult? = nil,
-        inventoryUnavailable: Bool = false
+        inventoryUnavailable: Bool = false,
+        removalInventory: Bool = false
     ) {
         selectedSession = session
         self.providerAuthenticationRequired = providerAuthenticationRequired
         self.currency = currency
         self.inventoryUnavailable = inventoryUnavailable
+        self.removalInventory = removalInventory
         self.execution = execution ?? .completed(
             stages: [
                 ExecutionStage(id: "forge", title: "Forge", detail: "ready", state: .passed),
@@ -389,7 +439,11 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
                         label: "Production",
                         exists: true,
                         forgeInstanceID: "forge-prod",
-                        engineeringPlatformInstanceID: "ep-prod"
+                        engineeringPlatformInstanceID: "ep-prod",
+                        installedCompositionID: removalInventory
+                            ? "forge-ep-qualified" : nil,
+                        installedCompositionManifestSHA256: removalInventory
+                            ? "sha256:" + String(repeating: "a", count: 64) : nil
                     )
                 ],
                 createCandidate: ManagedDeploymentTarget(
@@ -401,6 +455,62 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
             ))
         } catch {
             return .unavailable(.ambiguousInventory)
+        }
+    }
+
+    func prepareProductRemovalReview(
+        _ intent: ManagedInstallerProductRemovalReviewIntent
+    ) async -> Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        recordedCalls.append("removal-review")
+        guard removalInventory else { return .failure(.rejected) }
+        do {
+            let digest = String(repeating: "a", count: 64)
+            let request = try ManagedInstallerProductRemovalRequest(
+                operationID: intent.operationID,
+                deploymentID: intent.deploymentID,
+                action: intent.action,
+                targetComponent: intent.targetComponent,
+                reviewedRevision: 3,
+                reviewedDeploymentSHA256: digest,
+                reviewedPlanSHA256: digest,
+                forgeInstanceID: intent.forgeInstanceID,
+                engineeringPlatformInstanceID: intent.engineeringPlatformInstanceID,
+                installedCompositionIdentity: intent.installedCompositionIdentity,
+                installedManifestSHA256: intent.installedManifestSHA256,
+                installerRelease: intent.installerRelease
+            )
+            var reader = try StrictJSONResourceReader(data: request.canonicalJSONData())
+            let requestValue = try reader.parseDocument()
+            let diffs: [StrictJSONResourceValue] = [
+                .object([
+                    "component": .string("engineering-platform-server"),
+                    "instance_id": .string("ep-prod"),
+                    "action": .string("NO_CHANGE"),
+                ]),
+                .object([
+                    "component": .string("forge-runtime"),
+                    "instance_id": .string("forge-prod"),
+                    "action": .string("REMOVE_COMPONENT"),
+                ]),
+            ]
+            let data = StrictSignedJSON.canonicalPayload(from: .object([
+                "schema": .string(ManagedInstallerProductRemovalReviewProposal.schema),
+                "intent_fingerprint": .string(intent.intentFingerprint),
+                "request": requestValue,
+                "deployment_action": .string("CREATE_OR_UPDATE"),
+                "component_diffs": .array(diffs),
+                "resulting_components": .array([
+                    .string("engineering-platform-server"),
+                ]),
+            ]))
+            return .success(try ManagedInstallerProductRemovalReviewProposal.decodeJSON(
+                data, intent: intent
+            ))
+        } catch {
+            return .failure(.rejected)
         }
     }
 
