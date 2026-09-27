@@ -89,6 +89,58 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
             candidateManifests: [manifest],
             routes: snapshot.routes + snapshot.routes
         ))
+        let original = try XCTUnwrap(snapshot.routes.first)
+        func secondRoute(
+            consumerID: String, credentialReference: String
+        ) throws -> ManagedInstallerProductWorkerRouteAuthority {
+            let pairing = try ManagedInstallerProductWorkerPairingAuthority(
+                bindingID: "ep-secondary",
+                consumerID: consumerID,
+                hostID: original.pairing.hostID,
+                projectID: original.pairing.projectID,
+                repositoryID: original.pairing.repositoryID,
+                repositoryIdentity: original.pairing.repositoryIdentity,
+                credentialReference: credentialReference,
+                operatorID: original.pairing.operatorID
+            )
+            return try ManagedInstallerProductWorkerRouteAuthority(
+                deploymentID: "secondary",
+                forgeInstanceID: "forge-secondary",
+                forgeInstallationID: "forge-installation-secondary",
+                forgeServiceAccount: "_forge_secondary",
+                forgeBindPort: 8975,
+                forgeArtifactSHA256: original.forgeArtifactSHA256,
+                engineeringPlatformInstanceID: "ep-secondary",
+                engineeringPlatformDisplayLabel: "Secondary",
+                engineeringPlatformServiceAccount: "_ep_secondary",
+                engineeringPlatformBindPort: 8976,
+                pairing: pairing
+            )
+        }
+        for second in [
+            try secondRoute(
+                consumerID: original.pairing.consumerID,
+                credentialReference: "keychain://forge.ep/secondary"
+            ),
+            try secondRoute(
+                consumerID: "secondary-consumer",
+                credentialReference: original.pairing.credentialReference
+            ),
+        ] {
+            XCTAssertThrowsError(try ManagedInstallerProductWorkerAuthoritySnapshot(
+                installerRelease: snapshot.installerRelease,
+                candidateManifests: [manifest],
+                routes: [original, second]
+            ))
+        }
+        XCTAssertNoThrow(try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: snapshot.installerRelease,
+            candidateManifests: [manifest],
+            routes: [original, secondRoute(
+                consumerID: "secondary-consumer",
+                credentialReference: "keychain://forge.ep/secondary"
+            )]
+        ))
         XCTAssertFalse(expected.isEmpty)
     }
 

@@ -156,6 +156,17 @@ class ProductWorkerAuthorityLoader:
         ]
         if len(set(installation_ids)) != len(installation_ids):
             raise ProductWorkerAuthorityError("product routes reuse a Forge installation id")
+        pairing_scopes = [
+            (config.pairing_binding.consumer_id, config.pairing_binding.project_id)
+            for config in configurations
+        ]
+        if len(set(pairing_scopes)) != len(pairing_scopes):
+            raise ProductWorkerAuthorityError("product routes reuse an EP consumer scope")
+        credentials = [
+            config.pairing_binding.credential_reference for config in configurations
+        ]
+        if len(set(credentials)) != len(credentials):
+            raise ProductWorkerAuthorityError("product routes reuse a pairing credential reference")
         registry = ManagedDeploymentRegistry(self.root / "state/deployments")
         coordinator = ManagedForgeEPInstallationCoordinator(
             operations_root=self.root / "state/product-operations",

@@ -230,6 +230,8 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
             ("forge_service_account", "_forge_prod", "service account"),
             ("forge_bind_port", 8875, "bind port"),
             ("forge_installation_id", "forge-installation-prod", "installation id"),
+            ("pairing.consumer_id", "forge-consumer", "consumer scope"),
+            ("pairing.credential_reference", "keychain://forge.ep/consumer", "credential reference"),
         ):
             payload = _authority()
             second = json.loads(json.dumps(payload["routes"][0]))
@@ -244,7 +246,12 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
                 "ep_bind_port": 8976,
             })
             second["pairing"]["binding_id"] = "ep-staging"
-            second[field] = value
+            second["pairing"]["consumer_id"] = "staging-consumer"
+            second["pairing"]["credential_reference"] = "keychain://forge.ep/staging"
+            if field.startswith("pairing."):
+                second["pairing"][field.removeprefix("pairing.")] = value
+            else:
+                second[field] = value
             payload["routes"].append(second)
             self.write(payload)
             with self.subTest(field=field), self.assertRaisesRegex(
