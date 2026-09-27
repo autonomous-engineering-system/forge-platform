@@ -11,6 +11,7 @@ public enum ManagedInstallerHelperStateRootBootstrapFailure: Error, Equatable, S
 public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
     private static let vendorName = "AutonomousEngineeringSystem"
     private static let installerName = "ForgePlatformInstaller"
+    static let productVenvsDirectoryName = "managed-python-product-venvs"
 
     private let parentDirectory: URL
     private let expectedOwner: uid_t
@@ -60,9 +61,14 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
             in: installer
         )
         defer { Darwin.close(runtimeSlots) }
+        let productVenvs = try createPrivateChild(
+            Self.productVenvsDirectoryName, in: installer
+        )
+        defer { Darwin.close(productVenvs) }
         guard Self.isPrivateDirectory(vendor, owner: expectedOwner),
               Self.isPrivateDirectory(installer, owner: expectedOwner),
               Self.isPrivateDirectory(runtimeSlots, owner: expectedOwner),
+              Self.isPrivateDirectory(productVenvs, owner: expectedOwner),
               Self.isSecureParent(parent, owner: expectedOwner) else {
             throw ManagedInstallerHelperStateRootBootstrapFailure.unavailable
         }
