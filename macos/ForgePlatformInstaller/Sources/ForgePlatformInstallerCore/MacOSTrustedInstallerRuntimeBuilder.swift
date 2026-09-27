@@ -232,6 +232,9 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
             let routeCoordinator = ManagedInstallerReleasedRouteCoordinator(
                 loader: routeLoaderFactory(helperIdentity)
             )
+            let productTransport = MacOSManagedInstallerProductOperationXPCTransport(
+                helperIdentity: helperIdentity
+            )
             let releaseFeed = try GitHubSignedInstallerReleaseFeed(
                 trustConfiguration: sealedTrustConfiguration,
                 sealedReleaseProvenance: sealedReleaseProvenance,
@@ -275,7 +278,8 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 recoveryStore: FileInstallerSelfUpdateRecoveryStore(rootDirectory: stateRoot),
                 operationLock: FileInstallerSelfUpdateOperationLock(rootDirectory: stateRoot),
                 compositionSessionPreparer: compositionSessionPreparer,
-                managedDeploymentRouteCoordinator: routeCoordinator
+                managedDeploymentRouteCoordinator: routeCoordinator,
+                removalReviewTransport: productTransport
             ))
         } catch {
             // Do not leak a filesystem location, architecture detail, network

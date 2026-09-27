@@ -1,6 +1,14 @@
 import CryptoKit
 import Foundation
 
+/// Read-only fixed helper route. The caller supplies only a canonical bounded
+/// intent; the helper owns inventory, revision and reviewed-plan computation.
+public protocol ManagedInstallerProductRemovalReviewTransporting: Sendable {
+    func prepareProductRemovalReview(
+        _ canonicalIntent: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure>
+}
+
 /// Public target chosen for read-only helper review. Reviewed revision and
 /// plan hashes are deliberately computed by the helper from fresh registry
 /// state, never inferred by the GUI or CLI from inventory labels.

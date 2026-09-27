@@ -3,6 +3,94 @@ import XCTest
 
 final class SelfUpdateCoordinatorTests: XCTestCase {
 
+    func testCurrentReleasedRuntimeAcceptsExactReadOnlyRemovalReview() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try makeRemovalReviewIntent(release: record.release)
+        let proposal = try makeRemovalReviewProposal(for: intent)
+        let transport = ReviewTransportSpy(response: .success(proposal.canonicalJSONData()))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(record)),
+            inspector: InspectorSpy(responses: [.success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            removalReviewTransport: transport
+        )
+
+        let beforeCurrency = await coordinator.prepareProductRemovalReview(intent)
+        XCTAssertEqual(beforeCurrency, .failure(.rejected))
+        let currency = await coordinator.recheckInstallerBeforeMutation(
+            currentVersion: identity.version
+        )
+        XCTAssertEqual(currency, .current(record.release))
+        let accepted = await coordinator.prepareProductRemovalReview(intent)
+        XCTAssertEqual(accepted, .success(proposal))
+        let calls = await transport.calls()
+        XCTAssertEqual(calls, [intent.canonicalJSONData()])
+
+        let otherRecord = try makeReleaseRecord(version: "1.2.4", sequence: 21)
+        let wrongReleaseIntent = try makeRemovalReviewIntent(release: otherRecord.release)
+        let wrongRelease = await coordinator.prepareProductRemovalReview(wrongReleaseIntent)
+        XCTAssertEqual(wrongRelease, .failure(.rejected))
+        let finalCalls = await transport.calls()
+        XCTAssertEqual(finalCalls.count, 1)
+    }
+
+    func testReleasedRuntimeRejectsUnavailableAndDriftedReviewReplies() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try makeRemovalReviewIntent(release: record.release)
+        let transport = ReviewTransportSpy(response: .success(Data("{}".utf8)))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(record)),
+            inspector: InspectorSpy(responses: [.success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            removalReviewTransport: transport
+        )
+        let currency = await coordinator.recheckInstallerBeforeMutation(
+            currentVersion: identity.version
+        )
+        XCTAssertEqual(currency, .current(record.release))
+        let drifted = await coordinator.prepareProductRemovalReview(intent)
+        XCTAssertEqual(drifted, .failure(.rejected))
+        await transport.setResponse(.failure(.unavailable))
+        let unavailable = await coordinator.prepareProductRemovalReview(intent)
+        XCTAssertEqual(unavailable, .failure(.unavailable))
+    }
+
+    func testInFlightRemovalReviewCannotReturnAfterInstallerCurrencyDrifts() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let newer = try makeReleaseRecord(version: "1.2.4", sequence: 21)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try makeRemovalReviewIntent(release: record.release)
+        let proposal = try makeRemovalReviewProposal(for: intent)
+        let feed = FeedSpy(result: .success(record))
+        let transport = BlockingReviewTransportSpy()
+        let coordinator = makeCoordinator(
+            feed: feed,
+            inspector: InspectorSpy(responses: [
+                .success(identity), .success(identity),
+            ]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            removalReviewTransport: transport
+        )
+        let current = await coordinator.recheckInstallerBeforeMutation(
+            currentVersion: identity.version
+        )
+        XCTAssertEqual(current, .current(record.release))
+        let reviewTask = Task { await coordinator.prepareProductRemovalReview(intent) }
+        await transport.waitUntilCalled()
+        let calls = await transport.callCount()
+        XCTAssertEqual(calls, 1)
+        await feed.setResult(.success(newer))
+        let changed = await coordinator.recheckInstallerBeforeMutation(
+            currentVersion: identity.version
+        )
+        XCTAssertEqual(changed, .updateRequired(newer.release))
+        await transport.resume(with: .success(proposal.canonicalJSONData()))
+        let rejected = await reviewTask.value
+        XCTAssertEqual(rejected, .failure(.rejected))
+    }
+
     func testPreMutationCurrencyRecheckCoversCurrentUpdateAndFeedFailure() async throws {
         let currentRecord = try makeReleaseRecord(version: "1.2.3", sequence: 20)
         let currentIdentity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
@@ -1082,7 +1170,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         operationLock: any InstallerSelfUpdateOperationLocking = OperationLockSpy(),
         compositionSessionPreparer: any VerifiedCompositionSessionPreparing = UnavailableVerifiedCompositionSessionPreparer(),
         providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator(),
-        managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator()
+        managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator(),
+        removalReviewTransport: (any ManagedInstallerProductRemovalReviewTransporting)? = nil
     ) -> VerifiedInstallerSelfUpdateCoordinator {
         VerifiedInstallerSelfUpdateCoordinator(
             releaseFeed: feed,
@@ -1094,7 +1183,54 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             operationLock: operationLock,
             compositionSessionPreparer: compositionSessionPreparer,
             providerCoordinator: providerCoordinator,
-            managedDeploymentRouteCoordinator: managedDeploymentRouteCoordinator
+            managedDeploymentRouteCoordinator: managedDeploymentRouteCoordinator,
+            removalReviewTransport: removalReviewTransport
+        )
+    }
+
+    private func makeRemovalReviewIntent(
+        release: VerifiedInstallerRelease
+    ) throws -> ManagedInstallerProductRemovalReviewIntent {
+        try ManagedInstallerProductRemovalReviewIntent(
+            operationID: "remove-one", deploymentID: "deployment-one",
+            action: "REMOVE_DEPLOYMENT", targetComponent: nil,
+            forgeInstanceID: "forge-one", engineeringPlatformInstanceID: nil,
+            installedCompositionIdentity: "forge-ep-qualified",
+            installedManifestSHA256: "sha256:" + String(repeating: "a", count: 64),
+            installerRelease: release
+        )
+    }
+
+    private func makeRemovalReviewProposal(
+        for intent: ManagedInstallerProductRemovalReviewIntent
+    ) throws -> ManagedInstallerProductRemovalReviewProposal {
+        let digest = String(repeating: "a", count: 64)
+        let request = try ManagedInstallerProductRemovalRequest(
+            operationID: intent.operationID, deploymentID: intent.deploymentID,
+            action: intent.action, targetComponent: intent.targetComponent,
+            reviewedRevision: 3, reviewedDeploymentSHA256: digest,
+            reviewedPlanSHA256: digest, forgeInstanceID: intent.forgeInstanceID,
+            engineeringPlatformInstanceID: intent.engineeringPlatformInstanceID,
+            installedCompositionIdentity: intent.installedCompositionIdentity,
+            installedManifestSHA256: intent.installedManifestSHA256,
+            installerRelease: intent.installerRelease
+        )
+        var reader = try StrictJSONResourceReader(data: request.canonicalJSONData())
+        let requestValue = try reader.parseDocument()
+        let data = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerProductRemovalReviewProposal.schema),
+            "intent_fingerprint": .string(intent.intentFingerprint),
+            "request": requestValue,
+            "deployment_action": .string("REMOVE_DEPLOYMENT"),
+            "component_diffs": .array([.object([
+                "component": .string("forge-runtime"),
+                "instance_id": .string(intent.forgeInstanceID),
+                "action": .string("REMOVE_COMPONENT"),
+            ])]),
+            "resulting_components": .array([]),
+        ]))
+        return try ManagedInstallerProductRemovalReviewProposal.decodeJSON(
+            data, intent: intent
         )
     }
 
@@ -1277,7 +1413,7 @@ private actor ProviderCoordinatorSpy: ProviderActionCoordinating {
 }
 
 private actor FeedSpy: SignedInstallerReleaseFeedVerifying {
-    private let result: Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>
+    private var result: Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>
     private var calls = 0
 
     init(result: Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>) {
@@ -1291,6 +1427,12 @@ private actor FeedSpy: SignedInstallerReleaseFeedVerifying {
 
     func callCount() -> Int {
         calls
+    }
+
+    func setResult(
+        _ result: Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>
+    ) {
+        self.result = result
     }
 }
 
@@ -1671,5 +1813,63 @@ private final class OperationLockLeaseSpy: InstallerSelfUpdateOperationLock, @un
         owner = nil
         stateLock.unlock()
         return lockOwner?.releaseLease() ?? .success(())
+    }
+}
+
+private actor ReviewTransportSpy: ManagedInstallerProductRemovalReviewTransporting {
+    private var response: Result<Data, ManagedInstallerProductOperationBridgeFailure>
+    private var requests: [Data] = []
+
+    init(response: Result<Data, ManagedInstallerProductOperationBridgeFailure>) {
+        self.response = response
+    }
+
+    func prepareProductRemovalReview(
+        _ canonicalIntent: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        requests.append(canonicalIntent)
+        return response
+    }
+
+    func setResponse(
+        _ response: Result<Data, ManagedInstallerProductOperationBridgeFailure>
+    ) {
+        self.response = response
+    }
+
+    func calls() -> [Data] { requests }
+}
+
+private actor BlockingReviewTransportSpy: ManagedInstallerProductRemovalReviewTransporting {
+    private var continuations: [CheckedContinuation<
+        Result<Data, ManagedInstallerProductOperationBridgeFailure>, Never
+    >] = []
+    private var callWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func prepareProductRemovalReview(
+        _ canonicalIntent: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        _ = canonicalIntent
+        return await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+            callWaiters.forEach { $0.resume() }
+            callWaiters.removeAll()
+        }
+    }
+
+    func callCount() -> Int { continuations.count }
+
+    func waitUntilCalled() async {
+        if !continuations.isEmpty { return }
+        await withCheckedContinuation { continuation in
+            callWaiters.append(continuation)
+        }
+    }
+
+    func resume(
+        with result: Result<Data, ManagedInstallerProductOperationBridgeFailure>
+    ) {
+        guard !continuations.isEmpty else { return }
+        continuations.removeFirst().resume(returning: result)
     }
 }
