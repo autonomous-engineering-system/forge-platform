@@ -367,6 +367,7 @@ private struct TerminalReceiptReadback: ManagedPythonRuntimeActivationReading {
                 venvIdentity: venvRequest.venvIdentity,
                 runtimeIdentitySHA256: venvRequest.runtimeIdentitySHA256,
                 runtimeSlotIdentity: venvRequest.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: venvRequest.runtimeSlotEvidenceReference,
                 state: .ready,
                 evidenceReference: "receipt:current-venv-\(venvRequest.componentIdentity)"
             ))

@@ -234,7 +234,8 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
             operationID: request.operationID,
             deploymentID: request.deploymentID,
             environment: environment,
-            runtimeSlotIdentity: request.runtimeSlotIdentity
+            runtimeSlotIdentity: request.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: request.preparationReceipt.slotEvidenceReference
         )
         let foreign = try ManagedPythonProductVenvReceipt(
             operationID: request.operationID,
@@ -243,6 +244,7 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
             venvIdentity: environment.venvIdentity,
             runtimeIdentitySHA256: request.runtimeIdentitySHA256,
             runtimeSlotIdentity: request.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: request.preparationReceipt.slotEvidenceReference,
             state: .ready,
             evidenceReference: "receipt:foreign-deployment-venv"
         )
@@ -250,6 +252,44 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         let mutation = ActivationMutation(
             request: request,
             initialVenvs: [environment.componentIdentity: foreign]
+        )
+        let result = await ManagedPythonRuntimeActivationCoordinator(
+            mutation: mutation,
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
+        ).activate(request)
+        XCTAssertEqual(result.failure, .rejected)
+        let observations = await mutation.snapshot()
+        XCTAssertEqual(observations.venvEnsures, 0)
+        XCTAssertEqual(observations.activations, 0)
+    }
+
+    func testDifferentRuntimeSlotEvidenceFailsBeforeMutation() async throws {
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: fixture.missingReadback())
+        let environment = try XCTUnwrap(request.productVirtualEnvironments.first)
+        let exactRequest = ManagedPythonProductVenvMutationRequest(
+            operationID: request.operationID,
+            deploymentID: request.deploymentID,
+            environment: environment,
+            runtimeSlotIdentity: request.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: request.preparationReceipt.slotEvidenceReference
+        )
+        let stale = try ManagedPythonProductVenvReceipt(
+            operationID: request.operationID,
+            deploymentID: request.deploymentID,
+            componentIdentity: environment.componentIdentity,
+            venvIdentity: environment.venvIdentity,
+            runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+            runtimeSlotIdentity: request.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: "receipt:stale-runtime-slot",
+            state: .ready,
+            evidenceReference: "receipt:stale-venv"
+        )
+        XCTAssertFalse(stale.matches(exactRequest))
+        let mutation = ActivationMutation(
+            request: request,
+            initialVenvs: [environment.componentIdentity: stale]
         )
         let result = await ManagedPythonRuntimeActivationCoordinator(
             mutation: mutation,
@@ -325,6 +365,7 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
             venvIdentity: "forge-test-v1",
             runtimeIdentitySHA256: fixture.runtime.identitySHA256,
             runtimeSlotIdentity: fixture.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: fixture.preparation.slotEvidenceReference,
             state: .ready,
             evidenceReference: "receipt:venv"
         ))
@@ -335,6 +376,7 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
             venvIdentity: "forge-test-v1",
             runtimeIdentitySHA256: fixture.runtime.identitySHA256,
             runtimeSlotIdentity: fixture.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: fixture.preparation.slotEvidenceReference,
             state: .ready,
             evidenceReference: "receipt:venv"
         ))
@@ -541,6 +583,7 @@ struct ActivationFixture {
             venvIdentity: environment.venvIdentity,
             runtimeIdentitySHA256: request.runtimeIdentitySHA256,
             runtimeSlotIdentity: request.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: request.preparationReceipt.slotEvidenceReference,
             state: .ready,
             evidenceReference: "receipt:venv-\(environment.componentIdentity)"
         )

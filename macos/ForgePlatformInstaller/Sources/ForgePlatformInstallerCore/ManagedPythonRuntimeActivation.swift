@@ -283,12 +283,14 @@ public struct ManagedPythonProductVenvMutationRequest: Equatable, Sendable {
     public let venvIdentity: String
     public let runtimeIdentitySHA256: String
     public let runtimeSlotIdentity: String
+    public let runtimeSlotEvidenceReference: String
 
     init(
         operationID: String,
         deploymentID: String,
         environment: ManagedProductVirtualEnvironmentIdentity,
-        runtimeSlotIdentity: String
+        runtimeSlotIdentity: String,
+        runtimeSlotEvidenceReference: String
     ) {
         self.operationID = operationID
         self.deploymentID = deploymentID
@@ -296,6 +298,7 @@ public struct ManagedPythonProductVenvMutationRequest: Equatable, Sendable {
         venvIdentity = environment.venvIdentity
         runtimeIdentitySHA256 = environment.pythonRuntimeIdentitySHA256
         self.runtimeSlotIdentity = runtimeSlotIdentity
+        self.runtimeSlotEvidenceReference = runtimeSlotEvidenceReference
     }
 }
 
@@ -308,6 +311,7 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
     public let venvIdentity: String
     public let runtimeIdentitySHA256: String
     public let runtimeSlotIdentity: String
+    public let runtimeSlotEvidenceReference: String
     public let state: State
     public let evidenceReference: String
 
@@ -318,6 +322,7 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
         venvIdentity: String,
         runtimeIdentitySHA256: String,
         runtimeSlotIdentity: String,
+        runtimeSlotEvidenceReference: String,
         state: State,
         evidenceReference: String
     ) throws {
@@ -330,6 +335,7 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
                 == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
                     for: runtimeIdentitySHA256
                 ),
+              ManagedPythonRuntimeInstalledReadback.isEvidenceReference(runtimeSlotEvidenceReference),
               ManagedPythonRuntimeInstalledReadback.isEvidenceReference(evidenceReference) else {
             throw ManagedPythonRuntimeActivationFailure.invalidRequest
         }
@@ -339,6 +345,7 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
         self.venvIdentity = venvIdentity
         self.runtimeIdentitySHA256 = runtimeIdentitySHA256
         self.runtimeSlotIdentity = runtimeSlotIdentity
+        self.runtimeSlotEvidenceReference = runtimeSlotEvidenceReference
         self.state = state
         self.evidenceReference = evidenceReference
     }
@@ -350,6 +357,7 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
             && venvIdentity == request.venvIdentity
             && runtimeIdentitySHA256 == request.runtimeIdentitySHA256
             && runtimeSlotIdentity == request.runtimeSlotIdentity
+            && runtimeSlotEvidenceReference == request.runtimeSlotEvidenceReference
             && state == .ready
     }
 }
@@ -640,7 +648,8 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
                 operationID: request.operationID,
                 deploymentID: request.deploymentID,
                 environment: environment,
-                runtimeSlotIdentity: request.runtimeSlotIdentity
+                runtimeSlotIdentity: request.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: request.preparationReceipt.slotEvidenceReference
             )
             switch await ensureVenv(venvRequest) {
             case .success(let receipt):
@@ -751,7 +760,8 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
                 operationID: request.operationID,
                 deploymentID: request.deploymentID,
                 environment: environment,
-                runtimeSlotIdentity: request.runtimeSlotIdentity
+                runtimeSlotIdentity: request.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: request.preparationReceipt.slotEvidenceReference
             )
             switch await mutation.readProductVenv(venvRequest) {
             case .success(let readback?) where readback.matches(venvRequest):
