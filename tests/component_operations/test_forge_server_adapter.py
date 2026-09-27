@@ -243,7 +243,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
                 }
                 value.update(self.overrides)
                 value["assessment_digest"] = "sha256:" + hashlib.sha256(
-                    json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+                    (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
                 ).hexdigest()
                 if self.bad_digest:
                     value["assessment_digest"] = "sha256:" + "0" * 64

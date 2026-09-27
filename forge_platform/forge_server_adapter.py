@@ -489,7 +489,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             or payload.get("selected_installation") != expected_selected
             or payload.get("candidate") != expected_candidate
             or state not in {"UPDATE_AVAILABLE", "UP_TO_DATE", "INCOMPATIBLE", "UNKNOWN"}
-            or digest != _digest_json(unsigned)
+            or digest != _forge_product_digest(unsigned)
         ):
             raise ForgeServerAdapterError("Forge update assessment is not bound to the exact product target and artifact")
         same_artifact = all(
@@ -593,4 +593,12 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
 
 def _digest_json(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return "sha256:" + sha256(encoded).hexdigest()
+
+
+def _forge_product_digest(value: object) -> str:
+    """Match Forge's product-owned `_json_bytes` receipt/assessment grammar."""
+    encoded = (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+    ).encode("utf-8")
     return "sha256:" + sha256(encoded).hexdigest()
