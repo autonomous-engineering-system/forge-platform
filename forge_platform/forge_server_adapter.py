@@ -445,6 +445,8 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             readiness = self.readiness_probe.readiness(self.target)
         except ForgeServerAdapterError:
             readiness = {"ready": False}
+        if readiness.get("ready") is True and readiness.get("instance_id") != self.target.instance_id:
+            raise ForgeServerAdapterError("Forge readiness describes a different instance")
         ready = health.get("outcome") == "HEALTHY" and readiness.get("ready") is True
         evidence = "forge-health:" + _digest_json({"health": health, "readiness": readiness})
         return ProductInstallationReadback(
@@ -555,8 +557,30 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         elif request.kind == "remove":
             return self._run_uninstall(request)
         elif request.kind == "update":
+            before = self.readback(request)
+            if (
+                before.state != "ACTIVE"
+                or before.artifact != self.installed_artifact.correlation
+                or before.selected_instance_identity != self.target.instance_id
+            ):
+                raise ForgeServerAdapterError("Forge update selected inventory is stale or unhealthy")
+            assessment = self.assess_update(request)
+            if assessment.state != "UPDATE_AVAILABLE":
+                raise ForgeServerAdapterError("Forge product did not authorize the fresh update")
+            binding = self.update_binding
+            if binding is None or binding.runtime_id != self.target.instance_id or binding.existing_version != self.installed_artifact.version:
+                raise ForgeServerAdapterError("Forge update binding changed before service mutation")
+            self.supervisor.stop(self.target)
+            if self.supervisor.loaded(self.target):
+                raise ForgeServerAdapterError("Forge service remained loaded before product update")
             evidence_reference = self._run_update(request)
+            self.supervisor.register(self.target, binding.resolver)
+            self.supervisor.start(self.target)
+            self.forge_executable = binding.resolver
             self.installed_artifact = request.artifact
+            after = self.readback(request)
+            if after.state != "ACTIVE" or after.artifact != request.artifact.correlation:
+                raise ForgeServerAdapterError("Forge update did not restore exact instance readiness")
             state = "COMPLETED"
         else:
             raise ForgeServerAdapterError("Forge operation kind is unsupported")
