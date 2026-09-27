@@ -319,12 +319,18 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
             [$0.forgeInstanceID, $0.engineeringPlatformInstanceID]
         }
         let installations = values.map(\.forgeInstallationID)
+        let pairingScopes = values.map {
+            $0.pairing.consumerID + "\u{1f}" + $0.pairing.projectID
+        }
+        let credentialReferences = values.map(\.pairing.credentialReference)
         let accounts = values.flatMap {
             [$0.forgeServiceAccount, $0.engineeringPlatformServiceAccount]
         }
         let ports = values.flatMap { [$0.forgeBindPort, $0.engineeringPlatformBindPort] }
         return Set(instances).count == instances.count
             && Set(installations).count == installations.count
+            && Set(pairingScopes).count == pairingScopes.count
+            && Set(credentialReferences).count == credentialReferences.count
             && Set(accounts).count == accounts.count
             && Set(ports).count == ports.count
     }
