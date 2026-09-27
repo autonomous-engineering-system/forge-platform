@@ -1843,7 +1843,7 @@ private actor ProductWorkerRunner: ManagedInstallerProductWorkerRunning {
     }
 }
 
-private final class RawProductOperationXPCService:
+final class RawProductOperationXPCService:
     NSObject, NSXPCListenerDelegate, ManagedInstallerProductOperationXPCService,
     @unchecked Sendable {
     private let listener = NSXPCListener.anonymous()
@@ -1888,6 +1888,13 @@ private final class RawProductOperationXPCService:
         let response = responses.removeFirst()
         lock.unlock()
         reply(response)
+    }
+
+    func executeProductRemoval(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalRequest, withReply: reply)
     }
 
     func capturedRequests() -> [Data] {

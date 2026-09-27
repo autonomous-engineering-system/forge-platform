@@ -10,6 +10,24 @@ public protocol ManagedInstallerProductOperationHelperExecuting: Sendable {
         ManagedInstallerProductOperationReceipt,
         ManagedInstallerProductOperationBridgeFailure
     >
+    func executeProductRemoval(
+        _ request: ManagedInstallerProductRemovalRequest
+    ) async -> Result<
+        ManagedInstallerProductRemovalReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    >
+}
+
+public extension ManagedInstallerProductOperationHelperExecuting {
+    func executeProductRemoval(
+        _ request: ManagedInstallerProductRemovalRequest
+    ) async -> Result<
+        ManagedInstallerProductRemovalReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = request
+        return .failure(.rejected)
+    }
 }
 
 /// Fixed XPC interface exported by the separately installed privileged helper.
@@ -17,6 +35,10 @@ public protocol ManagedInstallerProductOperationHelperExecuting: Sendable {
 /// commands, environment values, credentials or caller-selected service names.
 @objc public protocol ManagedInstallerProductOperationXPCService {
     func executeProductOperation(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
+    func executeProductRemoval(
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     )
@@ -130,6 +152,41 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
             }
         }
     }
+
+    public func executeProductRemoval(
+        _ canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        guard let request = try? ManagedInstallerProductRemovalRequest.decodeJSON(
+            canonicalRequest
+        ), request.canonicalJSONData() == canonicalRequest else {
+            return .failure(.invalidRequest)
+        }
+        return await withCheckedContinuation { continuation in
+            let gate = ManagedInstallerProductOperationXPCReplyGate(
+                continuation: continuation
+            )
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+                gate.complete(.failure(.unavailable))
+            }) as? ManagedInstallerProductOperationXPCService else {
+                gate.complete(.failure(.unavailable))
+                return
+            }
+            proxy.executeProductRemoval(canonicalRequest) { response in
+                guard let response else {
+                    gate.complete(.failure(.unavailable))
+                    return
+                }
+                guard response.count <= ManagedInstallerProductRemovalReceipt.maximumBytes,
+                      let receipt = try? ManagedInstallerProductRemovalReceipt.decodeJSON(
+                          response, request: request
+                      ), receipt.canonicalJSONData() == response else {
+                    gate.complete(.failure(.rejected))
+                    return
+                }
+                gate.complete(.success(response))
+            }
+        }
+    }
 }
 
 /// Fail-closed helper handler. It accepts one exact canonical request and emits
@@ -176,6 +233,38 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
                   (try? ManagedInstallerProductOperationReceipt.decodeJSON(
                       response,
                       request: request
+                  )) == receipt else {
+                replyGate.complete(nil)
+                return
+            }
+            replyGate.complete(response)
+        }
+    }
+
+    public func executeProductRemoval(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let replyGate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
+        let executor = executor
+        Task {
+            guard let request = try? ManagedInstallerProductRemovalRequest.decodeJSON(
+                canonicalRequest
+            ), request.canonicalJSONData() == canonicalRequest else {
+                replyGate.complete(nil)
+                return
+            }
+            let receipt: ManagedInstallerProductRemovalReceipt
+            switch await executor.executeProductRemoval(request) {
+            case .success(let completed): receipt = completed
+            case .failure:
+                replyGate.complete(nil)
+                return
+            }
+            let response = receipt.canonicalJSONData()
+            guard response.count <= ManagedInstallerProductRemovalReceipt.maximumBytes,
+                  (try? ManagedInstallerProductRemovalReceipt.decodeJSON(
+                      response, request: request
                   )) == receipt else {
                 replyGate.complete(nil)
                 return
