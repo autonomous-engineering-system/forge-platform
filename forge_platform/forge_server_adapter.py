@@ -616,9 +616,16 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             or payload.get("operation_id") != request.operation_id
             or payload.get("instance_id") != self.target.instance_id
             or payload.get("request_digest") != _forge_product_digest(selected)
-            or not isinstance(payload.get("receipt_digest"), str)
         ):
             raise ForgeServerAdapterError("Forge uninstall status does not bind the exact request")
+        if payload.get("state") == "COMPLETE":
+            if payload.get("phase") != "COMPLETE" or not isinstance(payload.get("receipt_digest"), str):
+                raise ForgeServerAdapterError("Forge uninstall terminal status is incomplete")
+        elif payload.get("state") == "IN_PROGRESS":
+            if payload.get("phase") not in {"PREPARED", "VERIFIED", "DETACHED", "REMOVED"}:
+                raise ForgeServerAdapterError("Forge uninstall recovery phase is unsupported")
+        else:
+            raise ForgeServerAdapterError("Forge uninstall status is unsupported")
         return payload
 
     def _run_uninstall(self, request: ComponentOperationRequest) -> ProductOperationReceipt:
@@ -636,8 +643,8 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
                 raise ForgeServerAdapterError("Forge uninstall target changed before service stop")
         else:
             prior = self._uninstall_status(request)
-            if prior.get("phase") != "COMPLETE" or prior.get("state") != "COMPLETE":
-                raise ForgeServerAdapterError("Forge uninstall has no terminal prior operation")
+            if prior.get("state") not in {"IN_PROGRESS", "COMPLETE"}:
+                raise ForgeServerAdapterError("Forge uninstall has no recoverable prior operation")
         self.supervisor.stop(self.target)
         if self.supervisor.loaded(self.target):
             raise ForgeServerAdapterError("Forge service remained loaded before product uninstall")

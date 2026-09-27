@@ -197,6 +197,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
         class UninstallRunner(Runner):
             receipt = None
             status_drift = False
+            status_once_in_progress = False
             receipt_tamper: dict[str, object] = {}
 
             def run(self, argv):
@@ -214,6 +215,11 @@ class ForgeServerAdapterTests(unittest.TestCase):
                         "request_digest": self.receipt["request_digest"],
                         "receipt_digest": self.receipt["receipt_digest"],
                     }
+                    if self.status_once_in_progress:
+                        self.status_once_in_progress = False
+                        status["phase"] = "DETACHED"
+                        status["state"] = "IN_PROGRESS"
+                        del status["receipt_digest"]
                     if self.status_drift:
                         status["receipt_digest"] = "sha256:" + "0" * 64
                     return ForgeCommandResult(0, json.dumps(status), "")
@@ -264,6 +270,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
         receipt = adapter.execute(request)
         self.assertEqual(receipt.state, "COMPLETED")
         self.assertEqual(adapter.readback(request).state, "ABSENT")
+        runner.status_once_in_progress = True
         self.assertEqual(adapter.execute(request), receipt)
         self.assertEqual(len([call for call in runner.calls if "uninstall" in call]), 2)
         self.assertEqual((sibling / "preserve").read_text(encoding="utf-8"), "untouched")
@@ -316,6 +323,73 @@ class ForgeServerAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ForgeServerAdapterError, "target changed before service stop"):
             self.adapter.execute(request)
         self.assertEqual(self.supervisor.calls, [])
+
+    def test_uninstall_resumes_detached_product_operation_without_new_target(self) -> None:
+        selected = {
+            "operation_id": "forge-uninstall-recovery",
+            "instance_id": self.target.instance_id,
+            "runtime_id": self.target.instance_id,
+            "installation_id": "installation-1",
+            "data_root": str(self.target.data_root),
+            "instances_root": str(self.target.instances_root),
+        }
+
+        def digest(value):
+            raw = (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+            return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+        receipt = {
+            "contract": "forge-server-runtime-lifecycle/v1",
+            "operation": "UNINSTALL",
+            "operation_id": selected["operation_id"],
+            "instance_id": selected["instance_id"],
+            "runtime_id": selected["runtime_id"],
+            "installation_id": selected["installation_id"],
+            "request_digest": digest(selected),
+            "state": "COMPLETE", "mutable_instance_data": "REMOVED",
+            "service_definition": "DEPLOYMENT_OWNER",
+            "immutable_runtime_slots": "PRESERVED",
+            "completed_at": "2026-09-27T00:00:00Z",
+        }
+        receipt["receipt_digest"] = digest(receipt)
+
+        class RecoveryRunner(Runner):
+            completed = False
+
+            def run(self, argv):
+                args = tuple(argv)
+                self.calls.append(args)
+                if "uninstall-status" in args:
+                    status = {
+                        "contract": "forge-server-runtime-lifecycle/v1",
+                        "operation": "UNINSTALL", "operation_id": selected["operation_id"],
+                        "instance_id": selected["instance_id"],
+                        "request_digest": digest(selected),
+                        "phase": "COMPLETE" if self.completed else "DETACHED",
+                        "state": "COMPLETE" if self.completed else "IN_PROGRESS",
+                    }
+                    if self.completed:
+                        status["receipt_digest"] = receipt["receipt_digest"]
+                    return ForgeCommandResult(0, json.dumps(status), "")
+                if "uninstall" in args:
+                    self.completed = True
+                    return ForgeCommandResult(0, json.dumps(receipt), "")
+                return super().run(args)
+
+        self.data.rmdir()  # fixture represents Forge's already-detached phase
+        runner = RecoveryRunner()
+        adapter = ForgeServerProductAdapter(
+            forge_executable=Path("/opt/forge/current/bin/forge"),
+            lifecycle_executable=Path("/opt/forge/lifecycle-2.7.35/bin/forge"),
+            target=self.target, installed_artifact=ARTIFACT,
+            staged_artifacts={}, supervisor=self.supervisor, runner=runner,
+            readiness_probe=Probe(),
+            uninstall_binding=ForgeUninstallBinding(self.target.instance_id, "installation-1"),
+        )
+        request = self.request("remove", selected["operation_id"])
+        self.assertEqual(adapter.execute(request).state, "COMPLETED")
+        self.assertEqual(adapter.readback(request).state, "ABSENT")
+        self.assertEqual(len([call for call in runner.calls if "uninstall" in call]), 1)
 
     def test_update_remains_blocked_without_product_owned_update_assessment(self) -> None:
         candidate = QualifiedArtifact(
