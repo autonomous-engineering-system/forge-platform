@@ -29,6 +29,7 @@ from .forge_ep_pairing_executor import (
 from .forge_server_adapter import (
     ForgeServerProductAdapter,
     ForgeServerTarget,
+    ForgeUninstallBinding,
     ForgeUpdateBinding,
     MacOSForgeLaunchDaemonSupervisor,
 )
@@ -57,6 +58,7 @@ class ReleasedManagedProductRouteConfiguration:
     launch_daemons_directory: Path = Path("/Library/LaunchDaemons")
     forge_update_binding: ForgeUpdateBinding | None = None
     forge_lifecycle_executable: Path | None = None
+    forge_uninstall_binding: ForgeUninstallBinding | None = None
 
     def __post_init__(self) -> None:
         ManagedComponentBinding(FORGE_COMPONENT, self.deployment_id, "receipt:route")
@@ -77,6 +79,15 @@ class ReleasedManagedProductRouteConfiguration:
             or not self.forge_lifecycle_executable.is_absolute()
         ):
             raise ValueError("released route Forge lifecycle executable must be absolute")
+        if self.forge_uninstall_binding is not None and not isinstance(
+            self.forge_uninstall_binding, ForgeUninstallBinding
+        ):
+            raise TypeError("released route Forge uninstall binding is invalid")
+        if (
+            self.forge_uninstall_binding is not None
+            and self.forge_uninstall_binding.runtime_id != self.forge_target.instance_id
+        ):
+            raise ValueError("released route Forge uninstall targets a different instance")
         for label, path in (
             ("Forge executable", self.forge_executable),
             ("EP provisioner", self.engineering_platform_provisioner),
@@ -196,6 +207,7 @@ class ReleasedManagedProductRouteBuilder:
                 ),
                 update_binding=config.forge_update_binding,
                 lifecycle_executable=config.forge_lifecycle_executable,
+                uninstall_binding=config.forge_uninstall_binding,
             )
             ep = EngineeringPlatformSystemProvisionerAdapter(
                 provisioner_executable=config.engineering_platform_provisioner,

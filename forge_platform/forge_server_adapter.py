@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import plistlib
 import pwd
+import re
 import subprocess
 from typing import Mapping, Protocol, Sequence
 from urllib import request as urllib_request
@@ -32,6 +33,7 @@ from .component_operations import (
 
 FORGE_COMPONENT = "forge-runtime"
 FORGE_PROVIDER_ID = "codex-chatgpt-session"
+_FORGE_LIFECYCLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 class ForgeServerAdapterError(RuntimeError):
@@ -254,6 +256,21 @@ class ForgeUpdateBinding:
                 raise ValueError("Forge update binding paths must be absolute")
 
 
+@dataclass(frozen=True)
+class ForgeUninstallBinding:
+    runtime_id: str
+    installation_id: str
+
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(value, str)
+            or _FORGE_LIFECYCLE_ID.fullmatch(value) is None
+            or value in {".", ".."}
+            for value in (self.runtime_id, self.installation_id)
+        ):
+            raise ValueError("Forge uninstall requires exact product identities")
+
+
 class ForgeServerProductAdapter(ProductOperationAdapter):
     def __init__(
         self,
@@ -267,6 +284,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         readiness_probe: ForgeReadinessProbe | None = None,
         update_binding: ForgeUpdateBinding | None = None,
         lifecycle_executable: Path | None = None,
+        uninstall_binding: ForgeUninstallBinding | None = None,
     ) -> None:
         if not forge_executable.is_absolute():
             raise ValueError("Forge executable must be absolute")
@@ -281,6 +299,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self.readiness_probe = readiness_probe or ForgeHTTPReadinessProbe()
         self.update_binding = update_binding
         self.lifecycle_executable = lifecycle_executable
+        self.uninstall_binding = uninstall_binding
 
     @staticmethod
     def prepare_instance(
@@ -391,6 +410,19 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
 
     def readback(self, request: ComponentOperationRequest) -> ProductInstallationReadback:
         self._validate_request(request)
+        if request.kind == "remove" and not self.target.data_root.exists():
+            if self.target.data_root.is_symlink():
+                raise ForgeServerAdapterError("Forge removed target was replaced by a symbolic link")
+            status = self._uninstall_status(request)
+            if status.get("phase") != "COMPLETE" or status.get("state") != "COMPLETE":
+                raise ForgeServerAdapterError("Forge uninstall has no terminal product status")
+            if self.supervisor.loaded(self.target):
+                raise ForgeServerAdapterError("Forge service remained loaded after product uninstall")
+            return ProductInstallationReadback(
+                FORGE_COMPONENT, self.target.instance_id, "ABSENT",
+                None, None, None, None, None, "UNKNOWN", "MACHINE_WIDE", "NONE",
+                "forge-uninstall:" + str(status["receipt_digest"]),
+            )
         status = self._run("server", "status", allow_nonzero=True)
         if status.get("initialized") is not True:
             return ProductInstallationReadback(
@@ -515,9 +547,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             self.supervisor.start(self.target)
             state = "COMPLETED"
         elif request.kind == "remove":
-            raise ForgeServerAdapterError(
-                "Forge 2.7.34 publishes no product-owned uninstall dispatcher"
-            )
+            return self._run_uninstall(request)
         elif request.kind == "update":
             self._run_update(request)
             self.installed_artifact = request.artifact
@@ -539,9 +569,127 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         )
 
     def removal_support(self) -> str:
-        """Removal stays blocked until Forge publishes an owning uninstall route."""
+        """Advertise support only for a helper-bound exact product dispatcher."""
 
-        return "UNSUPPORTED"
+        return "SUPPORTED" if (
+            self.lifecycle_executable is not None
+            and self.uninstall_binding is not None
+            and self.uninstall_binding.runtime_id == self.target.instance_id
+            and self.target.data_root.parent == self.target.instances_root
+        ) else "UNSUPPORTED"
+
+    def _uninstall_request(self, request: ComponentOperationRequest) -> dict[str, str]:
+        binding = self.uninstall_binding
+        if self.lifecycle_executable is None or binding is None:
+            raise ForgeServerAdapterError("Forge product-owned uninstall binding is unavailable")
+        if request.kind != "remove" or binding.runtime_id != self.target.instance_id:
+            raise ForgeServerAdapterError("Forge uninstall does not target the exact selected instance")
+        if (
+            _FORGE_LIFECYCLE_ID.fullmatch(request.operation_id) is None
+            or request.operation_id in {".", ".."}
+        ):
+            raise ForgeServerAdapterError("Forge uninstall operation identity is unsafe")
+        if self.target.data_root.parent != self.target.instances_root:
+            raise ForgeServerAdapterError("Forge uninstall requires one direct managed instance root")
+        return {
+            "operation_id": request.operation_id,
+            "instance_id": self.target.instance_id,
+            "runtime_id": binding.runtime_id,
+            "installation_id": binding.installation_id,
+            "data_root": str(self.target.data_root),
+            "instances_root": str(self.target.instances_root),
+        }
+
+    def _uninstall_status(self, request: ComponentOperationRequest) -> Mapping[str, object]:
+        selected = self._uninstall_request(request)
+        assert self.lifecycle_executable is not None
+        result = self.runner.run((
+            str(self.lifecycle_executable), "server", "uninstall-status",
+            "--operation-id", request.operation_id,
+            "--instances-root", str(self.target.instances_root),
+            "--instance-id", self.target.instance_id,
+        ))
+        payload = self._json_result(result, "Forge uninstall status")
+        if (
+            payload.get("contract") != "forge-server-runtime-lifecycle/v1"
+            or payload.get("operation") != "UNINSTALL"
+            or payload.get("operation_id") != request.operation_id
+            or payload.get("instance_id") != self.target.instance_id
+            or payload.get("request_digest") != _forge_product_digest(selected)
+        ):
+            raise ForgeServerAdapterError("Forge uninstall status does not bind the exact request")
+        if payload.get("state") == "COMPLETE":
+            if payload.get("phase") != "COMPLETE" or not isinstance(payload.get("receipt_digest"), str):
+                raise ForgeServerAdapterError("Forge uninstall terminal status is incomplete")
+        elif payload.get("state") == "IN_PROGRESS":
+            if payload.get("phase") not in {"PREPARED", "VERIFIED", "DETACHED", "REMOVED"}:
+                raise ForgeServerAdapterError("Forge uninstall recovery phase is unsupported")
+        else:
+            raise ForgeServerAdapterError("Forge uninstall status is unsupported")
+        return payload
+
+    def _run_uninstall(self, request: ComponentOperationRequest) -> ProductOperationReceipt:
+        selected = self._uninstall_request(request)
+        assert self.lifecycle_executable is not None
+        if self.target.data_root.is_symlink():
+            raise ForgeServerAdapterError("Forge uninstall target is a symbolic link")
+        if self.target.data_root.exists():
+            installed = self._run("server", "status", allow_nonzero=True)
+            if (
+                installed.get("initialized") is not True
+                or installed.get("instance_id") != self.target.instance_id
+                or installed.get("product_version") != self.installed_artifact.version
+            ):
+                raise ForgeServerAdapterError("Forge uninstall target changed before service stop")
+        else:
+            prior = self._uninstall_status(request)
+            if prior.get("state") not in {"IN_PROGRESS", "COMPLETE"}:
+                raise ForgeServerAdapterError("Forge uninstall has no recoverable prior operation")
+        self.supervisor.stop(self.target)
+        if self.supervisor.loaded(self.target):
+            raise ForgeServerAdapterError("Forge service remained loaded before product uninstall")
+        result = self.runner.run((
+            str(self.lifecycle_executable), "--data-root", str(self.target.data_root),
+            "server", "uninstall",
+            "--operation-id", request.operation_id,
+            "--instances-root", str(self.target.instances_root),
+            "--instance-id", self.target.instance_id,
+            "--runtime-id", selected["runtime_id"],
+            "--installation-id", selected["installation_id"],
+        ))
+        payload = self._json_result(result, "Forge product-owned uninstall")
+        digest = payload.get("receipt_digest")
+        unsigned = dict(payload)
+        unsigned.pop("receipt_digest", None)
+        if (
+            payload.get("contract") != "forge-server-runtime-lifecycle/v1"
+            or payload.get("operation") != "UNINSTALL"
+            or payload.get("operation_id") != request.operation_id
+            or payload.get("instance_id") != self.target.instance_id
+            or payload.get("runtime_id") != selected["runtime_id"]
+            or payload.get("installation_id") != selected["installation_id"]
+            or payload.get("request_digest") != _forge_product_digest(selected)
+            or payload.get("state") != "COMPLETE"
+            or payload.get("mutable_instance_data") != "REMOVED"
+            or payload.get("service_definition") != "DEPLOYMENT_OWNER"
+            or payload.get("immutable_runtime_slots") != "PRESERVED"
+            or digest != _forge_product_digest(unsigned)
+        ):
+            raise ForgeServerAdapterError("Forge uninstall lacks an exact terminal product receipt")
+        status = self._uninstall_status(request)
+        if (
+            status.get("phase") != "COMPLETE"
+            or status.get("state") != "COMPLETE"
+            or status.get("receipt_digest") != digest
+        ):
+            raise ForgeServerAdapterError("Forge uninstall terminal status differs from the product receipt")
+        service = self.supervisor.remove(self.target)
+        if service.get("result") != "REMOVED" or self.supervisor.loaded(self.target):
+            raise ForgeServerAdapterError("Forge deployment-owned service removal did not complete")
+        return ProductOperationReceipt(
+            request.operation_id, FORGE_COMPONENT, self.target.instance_id,
+            request.artifact.correlation, "COMPLETED", "forge-uninstall:" + str(digest),
+        )
 
     def resume(
         self,
@@ -551,9 +699,9 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self._validate_request(request)
         if prior_receipt.product_operation_id != request.operation_id:
             raise ForgeServerAdapterError("Forge resume operation identity changed")
-        # Forge's updater is itself durable/idempotent under the same operation
-        # ID; install/repair/remove are re-read before ComponentOperationCoordinator
-        # calls this method and have no custom pending receipt state here.
+        # Forge's updater and uninstall dispatcher are durable/idempotent under
+        # the same operation ID. The product returns its terminal receipt again
+        # after a crash; no installer-owned data cleanup is performed here.
         return self.execute(request)
 
     def _run_update(self, request: ComponentOperationRequest) -> None:
