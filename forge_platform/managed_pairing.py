@@ -113,6 +113,8 @@ class ManagedDeploymentPairingCoordinator:
             current.label,
             current.components,
             binding,
+            current.schema,
+            current.composition_binding,
         )
         try:
             return self.registry.replace(updated, expected_revision=current.revision)
