@@ -953,6 +953,11 @@ publication, exact staged-archive-to-slot binding and cached tree readback are
 source-qualified. The stable-plan deployment ID now survives per-target
 preparation, mutation request/receipt and slot readback; a foreign deployment
 receipt or slot root fails closed.
+The helper can independently read the canonical product-worker authority
+snapshot and resolve a provider's exact deployment, product instance, product
+artifact and current installer release to one non-root local service account.
+Absent or stale product routes and OS accounts fail closed. This read-only
+resolution creates no account, provider home or authentication state.
 Credential-home provisioning, the complete provider mutation adapter and
 service-account secure-store integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,
