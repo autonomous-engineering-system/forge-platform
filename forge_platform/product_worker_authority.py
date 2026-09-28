@@ -28,11 +28,15 @@ from .managed_product_operation_service import (
     ManagedProductOperationHelperBuilder,
     ManagedProductOperationHelperService,
 )
-from .released_product_routes import ReleasedManagedProductRouteConfiguration
+from .released_product_routes import (
+    ReleasedManagedProductRouteConfiguration,
+    ReleasedManagedSingleProductRouteConfiguration,
+)
 from .universal_installer import CompositionManifest, UniversalInstallerError
 
 
 PRODUCT_WORKER_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v3"
+PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v4"
 PRODUCT_WORKER_ROOT = Path(
     "/Library/Application Support/AutonomousEngineeringSystem/ForgePlatformInstaller"
 )
@@ -42,6 +46,7 @@ _TOP_FIELDS = frozenset({
     "schema", "installer_release", "candidate_manifests",
     "installed_manifests", "routes",
 })
+_TOP_FIELDS_V4 = _TOP_FIELDS | {"single_routes"}
 _RELEASE_FIELDS = frozenset({
     "version", "release_page", "asset_name", "sha256", "signing_key_id",
 })
@@ -51,6 +56,10 @@ _ROUTE_FIELDS = frozenset({
     "forge_bind_port", "forge_artifact_sha256", "forge_installation_id", "ep_instance_id",
     "ep_artifact_sha256",
     "ep_display_label", "ep_service_account", "ep_bind_port", "pairing",
+})
+_SINGLE_ROUTE_FIELDS = frozenset({
+    "deployment_id", "component_identity", "instance_id", "service_account",
+    "bind_port", "artifact_sha256", "forge_installation_id", "ep_display_label",
 })
 _PAIRING_FIELDS = frozenset({
     "binding_id", "consumer_id", "host_id", "project_id", "repository_id",
@@ -72,6 +81,7 @@ class _AuthoritySnapshot:
     candidates: tuple[CompositionManifest, ...]
     installed: tuple[CompositionManifest, ...]
     routes: tuple[Mapping[str, object], ...]
+    single_routes: tuple[Mapping[str, object], ...]
 
 
 class _StableAuthorityCurrencyGuard:
@@ -133,16 +143,25 @@ class ProductWorkerAuthorityLoader:
         configurations = tuple(
             self._route(value, snapshot.candidates, snapshot.installed)
             for value in snapshot.routes
+        ) + tuple(
+            self._single_route(value, snapshot.candidates, snapshot.installed)
+            for value in snapshot.single_routes
         )
         claims = [
             (config.forge_target.service_account, config.forge_target.bind_port)
             for config in configurations
+            if isinstance(config, ReleasedManagedProductRouteConfiguration)
         ] + [
             (
                 config.engineering_platform_target.service_account,
                 config.engineering_platform_target.bind_port,
             )
             for config in configurations
+            if isinstance(config, ReleasedManagedProductRouteConfiguration)
+        ] + [
+            (config.target.service_account, config.target.bind_port)
+            for config in configurations
+            if isinstance(config, ReleasedManagedSingleProductRouteConfiguration)
         ]
         if len({account for account, _port_value in claims}) != len(claims):
             raise ProductWorkerAuthorityError(
@@ -160,11 +179,13 @@ class ProductWorkerAuthorityLoader:
         pairing_scopes = [
             (config.pairing_binding.consumer_id, config.pairing_binding.project_id)
             for config in configurations
+            if isinstance(config, ReleasedManagedProductRouteConfiguration)
         ]
         if len(set(pairing_scopes)) != len(pairing_scopes):
             raise ProductWorkerAuthorityError("product routes reuse an EP consumer scope")
         credentials = [
             config.pairing_binding.credential_reference for config in configurations
+            if isinstance(config, ReleasedManagedProductRouteConfiguration)
         ]
         if len(set(credentials)) != len(credentials):
             raise ProductWorkerAuthorityError("product routes reuse a pairing credential reference")
@@ -188,8 +209,12 @@ class ProductWorkerAuthorityLoader:
     def _snapshot(self) -> _AuthoritySnapshot:
         raw = self._read_secure_authority()
         payload = _strict_canonical_mapping(raw, "product-worker authority")
-        _exact_fields(payload, _TOP_FIELDS, "product-worker authority")
-        if payload["schema"] != PRODUCT_WORKER_AUTHORITY_SCHEMA:
+        schema = payload.get("schema")
+        if schema == PRODUCT_WORKER_AUTHORITY_SCHEMA:
+            _exact_fields(payload, _TOP_FIELDS, "product-worker authority")
+        elif schema == PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA:
+            _exact_fields(payload, _TOP_FIELDS_V4, "product-worker authority")
+        else:
             raise ProductWorkerAuthorityError("product-worker authority schema is unsupported")
         release_wire = _mapping(payload["installer_release"], "installer release")
         _exact_fields(release_wire, _RELEASE_FIELDS, "installer release")
@@ -206,9 +231,18 @@ class ProductWorkerAuthorityLoader:
             _mapping(value, "product route")
             for value in _list(payload["routes"], "product routes")
         )
-        if not routes:
+        single_routes = tuple(
+            _mapping(value, "single-product route")
+            for value in _list(
+                payload["single_routes"] if schema == PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA else [],
+                "single-product routes",
+            )
+        )
+        if not routes and not single_routes:
             raise ProductWorkerAuthorityError("product-worker routes are unavailable")
-        return _AuthoritySnapshot(raw, release, candidates, installed, routes)
+        if schema == PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA and not single_routes:
+            raise ProductWorkerAuthorityError("v4 single-product routes are unavailable")
+        return _AuthoritySnapshot(raw, release, candidates, installed, routes, single_routes)
 
     def _manifests(
         self, value: object, *, required: bool
@@ -321,6 +355,73 @@ class ProductWorkerAuthorityLoader:
                 forge_instance, forge_installation
             ),
             launch_daemons_directory=self.launch_daemons_directory,
+        )
+
+    def _single_route(
+        self,
+        wire: Mapping[str, object],
+        candidates: tuple[CompositionManifest, ...],
+        installed: tuple[CompositionManifest, ...],
+    ) -> ReleasedManagedSingleProductRouteConfiguration:
+        _exact_fields(wire, _SINGLE_ROUTE_FIELDS, "single-product route")
+        deployment = _safe_id(wire["deployment_id"], "deployment id")
+        instance = _safe_id(wire["instance_id"], "product instance id")
+        account = _account(wire["service_account"], "product account")
+        port = _port(wire["bind_port"], "product port")
+        digest = _digest(wire["artifact_sha256"], "product artifact sha256")
+        component = wire["component_identity"]
+        if component not in {"forge-runtime", "engineering-platform-server"}:
+            raise ProductWorkerAuthorityError("single-product component is unsupported")
+        artifacts = {
+            item.artifact.digest: item.artifact
+            for manifest in candidates + installed
+            for item in manifest.components
+            if item.identity == component
+        }
+        artifact = artifacts.get(digest)
+        if artifact is None:
+            raise ProductWorkerAuthorityError("single-product artifact lacks manifest authority")
+        staged = {
+            value: self.root / "staged" / f"{value.removeprefix('sha256:')}.artifact"
+            for value in artifacts
+        }
+        venvs = self.root / "product-venvs" / deployment
+        if component == "forge-runtime":
+            if wire["ep_display_label"] is not None:
+                raise ProductWorkerAuthorityError("single Forge route carries EP authority")
+            installation = _safe_id(
+                wire["forge_installation_id"], "Forge installation id"
+            )
+            instances = self.root / "instances/forge"
+            return ReleasedManagedSingleProductRouteConfiguration(
+                deployment_id=deployment,
+                component_identity=component,
+                executable=venvs / "forge/bin/forge",
+                target=ForgeServerTarget(
+                    instance, instances / instance, instances, account, port,
+                    self.root / "credentials/forge" / f"{instance}.token",
+                ),
+                installed_artifact=artifact,
+                staged_artifacts=staged,
+                forge_lifecycle_executable=venvs / "forge/bin/forge",
+                forge_uninstall_binding=ForgeUninstallBinding(instance, installation),
+                launch_daemons_directory=self.launch_daemons_directory,
+            )
+        if wire["forge_installation_id"] is not None:
+            raise ProductWorkerAuthorityError("single EP route carries Forge uninstall authority")
+        return ReleasedManagedSingleProductRouteConfiguration(
+            deployment_id=deployment,
+            component_identity=component,
+            executable=(
+                venvs / "engineering-platform/bin/engineering-platform-system-provisioner"
+            ),
+            target=EPSystemInstanceTarget(
+                instance, _string(wire["ep_display_label"], "EP display label"),
+                account, port,
+            ),
+            installed_artifact=artifact,
+            staged_artifacts=staged,
+            engineering_platform_product_root=self.root / "products/engineering-platform",
         )
 
     def _read_secure_authority(self) -> bytes:
