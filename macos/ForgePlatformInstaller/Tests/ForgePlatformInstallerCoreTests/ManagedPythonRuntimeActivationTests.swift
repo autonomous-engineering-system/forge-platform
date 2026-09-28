@@ -471,6 +471,26 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         XCTAssertEqual(resumeEnsureCount, firstEnsureCount)
     }
 
+    func testHelperAssemblyReadsOnlyExactEmptyPrivateInitialState() async throws {
+        let host = try InitialActivationHostFixture()
+        defer { host.cleanup() }
+        let initial = try host.bootstrap.readOrBootstrap().get()
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: initial)
+        let assembled = ManagedPythonInitialRuntimeHelperAssembly.make(
+            helperRoot: host.root, runtime: fixture.runtime,
+            expectedOwner: Darwin.geteuid()
+        )
+        let observed = await assembled.readActiveRuntime(request)
+        XCTAssertEqual(observed, .success(initial))
+        let wrongOwner = ManagedPythonInitialRuntimeHelperAssembly.make(
+            helperRoot: host.root, runtime: fixture.runtime,
+            expectedOwner: Darwin.geteuid() + 1
+        )
+        let rejected = await wrongOwner.readActiveRuntime(request)
+        XCTAssertEqual(rejected, .failure(.rejected))
+    }
+
     func testInitialRuntimeActivatorRejectsUnavailableSlotAndStaleInitialEvidence() async throws {
         let host = try InitialActivationHostFixture()
         defer { host.cleanup() }
