@@ -34,6 +34,12 @@ public protocol ManagedInstallerProductOperationHelperExecuting: Sendable {
         ManagedInstallerPreservedLifecycleReceipt,
         ManagedInstallerProductOperationBridgeFailure
     >
+    func readTerminalPreserveRecovery(
+        _ request: ManagedInstallerPreserveRecoveryRequest
+    ) async -> Result<
+        ManagedInstallerPreserveRecoveryReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    >
 }
 
 public extension ManagedInstallerProductOperationHelperExecuting {
@@ -76,6 +82,16 @@ public extension ManagedInstallerProductOperationHelperExecuting {
         _ = request
         return .failure(.rejected)
     }
+
+    func readTerminalPreserveRecovery(
+        _ request: ManagedInstallerPreserveRecoveryRequest
+    ) async -> Result<
+        ManagedInstallerPreserveRecoveryReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = request
+        return .failure(.rejected)
+    }
 }
 
 public protocol ManagedInstallerPreservedLifecycleReviewTransporting: Sendable {
@@ -86,6 +102,12 @@ public protocol ManagedInstallerPreservedLifecycleReviewTransporting: Sendable {
 
 public protocol ManagedInstallerPreservedLifecycleTransporting: Sendable {
     func executePreservedLifecycle(
+        _ canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure>
+}
+
+public protocol ManagedInstallerPreserveRecoveryTransporting: Sendable {
+    func readTerminalPreserveRecovery(
         _ canonicalRequest: Data
     ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure>
 }
@@ -111,6 +133,10 @@ public protocol ManagedInstallerPreservedLifecycleTransporting: Sendable {
         withReply reply: @escaping (Data?) -> Void
     )
     func executePreservedLifecycle(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
+    func readTerminalPreserveRecovery(
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     )
@@ -158,7 +184,8 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
     ManagedInstallerProductRemovalReviewTransporting,
     ManagedInstallerProductRemovalTransporting,
     ManagedInstallerPreservedLifecycleReviewTransporting,
-    ManagedInstallerPreservedLifecycleTransporting {
+    ManagedInstallerPreservedLifecycleTransporting,
+    ManagedInstallerPreserveRecoveryTransporting {
     public static let machServiceName =
         "com.autonomous-engineering-system.forge-platform-installer.helper.product-operations"
 
@@ -358,6 +385,36 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
             }
         }
     }
+
+    public func readTerminalPreserveRecovery(
+        _ canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        guard let request = try? ManagedInstallerPreserveRecoveryRequest.decodeJSON(
+            canonicalRequest
+        ), request.canonicalJSONData() == canonicalRequest else {
+            return .failure(.invalidRequest)
+        }
+        return await withCheckedContinuation { continuation in
+            let gate = ManagedInstallerProductOperationXPCReplyGate(continuation: continuation)
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+                gate.complete(.failure(.unavailable))
+            }) as? ManagedInstallerProductOperationXPCService else {
+                gate.complete(.failure(.unavailable))
+                return
+            }
+            proxy.readTerminalPreserveRecovery(canonicalRequest) { response in
+                guard let response,
+                      response.count <= ManagedInstallerPreserveRecoveryReceipt.maximumBytes,
+                      let receipt = try? ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+                        response, request: request
+                      ), receipt.canonicalJSONData() == response else {
+                    gate.complete(.failure(.rejected))
+                    return
+                }
+                gate.complete(.success(response))
+            }
+        }
+    }
 }
 
 /// Fail-closed helper handler. It accepts one exact canonical request and emits
@@ -532,6 +589,38 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
             guard response.count <= ManagedInstallerPreservedLifecycleReceipt.maximumBytes,
                   (try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
                       response, request: request
+                  )) == receipt else {
+                gate.complete(nil)
+                return
+            }
+            gate.complete(response)
+        }
+    }
+
+    public func readTerminalPreserveRecovery(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
+        let executor = executor
+        Task {
+            guard let request = try? ManagedInstallerPreserveRecoveryRequest.decodeJSON(
+                canonicalRequest
+            ), request.canonicalJSONData() == canonicalRequest else {
+                gate.complete(nil)
+                return
+            }
+            let receipt: ManagedInstallerPreserveRecoveryReceipt
+            switch await executor.readTerminalPreserveRecovery(request) {
+            case .success(let completed): receipt = completed
+            case .failure:
+                gate.complete(nil)
+                return
+            }
+            let response = receipt.canonicalJSONData()
+            guard response.count <= ManagedInstallerPreserveRecoveryReceipt.maximumBytes,
+                  (try? ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+                    response, request: request
                   )) == receipt else {
                 gate.complete(nil)
                 return
