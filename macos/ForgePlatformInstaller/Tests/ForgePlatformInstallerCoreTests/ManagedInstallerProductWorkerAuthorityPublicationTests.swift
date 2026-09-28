@@ -4,6 +4,115 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
+    func testV5BindsDistinctHelperOwnedProductVenvSlots() throws {
+        let (legacy, _) = try fixture()
+        let route = try XCTUnwrap(legacy.routes.first)
+        let forgeSlot = "venv-" + String(repeating: "a", count: 64)
+        let epSlot = "venv-" + String(repeating: "b", count: 64)
+        let bound = try ManagedInstallerProductWorkerRouteAuthority(
+            deploymentID: route.deploymentID,
+            forgeInstanceID: route.forgeInstanceID,
+            forgeInstallationID: route.forgeInstallationID,
+            forgeServiceAccount: route.forgeServiceAccount,
+            forgeBindPort: route.forgeBindPort,
+            forgeArtifactSHA256: route.forgeArtifactSHA256,
+            engineeringPlatformArtifactSHA256: route.engineeringPlatformArtifactSHA256,
+            engineeringPlatformInstanceID: route.engineeringPlatformInstanceID,
+            engineeringPlatformDisplayLabel: route.engineeringPlatformDisplayLabel,
+            engineeringPlatformServiceAccount: route.engineeringPlatformServiceAccount,
+            engineeringPlatformBindPort: route.engineeringPlatformBindPort,
+            pairing: route.pairing,
+            forgeVenvSlotName: forgeSlot,
+            engineeringPlatformVenvSlotName: epSlot
+        )
+        let snapshot = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: legacy.installerRelease,
+            candidateManifests: legacy.candidateManifests,
+            routes: [bound]
+        )
+        let bytes = snapshot.canonicalJSONData()
+        let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        XCTAssertEqual(wire["schema"] as? String,
+                       ManagedInstallerProductWorkerAuthoritySnapshot.slotSchema)
+        XCTAssertEqual((wire["single_routes"] as? [Any])?.count, 0)
+        let routes = try XCTUnwrap(wire["routes"] as? [[String: Any]])
+        XCTAssertEqual(routes[0]["forge_venv_slot"] as? String, forgeSlot)
+        XCTAssertEqual(routes[0]["ep_venv_slot"] as? String, epSlot)
+        let (parent, root, publisher) = try preparedPublisher()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let receipt = try publisher.publishProductWorkerAuthority(snapshot).get()
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(receipt.fileName)), bytes)
+        XCTAssertEqual(publisher.publishProductWorkerAuthority(snapshot), .success(receipt))
+        let (singleLegacy, _) = try singleFixture()
+        let single = try XCTUnwrap(singleLegacy.singleRoutes.first)
+        let singleSlot = "venv-" + String(repeating: "c", count: 64)
+        let boundSingle = try ManagedInstallerProductWorkerSingleRouteAuthority(
+            deploymentID: single.deploymentID,
+            componentIdentity: single.componentIdentity,
+            instanceID: single.instanceID,
+            serviceAccount: single.serviceAccount,
+            bindPort: single.bindPort,
+            artifactSHA256: single.artifactSHA256,
+            forgeInstallationID: single.forgeInstallationID,
+            engineeringPlatformDisplayLabel: single.engineeringPlatformDisplayLabel,
+            venvSlotName: singleSlot
+        )
+        let singleSnapshot = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: singleLegacy.installerRelease,
+            candidateManifests: singleLegacy.candidateManifests,
+            routes: [], singleRoutes: [boundSingle]
+        )
+        let singleWire = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: singleSnapshot.canonicalJSONData()) as? [String: Any])
+        XCTAssertEqual(singleWire["schema"] as? String,
+                       ManagedInstallerProductWorkerAuthoritySnapshot.slotSchema)
+        let singleRoutes = try XCTUnwrap(singleWire["single_routes"] as? [[String: Any]])
+        XCTAssertEqual(singleRoutes[0]["venv_slot"] as? String, singleSlot)
+        let duplicateSlot = try ManagedInstallerProductWorkerSingleRouteAuthority(
+            deploymentID: "other-deployment", componentIdentity: single.componentIdentity,
+            instanceID: "other-forge", serviceAccount: "_other_forge", bindPort: 9875,
+            artifactSHA256: single.artifactSHA256,
+            forgeInstallationID: "other-installation", venvSlotName: forgeSlot
+        )
+        XCTAssertThrowsError(try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: legacy.installerRelease,
+            candidateManifests: legacy.candidateManifests,
+            routes: [bound], singleRoutes: [duplicateSlot]
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductWorkerRouteAuthority(
+            deploymentID: route.deploymentID,
+            forgeInstanceID: route.forgeInstanceID,
+            forgeInstallationID: route.forgeInstallationID,
+            forgeServiceAccount: route.forgeServiceAccount,
+            forgeBindPort: route.forgeBindPort,
+            forgeArtifactSHA256: route.forgeArtifactSHA256,
+            engineeringPlatformArtifactSHA256: route.engineeringPlatformArtifactSHA256,
+            engineeringPlatformInstanceID: route.engineeringPlatformInstanceID,
+            engineeringPlatformDisplayLabel: route.engineeringPlatformDisplayLabel,
+            engineeringPlatformServiceAccount: route.engineeringPlatformServiceAccount,
+            engineeringPlatformBindPort: route.engineeringPlatformBindPort,
+            pairing: route.pairing,
+            forgeVenvSlotName: forgeSlot,
+            engineeringPlatformVenvSlotName: forgeSlot
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductWorkerRouteAuthority(
+            deploymentID: route.deploymentID,
+            forgeInstanceID: route.forgeInstanceID,
+            forgeInstallationID: route.forgeInstallationID,
+            forgeServiceAccount: route.forgeServiceAccount,
+            forgeBindPort: route.forgeBindPort,
+            forgeArtifactSHA256: route.forgeArtifactSHA256,
+            engineeringPlatformArtifactSHA256: route.engineeringPlatformArtifactSHA256,
+            engineeringPlatformInstanceID: route.engineeringPlatformInstanceID,
+            engineeringPlatformDisplayLabel: route.engineeringPlatformDisplayLabel,
+            engineeringPlatformServiceAccount: route.engineeringPlatformServiceAccount,
+            engineeringPlatformBindPort: route.engineeringPlatformBindPort,
+            pairing: route.pairing,
+            forgeVenvSlotName: "../foreign",
+            engineeringPlatformVenvSlotName: epSlot
+        ))
+    }
+
     func testV4SingleRouteMatchesPythonBytesAndCASReplacesV3() throws {
         let (pairSnapshot, pairBytes) = try fixture()
         let (singleSnapshot, singleBytes) = try singleFixture()

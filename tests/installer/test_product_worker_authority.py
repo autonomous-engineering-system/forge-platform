@@ -15,6 +15,7 @@ from forge_platform.product_worker_authority import (
     PRODUCT_WORKER_AUTHORITY_FILE,
     PRODUCT_WORKER_AUTHORITY_SCHEMA,
     PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA,
+    PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA,
     ProductWorkerAuthorityError,
     ProductWorkerAuthorityLoader,
 )
@@ -133,6 +134,74 @@ def _single_authority(component: str) -> dict:
 
 
 class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
+    def test_v5_uses_helper_owned_product_venv_slots_for_pair_and_single(self) -> None:
+        paired = _authority()
+        paired["schema"] = PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA
+        paired["single_routes"] = []
+        paired["routes"][0]["forge_venv_slot"] = "venv-" + "a" * 64
+        paired["routes"][0]["ep_venv_slot"] = "venv-" + "b" * 64
+        self.write(paired)
+        routes = self.loader().load().dispatcher.resolver._routes
+        forge = routes["production"].adapters["forge-runtime"]
+        ep = routes["production"].adapters["engineering-platform-server"]
+        self.assertEqual(
+            forge.lifecycle_executable,
+            self.root / ("managed-python-product-venvs/venv-" + "a" * 64 + "/bin/forge"),
+        )
+        self.assertEqual(
+            ep.provisioner_executable,
+            self.root / ("managed-python-product-venvs/venv-" + "b" * 64
+                         + "/bin/engineering-platform-system-provisioner"),
+        )
+        single = _single_authority("forge-runtime")
+        single["schema"] = PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA
+        single["single_routes"][0]["venv_slot"] = "venv-" + "c" * 64
+        self.write(single)
+        forge = self.loader().load().dispatcher.resolver._routes["production"].adapters[
+            "forge-runtime"
+        ]
+        self.assertEqual(
+            forge.lifecycle_executable,
+            self.root / ("managed-python-product-venvs/venv-" + "c" * 64 + "/bin/forge"),
+        )
+
+    def test_v5_rejects_missing_malformed_or_shared_slot_authority(self) -> None:
+        paired = _authority()
+        paired["schema"] = PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA
+        paired["single_routes"] = []
+        paired["routes"][0]["forge_venv_slot"] = "venv-" + "a" * 64
+        paired["routes"][0]["ep_venv_slot"] = "venv-" + "b" * 64
+        for field, value in (
+            ("forge_venv_slot", None),
+            ("forge_venv_slot", "venv-" + "A" * 64),
+            ("forge_venv_slot", "../product-venvs/foreign"),
+            ("ep_venv_slot", "venv-" + "a" * 64),
+        ):
+            payload = json.loads(json.dumps(paired))
+            if value is None:
+                del payload["routes"][0][field]
+            else:
+                payload["routes"][0][field] = value
+            self.write(payload)
+            with self.subTest(field=field, value=value), self.assertRaises(
+                ProductWorkerAuthorityError
+            ):
+                self.loader().load()
+        other = _single_authority("forge-runtime")
+        route = other["single_routes"][0]
+        route.update({
+            "deployment_id": "other-deployment",
+            "instance_id": "other-forge",
+            "forge_installation_id": "other-installation",
+            "service_account": "_other_forge",
+            "bind_port": 9875,
+            "venv_slot": "venv-" + "a" * 64,
+        })
+        paired["single_routes"] = [route]
+        self.write(paired)
+        with self.assertRaisesRegex(ProductWorkerAuthorityError, "reuse a managed venv slot"):
+            self.loader().load()
+
     def test_native_v4_fixture_has_exact_python_canonical_bytes(self) -> None:
         fixture = (
             Path(__file__).resolve().parents[2]

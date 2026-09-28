@@ -37,6 +37,7 @@ from .universal_installer import CompositionManifest, UniversalInstallerError
 
 PRODUCT_WORKER_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v3"
 PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v4"
+PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v5"
 PRODUCT_WORKER_ROOT = Path(
     "/Library/Application Support/AutonomousEngineeringSystem/ForgePlatformInstaller"
 )
@@ -57,10 +58,12 @@ _ROUTE_FIELDS = frozenset({
     "ep_artifact_sha256",
     "ep_display_label", "ep_service_account", "ep_bind_port", "pairing",
 })
+_SLOT_ROUTE_FIELDS = _ROUTE_FIELDS | {"forge_venv_slot", "ep_venv_slot"}
 _SINGLE_ROUTE_FIELDS = frozenset({
     "deployment_id", "component_identity", "instance_id", "service_account",
     "bind_port", "artifact_sha256", "forge_installation_id", "ep_display_label",
 })
+_SLOT_SINGLE_ROUTE_FIELDS = _SINGLE_ROUTE_FIELDS | {"venv_slot"}
 _PAIRING_FIELDS = frozenset({
     "binding_id", "consumer_id", "host_id", "project_id", "repository_id",
     "repository_identity", "credential_reference", "operator_id",
@@ -68,6 +71,7 @@ _PAIRING_FIELDS = frozenset({
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ACCOUNT = re.compile(r"^_[a-z][a-z0-9_]{0,30}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_VENV_SLOT = re.compile(r"^venv-[0-9a-f]{64}$")
 
 
 class ProductWorkerAuthorityError(RuntimeError):
@@ -76,6 +80,7 @@ class ProductWorkerAuthorityError(RuntimeError):
 
 @dataclass(frozen=True)
 class _AuthoritySnapshot:
+    schema: str
     raw_bytes: bytes
     release: NativeInstallerReleaseBinding
     candidates: tuple[CompositionManifest, ...]
@@ -141,10 +146,12 @@ class ProductWorkerAuthorityLoader:
         snapshot = self._snapshot()
         authority_digest = "sha256:" + sha256(snapshot.raw_bytes).hexdigest()
         configurations = tuple(
-            self._route(value, snapshot.candidates, snapshot.installed)
+            self._route(value, snapshot.candidates, snapshot.installed,
+                        schema=snapshot.schema)
             for value in snapshot.routes
         ) + tuple(
-            self._single_route(value, snapshot.candidates, snapshot.installed)
+            self._single_route(value, snapshot.candidates, snapshot.installed,
+                               schema=snapshot.schema)
             for value in snapshot.single_routes
         )
         claims = [
@@ -169,6 +176,13 @@ class ProductWorkerAuthorityLoader:
             )
         if len({port_value for _account_value, port_value in claims}) != len(claims):
             raise ProductWorkerAuthorityError("product routes reuse a bind port")
+        if snapshot.schema == PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA:
+            slots = [
+                slot for route in snapshot.routes
+                for slot in (route["forge_venv_slot"], route["ep_venv_slot"])
+            ] + [route["venv_slot"] for route in snapshot.single_routes]
+            if len(set(slots)) != len(slots):
+                raise ProductWorkerAuthorityError("product routes reuse a managed venv slot")
         installation_ids = [
             config.forge_uninstall_binding.installation_id
             for config in configurations
@@ -214,6 +228,8 @@ class ProductWorkerAuthorityLoader:
             _exact_fields(payload, _TOP_FIELDS, "product-worker authority")
         elif schema == PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA:
             _exact_fields(payload, _TOP_FIELDS_V4, "product-worker authority")
+        elif schema == PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA:
+            _exact_fields(payload, _TOP_FIELDS_V4, "product-worker authority")
         else:
             raise ProductWorkerAuthorityError("product-worker authority schema is unsupported")
         release_wire = _mapping(payload["installer_release"], "installer release")
@@ -234,7 +250,10 @@ class ProductWorkerAuthorityLoader:
         single_routes = tuple(
             _mapping(value, "single-product route")
             for value in _list(
-                payload["single_routes"] if schema == PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA else [],
+                payload["single_routes"] if schema in {
+                    PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA,
+                    PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA,
+                } else [],
                 "single-product routes",
             )
         )
@@ -242,7 +261,7 @@ class ProductWorkerAuthorityLoader:
             raise ProductWorkerAuthorityError("product-worker routes are unavailable")
         if schema == PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA and not single_routes:
             raise ProductWorkerAuthorityError("v4 single-product routes are unavailable")
-        return _AuthoritySnapshot(raw, release, candidates, installed, routes, single_routes)
+        return _AuthoritySnapshot(schema, raw, release, candidates, installed, routes, single_routes)
 
     def _manifests(
         self, value: object, *, required: bool
@@ -273,8 +292,10 @@ class ProductWorkerAuthorityLoader:
         wire: Mapping[str, object],
         candidates: tuple[CompositionManifest, ...],
         installed: tuple[CompositionManifest, ...],
+        *, schema: str,
     ) -> ReleasedManagedProductRouteConfiguration:
-        _exact_fields(wire, _ROUTE_FIELDS, "product route")
+        slots_bound = schema == PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA
+        _exact_fields(wire, _SLOT_ROUTE_FIELDS if slots_bound else _ROUTE_FIELDS, "product route")
         deployment = _safe_id(wire["deployment_id"], "deployment id")
         forge_instance = _safe_id(wire["forge_instance_id"], "Forge instance id")
         forge_installation = _safe_id(
@@ -308,14 +329,25 @@ class ProductWorkerAuthorityLoader:
         pairing = _mapping(wire["pairing"], "pairing authority")
         _exact_fields(pairing, _PAIRING_FIELDS, "pairing authority")
         instances = self.root / "instances/forge"
-        venvs = self.root / "product-venvs" / deployment
+        if slots_bound:
+            forge_slot = _venv_slot(wire["forge_venv_slot"])
+            ep_slot = _venv_slot(wire["ep_venv_slot"])
+            if forge_slot == ep_slot:
+                raise ProductWorkerAuthorityError("paired product venv slots are shared")
+            venvs = self.root / "managed-python-product-venvs"
+            forge_venv = venvs / forge_slot
+            ep_venv = venvs / ep_slot
+        else:
+            venvs = self.root / "product-venvs" / deployment
+            forge_venv = venvs / "forge"
+            ep_venv = venvs / "engineering-platform"
         staged = {
             digest: self.root / "staged" / f"{digest.removeprefix('sha256:')}.artifact"
             for digest in artifacts
         }
         return ReleasedManagedProductRouteConfiguration(
             deployment_id=deployment,
-            forge_executable=venvs / "forge/bin/forge",
+            forge_executable=forge_venv / "bin/forge",
             forge_target=ForgeServerTarget(
                 forge_instance,
                 instances / forge_instance,
@@ -327,7 +359,7 @@ class ProductWorkerAuthorityLoader:
             forge_installed_artifact=forge_artifact,
             engineering_platform_installed_artifact=ep_artifact,
             engineering_platform_provisioner=(
-                venvs / "engineering-platform/bin/engineering-platform-system-provisioner"
+                ep_venv / "bin/engineering-platform-system-provisioner"
             ),
             engineering_platform_product_root=self.root / "products/engineering-platform",
             engineering_platform_target=EPSystemInstanceTarget(
@@ -350,7 +382,7 @@ class ProductWorkerAuthorityLoader:
                 _pairing_string(pairing, "operator_id"),
                 True,
             ),
-            forge_lifecycle_executable=venvs / "forge/bin/forge",
+            forge_lifecycle_executable=forge_venv / "bin/forge",
             forge_uninstall_binding=ForgeUninstallBinding(
                 forge_instance, forge_installation
             ),
@@ -362,8 +394,11 @@ class ProductWorkerAuthorityLoader:
         wire: Mapping[str, object],
         candidates: tuple[CompositionManifest, ...],
         installed: tuple[CompositionManifest, ...],
+        *, schema: str,
     ) -> ReleasedManagedSingleProductRouteConfiguration:
-        _exact_fields(wire, _SINGLE_ROUTE_FIELDS, "single-product route")
+        slots_bound = schema == PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA
+        _exact_fields(wire, _SLOT_SINGLE_ROUTE_FIELDS if slots_bound else _SINGLE_ROUTE_FIELDS,
+                      "single-product route")
         deployment = _safe_id(wire["deployment_id"], "deployment id")
         instance = _safe_id(wire["instance_id"], "product instance id")
         account = _account(wire["service_account"], "product account")
@@ -385,7 +420,12 @@ class ProductWorkerAuthorityLoader:
             value: self.root / "staged" / f"{value.removeprefix('sha256:')}.artifact"
             for value in artifacts
         }
-        venvs = self.root / "product-venvs" / deployment
+        venv = (
+            self.root / "managed-python-product-venvs" / _venv_slot(wire["venv_slot"])
+            if slots_bound else self.root / "product-venvs" / deployment / (
+                "forge" if component == "forge-runtime" else "engineering-platform"
+            )
+        )
         if component == "forge-runtime":
             if wire["ep_display_label"] is not None:
                 raise ProductWorkerAuthorityError("single Forge route carries EP authority")
@@ -396,14 +436,14 @@ class ProductWorkerAuthorityLoader:
             return ReleasedManagedSingleProductRouteConfiguration(
                 deployment_id=deployment,
                 component_identity=component,
-                executable=venvs / "forge/bin/forge",
+                executable=venv / "bin/forge",
                 target=ForgeServerTarget(
                     instance, instances / instance, instances, account, port,
                     self.root / "credentials/forge" / f"{instance}.token",
                 ),
                 installed_artifact=artifact,
                 staged_artifacts=staged,
-                forge_lifecycle_executable=venvs / "forge/bin/forge",
+                forge_lifecycle_executable=venv / "bin/forge",
                 forge_uninstall_binding=ForgeUninstallBinding(instance, installation),
                 launch_daemons_directory=self.launch_daemons_directory,
             )
@@ -413,7 +453,7 @@ class ProductWorkerAuthorityLoader:
             deployment_id=deployment,
             component_identity=component,
             executable=(
-                venvs / "engineering-platform/bin/engineering-platform-system-provisioner"
+                venv / "bin/engineering-platform-system-provisioner"
             ),
             target=EPSystemInstanceTarget(
                 instance, _string(wire["ep_display_label"], "EP display label"),
@@ -566,6 +606,13 @@ def _digest(value: object, label: str) -> str:
     text = _string(value, label)
     if _DIGEST.fullmatch(text) is None:
         raise ProductWorkerAuthorityError(f"{label} is invalid")
+    return text
+
+
+def _venv_slot(value: object) -> str:
+    text = _string(value, "managed product venv slot")
+    if _VENV_SLOT.fullmatch(text) is None:
+        raise ProductWorkerAuthorityError("managed product venv slot is invalid")
     return text
 
 
