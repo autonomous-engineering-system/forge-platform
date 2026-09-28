@@ -23,12 +23,55 @@ class InstallerUXReleaseRoadmapTests(unittest.TestCase):
         for node in self.graph["nodes"]:
             self.assertNotIn(node["id"], seen)
             self.assertTrue(set(node["depends_on"]) <= seen)
-            self.assertEqual(node["status"], "PLANNED")
-            self.assertEqual(node["qualification_evidence"], [])
+            self.assertIn(node["status"], {"PLANNED", "DESIGNED", "QUALIFIED"})
+            if node["status"] == "QUALIFIED":
+                self.assertTrue(node["qualification_evidence"])
+            else:
+                self.assertEqual(node["qualification_evidence"], [])
             seen.add(node["id"])
-        self.assertEqual(len(seen), 8)
+        self.assertEqual(len(seen), 22)
         self.assertTrue(set(self.graph["external_evidence_gates"]) <= seen)
         self.assertFalse(seen & set(self.graph["parent_lanes"]))
+
+    def test_lifecycle_producer_evidence_and_consumer_status_are_separate(self):
+        baselines = self.graph["lifecycle_producer_baselines"]
+        self.assertEqual(baselines["forge"]["version"], "2.7.36")
+        self.assertEqual(baselines["forge"]["contract"],
+                         "forge-server-instance-lifecycle/v1")
+        self.assertEqual(baselines["engineering-platform"]["version"], "2.3.103")
+        self.assertEqual(baselines["engineering-platform"]["contract"],
+                         "engineering-platform.system-instance-lifecycle/v1")
+        self.assertTrue(all(item["status"] == "QUALIFIED" for item in baselines.values()))
+
+        nodes = {node["id"]: node for node in self.graph["nodes"]}
+        qualified = {
+            "IUR-LC-FORGE-CONTRACT", "IUR-LC-FORGE-RELEASE",
+            "IUR-LC-EP-CONTRACT", "IUR-LC-EP-RELEASE",
+        }
+        designed = {
+            "IUR-LC-PRODUCER-REBASELINE", "IUR-LC-PRESERVED-INVENTORY",
+            "IUR-LC-RESTORE-PLAN", "IUR-LC-PURGE-PLAN",
+        }
+        self.assertTrue(all(nodes[node_id]["status"] == "QUALIFIED" for node_id in qualified))
+        self.assertTrue(all(nodes[node_id]["status"] == "DESIGNED" for node_id in designed))
+        self.assertEqual(nodes["IUR-LC-HELPER-PRODUCT-ADAPTERS"]["status"], "PLANNED")
+        self.assertEqual(nodes["IUR-LC-FRESH-MAC-ACCEPTANCE"]["status"], "PLANNED")
+        self.assertEqual(nodes["IUR-LC-TERMINAL-HANDOFF"]["status"], "PLANNED")
+
+    def test_lifecycle_safety_invariants(self):
+        lifecycle = self.graph["lifecycle"]
+        self.assertEqual(lifecycle["states"], [
+            "INSTALLED", "UNINSTALLED_DATA_PRESERVED", "PURGED_OR_ABSENT",
+        ])
+        self.assertEqual(lifecycle["operations"], ["PRESERVE", "PURGE", "RESTORE"])
+        self.assertEqual(lifecycle["safe_remove_default"], "PRESERVE")
+        self.assertEqual(lifecycle["identity_after_restore"],
+                         "SAME_OPAQUE_PRODUCT_INSTANCE_ID")
+        rules = self.graph["invariants"]
+        for key in ("preserve_falls_back_to_purge", "preserved_auth_is_verified",
+                    "preserved_instance_is_absent", "legacy_remove_receipt_is_preserve_evidence",
+                    "purge_mutates_unrelated_deployments"):
+            self.assertFalse(rules[key])
 
     def test_presets_preserve_five_existing_roles(self):
         profiles = self.graph["profiles"]
@@ -63,7 +106,7 @@ class InstallerUXReleaseRoadmapTests(unittest.TestCase):
 
     def test_complete_scenario_inventory_and_roadmap_link(self):
         scenarios = self.graph["required_scenarios"]
-        self.assertEqual([s["id"] for s in scenarios], [f"IUR-T{i:02d}" for i in range(1, 11)])
+        self.assertEqual([s["id"] for s in scenarios], [f"IUR-T{i:02d}" for i in range(1, 21)])
         self.assertTrue(all(s["status"] == "PLANNED" and s["requirement"] for s in scenarios))
         self.assertTrue((ROOT / self.graph["roadmap"]).is_file())
         parent = (ROOT / "docs/roadmap/README.md").read_text()
