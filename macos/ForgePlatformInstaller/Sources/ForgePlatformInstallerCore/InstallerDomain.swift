@@ -872,6 +872,7 @@ public struct ComponentDiff: Equatable, Sendable, Identifiable {
     public let installedVersion: String?
     public let candidateVersion: String?
     public let artifactDigest: String?
+    public let updateAssessmentReference: String?
     public let detail: String
 
     public var id: String { componentID }
@@ -883,6 +884,7 @@ public struct ComponentDiff: Equatable, Sendable, Identifiable {
         installedVersion: String? = nil,
         candidateVersion: String? = nil,
         artifactDigest: String? = nil,
+        updateAssessmentReference: String? = nil,
         detail: String
     ) {
         self.componentID = componentID
@@ -891,6 +893,7 @@ public struct ComponentDiff: Equatable, Sendable, Identifiable {
         self.installedVersion = installedVersion
         self.candidateVersion = candidateVersion
         self.artifactDigest = artifactDigest
+        self.updateAssessmentReference = updateAssessmentReference
         self.detail = detail
     }
 }
@@ -1592,6 +1595,21 @@ public protocol InstallerWizardCoordinator: Sendable {
     /// Inventory existing managed deployments plus one coordinator-generated
     /// create target. This operation is read-only.
     func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult
+    /// Read-only exact-target removal proposal from the signed helper.
+    func prepareProductRemovalReview(
+        _ intent: ManagedInstallerProductRemovalReviewIntent
+    ) async -> Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    >
+    /// Executes only a previously reviewed exact helper proposal after a
+    /// fresh installer currency and helper proposal check.
+    func executeReviewedProductRemoval(
+        _ session: ManagedInstallerRemovalReviewSession
+    ) async -> Result<
+        ManagedInstallerProductRemovalReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    >
     /// Prepare exactly one verified composition session for the selected
     /// managed deployment after the mandatory self-update gate. Implementations
     /// must not return catalog bytes, URLs, commands, credentials, product
@@ -1631,6 +1649,26 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func executeReviewedProductRemoval(
+        _ session: ManagedInstallerRemovalReviewSession
+    ) async -> Result<
+        ManagedInstallerProductRemovalReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = session
+        return .failure(.rejected)
+    }
+
+    func prepareProductRemovalReview(
+        _ intent: ManagedInstallerProductRemovalReviewIntent
+    ) async -> Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = intent
+        return .failure(.rejected)
+    }
+
     func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
         .unavailable(.coordinatorUnavailable)
     }

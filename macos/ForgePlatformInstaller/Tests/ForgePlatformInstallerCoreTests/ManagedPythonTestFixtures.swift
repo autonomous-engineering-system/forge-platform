@@ -44,7 +44,9 @@ func managedInstallerTestStablePlan(
     activationPlan: ManagedPythonRuntimeActivationPlan,
     actions: [ManagedToolOriginalPlanAction],
     enabledProviderRequirements: [ProviderRequirement]? = nil,
-    components: [ComponentDiff] = [
+    components: [ComponentDiff]? = nil
+) throws -> ManagedInstallerStablePlan {
+    let reviewedComponents = components ?? [
         ComponentDiff(
             componentID: "forge-runtime",
             title: "Forge",
@@ -52,6 +54,8 @@ func managedInstallerTestStablePlan(
             installedVersion: "1.0.0",
             candidateVersion: "1.1.0",
             artifactDigest: "sha256:" + String(repeating: "8", count: 64),
+            updateAssessmentReference: "forge-update-assess:sha256:"
+                + String(repeating: "a", count: 64),
             detail: "Exact reviewed Forge update"
         ),
         ComponentDiff(
@@ -64,8 +68,7 @@ func managedInstallerTestStablePlan(
             detail: "Exact reviewed EP retention"
         ),
     ]
-) throws -> ManagedInstallerStablePlan {
-    try ManagedInstallerStablePlan(
+    return try ManagedInstallerStablePlan(
         session: session,
         deployment: deployment,
         activationPlan: activationPlan,
@@ -85,7 +88,7 @@ func managedInstallerTestStablePlan(
             ),
             enabledProviderRequirements: enabledProviderRequirements
                 ?? session.providerRequirements.filter(\.isRequired),
-            components: components
+            components: reviewedComponents
         ),
         originalManagedToolActions: actions
     )

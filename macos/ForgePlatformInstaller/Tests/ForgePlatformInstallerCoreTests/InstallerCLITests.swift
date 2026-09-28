@@ -31,8 +31,22 @@ final class InstallerCLITests: XCTestCase {
             .deploymentPlan("new")
         )
         XCTAssertEqual(
-            try InstallerCLIParser.parse(["deployment", "remove", "--deployment", "production"]).command,
-            .deploymentRemove("production")
+            try InstallerCLIParser.parse([
+                "deployment", "remove", "--deployment", "production",
+                "--operation-id", "remove-one", "--component", "forge-runtime",
+            ]).command,
+            .deploymentRemove(
+                "production", operationID: "remove-one", component: "forge-runtime"
+            )
+        )
+        XCTAssertEqual(
+            try InstallerCLIParser.parse([
+                "deployment", "remove", "plan", "--deployment", "production",
+                "--operation-id", "remove-one", "--component", "forge-runtime",
+            ]).command,
+            .deploymentRemovePlan(
+                "production", operationID: "remove-one", component: "forge-runtime"
+            )
         )
         XCTAssertThrowsError(try InstallerCLIParser.parse(["deployment", "apply"]))
         XCTAssertThrowsError(try InstallerCLIParser.parse([
@@ -44,6 +58,122 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertThrowsError(
             try InstallerCLIParser.parse(["deployment", "remove", "--deployment", "new"])
         )
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "remove", "plan", "--deployment", "production",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "remove", "plan", "--deployment", "production",
+            "--operation-id", "remove-one", "--yes",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "remove", "plan", "--deployment", "production",
+            "--operation-id", "bad/id",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "remove", "--deployment", "production",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "remove", "--deployment", "production",
+            "--operation-id", "remove-one", "--review-fingerprint", "invalid",
+        ]))
+    }
+
+    func testRemovalPlanDisplaysExactHelperDiffWithoutExecuting() async throws {
+        let coordinator = CLIWizardCoordinator(
+            session: try session(), removalInventory: true
+        )
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        ).planRemoval(
+            deploymentID: "production", operationID: "remove-one",
+            component: "forge-runtime"
+        )
+
+        XCTAssertEqual(result.exitCode, .success)
+        XCTAssertEqual(result.status, "removal-planned")
+        XCTAssertEqual(result.details["operation_id"], "remove-one")
+        XCTAssertEqual(result.details["action"], "REMOVE_COMPONENT")
+        XCTAssertEqual(result.details["forge_instance_id"], "forge-prod")
+        XCTAssertEqual(result.records.map { $0["action"] }, ["NO_CHANGE", "REMOVE_COMPONENT"])
+        let calls = await coordinator.calls()
+        XCTAssertEqual(calls, ["inventory", "removal-review", "inventory"])
+        let executions = await coordinator.executionCallCount()
+        XCTAssertEqual(executions, 0)
+    }
+
+    func testRemovalRequiresExactReviewConfirmationAndExecutesOnlyThroughCoordinator() async throws {
+        let coordinator = CLIWizardCoordinator(
+            session: try session(), removalInventory: true
+        )
+        let workflow = InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        )
+        let pending = await workflow.removeDeployment(
+            "production", operationID: "remove-one", component: "forge-runtime",
+            options: InstallerCLIOptions(nonInteractive: true, assumeYes: true),
+            confirm: { _ in XCTFail("automation must not prompt"); return true }
+        )
+        XCTAssertEqual(pending.exitCode, .confirmationRequired)
+        let fingerprint = try XCTUnwrap(pending.details["request_fingerprint"])
+        let removalCallsBefore = await coordinator.removalCallCount()
+        XCTAssertEqual(removalCallsBefore, 0)
+
+        let drift = await workflow.removeDeployment(
+            "production", operationID: "remove-one", component: "forge-runtime",
+            options: InstallerCLIOptions(
+                nonInteractive: true, assumeYes: true,
+                reviewFingerprint: String(repeating: "b", count: 64)
+            ),
+            confirm: { _ in XCTFail("automation must not prompt"); return true }
+        )
+        XCTAssertEqual(drift.status, "removal-review-drift")
+        let removalCallsAfterDrift = await coordinator.removalCallCount()
+        XCTAssertEqual(removalCallsAfterDrift, 0)
+
+        let complete = await workflow.removeDeployment(
+            "production", operationID: "remove-one", component: "forge-runtime",
+            options: InstallerCLIOptions(
+                nonInteractive: true, assumeYes: true, reviewFingerprint: fingerprint
+            ),
+            confirm: { _ in XCTFail("automation must not prompt"); return false }
+        )
+        XCTAssertEqual(complete.exitCode, .success)
+        XCTAssertEqual(complete.status, "removal-complete")
+        XCTAssertEqual(complete.details["operation_id"], "remove-one")
+        XCTAssertEqual(complete.records.map { $0["instance_id"] }, ["ep-prod", "forge-prod"])
+        let removalCallsAfterCompletion = await coordinator.removalCallCount()
+        XCTAssertEqual(removalCallsAfterCompletion, 1)
+    }
+
+    func testRemovalInteractiveCancelAndRecoveryPendingRemainNonTerminal() async throws {
+        let coordinator = CLIWizardCoordinator(
+            session: try session(), removalInventory: true,
+            removalState: "RECOVERY_PENDING"
+        )
+        let workflow = InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        )
+        let cancelled = await workflow.removeDeployment(
+            "production", operationID: "remove-one", component: "forge-runtime",
+            options: InstallerCLIOptions(), confirm: { prompt in
+                XCTAssertTrue(prompt.contains("forge-prod"))
+                XCTAssertTrue(prompt.contains("ep-prod"))
+                XCTAssertTrue(prompt.contains("REMOVE_COMPONENT"))
+                return false
+            }
+        )
+        XCTAssertEqual(cancelled.exitCode, .confirmationRequired)
+        let removalCallsAfterCancel = await coordinator.removalCallCount()
+        XCTAssertEqual(removalCallsAfterCancel, 0)
+        let recovering = await workflow.removeDeployment(
+            "production", operationID: "remove-one", component: "forge-runtime",
+            options: InstallerCLIOptions(), confirm: { _ in true }
+        )
+        XCTAssertEqual(recovering.exitCode, .executionFailed)
+        XCTAssertEqual(recovering.status, "removal-recovery-pending")
+        XCTAssertEqual(recovering.details["operation_id"], "remove-one")
+        let removalCallsAfterRecovery = await coordinator.removalCallCount()
+        XCTAssertEqual(removalCallsAfterRecovery, 1)
     }
 
     func testStatusAndListUseOnlyReadOnlyDeploymentInventory() async throws {
@@ -276,9 +406,12 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(status.exitCode, .blocked)
         XCTAssertEqual(status.status, "inventory-unavailable")
 
-        let remove = await workflow.removeDeployment("production")
-        XCTAssertEqual(remove.exitCode, .executionFailed)
-        XCTAssertEqual(remove.status, "producer-blocked")
+        let remove = await workflow.removeDeployment(
+            "production", operationID: "remove-one", component: nil,
+            options: InstallerCLIOptions(), confirm: { _ in true }
+        )
+        XCTAssertEqual(remove.exitCode, .blocked)
+        XCTAssertEqual(remove.status, "removal-review-blocked")
     }
 
     private func release(_ version: String) throws -> VerifiedInstallerRelease {
@@ -326,23 +459,30 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private let currency: InstallerCurrencyCheckResult?
     private let execution: ManagedDeploymentExecutionResult
     private let inventoryUnavailable: Bool
+    private let removalInventory: Bool
+    private let removalState: String
     private var recordedCalls: [String] = []
     private var recordedProviderActions: [ProviderAction] = []
     private var executions = 0
     private var handoffs = 0
     private var inventories = 0
+    private var removals = 0
 
     init(
         session: VerifiedCompositionSessionPlan,
         providerAuthenticationRequired: Bool = false,
         currency: InstallerCurrencyCheckResult? = nil,
         execution: ManagedDeploymentExecutionResult? = nil,
-        inventoryUnavailable: Bool = false
+        inventoryUnavailable: Bool = false,
+        removalInventory: Bool = false,
+        removalState: String = "COMPLETE"
     ) {
         selectedSession = session
         self.providerAuthenticationRequired = providerAuthenticationRequired
         self.currency = currency
         self.inventoryUnavailable = inventoryUnavailable
+        self.removalInventory = removalInventory
+        self.removalState = removalState
         self.execution = execution ?? .completed(
             stages: [
                 ExecutionStage(id: "forge", title: "Forge", detail: "ready", state: .passed),
@@ -389,7 +529,11 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
                         label: "Production",
                         exists: true,
                         forgeInstanceID: "forge-prod",
-                        engineeringPlatformInstanceID: "ep-prod"
+                        engineeringPlatformInstanceID: "ep-prod",
+                        installedCompositionID: removalInventory
+                            ? "forge-ep-qualified" : nil,
+                        installedCompositionManifestSHA256: removalInventory
+                            ? "sha256:" + String(repeating: "a", count: 64) : nil
                     )
                 ],
                 createCandidate: ManagedDeploymentTarget(
@@ -402,6 +546,108 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         } catch {
             return .unavailable(.ambiguousInventory)
         }
+    }
+
+    func prepareProductRemovalReview(
+        _ intent: ManagedInstallerProductRemovalReviewIntent
+    ) async -> Result<
+        ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        recordedCalls.append("removal-review")
+        guard removalInventory else { return .failure(.rejected) }
+        do {
+            let digest = String(repeating: "a", count: 64)
+            let request = try ManagedInstallerProductRemovalRequest(
+                operationID: intent.operationID,
+                deploymentID: intent.deploymentID,
+                action: intent.action,
+                targetComponent: intent.targetComponent,
+                reviewedRevision: 3,
+                reviewedDeploymentSHA256: digest,
+                reviewedPlanSHA256: digest,
+                forgeInstanceID: intent.forgeInstanceID,
+                engineeringPlatformInstanceID: intent.engineeringPlatformInstanceID,
+                installedCompositionIdentity: intent.installedCompositionIdentity,
+                installedManifestSHA256: intent.installedManifestSHA256,
+                installerRelease: intent.installerRelease
+            )
+            var reader = try StrictJSONResourceReader(data: request.canonicalJSONData())
+            let requestValue = try reader.parseDocument()
+            let diffs: [StrictJSONResourceValue] = [
+                .object([
+                    "component": .string("engineering-platform-server"),
+                    "instance_id": .string("ep-prod"),
+                    "action": .string("NO_CHANGE"),
+                ]),
+                .object([
+                    "component": .string("forge-runtime"),
+                    "instance_id": .string("forge-prod"),
+                    "action": .string("REMOVE_COMPONENT"),
+                ]),
+            ]
+            let data = StrictSignedJSON.canonicalPayload(from: .object([
+                "schema": .string(ManagedInstallerProductRemovalReviewProposal.schema),
+                "intent_fingerprint": .string(intent.intentFingerprint),
+                "request": requestValue,
+                "deployment_action": .string("CREATE_OR_UPDATE"),
+                "component_diffs": .array(diffs),
+                "resulting_components": .array([
+                    .string("engineering-platform-server"),
+                ]),
+            ]))
+            return .success(try ManagedInstallerProductRemovalReviewProposal.decodeJSON(
+                data, intent: intent
+            ))
+        } catch {
+            return .failure(.rejected)
+        }
+    }
+
+    func executeReviewedProductRemoval(
+        _ session: ManagedInstallerRemovalReviewSession
+    ) async -> Result<
+        ManagedInstallerProductRemovalReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        recordedCalls.append("removal-execute")
+        removals += 1
+        let request = session.proposal.request
+        guard removalInventory, request.action == "REMOVE_COMPONENT" else {
+            return .failure(.rejected)
+        }
+        let complete = removalState == "COMPLETE"
+        let data = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerProductRemovalReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "operation_id": .string(request.operationID),
+            "deployment_id": .string(request.deploymentID),
+            "action": .string(request.action),
+            "plan_fingerprint": .string("sha256:" + request.reviewedPlanSHA256),
+            "state": .string(removalState),
+            "registry_revision": complete ? .integer("4") : .null,
+            "components": .array([
+                .object([
+                    "component": .string("engineering-platform-server"),
+                    "instance_id": .string("ep-prod"),
+                    "action": .string("NO_CHANGE"),
+                    "state": .string("UNCHANGED"),
+                    "product_receipt_digest": .null,
+                ]),
+                .object([
+                    "component": .string("forge-runtime"),
+                    "instance_id": .string("forge-prod"),
+                    "action": .string("REMOVE_COMPONENT"),
+                    "state": .string(removalState),
+                    "product_receipt_digest": complete
+                        ? .string("sha256:" + String(repeating: "a", count: 64)) : .null,
+                ]),
+            ]),
+        ]))
+        guard let receipt = try? ManagedInstallerProductRemovalReceipt.decodeJSON(
+            data, request: request
+        ) else { return .failure(.rejected) }
+        return .success(receipt)
     }
 
     func prepareVerifiedCompositionSession(
@@ -512,4 +758,5 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     func executionCallCount() -> Int { executions }
     func handoffCallCount() -> Int { handoffs }
     func inventoryCallCount() -> Int { inventories }
+    func removalCallCount() -> Int { removals }
 }

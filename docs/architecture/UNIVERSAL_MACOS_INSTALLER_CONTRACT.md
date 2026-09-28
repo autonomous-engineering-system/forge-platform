@@ -730,7 +730,7 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 ## Managed Installer V1 implementation — 2026-09-23
 
 The active `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923` source slice
-implements the ADR-0007 management model against the frozen Forge 2.7.34 and
+implements the ADR-0007 management model against the frozen Forge 2.7.35 and
 Engineering Platform 2.3.102 contracts. The exact implementation/limitations
 are documented in [Managed Installer V1](MANAGED_INSTALLER_V1.md).
 
@@ -741,10 +741,10 @@ provider fan-out coordination, the EP system-provisioner adapter, and the Forge
 Server deployment/service adapter.
 
 These source surfaces do not by themselves claim installer publication or live
-Mac success. In particular, Forge 2.7.34 has no product-owned uninstall
-dispatcher and no separate read-only UPDATE_AVAILABLE assessment, so Forge
-remove/update remain fail-closed at those points rather than being reimplemented
-in Forge Platform. Signing/notarization, provider-supported real authentication,
+Mac success. Forge 2.7.35 supplies product-owned update assessment and
+uninstall boundaries. Forge Platform must still bind the exact producer
+executable and artifacts and complete reviewed update/remove execution before
+those operations can be released. Signing/notarization, provider-supported real authentication,
 fresh-Mac installation, cold reboot and no-user-login readiness require their
 own later exact evidence.
 

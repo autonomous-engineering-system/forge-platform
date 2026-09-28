@@ -10,7 +10,8 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentList
     case deploymentPlan(String)
     case deploymentApply(String)
-    case deploymentRemove(String)
+    case deploymentRemove(String, operationID: String, component: String?)
+    case deploymentRemovePlan(String, operationID: String, component: String?)
 }
 
 public struct InstallerCLIOptions: Equatable, Sendable {
@@ -18,17 +19,20 @@ public struct InstallerCLIOptions: Equatable, Sendable {
     public let nonInteractive: Bool
     public let assumeYes: Bool
     public let acceptInstallerUpdate: Bool
+    public let reviewFingerprint: String?
 
     public init(
         json: Bool = false,
         nonInteractive: Bool = false,
         assumeYes: Bool = false,
-        acceptInstallerUpdate: Bool = false
+        acceptInstallerUpdate: Bool = false,
+        reviewFingerprint: String? = nil
     ) {
         self.json = json
         self.nonInteractive = nonInteractive
         self.assumeYes = assumeYes
         self.acceptInstallerUpdate = acceptInstallerUpdate
+        self.reviewFingerprint = reviewFingerprint
     }
 }
 
@@ -93,7 +97,8 @@ public enum InstallerCLIParser {
       forge-platform-installer deployment list [--json]
       forge-platform-installer deployment plan --deployment <id|new> [--non-interactive] [--json]
       forge-platform-installer deployment apply --deployment <id|new> [--yes] [--non-interactive] [--accept-installer-update] [--json]
-      forge-platform-installer deployment remove --deployment <id> [--yes] [--json]
+      forge-platform-installer deployment remove --deployment <id> --operation-id <id> [--component forge-runtime] [--review-fingerprint <sha256> --yes] [--non-interactive] [--json]
+      forge-platform-installer deployment remove plan --deployment <id> --operation-id <id> [--component forge-runtime] [--json]
 
     Security:
       --non-interactive never bypasses provider authentication, installer update
@@ -106,6 +111,9 @@ public enum InstallerCLIParser {
         var assumeYes = false
         var acceptInstallerUpdate = false
         var deployment: String?
+        var operationID: String?
+        var component: String?
+        var reviewFingerprint: String?
         var positional: [String] = []
 
         var index = 0
@@ -135,6 +143,23 @@ public enum InstallerCLIParser {
                     throw InstallerCLIParseError.missingDeployment
                 }
                 deployment = value
+            case "--operation-id", "--component", "--review-fingerprint":
+                let isOperation = argument == "--operation-id"
+                let isFingerprint = argument == "--review-fingerprint"
+                guard (isOperation ? operationID : isFingerprint ? reviewFingerprint : component) == nil else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                index += 1
+                guard index < arguments.count else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                let value = arguments[index]
+                guard !value.isEmpty, !value.hasPrefix("-") else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                if isOperation { operationID = value }
+                else if isFingerprint { reviewFingerprint = value }
+                else { component = value }
             default:
                 guard !argument.hasPrefix("-") else {
                     throw InstallerCLIParseError.invalidArguments
@@ -171,18 +196,43 @@ public enum InstallerCLIParser {
             }
             command = .deploymentApply(deployment)
         case ["deployment", "remove"]:
-            guard let deployment, deployment != "new" else {
-                throw InstallerCLIParseError.missingDeployment
+            guard let deployment, deployment != "new",
+                  let operationID,
+                  ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+                  component == nil || component == "forge-runtime",
+                  reviewFingerprint.map(InstallerSelfUpdateValidation.isSHA256) ?? true else {
+                throw InstallerCLIParseError.invalidArguments
             }
-            command = .deploymentRemove(deployment)
+            command = .deploymentRemove(
+                deployment, operationID: operationID, component: component
+            )
+        case ["deployment", "remove", "plan"]:
+            guard let deployment, deployment != "new",
+                  let operationID,
+                  ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+                  component == nil || component == "forge-runtime",
+                  !assumeYes, reviewFingerprint == nil else {
+                throw InstallerCLIParseError.invalidArguments
+            }
+            command = .deploymentRemovePlan(
+                deployment, operationID: operationID, component: component
+            )
         default:
             throw InstallerCLIParseError.invalidArguments
         }
 
         if deployment != nil {
             switch command {
-            case .deploymentPlan, .deploymentApply, .deploymentRemove:
+            case .deploymentPlan, .deploymentApply, .deploymentRemove,
+                 .deploymentRemovePlan:
                 break
+            default:
+                throw InstallerCLIParseError.invalidArguments
+            }
+        }
+        if operationID != nil || component != nil || reviewFingerprint != nil {
+            switch command {
+            case .deploymentRemovePlan, .deploymentRemove: break
             default:
                 throw InstallerCLIParseError.invalidArguments
             }
@@ -194,7 +244,8 @@ public enum InstallerCLIParser {
                 json: json,
                 nonInteractive: nonInteractive,
                 assumeYes: assumeYes,
-                acceptInstallerUpdate: acceptInstallerUpdate
+                acceptInstallerUpdate: acceptInstallerUpdate,
+                reviewFingerprint: reviewFingerprint
             )
         )
     }
@@ -248,13 +299,168 @@ public struct InstallerCLIWorkflow: Sendable {
         }
     }
 
-    public func removeDeployment(_ deploymentID: String) async -> InstallerCLIResult {
-        _ = deploymentID
-        return InstallerCLIResult(
-            exitCode: .executionFailed,
-            status: "producer-blocked",
-            message: "Forge 2.7.34 publiceert geen product-owned uninstall dispatcher; deployment remove blijft fail-closed."
+    public func removeDeployment(
+        _ deploymentID: String,
+        operationID: String,
+        component: String?,
+        options: InstallerCLIOptions,
+        confirm: Confirmation
+    ) async -> InstallerCLIResult {
+        let action = component == nil ? "REMOVE_DEPLOYMENT" : "REMOVE_COMPONENT"
+        let workflow = ManagedInstallerRemovalReviewWorkflow(
+            coordinator: coordinator, currentRelease: currentRelease
         )
+        let session: ManagedInstallerRemovalReviewSession
+        switch await workflow.prepare(
+            operationID: operationID, deploymentID: deploymentID,
+            action: action, targetComponent: component
+        ) {
+        case .failure(let failure):
+            return InstallerCLIResult(
+                exitCode: .blocked, status: "removal-review-blocked",
+                message: "Het exacte verwijdervoorstel is niet beschikbaar.",
+                details: ["reason": String(describing: failure)]
+            )
+        case .success(let reviewed): session = reviewed
+        }
+        let request = session.proposal.request
+        let fingerprint = request.requestFingerprint
+        if let supplied = options.reviewFingerprint, supplied != fingerprint {
+            return InstallerCLIResult(
+                exitCode: .blocked, status: "removal-review-drift",
+                message: "De opgegeven review-fingerprint komt niet overeen met het actuele helpervoorstel."
+            )
+        }
+        if options.nonInteractive || options.assumeYes {
+            guard options.assumeYes, options.reviewFingerprint == fingerprint else {
+                return removalConfirmationRequired(session)
+            }
+        } else {
+            let diffs = session.proposal.componentDiffs.map {
+                "\($0.component):\($0.instanceID):\($0.action)"
+            }.joined(separator: ", ")
+            let prompt = "Bevestig \(action) voor deployment \(deploymentID), Forge \(request.forgeInstanceID), EP \(request.engineeringPlatformInstanceID ?? "geen"), revisie \(request.reviewedRevision), operation \(operationID), fingerprint \(fingerprint), diff \(diffs)?"
+            guard await confirm(prompt) else {
+                return removalConfirmationRequired(session)
+            }
+        }
+        switch await coordinator.executeReviewedProductRemoval(session) {
+        case .failure(let failure):
+            return InstallerCLIResult(
+                exitCode: .executionFailed, status: "removal-execution-failed",
+                message: "De helper heeft de beoordeelde verwijdering niet terminaal bevestigd.",
+                details: ["reason": String(describing: failure), "operation_id": operationID]
+            )
+        case .success(let receipt):
+            guard receipt.requestFingerprint == fingerprint,
+                  receipt.operationID == operationID,
+                  receipt.deploymentID == deploymentID,
+                  receipt.action == action,
+                  (try? ManagedInstallerProductRemovalReceipt.decodeJSON(
+                      receipt.canonicalJSONData(), request: request
+                  )) == receipt else {
+                return Self.blocked("Het productreceipt hoort niet bij de beoordeelde verwijdering.")
+            }
+            return InstallerCLIResult(
+                exitCode: receipt.state == "COMPLETE" ? .success : .executionFailed,
+                status: receipt.state == "COMPLETE" ? "removal-complete" : "removal-recovery-pending",
+                message: receipt.state == "COMPLETE"
+                    ? "Productverwijdering en exact registry-readback zijn terminaal bevestigd."
+                    : "Dezelfde operation ID moet worden hervat; verwijdering is nog niet terminaal.",
+                details: [
+                    "operation_id": operationID,
+                    "deployment_id": deploymentID,
+                    "request_fingerprint": fingerprint,
+                    "registry_revision": receipt.registryRevision.map(String.init) ?? "",
+                ],
+                records: receipt.components.map {
+                    ["component": $0.component, "instance_id": $0.instanceID,
+                     "action": $0.action, "state": $0.state]
+                }
+            )
+        }
+    }
+
+    private func removalConfirmationRequired(
+        _ session: ManagedInstallerRemovalReviewSession
+    ) -> InstallerCLIResult {
+        let request = session.proposal.request
+        return InstallerCLIResult(
+            exitCode: .confirmationRequired, status: "removal-confirmation-required",
+            message: "Bevestig interactief of herhaal met --yes en exact --review-fingerprint uit de actuele review.",
+            details: [
+                "operation_id": session.operationID,
+                "deployment_id": session.deploymentID,
+                "action": request.action,
+                "forge_instance_id": request.forgeInstanceID,
+                "engineering_platform_instance_id": request.engineeringPlatformInstanceID ?? "",
+                "reviewed_revision": String(request.reviewedRevision),
+                "request_fingerprint": request.requestFingerprint,
+            ],
+            records: session.proposal.componentDiffs.map {
+                ["component": $0.component, "instance_id": $0.instanceID,
+                 "action": $0.action]
+            }
+        )
+    }
+
+    public func planRemoval(
+        deploymentID: String,
+        operationID: String,
+        component: String?
+    ) async -> InstallerCLIResult {
+        let action = component == nil ? "REMOVE_DEPLOYMENT" : "REMOVE_COMPONENT"
+        let workflow = ManagedInstallerRemovalReviewWorkflow(
+            coordinator: coordinator,
+            currentRelease: currentRelease
+        )
+        switch await workflow.prepare(
+            operationID: operationID,
+            deploymentID: deploymentID,
+            action: action,
+            targetComponent: component
+        ) {
+        case .failure(let failure):
+            let reason: String
+            switch failure {
+            case .invalidRequest: reason = "invalid-request"
+            case .unavailable: reason = "helper-unavailable"
+            case .rejected: reason = "review-rejected"
+            }
+            return InstallerCLIResult(
+                exitCode: .blocked,
+                status: "removal-review-blocked",
+                message: "Het exacte verwijdervoorstel is niet beschikbaar.",
+                details: ["reason": reason]
+            )
+        case .success(let session):
+            let request = session.proposal.request
+            return InstallerCLIResult(
+                exitCode: .success,
+                status: "removal-planned",
+                message: "Het helpervoorstel is alleen gelezen; er is geen productmutatie uitgevoerd.",
+                details: [
+                    "operation_id": session.operationID,
+                    "deployment_id": session.deploymentID,
+                    "action": request.action,
+                    "target_component": request.targetComponent ?? "",
+                    "forge_instance_id": request.forgeInstanceID,
+                    "engineering_platform_instance_id":
+                        request.engineeringPlatformInstanceID ?? "",
+                    "reviewed_revision": String(request.reviewedRevision),
+                    "reviewed_plan_sha256": request.reviewedPlanSHA256,
+                    "request_fingerprint": request.requestFingerprint,
+                    "inventory_evidence_reference": session.inventoryEvidenceReference,
+                ],
+                records: session.proposal.componentDiffs.map { diff in
+                    [
+                        "component": diff.component,
+                        "instance_id": diff.instanceID,
+                        "action": diff.action,
+                    ]
+                }
+            )
+        }
     }
 
 

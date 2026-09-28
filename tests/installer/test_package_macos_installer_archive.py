@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+import io
 import os
 from pathlib import Path
 import plistlib
@@ -32,11 +34,17 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
             before = self._snapshot(app_bundle)
             first = workspace / "first archive" / "Forge Platform Installer.zip"
             second = workspace / "second archive" / "Forge Platform Installer.zip"
+            direct = workspace / "direct archive" / "Forge Platform Installer.zip"
             first.parent.mkdir()
             second.parent.mkdir()
+            direct.parent.mkdir()
 
             first_result = self._run(app_bundle, first)
             second_result = self._run(app_bundle, second)
+            direct_result = archive_producer.package_archive(
+                app_bundle=app_bundle,
+                output=direct,
+            )
 
             self.assertEqual(first_result.returncode, 0, first_result.stderr)
             self.assertEqual(second_result.returncode, 0, second_result.stderr)
@@ -44,6 +52,8 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
             self.assertIn("profile=stored-zip-v1", first_result.stdout)
             self.assertEqual(self._snapshot(app_bundle), before)
             self.assertEqual(first.read_bytes(), second.read_bytes())
+            self.assertEqual(first.read_bytes(), direct.read_bytes())
+            self.assertGreater(direct_result.entry_count, 0)
             self.assertEqual(stat.S_IMODE(first.stat().st_mode), 0o600)
 
             with zipfile.ZipFile(first) as archive:
@@ -60,6 +70,7 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
                         "Forge Platform Installer.app/Contents/MacOS/ForgePlatformInstaller",
                         "Forge Platform Installer.app/Contents/MacOS/forge-platform-installer",
                         "Forge Platform Installer.app/Contents/Resources/forge-platform-installer-helper",
+                        "Forge Platform Installer.app/Contents/Resources/forge-platform-product-worker.pyz",
                         "Forge Platform Installer.app/Contents/Library/LaunchDaemons/",
                         "Forge Platform Installer.app/Contents/Library/LaunchDaemons/com.autonomous-engineering-system.forge-platform-installer.helper.plist",
                         "Forge Platform Installer.app/Contents/Resources/Read Me.txt",
@@ -121,6 +132,50 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
             self.assertIn("group- or world-writable", result.stderr)
             self.assertFalse(output.exists())
             self.assertEqual(self._snapshot(app_bundle), before)
+
+    def test_rejects_missing_or_empty_product_worker_before_creating_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            app_bundle = self._app_bundle(workspace)
+            worker = app_bundle / "Contents" / "Resources" / "forge-platform-product-worker.pyz"
+            worker.unlink()
+            missing = self._run(app_bundle, workspace / "missing-worker.zip")
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("sealed product-worker resource", missing.stderr)
+            self.assertFalse((workspace / "missing-worker.zip").exists())
+
+            worker.write_bytes(b"")
+            worker.chmod(0o644)
+            empty = self._run(app_bundle, workspace / "empty-worker.zip")
+            self.assertNotEqual(empty.returncode, 0)
+            self.assertIn("sealed product-worker resource", empty.stderr)
+            self.assertFalse((workspace / "empty-worker.zip").exists())
+
+            worker.write_bytes(b"worker fixture\n")
+            worker.chmod(0o755)
+            executable_output = workspace / "executable-worker.zip"
+            with self.assertRaisesRegex(ValueError, "sealed product-worker resource"):
+                archive_producer.package_archive(
+                    app_bundle=app_bundle,
+                    output=executable_output,
+                )
+            self.assertFalse(executable_output.exists())
+
+    def test_direct_cli_reports_created_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            app_bundle = self._app_bundle(workspace)
+            output = workspace / "installer.zip"
+            result = io.StringIO()
+            with mock.patch.object(
+                sys,
+                "argv",
+                ["package_macos_installer_archive.py", "--app-bundle", str(app_bundle),
+                 "--output", str(output)],
+            ), redirect_stdout(result):
+                archive_producer.main()
+            self.assertIn("INSTALLER_APP_ARCHIVE=PASS", result.getvalue())
+            self.assertTrue(output.is_file())
 
     def test_rejects_metadata_sidecars_and_never_serializes_source_extended_attributes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -305,6 +360,9 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
             thin_arm64_macho_test_bytes(b"native privileged helper candidate bytes\n")
         )
         helper_binary.chmod(0o755)
+        product_worker = resources / "forge-platform-product-worker.pyz"
+        product_worker.write_bytes(b"canonical product worker fixture\n")
+        product_worker.chmod(0o644)
         helper_plist = launch_daemons / (
             "com.autonomous-engineering-system.forge-platform-installer.helper.plist"
         )

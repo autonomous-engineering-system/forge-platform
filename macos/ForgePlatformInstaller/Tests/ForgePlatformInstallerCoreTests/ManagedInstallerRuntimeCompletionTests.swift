@@ -547,6 +547,10 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(decoded.components.map(\.installedVersion), ["2.0.0", "1.0.0"])
         XCTAssertEqual(decoded.components.map(\.candidateVersion), ["2.0.0", "1.1.0"])
         XCTAssertEqual(
+            decoded.components.map(\.updateAssessmentReference),
+            [nil, "forge-update-assess:sha256:" + String(repeating: "a", count: 64)]
+        )
+        XCTAssertEqual(
             decoded.components.map(\.artifactSHA256),
             [
                 "sha256:" + String(repeating: "7", count: 64),
@@ -564,6 +568,13 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         )
         XCTAssertEqual(decoded.requestFingerprint.count, 64)
         XCTAssertEqual(decoded.canonicalJSONData(), bytes)
+        XCTAssertThrowsError(try ManagedInstallerProductComponentOperation(
+            componentID: "forge-runtime",
+            change: .update,
+            installedVersion: "1.0.0",
+            candidateVersion: "1.1.0",
+            artifactSHA256: "sha256:" + String(repeating: "8", count: 64)
+        ))
         XCTAssertThrowsError(try ManagedInstallerProductComponentOperation(
             componentID: "forge-runtime",
             change: .remove,
@@ -616,6 +627,73 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertThrowsError(try ManagedInstallerProductOperationRequest.decodeJSON(Data()))
         XCTAssertThrowsError(try ManagedInstallerProductOperationRequest.decodeJSON(
             Data(repeating: 0x20, count: 128 * 1_024 + 1)
+        ))
+    }
+
+    func testProductBridgeAcceptsExactSingleComponentRequestAndReceipt() throws {
+        for identity in ["forge-runtime", "engineering-platform-server"] {
+            let fixture = try RuntimeCompletionFixture(singleComponent: identity)
+            let request = try ManagedInstallerProductOperationRequest(
+                stablePlan: fixture.stablePlan,
+                runtimeTransactionReceipt: fixture.transactionReceipt()
+            )
+            XCTAssertEqual(request.components.map(\.componentID), [identity])
+            XCTAssertEqual(request.forgeInstanceID != nil, identity == "forge-runtime")
+            XCTAssertEqual(
+                request.engineeringPlatformInstanceID != nil,
+                identity == "engineering-platform-server"
+            )
+            XCTAssertEqual(
+                try ManagedInstallerProductOperationRequest.decodeJSON(
+                    request.canonicalJSONData()
+                ), request
+            )
+            let completion = try ManagedInstallerProductCompletion(
+                componentID: identity, state: .ready
+            )
+            let receipt = try ManagedInstallerProductOperationReceipt(
+                request: request,
+                productReceiptReferences: ["receipt:product"],
+                pairingReceiptReference: nil,
+                readinessReceiptReferences: ["receipt:readiness"],
+                completions: [completion]
+            )
+            XCTAssertEqual(
+                try ManagedInstallerProductOperationReceipt.decodeJSON(
+                    receipt.canonicalJSONData(), request: request
+                ), receipt
+            )
+            XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+                request: request,
+                productReceiptReferences: ["receipt:product"],
+                pairingReceiptReference: "receipt:unreviewed-pairing",
+                readinessReceiptReferences: ["receipt:readiness"],
+                completions: [completion]
+            ))
+            XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+                request: request,
+                productReceiptReferences: ["receipt:product"],
+                pairingReceiptReference: nil,
+                readinessReceiptReferences: ["receipt:readiness", "receipt:extra"],
+                completions: [completion]
+            ))
+            XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+                request: request,
+                productReceiptReferences: ["receipt:product", "receipt:other-product"],
+                pairingReceiptReference: nil,
+                readinessReceiptReferences: ["receipt:readiness"],
+                completions: [completion]
+            ))
+        }
+    }
+
+    func testProductBridgeRejectsSingleComponentWithExtraInstanceAuthority() throws {
+        let fixture = try RuntimeCompletionFixture(
+            singleComponent: "forge-runtime", includeUnreviewedInstance: true
+        )
+        XCTAssertThrowsError(try ManagedInstallerProductOperationRequest(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: fixture.transactionReceipt()
         ))
     }
 
@@ -1039,6 +1117,24 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(invocation.workerURL, worker)
         XCTAssertEqual(invocation.timeoutNanoseconds, 99)
         XCTAssertEqual(invocation.expectedInterpreterOwner, geteuid())
+        XCTAssertEqual(invocation.trustedStateRootURL, root)
+
+        XCTAssertNoThrow(try FileManagedInstallerProductWorkerInvocationResolver(
+            stateRoot: root,
+            runtimeSlotsRoot: slots,
+            workerURL: worker,
+            workerSHA256: "sha256:" + String(repeating: "b", count: 64),
+            authorityReader: FixedProductWorkerAuthorityReader(
+                result: .success("sha256:" + String(repeating: "c", count: 64))
+            )
+        ).resolveProductWorkerInvocation().get())
+        XCTAssertEqual(FileManagedInstallerProductWorkerInvocationResolver(
+            stateRoot: root,
+            runtimeSlotsRoot: slots,
+            workerURL: worker,
+            workerSHA256: "sha256:" + String(repeating: "b", count: 64),
+            authorityReader: FixedProductWorkerAuthorityReader(result: .failure(.unavailable))
+        ).resolveProductWorkerInvocation().workerFailure, .unavailable)
 
         XCTAssertEqual(
             FileManagedInstallerProductWorkerInvocationResolver(
@@ -1059,6 +1155,56 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             ).resolveProductWorkerInvocation().workerFailure,
             .unavailable
         )
+    }
+
+    func testProductWorkerRejectsUnsafeManagedInterpreterDirectoryChain() throws {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let slot = "sha256-" + String(repeating: "a", count: 64)
+        let slots = root.appendingPathComponent("managed-python-runtime-slots", isDirectory: true)
+        let slotURL = slots.appendingPathComponent(slot, isDirectory: true)
+        let bin = slotURL.appendingPathComponent("bin", isDirectory: true)
+        let interpreter = bin.appendingPathComponent("python3")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for directory in [root, slots, slotURL, bin] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: directory.path
+            )
+        }
+        try Data("#!/bin/sh\n".utf8).write(to: interpreter)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: interpreter.path
+        )
+        let invocation = ManagedInstallerProductWorkerInvocation(
+            interpreterURL: interpreter,
+            trustedStateRootURL: root,
+            workerURL: root.appendingPathComponent("worker.pyz"),
+            workerSHA256: "sha256:" + String(repeating: "b", count: 64),
+            expectedInterpreterOwner: geteuid(),
+            requireSingleInterpreterLink: true,
+            timeoutNanoseconds: 1
+        )
+        let runner = MacOSManagedInstallerProductWorkerRunner()
+        XCTAssertTrue(runner.secureInterpreter(invocation))
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o777], ofItemAtPath: bin.path
+        )
+        XCTAssertFalse(runner.secureInterpreter(invocation))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: bin.path
+        )
+
+        try FileManager.default.removeItem(at: bin)
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: outside.path
+        )
+        try Data("#!/bin/sh\n".utf8).write(to: outside.appendingPathComponent("python3"))
+        try FileManager.default.createSymbolicLink(at: bin, withDestinationURL: outside)
+        XCTAssertFalse(runner.secureInterpreter(invocation))
     }
 
     func testPythonProductExecutorSerializesCanonicalWorkerReceipt() async throws {
@@ -1153,6 +1299,89 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             canonicalRequest: request.canonicalJSONData()
         )
         XCTAssertEqual(changedResult.workerFailure, .rejected)
+    }
+
+    func testProductWorkerExitGateCompletesExactlyOnce() async {
+        let early = ManagedInstallerProductWorkerExitGate()
+        XCTAssertTrue(early.complete(true))
+        XCTAssertFalse(early.complete(false))
+        let earlyResult = await early.wait()
+        XCTAssertTrue(earlyResult)
+
+        let pending = ManagedInstallerProductWorkerExitGate()
+        let waiter = Task { await pending.wait() }
+        await Task.yield()
+        XCTAssertTrue(pending.complete(false))
+        XCTAssertFalse(pending.complete(true))
+        let pendingResult = await waiter.value
+        XCTAssertFalse(pendingResult)
+    }
+
+    func testProductWorkerPipeReadHasIndependentDeadlineEvenWithWriterOpen() async throws {
+        let held = Pipe()
+        let started = DispatchTime.now().uptimeNanoseconds
+        let timedOut = await MacOSManagedInstallerProductWorkerRunner.readBounded(
+            held.fileHandleForReading,
+            maximumBytes: 8,
+            timeoutNanoseconds: 50_000_000
+        )
+        let elapsed = DispatchTime.now().uptimeNanoseconds - started
+        XCTAssertNil(timedOut)
+        XCTAssertLessThan(elapsed, 2_000_000_000)
+        try held.fileHandleForWriting.close()
+
+        let complete = Pipe()
+        try complete.fileHandleForWriting.write(contentsOf: Data("receipt".utf8))
+        try complete.fileHandleForWriting.close()
+        let bytes = await MacOSManagedInstallerProductWorkerRunner.readBounded(
+            complete.fileHandleForReading,
+            maximumBytes: 8,
+            timeoutNanoseconds: 1_000_000_000
+        )
+        XCTAssertEqual(bytes, Data("receipt".utf8))
+
+        let excessive = Pipe()
+        try excessive.fileHandleForWriting.write(contentsOf: Data("too many bytes".utf8))
+        try excessive.fileHandleForWriting.close()
+        let rejected = await MacOSManagedInstallerProductWorkerRunner.readBounded(
+            excessive.fileHandleForReading,
+            maximumBytes: 8,
+            timeoutNanoseconds: 1_000_000_000
+        )
+        XCTAssertNil(rejected)
+    }
+
+    func testProductWorkerPipeWriteHasIndependentDeadlineWhenReaderStalls() async throws {
+        let stalled = Pipe()
+        let started = DispatchTime.now().uptimeNanoseconds
+        let timedOut = await MacOSManagedInstallerProductWorkerRunner.writeBounded(
+            Data(repeating: 0x61, count: 1_000_000),
+            to: stalled.fileHandleForWriting,
+            timeoutNanoseconds: 50_000_000
+        )
+        let elapsed = DispatchTime.now().uptimeNanoseconds - started
+        XCTAssertFalse(timedOut)
+        XCTAssertLessThan(elapsed, 2_000_000_000)
+        try stalled.fileHandleForReading.close()
+
+        let complete = Pipe()
+        let written = await MacOSManagedInstallerProductWorkerRunner.writeBounded(
+            Data("request".utf8),
+            to: complete.fileHandleForWriting,
+            timeoutNanoseconds: 1_000_000_000
+        )
+        XCTAssertTrue(written)
+        XCTAssertEqual(try complete.fileHandleForReading.readToEnd(), Data("request".utf8))
+        try complete.fileHandleForReading.close()
+
+        let abandoned = Pipe()
+        try abandoned.fileHandleForReading.close()
+        let rejected = await MacOSManagedInstallerProductWorkerRunner.writeBounded(
+            Data("request".utf8),
+            to: abandoned.fileHandleForWriting,
+            timeoutNanoseconds: 1_000_000_000
+        )
+        XCTAssertFalse(rejected)
     }
 
     func testProductWorkerRunnerRejectsTimeoutAndUnboundedOutput() async throws {
@@ -1317,7 +1546,9 @@ private struct RuntimeCompletionFixture {
         deploymentID: String = "activation-deployment",
         managedGitAction: ManagedToolOriginalPlanAction.Action? = nil,
         installedCompositionID: String? = nil,
-        installedCompositionManifestSHA256: String? = nil
+        installedCompositionManifestSHA256: String? = nil,
+        singleComponent: String? = nil,
+        includeUnreviewedInstance: Bool = false
     ) throws {
         let git = try ManagedToolRequirement(
             identity: .git,
@@ -1333,8 +1564,11 @@ private struct RuntimeCompletionFixture {
         let deployment = try ManagedDeploymentTarget(
             id: deploymentID,
             exists: true,
-            forgeInstanceID: "forge-one",
-            engineeringPlatformInstanceID: "ep-one",
+            forgeInstanceID: singleComponent == "engineering-platform-server"
+                ? nil : "forge-one",
+            engineeringPlatformInstanceID: singleComponent == "forge-runtime"
+                && !includeUnreviewedInstance
+                ? nil : "ep-one",
             installedCompositionID: installedCompositionID,
             installedCompositionManifestSHA256: installedCompositionManifestSHA256
         )
@@ -1343,13 +1577,31 @@ private struct RuntimeCompletionFixture {
             deployment: deployment,
             initialReadback: activationFixture.missingReadback()
         )
+        let singleComponents: [ComponentDiff]? = switch singleComponent {
+        case "forge-runtime": [ComponentDiff(
+            componentID: "forge-runtime", title: "Forge", change: .update,
+            installedVersion: "1.0.0", candidateVersion: "1.1.0",
+            artifactDigest: "sha256:" + String(repeating: "8", count: 64),
+            updateAssessmentReference: "forge-update-assess:sha256:"
+                + String(repeating: "a", count: 64),
+            detail: "Exact reviewed Forge update"
+        )]
+        case "engineering-platform-server": [ComponentDiff(
+            componentID: "engineering-platform-server", title: "Engineering Platform",
+            change: .retain, installedVersion: "2.0.0", candidateVersion: "2.0.0",
+            artifactDigest: "sha256:" + String(repeating: "7", count: 64),
+            detail: "Exact reviewed EP retention"
+        )]
+        default: nil
+        }
         stablePlan = try managedInstallerTestStablePlan(
             session: activationFixture.session,
             deployment: deployment,
             activationPlan: plan,
             actions: managedGitAction.map {
                 [ManagedToolOriginalPlanAction(requirement: git, action: $0)]
-            } ?? []
+            } ?? [],
+            components: singleComponents
         )
         let journal = try ManagedPythonRuntimeParentJournalRecord(
             plan: plan,
@@ -1832,7 +2084,7 @@ private actor ProductWorkerRunner: ManagedInstallerProductWorkerRunning {
     }
 }
 
-private final class RawProductOperationXPCService:
+final class RawProductOperationXPCService:
     NSObject, NSXPCListenerDelegate, ManagedInstallerProductOperationXPCService,
     @unchecked Sendable {
     private let listener = NSXPCListener.anonymous()
@@ -1877,6 +2129,20 @@ private final class RawProductOperationXPCService:
         let response = responses.removeFirst()
         lock.unlock()
         reply(response)
+    }
+
+    func executeProductRemoval(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalRequest, withReply: reply)
+    }
+
+    func prepareProductRemovalReview(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalIntent, withReply: reply)
     }
 
     func capturedRequests() -> [Data] {
@@ -1967,4 +2233,13 @@ private extension Result where Failure == ManagedInstallerProductWorkerFailure {
         guard case .failure(let failure) = self else { return nil }
         return failure
     }
+}
+
+private struct FixedProductWorkerAuthorityReader:
+    ManagedInstallerProductWorkerAuthorityReading {
+    let result: Result<String, ManagedInstallerProductWorkerAuthorityReadFailure>
+
+    func readAuthorityDigest() -> Result<
+        String, ManagedInstallerProductWorkerAuthorityReadFailure
+    > { result }
 }

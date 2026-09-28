@@ -23,8 +23,7 @@ public enum MacOSTrustedInstallerRuntimeBuilderConfigurationError: Error, Equata
     case unsupportedMacOSVersion
 }
 
-/// Creates the private per-login installer control root used before a future
-/// privileged product-operation helper is admitted. This root stores only
+/// Creates the private per-login installer control root. This root stores only
 /// installer self-update and read-only catalog state; product services, venvs,
 /// provider credentials and machine-wide mutation locks never live here.
 enum MacOSInstallerUserStateRoot {
@@ -137,8 +136,8 @@ enum MacOSInstallerPlatformContract {
 /// every released installer process; this source-level builder cannot turn a
 /// per-user location into evidence of cross-account uniqueness.
 ///
-/// It does not wire application startup, install a product, launch a provider
-/// command, or create a service. The catalog path assembled here remains
+/// It does not install a product, launch a provider command, or create a
+/// service. The catalog path assembled here remains
 /// read-only: it can verify and select exact catalog/index/manifest bytes after
 /// current-installer enforcement, but it has no acceptance-write or mutation
 /// authority. Until the app is explicitly wired through this builder by a
@@ -147,6 +146,9 @@ enum MacOSInstallerPlatformContract {
 public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuilding {
     private let stateRoot: URL
     private let architecture: String
+    private let routeLoaderFactory: @Sendable (
+        ManagedInstallerPostToolXPCHelperIdentity
+    ) -> any ManagedInstallerReleasedRouteSnapshotLoading
 
     /// Creates a builder only for an existing private installer-owned root.
     /// The root is canonicalised through `realpath(3)` after rejecting a final
@@ -163,9 +165,24 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
     /// negative qualification.  Platform admission intentionally happens
     /// before even the installer state root is inspected.
     init(stateRoot: URL, platformFacts: MacOSInstallerPlatformFacts) throws {
+        try self.init(
+            stateRoot: stateRoot,
+            platformFacts: platformFacts,
+            routeLoaderFactory: { MacOSManagedInstallerReleasedRouteXPCTransport(helperIdentity: $0) }
+        )
+    }
+
+    init(
+        stateRoot: URL,
+        platformFacts: MacOSInstallerPlatformFacts,
+        routeLoaderFactory: @escaping @Sendable (
+            ManagedInstallerPostToolXPCHelperIdentity
+        ) -> any ManagedInstallerReleasedRouteSnapshotLoading
+    ) throws {
         try MacOSInstallerPlatformContract.requireSupported(platformFacts)
         self.stateRoot = try MacOSInstallerOwnedStateRoot.validatedCanonicalURL(from: stateRoot)
         self.architecture = MacOSInstallerPlatformContract.architecture
+        self.routeLoaderFactory = routeLoaderFactory
     }
 
     /// Assembles only the existing sealed-trust adapters.  The startup
@@ -209,6 +226,15 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                         reader: componentCatalogAcceptanceStore
                     )
             )
+            let helperIdentity = try ManagedInstallerPostToolXPCHelperIdentity(
+                releaseTrust: sealedTrustConfiguration
+            )
+            let routeCoordinator = ManagedInstallerReleasedRouteCoordinator(
+                loader: routeLoaderFactory(helperIdentity)
+            )
+            let productTransport = MacOSManagedInstallerProductOperationXPCTransport(
+                helperIdentity: helperIdentity
+            )
             let releaseFeed = try GitHubSignedInstallerReleaseFeed(
                 trustConfiguration: sealedTrustConfiguration,
                 sealedReleaseProvenance: sealedReleaseProvenance,
@@ -251,7 +277,10 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 atomicHandoff: atomicHandoff,
                 recoveryStore: FileInstallerSelfUpdateRecoveryStore(rootDirectory: stateRoot),
                 operationLock: FileInstallerSelfUpdateOperationLock(rootDirectory: stateRoot),
-                compositionSessionPreparer: compositionSessionPreparer
+                compositionSessionPreparer: compositionSessionPreparer,
+                managedDeploymentRouteCoordinator: routeCoordinator,
+                removalReviewTransport: productTransport,
+                removalTransport: productTransport
             ))
         } catch {
             // Do not leak a filesystem location, architecture detail, network

@@ -34,17 +34,31 @@ public struct FileManagedInstallerReleasedRouteStatePublisher:
 
     private let rootDirectory: URL
     private let expectedOwner: uid_t
+    private let currentInventory: (@Sendable () -> ManagedDeploymentInventory?)?
 
     public init() {
+        let producer = ManagedInstallerManagedDeploymentInventoryProducer(
+            registry: FileManagedInstallerManagedDeploymentRegistryReader(),
+            candidate: FileManagedInstallerManagedDeploymentCreateCandidateStore()
+        )
         self.init(
             rootDirectory: FileManagedInstallerReleasedRouteXPCService.productionRoot,
-            expectedOwner: 0
+            expectedOwner: 0,
+            currentInventory: {
+                guard case .success(let inventory) = producer.produce() else { return nil }
+                return inventory
+            }
         )
     }
 
-    init(rootDirectory: URL, expectedOwner: uid_t) {
+    init(
+        rootDirectory: URL,
+        expectedOwner: uid_t,
+        currentInventory: (@Sendable () -> ManagedDeploymentInventory?)? = nil
+    ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
+        self.currentInventory = currentInventory
     }
 
     public func publishReleasedRouteState(
@@ -60,6 +74,10 @@ public struct FileManagedInstallerReleasedRouteStatePublisher:
                 inventoryEvidenceReference: snapshot.inventory.evidenceReference
             )
             guard request.matches(snapshot) else {
+                throw ManagedInstallerReleasedRouteStatePublicationFailure.invalidState
+            }
+            if let currentInventory,
+               currentInventory() != snapshot.inventory {
                 throw ManagedInstallerReleasedRouteStatePublicationFailure.invalidState
             }
             let requestData = request.canonicalJSONData()
@@ -81,6 +99,10 @@ public struct FileManagedInstallerReleasedRouteStatePublisher:
             defer {
                 _ = flock(lock, LOCK_UN)
                 Darwin.close(lock)
+            }
+            if let currentInventory,
+               currentInventory() != snapshot.inventory {
+                throw ManagedInstallerReleasedRouteStatePublicationFailure.invalidState
             }
             try validateExisting(
                 named: routeFileName,

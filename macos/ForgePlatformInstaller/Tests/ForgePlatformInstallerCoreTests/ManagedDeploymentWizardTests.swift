@@ -93,6 +93,46 @@ final class ManagedDeploymentWizardTests: XCTestCase {
         }
     }
 
+    func testInventoryRejectsCrossDeploymentProductInstanceReuse() throws {
+        let create = try ManagedDeploymentTarget(id: "new", exists: false)
+        let first = try ManagedDeploymentTarget(
+            id: "first", exists: true,
+            forgeInstanceID: "forge-one", engineeringPlatformInstanceID: "ep-one"
+        )
+        let reusedForge = try ManagedDeploymentTarget(
+            id: "second", exists: true,
+            forgeInstanceID: "forge-one", engineeringPlatformInstanceID: "ep-two"
+        )
+        XCTAssertThrowsError(try ManagedDeploymentInventory(
+            existing: [first, reusedForge], createCandidate: create,
+            evidenceReference: "inventory:fixture"
+        )) { error in
+            XCTAssertEqual(error as? ManagedDeploymentInventoryError,
+                           .duplicateForgeInstanceIdentity)
+        }
+
+        let reusedEP = try ManagedDeploymentTarget(
+            id: "second", exists: true,
+            forgeInstanceID: "forge-two", engineeringPlatformInstanceID: "ep-one"
+        )
+        XCTAssertThrowsError(try ManagedDeploymentInventory(
+            existing: [first, reusedEP], createCandidate: create,
+            evidenceReference: "inventory:fixture"
+        )) { error in
+            XCTAssertEqual(error as? ManagedDeploymentInventoryError,
+                           .duplicateEngineeringPlatformInstanceIdentity)
+        }
+
+        let isolated = try ManagedDeploymentTarget(
+            id: "second", exists: true,
+            forgeInstanceID: "forge-two", engineeringPlatformInstanceID: "ep-two"
+        )
+        let inventory = try ManagedDeploymentInventory(
+            existing: [isolated, first], createCandidate: create,
+            evidenceReference: "inventory:fixture"
+        )
+        XCTAssertEqual(inventory.existing.map(\.id), ["first", "second"])
+    }
 
     func testTerminalCompositionProvenanceIsOptionalForLegacyButExactWhenPresent() throws {
         let legacy = try ManagedDeploymentTarget(

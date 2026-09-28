@@ -16,7 +16,9 @@ from types import MappingProxyType
 from typing import Mapping, Protocol
 
 from .component_operations import ComponentOperationRequest, ProductOperationAdapter
+from .ep_consumer_revocation import EPConsumerRevocationAdapter
 from .managed_deployments import (
+    MANAGED_DEPLOYMENT_SCHEMA_V1,
     ManagedComponentBinding,
     ManagedDeployment,
     ManagedDeploymentPlanner,
@@ -26,6 +28,7 @@ from .managed_install_flow import (
     FORGE_COMPONENT,
     ForgeEPPairingExecutor,
     ManagedForgeEPInstallationCoordinator,
+    ManagedSingleProductInstallationCoordinator,
 )
 from .managed_product_operation_admission import (
     AdmittedNativeProductOperation,
@@ -59,27 +62,50 @@ class ManagedProductOperationDispatchError(RuntimeError):
 
 @dataclass(frozen=True)
 class ResolvedManagedProductRoute:
-    forge_instance_id: str
-    engineering_platform_instance_id: str
+    forge_instance_id: str | None
+    engineering_platform_instance_id: str | None
     adapters: Mapping[str, ProductOperationAdapter]
-    pairing_executor: ForgeEPPairingExecutor
+    pairing_executor: ForgeEPPairingExecutor | None
+    ep_consumer_revoker: EPConsumerRevocationAdapter | None = None
 
     def __post_init__(self) -> None:
         adapters = MappingProxyType(dict(self.adapters))
         object.__setattr__(self, "adapters", adapters)
         # ManagedComponentBinding owns the common safe opaque-ID grammar.
-        ManagedComponentBinding(FORGE_COMPONENT, self.forge_instance_id, "receipt:route")
-        ManagedComponentBinding(
-            EP_COMPONENT, self.engineering_platform_instance_id, "receipt:route"
-        )
-        if self.forge_instance_id == self.engineering_platform_instance_id:
+        identities = {
+            component: instance for component, instance in (
+                (FORGE_COMPONENT, self.forge_instance_id),
+                (EP_COMPONENT, self.engineering_platform_instance_id),
+            ) if instance is not None
+        }
+        if not identities or set(adapters) != set(identities):
+            raise ValueError("resolved product route has inconsistent component targets")
+        for component, instance in identities.items():
+            ManagedComponentBinding(component, instance, "receipt:route")
+        if len(set(identities.values())) != len(identities):
             raise ValueError("Forge and EP routes require distinct product instance identities")
-        if set(adapters) != set(_COMPONENTS):
-            raise ValueError("resolved product route requires exact Forge and EP adapters")
-        if any(not _is_adapter(adapters[component]) for component in _COMPONENTS):
+        if any(not _is_adapter(adapters[component]) for component in identities):
             raise ValueError("resolved product route contains an invalid adapter")
-        if not _is_pairer(self.pairing_executor):
-            raise ValueError("resolved product route requires a pairing executor")
+        if len(identities) == 2:
+            if not _is_pairer(self.pairing_executor):
+                raise ValueError("paired product route requires a pairing executor")
+        elif self.pairing_executor is not None:
+            raise ValueError("single-component route cannot carry pairing authority")
+        if self.ep_consumer_revoker is not None:
+            if len(identities) != 2:
+                raise ValueError("single-component route cannot carry EP consumer revocation")
+            revoker = self.ep_consumer_revoker
+            binding = getattr(self.pairing_executor, "binding", None)
+            if (
+                not isinstance(revoker, EPConsumerRevocationAdapter)
+                or revoker.provisioner is not adapters[EP_COMPONENT]
+                or revoker.provisioner.target.instance_id != self.engineering_platform_instance_id
+                or binding is None
+                or revoker.scope.consumer_id != binding.consumer_id
+                or revoker.scope.project_id != binding.project_id
+                or revoker.expected_artifact.digest not in revoker.provisioner.staged_artifacts
+            ):
+                raise ValueError("resolved EP consumer revocation authority is inconsistent")
 
 
 class ManagedProductRouteResolver(Protocol):
@@ -111,8 +137,11 @@ class PinnedManagedProductRouteResolver:
             if not isinstance(route, ResolvedManagedProductRoute):
                 raise TypeError("helper-owned product route is invalid")
             claims = {
-                (FORGE_COMPONENT, route.forge_instance_id),
-                (EP_COMPONENT, route.engineering_platform_instance_id),
+                (component, instance)
+                for component, instance in (
+                    (FORGE_COMPONENT, route.forge_instance_id),
+                    (EP_COMPONENT, route.engineering_platform_instance_id),
+                ) if instance is not None
             }
             if claimed_instances.intersection(claims):
                 raise ValueError("helper-owned product routes reuse a product instance")
@@ -129,16 +158,27 @@ class PinnedManagedProductRouteResolver:
             raise ManagedProductOperationDispatchError(
                 "helper-owned product route is unavailable"
             )
+        if (
+            {component.identity for component in admitted.manifest.components}
+                != set(route.adapters)
+            or {component.identity for component in admitted.request.components}
+                != set(route.adapters)
+        ):
+            raise ManagedProductOperationDispatchError(
+                "helper-owned product route conflicts with reviewed component topology"
+            )
         current = admitted.current_deployment
         if current is not None:
             by_component = current.by_component
-            forge = by_component.get(FORGE_COMPONENT)
-            ep = by_component.get(EP_COMPONENT)
-            if (
-                forge is None
-                or ep is None
-                or forge.instance_id != route.forge_instance_id
-                or ep.instance_id != route.engineering_platform_instance_id
+            expected = {
+                component: instance for component, instance in (
+                    (FORGE_COMPONENT, route.forge_instance_id),
+                    (EP_COMPONENT, route.engineering_platform_instance_id),
+                ) if instance is not None
+            }
+            if set(by_component) != set(expected) or any(
+                by_component[component].instance_id != instance
+                for component, instance in expected.items()
             ):
                 raise ManagedProductOperationDispatchError(
                     "helper-owned product route conflicts with existing topology"
@@ -152,8 +192,9 @@ class NativeProductOperationDispatchReceipt:
     stable_plan_fingerprint: str
     operation_id: str
     product_receipt_references: tuple[str, ...]
-    pairing_receipt_reference: str
+    pairing_receipt_reference: str | None
     readiness_receipt_references: tuple[str, ...]
+    completed_components: tuple[str, ...] = _COMPONENTS
 
     def canonical_json_bytes(self) -> bytes:
         completions = [
@@ -163,7 +204,7 @@ class NativeProductOperationDispatchReceipt:
                 "dashboard_url": None,
                 "service_scope": None,
             }
-            for component in _COMPONENTS
+            for component in self.completed_components
         ]
         return json.dumps(
             {
@@ -197,6 +238,12 @@ class ManagedProductOperationDispatcher:
         if not callable(getattr(resolver, "resolve", None)):
             raise TypeError("helper-owned product route resolver is required")
         self.coordinator = coordinator
+        self.single_coordinator = ManagedSingleProductInstallationCoordinator(
+            operations_root=coordinator.operations_root,
+            component_operations_root=coordinator.component_operations_root,
+            registry=coordinator.registry,
+            currency_guard=coordinator.currency_guard,
+        )
         self.resolver = resolver
 
     def dispatch(
@@ -224,6 +271,7 @@ class ManagedProductOperationDispatcher:
             )
 
         operations = {component.identity: component for component in request.components}
+        components = tuple(sorted(route.adapters))
         manifest_components = {
             component.identity: component for component in admitted.manifest.components
         }
@@ -231,24 +279,24 @@ class ManagedProductOperationDispatcher:
             request.deployment_id,
             1 if current is None else current.revision,
             None if current is None else current.label,
-            (
-                ManagedComponentBinding(
-                    FORGE_COMPONENT, route.forge_instance_id, "receipt:planned-forge"
-                ),
-                ManagedComponentBinding(
-                    EP_COMPONENT,
-                    route.engineering_platform_instance_id,
-                    "receipt:planned-ep",
-                ),
-            ),
+            tuple(ManagedComponentBinding(
+                component,
+                route.forge_instance_id if component == FORGE_COMPONENT
+                    else route.engineering_platform_instance_id,
+                f"receipt:planned-{component}",
+            ) for component in components),
             None if current is None else current.peer_binding,
+            schema=current.schema if current is not None else MANAGED_DEPLOYMENT_SCHEMA_V1,
+            composition_binding=(
+                None if current is None else current.composition_binding
+            ),
         )
         plan = ManagedDeploymentPlanner.plan(
             current,
             desired,
             product_actions={
                 component: _PRODUCT_ACTIONS[operations[component].change]
-                for component in _COMPONENTS
+                for component in components
             },
         )
         readbacks = {
@@ -260,7 +308,7 @@ class ManagedProductOperationDispatcher:
                 route,
                 readback=True,
             )
-            for component in _COMPONENTS
+            for component in components
         }
         mutations = {
             component: _component_request(
@@ -271,27 +319,33 @@ class ManagedProductOperationDispatcher:
                 route,
                 readback=False,
             )
-            for component in _COMPONENTS
+            for component in components
             if operations[component].change != "retain"
         }
-        result = self.coordinator.execute(
-            request.operation_id,
-            plan,
-            mutation_requests=mutations,
-            readback_requests=readbacks,
-            adapters=route.adapters,
-            pairing_executor=route.pairing_executor,
-            composition_id=admitted.manifest.composition_id,
-            composition_manifest_digest=admitted.manifest.manifest_digest,
-        )
+        if len(components) == 2:
+            result = self.coordinator.execute(
+                request.operation_id, plan,
+                mutation_requests=mutations, readback_requests=readbacks,
+                adapters=route.adapters, pairing_executor=route.pairing_executor,
+                composition_id=admitted.manifest.composition_id,
+                composition_manifest_digest=admitted.manifest.manifest_digest,
+            )
+        else:
+            result = self.single_coordinator.execute(
+                request.operation_id, plan,
+                mutation_requests=mutations, readback_requests=readbacks,
+                adapters=route.adapters,
+                composition_id=admitted.manifest.composition_id,
+                composition_manifest_digest=admitted.manifest.manifest_digest,
+            )
         if result.state != "COMPLETE":
             raise ManagedProductOperationDispatchError(
                 f"product saga did not complete: {result.state}"
             )
         if (
-            len(result.product_receipt_references) != 2
-            or result.pairing_receipt_reference is None
-            or len(result.readiness_receipt_references) != 2
+            len(result.product_receipt_references) != len(components)
+            or len(result.readiness_receipt_references) != len(components)
+            or (result.pairing_receipt_reference is None) != (len(components) == 1)
         ):
             raise ManagedProductOperationDispatchError(
                 "terminal product saga evidence is incomplete"
@@ -303,6 +357,7 @@ class ManagedProductOperationDispatcher:
             tuple(sorted(result.product_receipt_references)),
             result.pairing_receipt_reference,
             tuple(sorted(result.readiness_receipt_references)),
+            components,
         )
 
 
@@ -331,7 +386,10 @@ def _component_request(
         artifact,
         instance,
         role,
-        {},
+        (
+            {"reviewed_update_assessment_reference": operation.update_assessment_reference}
+            if operation.change == "update" else {}
+        ),
     )
 
 

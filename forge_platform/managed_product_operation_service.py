@@ -11,6 +11,8 @@ accepted from the native caller.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
+import json
 from types import MappingProxyType
 from typing import Iterable, Mapping, Protocol
 
@@ -25,10 +27,21 @@ from .managed_product_operation_dispatch import (
     PinnedManagedProductRouteResolver,
     ResolvedManagedProductRoute,
 )
+from .managed_product_removal_admission import (
+    NativeProductRemovalRequest, decode_native_product_removal_request,
+)
+from .managed_product_removal_proposal import (
+    NativeProductRemovalReviewIntent,
+    decode_native_product_removal_review_intent,
+    prepare_native_product_removal_review,
+)
+from .managed_product_removal_dispatch import ManagedProductRemovalDispatcher
+from .managed_installer import ManagedDeploymentExecutionRecord
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
 from .released_product_routes import (
     ReleasedManagedProductRouteBuilder,
     ReleasedManagedProductRouteConfiguration,
+    ReleasedManagedSingleProductRouteConfiguration,
 )
 from .universal_installer import (
     CompositionManifest,
@@ -38,6 +51,8 @@ from .universal_installer import (
 
 
 MAXIMUM_NATIVE_PRODUCT_OPERATION_RECEIPT_BYTES = 128 * 1_024
+MAXIMUM_NATIVE_PRODUCT_REMOVAL_RECEIPT_BYTES = 32 * 1_024
+NATIVE_PRODUCT_REMOVAL_RECEIPT_SCHEMA = "forge-platform.native-product-removal-receipt/v1"
 
 
 class ManagedProductOperationServiceError(RuntimeError):
@@ -149,6 +164,48 @@ class PinnedManagedProductOperationAuthorityResolver:
             installed,
         )
 
+    def resolve_installed_removal(
+        self, request: NativeProductRemovalRequest
+    ) -> CompositionManifest:
+        """Select only an already pinned installed composition for removal."""
+
+        if not isinstance(request, NativeProductRemovalRequest):
+            raise TypeError("decoded native removal request is required")
+        if request.installer_release != self.current_installer_release:
+            raise ManagedProductOperationServiceError(
+                "installer release authority changed for removal"
+            )
+        installed = self._installed_manifests.get((
+            request.installed_composition_identity,
+            request.installed_manifest_sha256,
+        ))
+        if installed is None:
+            raise ManagedProductOperationServiceError(
+                "installed removal composition authority is unavailable"
+            )
+        return installed
+
+    def resolve_installed_review(
+        self, intent: NativeProductRemovalReviewIntent
+    ) -> CompositionManifest:
+        """Select one pinned installed composition for read-only review."""
+
+        if not isinstance(intent, NativeProductRemovalReviewIntent):
+            raise TypeError("decoded native removal review intent is required")
+        if intent.installer_release != self.current_installer_release:
+            raise ManagedProductOperationServiceError(
+                "installer release authority changed for removal review"
+            )
+        installed = self._installed_manifests.get((
+            intent.installed_composition_identity,
+            intent.installed_manifest_sha256,
+        ))
+        if installed is None:
+            raise ManagedProductOperationServiceError(
+                "installed removal review composition authority is unavailable"
+            )
+        return installed
+
 
 class ReleasedManagedProductOperationAuthorityLoader:
     """Load one helper snapshot only from verified released selections.
@@ -247,6 +304,7 @@ class ManagedProductOperationHelperService:
         *,
         authority_resolver: ManagedProductOperationAuthorityResolving,
         dispatcher: ManagedProductOperationDispatcher,
+        removal_dispatcher: ManagedProductRemovalDispatcher | None = None,
     ) -> None:
         if not callable(getattr(authority_resolver, "resolve", None)):
             raise TypeError("helper-owned authority resolver is required")
@@ -254,6 +312,7 @@ class ManagedProductOperationHelperService:
             raise TypeError("managed product operation dispatcher is required")
         self.authority_resolver = authority_resolver
         self.dispatcher = dispatcher
+        self.removal_dispatcher = removal_dispatcher
 
     def execute(self, canonical_request: bytes) -> bytes:
         """Return one bounded canonical receipt or raise a generic failure."""
@@ -282,6 +341,120 @@ class ManagedProductOperationHelperService:
                 "native product operation was rejected"
             ) from error
 
+    def execute_removal(self, canonical_request: bytes) -> bytes:
+        """Admit and dispatch one exact removal, returning no product secret text."""
+
+        try:
+            if (
+                not isinstance(self.authority_resolver, PinnedManagedProductOperationAuthorityResolver)
+                or not isinstance(self.removal_dispatcher, ManagedProductRemovalDispatcher)
+            ):
+                raise TypeError("released removal authority is unavailable")
+            request = decode_native_product_removal_request(canonical_request)
+            manifest = self.authority_resolver.resolve_installed_removal(request)
+            admitted = self.removal_dispatcher.admit_or_restore(
+                request, installed_manifest=manifest,
+            )
+            record = self.removal_dispatcher.dispatch(admitted)
+            if (
+                not isinstance(record, ManagedDeploymentExecutionRecord)
+                or record.operation_id != request.operation_id
+                or record.deployment_id != request.deployment_id
+                or record.expected_registry_revision != request.reviewed_revision
+                or record.plan_fingerprint != "sha256:" + request.reviewed_plan_sha256
+                or record.state not in {"COMPLETE", "RECOVERY_PENDING"}
+            ):
+                raise ValueError("removal product receipt is inconsistent")
+            diffs = {diff.component: diff for diff in admitted.plan.component_diffs}
+            components = {item.component: item for item in record.components}
+            if len(record.components) != len(diffs) or set(components) != set(diffs) or any(
+                item.instance_id != diffs[component].instance_id
+                or item.action != diffs[component].action
+                or item.receipt_reference is not None and (
+                    not isinstance(item.receipt_reference, str)
+                    or len(item.receipt_reference.encode("utf-8")) > 4096
+                )
+                for component, item in components.items()
+            ):
+                raise ValueError("removal component receipt changed")
+            current = self.removal_dispatcher.coordinator.registry.load(request.deployment_id)
+            if record.state == "COMPLETE":
+                if request.action == "REMOVE_DEPLOYMENT":
+                    if current is not None or record.registry_revision != 0:
+                        raise ValueError("removed deployment remains registered")
+                elif (
+                    current is None or admitted.plan.desired is None
+                    or current.revision != request.reviewed_revision + 1
+                    or record.registry_revision != current.revision
+                    or current.by_component != admitted.plan.desired.by_component
+                    or current.peer_binding is not None
+                    or current.composition_binding
+                    != admitted.plan.desired.composition_binding
+                ):
+                    raise ValueError("retained EP deployment changed")
+                if any(
+                    item.state != ("UNCHANGED" if item.action == "NO_CHANGE" else "COMPLETE")
+                    for item in components.values()
+                ):
+                    raise ValueError("terminal removal component is incomplete")
+            elif current != admitted.reviewed_current or record.registry_revision is not None:
+                raise ValueError("pending removal changed the registry")
+            response = {
+                "schema": NATIVE_PRODUCT_REMOVAL_RECEIPT_SCHEMA,
+                "request_fingerprint": request.request_fingerprint,
+                "operation_id": request.operation_id,
+                "deployment_id": request.deployment_id,
+                "action": request.action,
+                "plan_fingerprint": record.plan_fingerprint,
+                "state": record.state,
+                "registry_revision": record.registry_revision,
+                "components": [
+                    {
+                        "component": item.component,
+                        "instance_id": item.instance_id,
+                        "action": item.action,
+                        "state": item.state,
+                        "product_receipt_digest": (
+                            None if item.receipt_reference is None else
+                            "sha256:" + sha256(item.receipt_reference.encode("utf-8")).hexdigest()
+                        ),
+                    }
+                    for _component, item in sorted(components.items())
+                ],
+            }
+            raw = json.dumps(
+                response, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=True, allow_nan=False,
+            ).encode("utf-8")
+            if not raw or len(raw) > MAXIMUM_NATIVE_PRODUCT_REMOVAL_RECEIPT_BYTES:
+                raise ValueError("removal receipt exceeded its bound")
+            return raw
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "native product removal was rejected"
+            ) from error
+
+    def prepare_removal_review(self, canonical_intent: bytes) -> bytes:
+        """Produce one read-only proposal from the dispatcher's exact registry."""
+
+        try:
+            if (
+                not isinstance(self.authority_resolver, PinnedManagedProductOperationAuthorityResolver)
+                or not isinstance(self.removal_dispatcher, ManagedProductRemovalDispatcher)
+            ):
+                raise TypeError("released removal review authority is unavailable")
+            intent = decode_native_product_removal_review_intent(canonical_intent)
+            manifest = self.authority_resolver.resolve_installed_review(intent)
+            return prepare_native_product_removal_review(
+                canonical_intent, installed_manifest=manifest,
+                registry=self.removal_dispatcher.coordinator.registry,
+                current_installer_release=self.authority_resolver.current_installer_release,
+            )
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "native product removal review was rejected"
+            ) from error
+
 
 class ManagedProductOperationHelperBuilder:
     """Compose the closed helper service from already typed helper authority.
@@ -299,7 +472,10 @@ class ManagedProductOperationHelperBuilder:
         candidate_selections: Iterable[VerifiedCompositionSelection],
         installed_selections: Iterable[VerifiedCompositionSelection] = (),
         coordinator: ManagedForgeEPInstallationCoordinator,
-        route_configurations: Iterable[ReleasedManagedProductRouteConfiguration],
+        route_configurations: Iterable[
+            ReleasedManagedProductRouteConfiguration
+            | ReleasedManagedSingleProductRouteConfiguration
+        ],
     ) -> ManagedProductOperationHelperService:
         """Construct concrete adapters and the closed helper service together."""
 
@@ -325,7 +501,10 @@ class ManagedProductOperationHelperBuilder:
         candidate_manifests: Iterable[CompositionManifest],
         installed_manifests: Iterable[CompositionManifest] = (),
         coordinator: ManagedForgeEPInstallationCoordinator,
-        route_configurations: Iterable[ReleasedManagedProductRouteConfiguration],
+        route_configurations: Iterable[
+            ReleasedManagedProductRouteConfiguration
+            | ReleasedManagedSingleProductRouteConfiguration
+        ],
     ) -> ManagedProductOperationHelperService:
         """Compose a worker service from one immutable helper-owned snapshot.
 
@@ -390,7 +569,13 @@ class ManagedProductOperationHelperBuilder:
             coordinator=coordinator,
             resolver=route_resolver,
         )
+        removal_dispatcher = ManagedProductRemovalDispatcher(
+            coordinator=coordinator,
+            routes=routes,
+            current_installer_release=authority_resolver.current_installer_release,
+        )
         return ManagedProductOperationHelperService(
             authority_resolver=authority_resolver,
             dispatcher=dispatcher,
+            removal_dispatcher=removal_dispatcher,
         )

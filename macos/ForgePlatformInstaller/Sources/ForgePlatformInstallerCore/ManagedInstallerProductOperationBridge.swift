@@ -14,6 +14,7 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
     public let installedVersion: String?
     public let candidateVersion: String
     public let artifactSHA256: String
+    public let updateAssessmentReference: String?
 
     init(component: ComponentDiff) throws {
         try self.init(
@@ -21,7 +22,8 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
             change: component.change,
             installedVersion: component.installedVersion,
             candidateVersion: component.candidateVersion,
-            artifactSHA256: component.artifactDigest
+            artifactSHA256: component.artifactDigest,
+            updateAssessmentReference: component.updateAssessmentReference
         )
     }
 
@@ -30,7 +32,8 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
         change: ComponentChange,
         installedVersion: String?,
         candidateVersion: String?,
-        artifactSHA256: String?
+        artifactSHA256: String?,
+        updateAssessmentReference: String? = nil
     ) throws {
         guard ManagedPythonRuntimeStagingValidation.isOperationID(componentID),
               change != .blocked,
@@ -44,11 +47,25 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
               CompositionCatalogValidation.isTaggedSHA256(artifactSHA256) else {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
         }
+        if change == .update {
+            let prefix = componentID == "forge-runtime"
+                ? "forge-update-assess:" : "ep-update-assess:"
+            guard let updateAssessmentReference,
+                  updateAssessmentReference.hasPrefix(prefix),
+                  CompositionCatalogValidation.isTaggedSHA256(
+                      String(updateAssessmentReference.dropFirst(prefix.count))
+                  ) else {
+                throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
+            }
+        } else if updateAssessmentReference != nil {
+            throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
+        }
         self.componentID = componentID
         self.change = change
         self.installedVersion = installedVersion
         self.candidateVersion = candidateVersion
         self.artifactSHA256 = artifactSHA256
+        self.updateAssessmentReference = updateAssessmentReference
     }
 
     private static func isBoundedVersion(_ value: String) -> Bool {
@@ -60,13 +77,13 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
     }
 }
 
-/// Canonical, non-secret bridge request for the product-owned Forge+EP saga.
+/// Canonical, non-secret bridge request for the reviewed product saga.
 /// The helper resolves every path, executable and command from its own sealed
 /// configuration and durable journal. The caller can supply only identities,
 /// reviewed actions and evidence references already bound by one reconstructed
 /// terminal `MANAGED_TOOLS` receipt.
 public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
-    public static let schema = "forge-platform.native-product-operation-request/v2"
+    public static let schema = "forge-platform.native-product-operation-request/v3"
     static let maximumBytes = 128 * 1_024
 
     public let stablePlanFingerprint: String
@@ -167,10 +184,16 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         let orderedComponents = components.sorted { $0.componentID < $1.componentID }
         let orderedProviders = providerTargetIDs.sorted()
         let orderedEvidence = runtimeEvidenceReferences.sorted()
-        let requiredComponents = [
+        let supportedComponents = Set([
             ProviderOwnerComponent.engineeringPlatformServer.rawValue,
             ProviderOwnerComponent.forgeRuntime.rawValue,
-        ].sorted()
+        ])
+        let claimedComponents = Set([
+            forgeInstanceID == nil ? nil : ProviderOwnerComponent.forgeRuntime.rawValue,
+            engineeringPlatformInstanceID == nil
+                ? nil : ProviderOwnerComponent.engineeringPlatformServer.rawValue,
+        ].compactMap { $0 })
+        let requestedComponents = Set(orderedComponents.map(\.componentID))
         guard ManagedPythonRuntimePostToolQualification.isFingerprint(
                   stablePlanFingerprint
               ),
@@ -209,8 +232,10 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
               GitHubInstallerReleaseDescriptorValidation.isKeyID(
                   installerRelease.signingKeyID
               ),
-              orderedComponents.map(\.componentID) == requiredComponents,
+              !orderedComponents.isEmpty,
+              requestedComponents.isSubset(of: supportedComponents),
               Set(orderedComponents.map(\.componentID)).count == orderedComponents.count,
+              !deploymentExists || claimedComponents == requestedComponents,
               Set(orderedProviders).count == orderedProviders.count,
               orderedProviders.allSatisfy({ ProviderTargetID(rawValue: $0) != nil }),
               !orderedEvidence.isEmpty,
@@ -480,6 +505,9 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             } ?? .null,
             "candidate_version": .string(component.candidateVersion),
             "artifact_sha256": .string(component.artifactSHA256),
+            "update_assessment_reference": component.updateAssessmentReference.map {
+                .string($0)
+            } ?? .null,
         ])
     }
 
@@ -489,14 +517,15 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         guard let fields = value.objectValue,
               Set(fields.keys) == Set([
                   "identity", "change", "installed_version", "candidate_version",
-                  "artifact_sha256",
+                  "artifact_sha256", "update_assessment_reference",
               ]),
               let identity = fields["identity"]?.stringValue,
               let changeValue = fields["change"]?.stringValue,
               let change = ComponentChange(rawValue: changeValue),
               let installedVersionValue = fields["installed_version"],
               let candidateVersion = fields["candidate_version"]?.stringValue,
-              let artifactSHA256 = fields["artifact_sha256"]?.stringValue else {
+              let artifactSHA256 = fields["artifact_sha256"]?.stringValue,
+              let assessmentValue = fields["update_assessment_reference"] else {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
         }
         return try ManagedInstallerProductComponentOperation(
@@ -504,7 +533,8 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             change: change,
             installedVersion: try optionalString(installedVersionValue),
             candidateVersion: candidateVersion,
-            artifactSHA256: artifactSHA256
+            artifactSHA256: artifactSHA256,
+            updateAssessmentReference: try optionalString(assessmentValue)
         )
     }
 
@@ -590,14 +620,17 @@ public struct ManagedInstallerProductOperationReceipt: Equatable, Sendable {
         let orderedCompletions = completions.sorted { $0.componentID < $1.componentID }
         let expected = request.components.sorted { $0.componentID < $1.componentID }
         guard !products.isEmpty,
+              products.count <= expected.count,
               Set(products).count == products.count,
               products.allSatisfy(ManagedPythonRuntimeInstalledReadback.isEvidenceReference),
-              readiness.count == 2,
+              readiness.count == expected.count,
               Set(readiness).count == readiness.count,
               readiness.allSatisfy(ManagedPythonRuntimeInstalledReadback.isEvidenceReference),
-              pairingReceiptReference.map(
-                  ManagedPythonRuntimeInstalledReadback.isEvidenceReference
-              ) == true,
+              (expected.count == 2
+                ? pairingReceiptReference.map(
+                    ManagedPythonRuntimeInstalledReadback.isEvidenceReference
+                  ) == true
+                : pairingReceiptReference == nil),
               expected.map(\.componentID) == orderedCompletions.map(\.componentID),
               zip(expected, orderedCompletions).allSatisfy({ operation, completion in
                   operation.change == .remove
