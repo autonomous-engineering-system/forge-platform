@@ -133,7 +133,9 @@ class ManagedPreservedProductAdapterTests(unittest.TestCase):
                 installation_id="install-a", artifact=artifact, runner=runner,
             )
             terminal = adapter.invoke(review, registry=registry, installed_manifest=manifest)
-            self.assertEqual(terminal.lifecycle_state, "UNINSTALLED_DATA_PRESERVED")
+            self.assertEqual(terminal.terminal.lifecycle_state, "UNINSTALLED_DATA_PRESERVED")
+            self.assertEqual(terminal.receipt, receipt)
+            self.assertEqual(terminal.status, status)
             self.assertEqual(runner.calls[0][0:5], (
                 str(root / "forge-lifecycle"), "--data-root", str(target.data_root),
                 "server", "preserve",
@@ -159,7 +161,7 @@ class ManagedPreservedProductAdapterTests(unittest.TestCase):
             )
             self.assertEqual(adapter.invoke(
                 restore, registry=registry, installed_manifest=manifest,
-            ).lifecycle_state, "RESTORE_VALIDATED")
+            ).terminal.lifecycle_state, "RESTORE_VALIDATED")
             self.assertIn("--preserve-operation-id", runner.calls[0])
             self.assertEqual(runner.calls[0][-1], "preserve-a")
 
@@ -182,7 +184,7 @@ class ManagedPreservedProductAdapterTests(unittest.TestCase):
             )
             self.assertEqual(adapter.invoke(
                 review, registry=registry, installed_manifest=manifest,
-            ).lifecycle_state, "UNINSTALLED_DATA_PRESERVED")
+            ).terminal.lifecycle_state, "UNINSTALLED_DATA_PRESERVED")
             self.assertEqual(runner.calls[0][0:2], (str(root / "ep-provisioner"), "preserve"))
             self.assertEqual(runner.calls[0][-2:], ("--confirm-instance-id", "ep-a"))
             self.assertEqual(runner.calls[1][1], "lifecycle-status")
@@ -217,7 +219,7 @@ class ManagedPreservedProductAdapterTests(unittest.TestCase):
             )
             self.assertEqual(forge.invoke(
                 forge_review, registry=registry, installed_manifest=manifest,
-            ).lifecycle_state, "PURGED")
+            ).terminal.lifecycle_state, "PURGED")
             self.assertEqual(runner.calls[0][4], "purge")
 
             ep_review = prepare_preserved_lifecycle_review(
@@ -235,7 +237,7 @@ class ManagedPreservedProductAdapterTests(unittest.TestCase):
             )
             self.assertEqual(ep.invoke(
                 ep_review, registry=registry, installed_manifest=manifest,
-            ).lifecycle_state, "PURGED")
+            ).terminal.lifecycle_state, "PURGED")
             self.assertEqual(runner.calls[0][1], "purge")
 
     def test_stale_review_wrong_target_and_bad_receipt_fail_before_or_after_cli(self):
@@ -329,7 +331,7 @@ class ManagedPreservedProductAdapterTests(unittest.TestCase):
                 terminal = adapter.invoke(
                     review, registry=registry, installed_manifest=manifest,
                 )
-            self.assertEqual(terminal.lifecycle_state, "RESTORED_REQUIRES_PROVIDER_REVERIFICATION")
+            self.assertEqual(terminal.terminal.lifecycle_state, "RESTORED_REQUIRES_PROVIDER_REVERIFICATION")
             self.assertIn("--preserve-operation-id", runner.calls[0])
             self.assertEqual(runner.calls[0][runner.calls[0].index("--preserve-operation-id") + 1], "preserve-ep")
 
