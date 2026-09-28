@@ -160,6 +160,7 @@ final class ManagedInstallerManagedDeploymentRegistryRecordTests: XCTestCase {
         let decoded = try codec.decode(wire(partly), expectedDeploymentID: "deployment-one")
         XCTAssertNil(decoded.target.forgeInstanceID)
         XCTAssertEqual(decoded.target.preservedForgeInstanceID, "forge-one")
+        XCTAssertEqual(decoded.canonicalJSONData(), wire(partly))
         XCTAssertEqual(decoded.target.engineeringPlatformInstanceID, "ep-one")
         XCTAssertEqual(decoded.preservedComponents["forge-runtime"]?.forgeInstallationID, "Install-A")
         XCTAssertEqual(decoded.preservedComponents["forge-runtime"]?.preserveOperationID, "preserve-forge")

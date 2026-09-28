@@ -23,7 +23,9 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
         let route = LifecycleInventoryRouteSpy(inventories: [
             inventory, inventory, try lifecycleInventory(preserved: true),
+            try lifecycleInventory(preserved: true),
         ])
+        let registry = LifecycleRegistryReadSpy(record: try lifecycleRegistryRecord())
         let review = LifecycleReviewTransportSpy(reply: proposal.canonicalJSONData())
         let execution = LifecycleExecutionTransportSpy(reply: receipt.canonicalJSONData())
         let coordinator = makeCoordinator(
@@ -32,7 +34,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             staging: StagingSpy(result: .success(try makeStagedAsset())),
             managedDeploymentRouteCoordinator: route,
             preservedLifecycleReviewTransport: review,
-            preservedLifecycleTransport: execution
+            preservedLifecycleTransport: execution,
+            preservedRegistryReadTransport: registry
         )
         let currency = await coordinator.recheckInstallerBeforeMutation(
             currentVersion: identity.version
@@ -45,7 +48,9 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         let executionCalls = await execution.calls()
         XCTAssertEqual(executionCalls, [request.canonicalJSONData()])
         let inventoryReads = await route.readCount()
-        XCTAssertEqual(inventoryReads, 3)
+        XCTAssertEqual(inventoryReads, 4)
+        let registryReads = await registry.calls()
+        XCTAssertEqual(registryReads, ["deployment-one"])
     }
 
     func testReleasedRuntimeRejectsPreserveReviewDriftBeforeMutation() async throws {
@@ -60,6 +65,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             intent: intent, proposal: proposal
         )
         let route = LifecycleInventoryRouteSpy(inventories: [inventory, inventory])
+        let registry = LifecycleRegistryReadSpy(record: try lifecycleRegistryRecord())
         let review = LifecycleReviewTransportSpy(reply: Data("{}".utf8))
         let execution = LifecycleExecutionTransportSpy(reply: Data("{}".utf8))
         let coordinator = makeCoordinator(
@@ -68,7 +74,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             staging: StagingSpy(result: .success(try makeStagedAsset())),
             managedDeploymentRouteCoordinator: route,
             preservedLifecycleReviewTransport: review,
-            preservedLifecycleTransport: execution
+            preservedLifecycleTransport: execution,
+            preservedRegistryReadTransport: registry
         )
         _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
         let result = await coordinator.executeReviewedPreservedLifecycle(session)
@@ -94,6 +101,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
         for inventories in [[post], [inventory, inventory, inventory]] {
             let route = LifecycleInventoryRouteSpy(inventories: inventories)
+            let registry = LifecycleRegistryReadSpy(record: try lifecycleRegistryRecord())
             let review = LifecycleReviewTransportSpy(reply: proposal.canonicalJSONData())
             let execution = LifecycleExecutionTransportSpy(reply: lifecycleReceipt(request))
             let coordinator = makeCoordinator(
@@ -102,7 +110,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
                 staging: StagingSpy(result: .success(try makeStagedAsset())),
                 managedDeploymentRouteCoordinator: route,
                 preservedLifecycleReviewTransport: review,
-                preservedLifecycleTransport: execution
+                preservedLifecycleTransport: execution,
+                preservedRegistryReadTransport: registry
             )
             _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
             let result = await coordinator.executeReviewedPreservedLifecycle(session)
@@ -112,6 +121,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         }
 
         let route = LifecycleInventoryRouteSpy(inventories: [inventory, inventory])
+        let registry = LifecycleRegistryReadSpy(record: try lifecycleRegistryRecord())
         let review = LifecycleReviewTransportSpy(reply: proposal.canonicalJSONData())
         let execution = LifecycleExecutionTransportSpy(reply: Data("{}".utf8))
         let coordinator = makeCoordinator(
@@ -120,11 +130,56 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             staging: StagingSpy(result: .success(try makeStagedAsset())),
             managedDeploymentRouteCoordinator: route,
             preservedLifecycleReviewTransport: review,
-            preservedLifecycleTransport: execution
+            preservedLifecycleTransport: execution,
+            preservedRegistryReadTransport: registry
         )
         _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
         let invalidReceipt = await coordinator.executeReviewedPreservedLifecycle(session)
         XCTAssertEqual(invalidReceipt, .failure(.rejected))
+    }
+
+    func testReleasedRuntimeRejectsMismatchedIndependentRegistryEvidence() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try lifecycleIntent(release: record.release)
+        let proposal = try lifecycleProposal(intent)
+        let inventory = try lifecycleInventory(preserved: false)
+        let post = try lifecycleInventory(preserved: true)
+        let session = ManagedInstallerPreservedLifecycleReviewSession(
+            inventory: inventory, target: inventory.existing[0],
+            inventoryEvidenceReference: inventory.evidenceReference,
+            intent: intent, proposal: proposal
+        )
+        let request = try ManagedInstallerPreservedLifecycleRequest(
+            intent: intent, proposal: proposal
+        )
+        for registryRecord in [
+            try lifecycleRegistryRecord(operationID: "preserve-other"),
+            try lifecycleRegistryRecord(receiptDigest:
+                "sha256:" + String(repeating: "e", count: 64)),
+            try lifecycleRegistryRecord(revision: 3),
+        ] {
+            let route = LifecycleInventoryRouteSpy(inventories: [inventory, inventory, post])
+            let registry = LifecycleRegistryReadSpy(record: registryRecord)
+            let coordinator = makeCoordinator(
+                feed: FeedSpy(result: .success(record)),
+                inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+                staging: StagingSpy(result: .success(try makeStagedAsset())),
+                managedDeploymentRouteCoordinator: route,
+                preservedLifecycleReviewTransport:
+                    LifecycleReviewTransportSpy(reply: proposal.canonicalJSONData()),
+                preservedLifecycleTransport:
+                    LifecycleExecutionTransportSpy(reply: lifecycleReceipt(request)),
+                preservedRegistryReadTransport: registry
+            )
+            _ = await coordinator.recheckInstallerBeforeMutation(
+                currentVersion: identity.version
+            )
+            let result = await coordinator.executeReviewedPreservedLifecycle(session)
+            XCTAssertEqual(result, .failure(.rejected))
+            let reads = await registry.calls()
+            XCTAssertEqual(reads, ["deployment-one"])
+        }
     }
 
     private func lifecycleIntent(
@@ -202,6 +257,20 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             "receipt_digest": .string("sha256:" + String(repeating: "d", count: 64)),
             "registry_revision": .integer("2"),
         ]))
+    }
+
+    private func lifecycleRegistryRecord(
+        operationID: String = "preserve-one",
+        receiptDigest: String = "sha256:" + String(repeating: "d", count: 64),
+        revision: UInt64 = 2
+    ) throws -> ManagedInstallerManagedDeploymentRegistryRecord {
+        try ManagedInstallerManagedDeploymentRegistryRecord.decode(
+            PreservedRegistryFixture.record(
+                operationID: operationID,
+                receiptDigest: receiptDigest,
+                revision: revision
+            ), expectedDeploymentID: "deployment-one"
+        )
     }
 
     func testReleasedRuntimeExecutesOnlyFreshlyReviewedExactRemoval() async throws {
@@ -1490,7 +1559,9 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         preservedLifecycleReviewTransport:
             (any ManagedInstallerPreservedLifecycleReviewTransporting)? = nil,
         preservedLifecycleTransport:
-            (any ManagedInstallerPreservedLifecycleTransporting)? = nil
+            (any ManagedInstallerPreservedLifecycleTransporting)? = nil,
+        preservedRegistryReadTransport:
+            (any ManagedInstallerPreservedRegistryReading)? = nil
     ) -> VerifiedInstallerSelfUpdateCoordinator {
         VerifiedInstallerSelfUpdateCoordinator(
             releaseFeed: feed,
@@ -1506,7 +1577,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             removalReviewTransport: removalReviewTransport,
             removalTransport: removalTransport,
             preservedLifecycleReviewTransport: preservedLifecycleReviewTransport,
-            preservedLifecycleTransport: preservedLifecycleTransport
+            preservedLifecycleTransport: preservedLifecycleTransport,
+            preservedRegistryReadTransport: preservedRegistryReadTransport
         )
     }
 
@@ -1724,6 +1796,19 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
     }
 }
 
+
+private actor LifecycleRegistryReadSpy: ManagedInstallerPreservedRegistryReading {
+    let record: ManagedInstallerManagedDeploymentRegistryRecord
+    private var requests: [String] = []
+    init(record: ManagedInstallerManagedDeploymentRegistryRecord) { self.record = record }
+    func loadManagedDeploymentRegistryRecord(
+        deploymentID: String
+    ) async throws -> ManagedInstallerManagedDeploymentRegistryRecord {
+        requests.append(deploymentID)
+        return record
+    }
+    func calls() -> [String] { requests }
+}
 
 private actor LifecycleInventoryRouteSpy: ManagedDeploymentRouteCoordinating {
     private var inventories: [ManagedDeploymentInventory]

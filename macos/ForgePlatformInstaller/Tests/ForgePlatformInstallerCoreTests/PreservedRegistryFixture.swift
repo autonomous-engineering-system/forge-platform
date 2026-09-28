@@ -1,0 +1,40 @@
+import Foundation
+@testable import ForgePlatformInstallerCore
+
+/// Synthetic canonical V3 record for native boundary tests only.
+enum PreservedRegistryFixture {
+    static func record(
+        deploymentID: String = "deployment-one",
+        forgeID: String = "forge-one",
+        operationID: String = "preserve-one",
+        receiptDigest: String = "sha256:" + String(repeating: "d", count: 64),
+        revision: UInt64 = 2
+    ) -> Data {
+        StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string("forge-platform.managed-deployment/v3"),
+            "deployment_id": .string(deploymentID),
+            "revision": .integer(String(revision)),
+            "label": .null,
+            "components": .array([]),
+            "peer_binding": .null,
+            "historical_peer_binding": .null,
+            "composition_binding": .object([
+                "composition_id": .string("forge-qualified"),
+                "manifest_digest": .string("sha256:" + String(repeating: "a", count: 64)),
+                "receipt_reference": .string("receipt:composition-one"),
+            ]),
+            "preserved_components": .array([.object([
+                "component": .string("forge-runtime"),
+                "instance_id": .string(forgeID),
+                "previous_receipt_reference": .string("receipt:forge-one"),
+                "preserve_operation_id": .string(operationID),
+                "preserve_receipt_digest": .string(receiptDigest),
+                "version": .string("2.7.36"),
+                "source_revision": .string("ed1e623ef3cedd8c4f720510e0052409b2d5ab1f"),
+                "artifact_digest": .string("sha256:c10e9584649538f2f1547bb09fd3982cc3495dcf34ef807d66463661fdd5cd68"),
+                "forge_runtime_id": .string(forgeID),
+                "forge_installation_id": .string("Install-A"),
+            ])]),
+        ])) + Data([0x0A])
+    }
+}
