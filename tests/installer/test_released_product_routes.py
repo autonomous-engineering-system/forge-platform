@@ -174,6 +174,30 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
         values.update(changes)
         return ReleasedManagedProductRouteConfiguration(**values)
 
+    def isolated_other_configuration(self):
+        return self.configuration(
+            deployment_id="production-other",
+            forge_target=replace(
+                self.config.forge_target,
+                instance_id="forge-other",
+                data_root=self.root / "forge/instances/forge-other",
+                service_account="_forge_other",
+                bind_port=8877,
+                api_credential_file=self.root / "forge/credentials/api-other",
+            ),
+            engineering_platform_target=replace(
+                self.config.engineering_platform_target,
+                instance_id="ep-other", service_account="_ep_other", bind_port=8878,
+            ),
+            pairing_binding=replace(
+                self.config.pairing_binding,
+                endpoint="http://127.0.0.1:8878",
+                expected_ep_instance_id="ep-other",
+                consumer_id="forge-consumer-other",
+                project_id="forge-project-other",
+            ),
+        )
+
     def test_builds_exact_concrete_routes_from_catalog_authority(self):
         routes = ReleasedManagedProductRouteBuilder.build(
             configurations=(self.config,),
@@ -358,14 +382,13 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
             )
 
     def test_routes_reject_shared_ep_consumer_scope_across_deployments(self):
-        other = self.configuration(
-            deployment_id="production-other",
-            forge_target=replace(self.config.forge_target, instance_id="forge-other"),
-            engineering_platform_target=replace(
-                self.config.engineering_platform_target, instance_id="ep-other"
-            ),
+        other = self.isolated_other_configuration()
+        other = replace(
+            other,
             pairing_binding=replace(
-                self.config.pairing_binding, expected_ep_instance_id="ep-other"
+                other.pairing_binding,
+                consumer_id=self.config.pairing_binding.consumer_id,
+                project_id=self.config.pairing_binding.project_id,
             ),
         )
         with self.assertRaisesRegex(ValueError, "scope is shared"):
@@ -373,6 +396,94 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
                 configurations=(self.config, other),
                 candidate_selections=(self.selection,),
             )
+
+    def test_distinct_deployments_have_isolated_product_routes(self):
+        other = self.isolated_other_configuration()
+        routes = ReleasedManagedProductRouteBuilder.build(
+            configurations=(self.config, other),
+            candidate_selections=(self.selection,),
+        )
+        self.assertEqual(set(routes), {"production", "production-other"})
+        self.assertEqual(routes["production-other"].forge_instance_id, "forge-other")
+        self.assertEqual(routes["production-other"].engineering_platform_instance_id, "ep-other")
+
+    def test_duplicate_product_instance_ids_fail_before_route_construction(self):
+        other = self.isolated_other_configuration()
+        for altered in (
+            replace(other, forge_target=replace(
+                other.forge_target, instance_id="forge-prod"
+            )),
+            replace(other, engineering_platform_target=replace(
+                other.engineering_platform_target, instance_id="ep-prod"
+            ), pairing_binding=replace(
+                other.pairing_binding, expected_ep_instance_id="ep-prod"
+            )),
+        ):
+            with self.subTest(altered=altered.deployment_id), self.assertRaisesRegex(
+                ValueError, "claimed by multiple deployments"
+            ):
+                ReleasedManagedProductRouteBuilder.build(
+                    configurations=(self.config, altered),
+                    candidate_selections=(self.selection,),
+                )
+
+        single_forge = ReleasedManagedSingleProductRouteConfiguration(
+            deployment_id="forge-single-other",
+            component_identity="forge-runtime",
+            executable=self.config.forge_executable,
+            target=replace(
+                self.config.forge_target,
+                data_root=self.root / "forge/instances/forge-single-other",
+                service_account="_forge_single_other",
+                bind_port=8880,
+                api_credential_file=self.root / "forge/credentials/api-single-other",
+            ),
+            installed_artifact=self.components["forge-runtime"].artifact,
+            staged_artifacts={
+                self.components["forge-runtime"].artifact.digest:
+                    self.root / "staged/forge-runtime.whl"
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "claimed by multiple deployments"):
+            ReleasedManagedProductRouteBuilder.build_from_manifests(
+                configurations=(self.config, single_forge),
+                candidate_manifests=(self.selection.manifest,),
+            )
+
+    def test_forge_state_aliases_and_shared_os_authority_fail_closed(self):
+        other = self.isolated_other_configuration()
+        cases = (
+            (replace(other, forge_target=replace(
+                other.forge_target, data_root=self.config.forge_target.data_root
+            )), "data roots overlap"),
+            (replace(other, forge_target=replace(
+                other.forge_target,
+                data_root=self.config.forge_target.data_root / "nested"
+            )), "data roots overlap"),
+            (replace(other, forge_target=replace(
+                other.forge_target,
+                api_credential_file=self.config.forge_target.api_credential_file,
+            )), "credential path is shared"),
+            (replace(other, forge_target=replace(
+                other.forge_target, service_account=self.config.forge_target.service_account,
+            )), "OS authority is shared"),
+            (replace(
+                other,
+                engineering_platform_target=replace(
+                    other.engineering_platform_target,
+                    bind_port=self.config.engineering_platform_target.bind_port,
+                ),
+                pairing_binding=replace(
+                    other.pairing_binding, endpoint="http://127.0.0.1:8876"
+                ),
+            ), "OS authority is shared"),
+        )
+        for altered, error in cases:
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                ReleasedManagedProductRouteBuilder.build(
+                    configurations=(self.config, altered),
+                    candidate_selections=(self.selection,),
+                )
 
     def test_builds_exact_forge_only_route_without_ep_or_pairing_authority(self):
         selection = verified_forge_ep_selection(
