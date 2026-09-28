@@ -2,6 +2,45 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
+    func testInventoryCodecRejectsCrossDeploymentInstanceReuse() throws {
+        let inventory = try ManagedDeploymentInventory(
+            existing: [
+                try ManagedDeploymentTarget(
+                    id: "first", exists: true,
+                    forgeInstanceID: "forge-one", engineeringPlatformInstanceID: "ep-one"
+                ),
+                try ManagedDeploymentTarget(
+                    id: "second", exists: true,
+                    forgeInstanceID: "forge-two", engineeringPlatformInstanceID: "ep-two"
+                ),
+            ],
+            createCandidate: try ManagedDeploymentTarget(id: "new", exists: false),
+            evidenceReference: "inventory:fixture"
+        )
+        var reader = try StrictJSONResourceReader(
+            data: ManagedInstallerReleasedRouteXPCCodec.encodeInventory(inventory)
+        )
+        let original = try XCTUnwrap(reader.parseDocument().objectValue)
+        for (field, reusedIdentity, expected) in [
+            ("forge_instance_id", "forge-one",
+             ManagedDeploymentInventoryError.duplicateForgeInstanceIdentity),
+            ("engineering_platform_instance_id", "ep-one",
+             ManagedDeploymentInventoryError.duplicateEngineeringPlatformInstanceIdentity),
+        ] {
+            var fields = original
+            var targets = try XCTUnwrap(fields["existing"]?.arrayValue)
+            var second = try XCTUnwrap(targets[1].objectValue)
+            second[field] = .string(reusedIdentity)
+            targets[1] = .object(second)
+            fields["existing"] = .array(targets)
+            XCTAssertThrowsError(try ManagedInstallerReleasedRouteXPCCodec.decodeInventory(
+                StrictSignedJSON.canonicalPayload(from: .object(fields))
+            )) { error in
+                XCTAssertEqual(error as? ManagedDeploymentInventoryError, expected)
+            }
+        }
+    }
+
     func testVersionTwoSnapshotBindsForgeAssessmentAndLegacySnapshotRemainsReadable() throws {
         let fixture = try ReleasedRouteFixture()
         let request = try ManagedInstallerReleasedRouteRequest(

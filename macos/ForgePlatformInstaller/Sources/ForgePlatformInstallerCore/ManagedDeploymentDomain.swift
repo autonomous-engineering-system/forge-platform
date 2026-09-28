@@ -146,6 +146,16 @@ public struct ManagedDeploymentInventory: Equatable, Sendable {
         guard existing.allSatisfy(\.exists) else {
             throw ManagedDeploymentInventoryError.invalidExistingDeployment
         }
+        let forgeInstances = existing.compactMap(\.forgeInstanceID)
+        guard Set(forgeInstances).count == forgeInstances.count else {
+            throw ManagedDeploymentInventoryError.duplicateForgeInstanceIdentity
+        }
+        let engineeringPlatformInstances = existing.compactMap(
+            \.engineeringPlatformInstanceID
+        )
+        guard Set(engineeringPlatformInstances).count == engineeringPlatformInstances.count else {
+            throw ManagedDeploymentInventoryError.duplicateEngineeringPlatformInstanceIdentity
+        }
         self.existing = existing.sorted { $0.id < $1.id }
         self.createCandidate = createCandidate
         self.evidenceReference = evidenceReference
@@ -161,6 +171,8 @@ public enum ManagedDeploymentInventoryError: Error, Equatable, Sendable {
     case invalidEvidenceReference
     case duplicateDeploymentIdentity
     case invalidExistingDeployment
+    case duplicateForgeInstanceIdentity
+    case duplicateEngineeringPlatformInstanceIdentity
 }
 
 public enum ManagedDeploymentSelectionFailure: String, Equatable, Sendable {
