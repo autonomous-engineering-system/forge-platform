@@ -9,6 +9,7 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
 
     public let intent: ManagedInstallerReviewedExecutionIntent
     public let routeRequest: ManagedInstallerReleasedRouteRequest
+    public let componentIdentities: [String]
     public let enabledProviderTargetIDs: [ProviderTargetID]
 
     public init(stablePlan: ManagedInstallerStablePlan) throws {
@@ -20,6 +21,8 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
                 inventoryEvidenceReference:
                     stablePlan.reviewedOperation.inventoryEvidenceReference
             ),
+            componentIdentities: stablePlan.session.productVirtualEnvironments
+                .map(\.componentIdentity),
             enabledProviderTargetIDs: stablePlan.enabledProviderRequirements.map(\.id)
         )
     }
@@ -27,10 +30,17 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
     private init(
         intent: ManagedInstallerReviewedExecutionIntent,
         routeRequest: ManagedInstallerReleasedRouteRequest,
+        componentIdentities: [String],
         enabledProviderTargetIDs: [ProviderTargetID]
     ) throws {
+        let components = componentIdentities.sorted()
         let sorted = enabledProviderTargetIDs.sorted { $0.rawValue < $1.rawValue }
-        guard sorted.count <= 32,
+        guard !components.isEmpty, components.count <= 2,
+              Set(components).count == components.count,
+              Set(components).isSubset(of: Set([
+                "engineering-platform-server", "forge-runtime",
+              ])),
+              sorted.count <= 32,
               Set(sorted).count == sorted.count else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
         }
@@ -40,6 +50,7 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
         }
         self.intent = intent
         self.routeRequest = routeRequest
+        self.componentIdentities = components
         self.enabledProviderTargetIDs = sorted
     }
 
@@ -47,6 +58,7 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
         StrictSignedJSON.canonicalPayload(from: .object([
             "schema": .string(Self.schema),
             "route_request": routeRequest.canonicalValue(),
+            "component_identities": .array(componentIdentities.map { .string($0) }),
             "intent": .object([
                 "operation_id": .string(intent.operationID),
                 "deployment_id": .string(intent.deploymentID),
@@ -69,10 +81,12 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
         guard let fields = try reader.parseDocument().objectValue,
               Set(fields.keys) == Set([
                 "schema", "intent", "route_request", "enabled_provider_target_ids",
+                "component_identities",
               ]),
               fields["schema"]?.stringValue == schema,
               let intentFields = fields["intent"]?.objectValue,
               let routeValue = fields["route_request"],
+              let componentValues = fields["component_identities"]?.arrayValue,
               let providerValues = fields["enabled_provider_target_ids"]?.arrayValue,
               providerValues.count <= 32 else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
@@ -86,6 +100,12 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
         let routeRequest = try ManagedInstallerReleasedRouteRequest.decodeJSON(
             StrictSignedJSON.canonicalPayload(from: routeValue)
         )
+        let components = try componentValues.map { value -> String in
+            guard let identity = value.stringValue else {
+                throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+            }
+            return identity
+        }
         let ids = try providerValues.map { value -> ProviderTargetID in
             guard let raw = value.stringValue,
                   let id = ProviderTargetID(rawValue: raw) else {
@@ -96,6 +116,7 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
         let selection = try Self(
             intent: intent,
             routeRequest: routeRequest,
+            componentIdentities: components,
             enabledProviderTargetIDs: ids
         )
         guard selection.canonicalJSONData() == data else {

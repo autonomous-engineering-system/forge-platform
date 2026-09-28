@@ -217,7 +217,8 @@ public actor ManagedInstallerReleasedRouteCoordinator:
     ) async -> ManagedDeploymentExecutionResult {
         guard let reviewed = reviewedPlan,
               reviewed.reviewedOperation == operation,
-              let sender = loader as? any ManagedInstallerReviewedExecutionIntentSending else {
+              let sender = loader as? any ManagedInstallerReviewedExecutionIntentSending,
+              let registrar = loader as? any ManagedInstallerReviewedSelectionRegistering else {
             return .failed(.coordinatorUnavailable, stages: [])
         }
         switch await prepareStablePlan(for: operation) {
@@ -225,6 +226,9 @@ public actor ManagedInstallerReleasedRouteCoordinator:
             && reviewedPlan == reviewed:
             do {
                 let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: reviewed)
+                try await registrar.registerReviewedSelection(
+                    ManagedInstallerReviewedSelection(stablePlan: reviewed)
+                )
                 return try await sender.executeReviewedIntent(intent)
             } catch {
                 return .failed(.coordinatorUnavailable, stages: [])

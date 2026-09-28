@@ -18,6 +18,8 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
         XCTAssertEqual(result, .failed(.executionFailed, stages: []))
         let sent = await loader.sentIntents()
         XCTAssertEqual(sent, [try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)])
+        let registered = await loader.registeredSelections()
+        XCTAssertEqual(registered, [try ManagedInstallerReviewedSelection(stablePlan: plan)])
     }
 
     func testReviewedExecutionRejectsDriftBeforeSendingIntent() async throws {
@@ -33,6 +35,25 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
         let result = await coordinator.executeReviewedManagedDeployment(fixture.operation)
 
         XCTAssertEqual(result, .failed(.staleSession, stages: []))
+        let sent = await loader.sentIntents()
+        XCTAssertTrue(sent.isEmpty)
+        let registered = await loader.registeredSelections()
+        XCTAssertTrue(registered.isEmpty)
+    }
+
+    func testReviewedExecutionRequiresDurableHelperRegistrationBeforeMutation() async throws {
+        let fixture = try ReleasedRouteFixture()
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        _ = await coordinator.prepareStablePlan(for: fixture.operation)
+        await loader.setRegistrationFailure(true)
+
+        let result = await coordinator.executeReviewedManagedDeployment(fixture.operation)
+
+        XCTAssertEqual(result, .failed(.coordinatorUnavailable, stages: []))
         let sent = await loader.sentIntents()
         XCTAssertTrue(sent.isEmpty)
     }
@@ -244,14 +265,26 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
 
 private actor ExecutionRouteLoader:
     ManagedInstallerReleasedRouteSnapshotLoading,
-    ManagedInstallerReviewedExecutionIntentSending {
+    ManagedInstallerReviewedExecutionIntentSending,
+    ManagedInstallerReviewedSelectionRegistering {
     let snapshot: ManagedInstallerReleasedRouteSnapshot
     private var failing = false
+    private var registrationFailure = false
     private var sent: [ManagedInstallerReviewedExecutionIntent] = []
+    private var registered: [ManagedInstallerReviewedSelection] = []
 
     init(snapshot: ManagedInstallerReleasedRouteSnapshot) { self.snapshot = snapshot }
     func setFailure(_ value: Bool) { failing = value }
+    func setRegistrationFailure(_ value: Bool) { registrationFailure = value }
     func sentIntents() -> [ManagedInstallerReviewedExecutionIntent] { sent }
+    func registeredSelections() -> [ManagedInstallerReviewedSelection] { registered }
+
+    func registerReviewedSelection(
+        _ selection: ManagedInstallerReviewedSelection
+    ) async throws {
+        if registrationFailure { throw TestFailure.failed }
+        registered.append(selection)
+    }
 
     func loadManagedDeploymentInventory() async throws -> ManagedDeploymentInventory {
         if failing { throw TestFailure.failed }

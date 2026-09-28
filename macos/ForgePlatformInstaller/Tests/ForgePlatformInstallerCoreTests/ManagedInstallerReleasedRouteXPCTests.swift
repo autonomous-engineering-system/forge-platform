@@ -705,6 +705,13 @@ private final class RawReleasedRouteXPCService:
         _ = canonicalIntent
         reply(nil)
     }
+    func registerReviewedSelection(
+        _ canonicalSelection: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalSelection
+        reply(nil)
+    }
     func listener(
         _ listener: NSXPCListener,
         shouldAcceptNewConnection connection: NSXPCConnection
