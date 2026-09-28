@@ -170,6 +170,23 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             assessment
         )
 
+        var previousReader = try StrictJSONResourceReader(data: encoded)
+        var previousFields = try XCTUnwrap(previousReader.parseDocument().objectValue)
+        previousFields["schema"] = .string(
+            ManagedInstallerReleasedRouteXPCCodec.previousSnapshotSchema
+        )
+        previousFields["deployment"] = try legacyTarget(
+            XCTUnwrap(previousFields["deployment"])
+        )
+        previousFields["inventory"] = try legacyInventory(
+            XCTUnwrap(previousFields["inventory"])
+        )
+        let previous = StrictSignedJSON.canonicalPayload(from: .object(previousFields))
+        XCTAssertEqual(try ManagedInstallerReleasedRouteXPCCodec.decodeSnapshot(
+            previous, request: request, session: fixture.session,
+            deployment: fixture.deployment
+        ), snapshot)
+
         var reader = try StrictJSONResourceReader(data: encoded)
         var fields = try XCTUnwrap(reader.parseDocument().objectValue)
         var values = try XCTUnwrap(fields["components"]?.arrayValue)
@@ -197,6 +214,12 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             component.removeValue(forKey: "update_assessment_reference")
             return .object(component)
         })
+        legacyFields["deployment"] = try legacyTarget(
+            XCTUnwrap(legacyFields["deployment"])
+        )
+        legacyFields["inventory"] = try legacyInventory(
+            XCTUnwrap(legacyFields["inventory"])
+        )
         let legacy = StrictSignedJSON.canonicalPayload(from: .object(legacyFields))
         let decodedLegacy = try ManagedInstallerReleasedRouteXPCCodec.decodeSnapshot(
             legacy, request: request, session: fixture.session,
@@ -219,6 +242,12 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             component.removeValue(forKey: "update_assessment_reference")
             return .object(component)
         })
+        oldUpdateFields["deployment"] = try legacyTarget(
+            XCTUnwrap(oldUpdateFields["deployment"])
+        )
+        oldUpdateFields["inventory"] = try legacyInventory(
+            XCTUnwrap(oldUpdateFields["inventory"])
+        )
         XCTAssertThrowsError(try ManagedInstallerReleasedRouteXPCCodec.decodeSnapshot(
             StrictSignedJSON.canonicalPayload(from: .object(oldUpdateFields)),
             request: request, session: fixture.session,
@@ -267,10 +296,7 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         let noncanonical = Data(
             (" " + String(decoding: request.canonicalJSONData(), as: UTF8.self)).utf8
         )
-        XCTAssertEqual(
-            try ManagedInstallerReleasedRouteRequest.decodeJSON(noncanonical),
-            request
-        )
+        XCTAssertThrowsError(try ManagedInstallerReleasedRouteRequest.decodeJSON(noncanonical))
         XCTAssertThrowsError(try ManagedInstallerReleasedRouteRequest.decodeJSON(
             Data(repeating: 0x61, count: ManagedInstallerReleasedRouteRequest.maximumBytes + 1)
         ))
@@ -289,6 +315,41 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             session: fixture.session,
             deployment: other
         ))
+    }
+
+    func testV3PreservedIdentitySurvivesHelperInventoryTransport() throws {
+        let preserved = try ManagedDeploymentTarget(
+            id: "preserved-pair", exists: true,
+            engineeringPlatformInstanceID: "ep-one",
+            preservedForgeInstanceID: "forge-one",
+            installedCompositionID: "forge-ep-qualified",
+            installedCompositionManifestSHA256:
+                "sha256:" + String(repeating: "a", count: 64)
+        )
+        let inventory = try ManagedDeploymentInventory(
+            existing: [preserved],
+            createCandidate: ManagedDeploymentTarget(id: "new", exists: false),
+            evidenceReference: "registry:preserved"
+        )
+        let bytes = ManagedInstallerReleasedRouteXPCCodec.encodeInventory(inventory)
+        XCTAssertEqual(try ManagedInstallerReleasedRouteXPCCodec.decodeInventory(bytes), inventory)
+
+        var reader = try StrictJSONResourceReader(data: bytes)
+        var fields = try XCTUnwrap(reader.parseDocument().objectValue)
+        fields["schema"] = .string(
+            ManagedInstallerReleasedRouteXPCCodec.legacyInventorySchema
+        )
+        XCTAssertThrowsError(try ManagedInstallerReleasedRouteXPCCodec.decodeInventory(
+            StrictSignedJSON.canonicalPayload(from: .object(fields))
+        ))
+        let fixture = try ReleasedRouteFixture()
+        let request = try ManagedInstallerReleasedRouteRequest(
+            session: fixture.session, deployment: preserved,
+            inventoryEvidenceReference: inventory.evidenceReference
+        )
+        XCTAssertEqual(try ManagedInstallerReleasedRouteRequest.decodeJSON(
+            request.canonicalJSONData()
+        ), request)
     }
 
     func testInProcessXPCRoundTripUsesExactCallerRequirement() async throws {
@@ -408,6 +469,29 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             )
         )
         await privileged.invalidate()
+    }
+
+    private func legacyTarget(_ value: StrictJSONResourceValue) throws
+        -> StrictJSONResourceValue {
+        var fields = try XCTUnwrap(value.objectValue)
+        fields.removeValue(forKey: "preserved_forge_instance_id")
+        fields.removeValue(forKey: "preserved_engineering_platform_instance_id")
+        return .object(fields)
+    }
+
+    private func legacyInventory(_ value: StrictJSONResourceValue) throws
+        -> StrictJSONResourceValue {
+        var fields = try XCTUnwrap(value.objectValue)
+        fields["schema"] = .string(
+            ManagedInstallerReleasedRouteXPCCodec.legacyInventorySchema
+        )
+        fields["existing"] = .array(try XCTUnwrap(fields["existing"]?.arrayValue).map {
+            try legacyTarget($0)
+        })
+        fields["create_candidate"] = try legacyTarget(
+            XCTUnwrap(fields["create_candidate"])
+        )
+        return .object(fields)
     }
 }
 

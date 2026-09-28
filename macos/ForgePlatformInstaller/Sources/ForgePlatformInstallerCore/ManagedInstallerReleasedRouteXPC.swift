@@ -11,7 +11,7 @@ public enum ManagedInstallerReleasedRouteXPCFailure: Error, Equatable, Sendable 
 /// Bounded correlation-only request for a helper-owned released route. It
 /// carries no path, command, environment value, URL or credential.
 public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
-    public static let schema = "forge-platform.managed-installer-released-route-request/v1"
+    public static let schema = "forge-platform.managed-installer-released-route-request/v2"
     static let maximumBytes = 8 * 1_024
 
     public let sessionID: String
@@ -82,7 +82,8 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
               let compositionIdentity = fields["composition_identity"]?.stringValue,
               let manifestSHA256 = fields["manifest_sha256"]?.stringValue,
               let deploymentValue = fields["deployment"],
-              let evidence = fields["inventory_evidence_reference"]?.stringValue else {
+              let evidence = fields["inventory_evidence_reference"]?.stringValue,
+              StrictSignedJSON.canonicalPayload(from: .object(fields)) == data else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
         }
         return try Self(
@@ -110,6 +111,11 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
             "forge_instance_id": target.forgeInstanceID.map(StrictJSONResourceValue.string) ?? .null,
             "engineering_platform_instance_id": target.engineeringPlatformInstanceID
                 .map(StrictJSONResourceValue.string) ?? .null,
+            "preserved_forge_instance_id": target.preservedForgeInstanceID
+                .map(StrictJSONResourceValue.string) ?? .null,
+            "preserved_engineering_platform_instance_id":
+                target.preservedEngineeringPlatformInstanceID
+                    .map(StrictJSONResourceValue.string) ?? .null,
             "installed_composition_id": target.installedCompositionID
                 .map(StrictJSONResourceValue.string) ?? .null,
             "installed_composition_manifest_sha256":
@@ -118,14 +124,19 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
         ])
     }
 
-    static func decodeTarget(_ value: StrictJSONResourceValue) throws
+    static func decodeTarget(
+        _ value: StrictJSONResourceValue, legacy: Bool = false
+    ) throws
         -> ManagedDeploymentTarget {
         guard let fields = value.objectValue,
               Set(fields.keys) == Set([
                 "id", "label", "exists", "forge_instance_id",
                 "engineering_platform_instance_id", "installed_composition_id",
                 "installed_composition_manifest_sha256",
-              ]),
+              ] + (legacy ? [] : [
+                "preserved_forge_instance_id",
+                "preserved_engineering_platform_instance_id",
+              ])),
               let id = fields["id"]?.stringValue,
               case .boolean(let exists) = fields["exists"] else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
@@ -137,6 +148,10 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
             forgeInstanceID: optionalString(fields["forge_instance_id"]),
             engineeringPlatformInstanceID:
                 optionalString(fields["engineering_platform_instance_id"]),
+            preservedForgeInstanceID: legacy ? nil
+                : optionalString(fields["preserved_forge_instance_id"]),
+            preservedEngineeringPlatformInstanceID: legacy ? nil
+                : optionalString(fields["preserved_engineering_platform_instance_id"]),
             installedCompositionID: optionalString(fields["installed_composition_id"]),
             installedCompositionManifestSHA256:
                 optionalString(fields["installed_composition_manifest_sha256"])
@@ -158,8 +173,10 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
 }
 
 enum ManagedInstallerReleasedRouteXPCCodec {
-    static let inventorySchema = "forge-platform.managed-deployment-inventory/v1"
-    static let snapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v2"
+    static let inventorySchema = "forge-platform.managed-deployment-inventory/v2"
+    static let legacyInventorySchema = "forge-platform.managed-deployment-inventory/v1"
+    static let snapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v3"
+    static let previousSnapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v2"
     static let legacySnapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v1"
     static let maximumResponseBytes = 128 * 1_024
 
@@ -168,17 +185,30 @@ enum ManagedInstallerReleasedRouteXPCCodec {
     }
 
     static func decodeInventory(_ data: Data) throws -> ManagedDeploymentInventory {
-        let fields = try root(data, schema: inventorySchema, keys: [
+        let keys: Set<String> = [
             "schema", "existing", "create_candidate", "evidence_reference",
-        ])
+        ]
+        let fields: [String: StrictJSONResourceValue]
+        let legacy: Bool
+        if let current = try? root(data, schema: inventorySchema, keys: keys) {
+            fields = current
+            legacy = false
+        } else {
+            fields = try root(data, schema: legacyInventorySchema, keys: keys)
+            legacy = true
+        }
         guard let existingValues = fields["existing"]?.arrayValue,
               let createValue = fields["create_candidate"],
               let evidence = fields["evidence_reference"]?.stringValue else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
         }
         return try ManagedDeploymentInventory(
-            existing: existingValues.map(ManagedInstallerReleasedRouteRequest.decodeTarget),
-            createCandidate: ManagedInstallerReleasedRouteRequest.decodeTarget(createValue),
+            existing: existingValues.map {
+                try ManagedInstallerReleasedRouteRequest.decodeTarget($0, legacy: legacy)
+            },
+            createCandidate: ManagedInstallerReleasedRouteRequest.decodeTarget(
+                createValue, legacy: legacy
+            ),
             evidenceReference: evidence
         )
     }
@@ -235,7 +265,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
               fields["composition_identity"]?.stringValue == request.compositionIdentity,
               fields["manifest_sha256"]?.stringValue == request.manifestSHA256,
               let deploymentValue = fields["deployment"],
-              try ManagedInstallerReleasedRouteRequest.decodeTarget(deploymentValue) == deployment,
+              try ManagedInstallerReleasedRouteRequest.decodeTarget(
+                deploymentValue, legacy: fields["schema"]?.stringValue != snapshotSchema
+              ) == deployment,
               let preflightValues = fields["passed_preflight_ids"]?.arrayValue,
               fields["review_status"]?.stringValue == "COMPATIBLE",
               case .boolean(false) = fields["review_acknowledged"],
@@ -309,7 +341,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
               fields["composition_identity"]?.stringValue == request.compositionIdentity,
               fields["manifest_sha256"]?.stringValue == request.manifestSHA256,
               let deploymentValue = fields["deployment"],
-              try ManagedInstallerReleasedRouteRequest.decodeTarget(deploymentValue)
+              try ManagedInstallerReleasedRouteRequest.decodeTarget(
+                deploymentValue, legacy: fields["schema"]?.stringValue != snapshotSchema
+              )
                 == request.deployment,
               let inventoryValue = fields["inventory"],
               try decodeInventory(StrictSignedJSON.canonicalPayload(from: inventoryValue))
@@ -410,6 +444,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         ]
         if let current = try? root(data, schema: snapshotSchema, keys: keys) {
             return (current, false)
+        }
+        if let previous = try? root(data, schema: previousSnapshotSchema, keys: keys) {
+            return (previous, false)
         }
         return (try root(data, schema: legacySnapshotSchema, keys: keys), true)
     }
