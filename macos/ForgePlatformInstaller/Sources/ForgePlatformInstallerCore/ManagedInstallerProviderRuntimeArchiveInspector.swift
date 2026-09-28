@@ -46,6 +46,11 @@ public struct ManagedInstallerProviderRuntimeArchiveInspection: Equatable, Senda
     }
 }
 
+struct ManagedInstallerProviderRuntimeArchiveExtractionInventory: Equatable, Sendable {
+    let inspection: ManagedInstallerProviderRuntimeArchiveInspection
+    let members: [ManagedPythonRuntimeArchiveMember]
+}
+
 /// Read-only inspection of one exact staged component-provider archive. The
 /// archive stays in memory, no archive path is exposed, and no content is
 /// extracted or executed. Both admitted formats require safe canonical paths,
@@ -90,37 +95,55 @@ public struct MacOSManagedInstallerProviderRuntimeArchiveInspector: Sendable {
             }
             guard readback.providerTargetID == requirement.id,
                   readback.provider == requirement.provider,
-                  readback.runtime == runtime,
-                  Self.taggedSHA256(readback.bytes) == runtime.artifactSHA256 else {
+                  readback.runtime == runtime else {
                 throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
             }
+            return .success(try Self.inspectArchiveForExtraction(
+                readback.bytes, for: requirement
+            ).inspection)
+        } catch let failure as ManagedInstallerProviderRuntimeArchiveInspectionFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.rejected)
+        }
+    }
 
-            let contents: ProviderArchiveContents
-            switch runtime.archiveKind {
-            case .tarGzip:
-                var tar = try ProviderTarInspector(
-                    executablePath: runtime.executableRelativePath,
-                    maximumExpandedBytes: Self.maximumExpandedArchiveBytes,
-                    maximumEntries: Self.maximumArchiveEntries,
-                    maximumPathBytes: Self.maximumPathBytes,
-                    maximumExecutableBytes: Self.maximumExecutableBytes
-                )
-                try ProviderGZIP.inspect(readback.bytes, feeding: &tar)
-                contents = try tar.finish()
-            case .zip:
-                contents = try ProviderZIPInspector(
-                    executablePath: runtime.executableRelativePath,
-                    maximumExpandedBytes: Self.maximumExpandedArchiveBytes,
-                    maximumEntries: Self.maximumArchiveEntries,
-                    maximumPathBytes: Self.maximumPathBytes,
-                    maximumExecutableBytes: Self.maximumExecutableBytes
-                ).inspect(readback.bytes)
-            }
-            guard Self.taggedSHA256(contents.executable) == runtime.executableSHA256 else {
-                throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
-            }
-            let deploymentTarget = try ManagedPythonMachOInspector.inspect(contents.executable)
-            return .success(try ManagedInstallerProviderRuntimeArchiveInspection(
+    static func inspectArchiveForExtraction(
+        _ archive: Data,
+        for requirement: ProviderRequirement
+    ) throws -> ManagedInstallerProviderRuntimeArchiveExtractionInventory {
+        guard isExactComponentRequirement(requirement),
+              let runtime = requirement.runtime,
+              taggedSHA256(archive) == runtime.artifactSHA256 else {
+            throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
+        }
+        let contents: ProviderArchiveContents
+        switch runtime.archiveKind {
+        case .tarGzip:
+            var tar = try ProviderTarInspector(
+                executablePath: runtime.executableRelativePath,
+                maximumExpandedBytes: maximumExpandedArchiveBytes,
+                maximumEntries: maximumArchiveEntries,
+                maximumPathBytes: maximumPathBytes,
+                maximumExecutableBytes: maximumExecutableBytes
+            )
+            try ProviderGZIP.inspect(archive, feeding: &tar)
+            contents = try tar.finish()
+        case .zip:
+            contents = try ProviderZIPInspector(
+                executablePath: runtime.executableRelativePath,
+                maximumExpandedBytes: maximumExpandedArchiveBytes,
+                maximumEntries: maximumArchiveEntries,
+                maximumPathBytes: maximumPathBytes,
+                maximumExecutableBytes: maximumExecutableBytes
+            ).inspect(archive)
+        }
+        guard taggedSHA256(contents.executable) == runtime.executableSHA256 else {
+            throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
+        }
+        let deploymentTarget = try ManagedPythonMachOInspector.inspect(contents.executable)
+        return ManagedInstallerProviderRuntimeArchiveExtractionInventory(
+            inspection: try ManagedInstallerProviderRuntimeArchiveInspection(
                 providerTargetID: requirement.id,
                 provider: requirement.provider,
                 runtime: runtime,
@@ -128,16 +151,18 @@ public struct MacOSManagedInstallerProviderRuntimeArchiveInspector: Sendable {
                 expandedByteCount: contents.expandedByteCount,
                 executableArchitectures: ["arm64"],
                 minimumMacOSVersion: deploymentTarget,
-                evidenceReference: Self.evidenceReference(
+                evidenceReference: evidenceReference(
                     requirement: requirement,
                     contents: contents
                 )
-            ))
-        } catch let failure as ManagedInstallerProviderRuntimeArchiveInspectionFailure {
-            return .failure(failure)
-        } catch {
-            return .failure(.rejected)
-        }
+            ),
+            members: contents.members.sorted { left, right in
+                let leftDepth = left.path.filter { $0 == "/" }.count
+                let rightDepth = right.path.filter { $0 == "/" }.count
+                return leftDepth == rightDepth ? left.path < right.path
+                    : leftDepth < rightDepth
+            }
+        )
     }
 
     private static func isExactComponentRequirement(
@@ -183,6 +208,7 @@ private struct ProviderArchiveContents {
     let executable: Data
     let entryCount: Int
     let expandedByteCount: UInt64
+    let members: [ManagedPythonRuntimeArchiveMember]
 }
 
 private struct ProviderArchivePath: Hashable {
@@ -360,7 +386,8 @@ private enum ProviderGZIP {
 private struct ProviderTarInspector {
     private enum State {
         case header
-        case payload(path: ProviderArchivePath, remaining: UInt64, padding: Int, collected: Data?)
+        case payload(path: ProviderArchivePath, mode: UInt16, size: UInt64,
+                     remaining: UInt64, padding: Int, collected: Data?)
         case padding(Int)
         case trailer
     }
@@ -374,6 +401,8 @@ private struct ProviderTarInspector {
     private var buffer = Data()
     private var layout = ProviderArchiveLayoutValidation()
     private var executable: Data?
+    private var fileHash = SHA256()
+    private var members: [ManagedPythonRuntimeArchiveMember] = []
     private var zeroHeaderCount = 0
 
     init(
@@ -414,7 +443,8 @@ private struct ProviderTarInspector {
         return ProviderArchiveContents(
             executable: executable,
             entryCount: layout.entryCount,
-            expandedByteCount: layout.expandedByteCount
+            expandedByteCount: layout.expandedByteCount,
+            members: members
         )
     }
 
@@ -434,9 +464,11 @@ private struct ProviderTarInspector {
                     throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
                 }
                 try beginEntry(header)
-            case .payload(let path, let remaining, let padding, let collected):
+            case .payload(let path, let mode, let size, let remaining,
+                          let padding, let collected):
                 guard remaining > 0 else {
-                    try completeEntry(path: path, collected: collected)
+                    try completeEntry(path: path, mode: mode, size: size,
+                                      collected: collected)
                     state = .padding(padding)
                     continue
                 }
@@ -444,10 +476,13 @@ private struct ProviderTarInspector {
                 let amount = min(buffer.count, Int(min(remaining, UInt64(Int.max))))
                 let chunk = buffer.prefix(amount)
                 buffer.removeFirst(amount)
+                fileHash.update(data: chunk)
                 var next = collected
                 next?.append(chunk)
                 state = .payload(
                     path: path,
+                    mode: mode,
+                    size: size,
                     remaining: remaining - UInt64(amount),
                     padding: padding,
                     collected: next
@@ -488,13 +523,14 @@ private struct ProviderTarInspector {
         let mode = try octal(header[100..<108])
         let size = try octal(header[124..<136])
         let type = header[156]
-        guard mode & 0o7022 == 0 else {
+        guard mode & 0o7022 == 0, mode <= 0o777 else {
             throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
         }
         switch type {
         case 0, 0x30:
             let path = try ProviderArchivePath(rawPath, maximumPathBytes: maximumPathBytes)
             guard !path.isDirectory,
+                  mode & 0o400 != 0,
                   size <= maximumExpandedBytes,
                   path.canonical != executablePath || mode & 0o111 != 0,
                   path.canonical != executablePath || size <= maximumExecutableBytes else {
@@ -506,8 +542,11 @@ private struct ProviderTarInspector {
                 maximumEntries: maximumEntries,
                 maximumExpandedBytes: maximumExpandedBytes
             )
+            fileHash = SHA256()
             state = .payload(
                 path: path,
+                mode: UInt16(mode),
+                size: size,
                 remaining: size,
                 padding: padding(for: size),
                 collected: path.canonical == executablePath ? Data() : nil
@@ -518,7 +557,8 @@ private struct ProviderTarInspector {
                 directoryRawPath,
                 maximumPathBytes: maximumPathBytes
             )
-            guard path.isDirectory, size == 0 else {
+            guard path.isDirectory, size == 0,
+                  mode & 0o500 == 0o500 else {
                 throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
             }
             try layout.admit(
@@ -527,6 +567,10 @@ private struct ProviderTarInspector {
                 maximumEntries: maximumEntries,
                 maximumExpandedBytes: maximumExpandedBytes
             )
+            members.append(ManagedPythonRuntimeArchiveMember(
+                path: path.canonical + "/", kind: .directory,
+                mode: UInt16(mode), byteCount: 0, sha256: nil
+            ))
             state = .padding(0)
         default:
             throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
@@ -535,8 +579,17 @@ private struct ProviderTarInspector {
 
     private mutating func completeEntry(
         path: ProviderArchivePath,
+        mode: UInt16,
+        size: UInt64,
         collected: Data?
     ) throws {
+        let digest = "sha256:" + fileHash.finalize().map {
+            String(format: "%02x", $0)
+        }.joined()
+        members.append(ManagedPythonRuntimeArchiveMember(
+            path: path.canonical, kind: .file, mode: mode,
+            byteCount: size, sha256: digest
+        ))
         if path.canonical == executablePath {
             guard executable == nil, let collected, !collected.isEmpty else {
                 throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
@@ -596,6 +649,7 @@ private struct ProviderZIPInspector {
         let uncompressedSize: UInt64
         let localOffset: Int
         let rawName: Data
+        let mode: UInt16
     }
 
     private let executablePath: String
@@ -693,6 +747,7 @@ private struct ProviderZIPInspector {
             let fileType = unixMode & 0o170000
             guard UInt8(truncatingIfNeeded: versionMadeBy >> 8) == 3,
                   unixMode & 0o7022 == 0,
+                  unixMode & 0o777 != 0,
                   fileType != 0o120000 else {
                 throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
             }
@@ -701,11 +756,13 @@ private struct ProviderZIPInspector {
                       compressed == 0,
                       uncompressed == 0,
                       crc == 0,
-                      fileType == 0o040000 else {
+                      fileType == 0o040000,
+                      unixMode & 0o500 == 0o500 else {
                     throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
                 }
             } else {
                 guard fileType == 0o100000,
+                      unixMode & 0o400 != 0,
                       compression != 0 || compressed == uncompressed,
                       path.canonical != executablePath || unixMode & 0o111 != 0,
                       path.canonical != executablePath
@@ -728,7 +785,8 @@ private struct ProviderZIPInspector {
                 compressedSize: Int(compressed),
                 uncompressedSize: UInt64(uncompressed),
                 localOffset: Int(localOffset),
-                rawName: name
+                rawName: name,
+                mode: unixMode & 0o777
             ))
             cursor += 46 + variableCount
         }
@@ -739,6 +797,7 @@ private struct ProviderZIPInspector {
 
         var ranges: [(Int, Int)] = []
         var executable: Data?
+        var members: [ManagedPythonRuntimeArchiveMember] = []
         for entry in entries {
             guard entry.localOffset >= 0,
                   entry.localOffset <= centralOffset - 30,
@@ -777,7 +836,12 @@ private struct ProviderZIPInspector {
             }
             let dataEnd = dataStart + entry.compressedSize
             ranges.append((entry.localOffset, dataEnd))
-            if !entry.path.isDirectory {
+            if entry.path.isDirectory {
+                members.append(ManagedPythonRuntimeArchiveMember(
+                    path: entry.path.canonical + "/", kind: .directory,
+                    mode: entry.mode, byteCount: 0, sha256: nil
+                ))
+            } else {
                 let compressedBytes = Data(archive[dataStart..<dataEnd])
                 let collect = entry.path.canonical == executablePath
                 let result = try decode(
@@ -787,11 +851,17 @@ private struct ProviderZIPInspector {
                     expectedCRC: entry.crc32,
                     collect: collect
                 )
+                members.append(ManagedPythonRuntimeArchiveMember(
+                    path: entry.path.canonical, kind: .file,
+                    mode: entry.mode, byteCount: entry.uncompressedSize,
+                    sha256: result.sha256
+                ))
                 if collect {
-                    guard executable == nil, let result, !result.isEmpty else {
+                    guard executable == nil, let bytes = result.collected,
+                          !bytes.isEmpty else {
                         throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
                     }
-                    executable = result
+                    executable = bytes
                 }
             }
         }
@@ -811,8 +881,14 @@ private struct ProviderZIPInspector {
         return ProviderArchiveContents(
             executable: executable,
             entryCount: layout.entryCount,
-            expandedByteCount: layout.expandedByteCount
+            expandedByteCount: layout.expandedByteCount,
+            members: members
         )
+    }
+
+    private struct DecodedFile {
+        let sha256: String
+        let collected: Data?
     }
 
     private func decode(
@@ -821,7 +897,7 @@ private struct ProviderZIPInspector {
         expectedSize: UInt64,
         expectedCRC: UInt32,
         collect: Bool
-    ) throws -> Data? {
+    ) throws -> DecodedFile {
         if method == 0 {
             guard UInt64(input.count) == expectedSize else {
                 throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
@@ -831,7 +907,12 @@ private struct ProviderZIPInspector {
             guard crc.checksum == expectedCRC else {
                 throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
             }
-            return collect ? input : nil
+            return DecodedFile(
+                sha256: "sha256:" + SHA256.hash(data: input).map {
+                    String(format: "%02x", $0)
+                }.joined(),
+                collected: collect ? input : nil
+            )
         }
         let placeholder = UnsafeMutablePointer<UInt8>.allocate(capacity: 1)
         defer { placeholder.deallocate() }
@@ -851,6 +932,7 @@ private struct ProviderZIPInspector {
         var producedTotal: UInt64 = 0
         var collected = Data()
         var crc = ProviderCRC32()
+        var hash = SHA256()
         try input.withUnsafeBytes { source in
             guard let sourceBase = source.bindMemory(to: UInt8.self).baseAddress else {
                 if expectedSize == 0 { return }
@@ -877,6 +959,7 @@ private struct ProviderZIPInspector {
                     producedTotal = next
                     let chunk = Data(output.prefix(produced))
                     crc.update(chunk)
+                    hash.update(data: chunk)
                     if collect { collected.append(chunk) }
                 }
                 if status == COMPRESSION_STATUS_END {
@@ -894,7 +977,12 @@ private struct ProviderZIPInspector {
         guard producedTotal == expectedSize, crc.checksum == expectedCRC else {
             throw ManagedInstallerProviderRuntimeArchiveInspectionFailure.rejected
         }
-        return collect ? collected : nil
+        return DecodedFile(
+            sha256: "sha256:" + hash.finalize().map {
+                String(format: "%02x", $0)
+            }.joined(),
+            collected: collect ? collected : nil
+        )
     }
 
     private func containsZIP64(_ data: Data) -> Bool {

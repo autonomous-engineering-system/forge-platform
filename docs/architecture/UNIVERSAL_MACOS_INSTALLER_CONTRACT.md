@@ -27,7 +27,10 @@ V3 targets in canonical order and returns only a complete plan-bound receipt
 set. A source-level runtime-preparation admission coordinator requires exact
 durable parent-`PLANNED` readback before provider or managed-Python preparation,
 revalidates each result before advancing and returns one stable-plan-bound
-`RUNTIMES_READY` receipt. It is not released-route wiring. The concrete provider extraction/install adapter,
+`RUNTIMES_READY` receipt. It is not released-route wiring. The helper-side
+provider archive extractor now re-inspects exact `tar.gz`/ZIP bytes before
+mutation, extracts into an empty private destination and independently verifies
+every resulting path, mode and file digest. Runtime slot publication,
 credential-home provisioning and released wiring remain unimplemented; this
 source-level seam is not live provider-readiness evidence.
 
@@ -857,7 +860,7 @@ discard under the same lease, with cleanup and release failure precedence. The
 exact stable-plan provider fanout is also implemented as a fail-fast,
 source-level coordinator with deterministic per-target operations and a
 complete plan-bound receipt. A separate admission coordinator enforces durable
-`PLANNED` seeding before provider and managed-Python runtime preparation. The concrete extraction/install adapter and credential-home provisioning,
+`PLANNED` seeding before provider and managed-Python runtime preparation. Provider archive extraction and exact tree readback are source-qualified; runtime slot publication and credential-home provisioning,
 service-account secure-store integration, the other four live gate observers,
 signed helper registration and released journal-seeding integration remain
 unimplemented.
@@ -942,7 +945,7 @@ cleanup-enforcing provider preparation transaction are implemented. The
 canonical stable-plan fanout and its complete plan-bound receipt are also
 implemented. Exact parent-journal seeding is ordered before provider and
 managed-Python preparation by a source-level stable-plan admission coordinator.
-The concrete extraction/install adapter and credential-home provisioning, service-account secure-store
+Provider archive extraction and exact tree readback are source-qualified. Runtime slot publication and credential-home provisioning, service-account secure-store
 integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,
 separate gate router and fixed-layout macOS component-provider inspector are
