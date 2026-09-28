@@ -67,6 +67,12 @@ _PRODUCT_WORKER_MAXIMUM_BYTES = 16 * 1_024 * 1_024
 _PRODUCT_WORKER_MAXIMUM_UNCOMPRESSED_BYTES = 64 * 1_024 * 1_024
 _PRODUCT_WORKER_MAXIMUM_ENTRIES = 4_096
 _PRODUCT_WORKER_ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+_FORGE_UPDATE_CONTROLLER_RESOURCE_NAME = "forge-update-controller.py"
+_FORGE_UPDATE_CONTROLLER_DIGEST_INFO_KEY = "ForgePlatformForgeUpdateControllerSHA256"
+_FORGE_UPDATE_CONTROLLER_SOURCE_INFO_KEY = "ForgePlatformForgeUpdateControllerSourceRevision"
+_FORGE_UPDATE_CONTROLLER_SOURCE = "bf7ae99c67e32fd2047965f19ece30a35071e868"
+_FORGE_UPDATE_CONTROLLER_SHA256 = "sha256:9c43e1c3dcb411fb5f81a6a70d99b0c28b6bb2c79117f70703a50037e2e78183"
+_FORGE_UPDATE_CONTROLLER_MAXIMUM_BYTES = 512 * 1_024
 
 
 @dataclass(frozen=True)
@@ -138,6 +144,30 @@ class SealedProductWorkerResource:
     source: Path
     contents: bytes
     sha256: str
+
+
+@dataclass(frozen=True)
+class SealedForgeUpdateControllerResource:
+    source: Path
+    contents: bytes
+    sha256: str
+
+
+def _sealed_forge_update_controller_resource(value: str) -> SealedForgeUpdateControllerResource:
+    source, contents = _read_regular_non_symlink_file(
+        value, description="Forge update controller resource",
+        maximum_bytes=_FORGE_UPDATE_CONTROLLER_MAXIMUM_BYTES,
+    )
+    return _validated_forge_update_controller_resource(source, contents)
+
+
+def _validated_forge_update_controller_resource(
+    source: Path, contents: bytes
+) -> SealedForgeUpdateControllerResource:
+    digest = "sha256:" + sha256(contents).hexdigest()
+    if not contents or digest != _FORGE_UPDATE_CONTROLLER_SHA256:
+        raise ValueError("Forge update controller does not match the exact protected source")
+    return SealedForgeUpdateControllerResource(source, contents, digest)
 
 
 def _read_regular_non_symlink_file(value: str, *, description: str, maximum_bytes: int) -> tuple[Path, bytes]:
@@ -471,6 +501,7 @@ def package(
     cli_executable: Path,
     helper_executable: Path | None = None,
     product_worker: SealedProductWorkerResource | None = None,
+    forge_update_controller: SealedForgeUpdateControllerResource | None = None,
     output: Path,
     bundle_identifier: str,
     sealed_release_trust: SealedReleaseTrustResource | None = None,
@@ -524,6 +555,12 @@ def package(
             product_worker.source,
             product_worker.contents,
         )
+    if forge_update_controller is not None:
+        forge_update_controller = _validated_forge_update_controller_resource(
+            forge_update_controller.source, forge_update_controller.contents
+        )
+        if helper_executable is None or product_worker is None:
+            raise ValueError("Forge update controller requires helper and product worker")
 
     if sealed_composition_catalog_trust is not None and (
         sealed_release_trust is None or sealed_release_provenance is None
@@ -591,6 +628,7 @@ def package(
     cli_destination = macos / "forge-platform-installer"
     helper_destination = resources / "forge-platform-installer-helper"
     product_worker_destination = resources / _PRODUCT_WORKER_RESOURCE_NAME
+    forge_controller_destination = resources / _FORGE_UPDATE_CONTROLLER_RESOURCE_NAME
     helper_plist = launch_daemons / _HELPER_PLIST_NAME
     info_plist = contents / "Info.plist"
     output_owned = False
@@ -644,6 +682,9 @@ def package(
         }
         if product_worker is not None:
             metadata[_PRODUCT_WORKER_DIGEST_INFO_KEY] = product_worker.sha256
+        if forge_update_controller is not None:
+            metadata[_FORGE_UPDATE_CONTROLLER_DIGEST_INFO_KEY] = forge_update_controller.sha256
+            metadata[_FORGE_UPDATE_CONTROLLER_SOURCE_INFO_KEY] = _FORGE_UPDATE_CONTROLLER_SOURCE
         with info_plist.open("wb") as stream:
             plistlib.dump(metadata, stream, fmt=plistlib.FMT_XML, sort_keys=True)
         info_plist.chmod(0o644)
@@ -652,12 +693,17 @@ def package(
             or sealed_release_provenance is not None
             or sealed_composition_catalog_trust is not None
             or product_worker is not None
+            or forge_update_controller is not None
         ):
             resources.mkdir(mode=0o755, exist_ok=helper_executable is not None)
         if product_worker is not None:
             with product_worker_destination.open("xb") as stream:
                 stream.write(product_worker.contents)
             product_worker_destination.chmod(0o644)
+        if forge_update_controller is not None:
+            with forge_controller_destination.open("xb") as stream:
+                stream.write(forge_update_controller.contents)
+            forge_controller_destination.chmod(0o644)
         if sealed_release_trust is not None:
             trust_destination = resources / INSTALLER_RELEASE_TRUST_RESOURCE_NAME
             with trust_destination.open("xb") as stream:
@@ -698,6 +744,13 @@ def main() -> None:
             "optional deterministic Python zipapp copied to "
             f"Contents/Resources/{_PRODUCT_WORKER_RESOURCE_NAME} and bound by "
             f"the {_PRODUCT_WORKER_DIGEST_INFO_KEY} Info.plist value"
+        ),
+    )
+    parser.add_argument(
+        "--forge-update-controller",
+        help=(
+            "exact protected Forge 2.7.38 external update controller copied to "
+            f"Contents/Resources/{_FORGE_UPDATE_CONTROLLER_RESOURCE_NAME}"
         ),
     )
     parser.add_argument("--output", required=True)
@@ -745,6 +798,11 @@ def main() -> None:
             if args.product_worker is not None
             else None
         )
+        forge_update_controller = (
+            _sealed_forge_update_controller_resource(args.forge_update_controller)
+            if args.forge_update_controller is not None
+            else None
+        )
         output = _output_bundle(args.output)
         bundle_identifier = _bundle_identifier(args.bundle_identifier)
         sealed_release_trust = (
@@ -769,6 +827,7 @@ def main() -> None:
             cli_executable=cli_executable,
             helper_executable=helper_executable,
             product_worker=product_worker,
+            forge_update_controller=forge_update_controller,
             output=output,
             bundle_identifier=bundle_identifier,
             sealed_release_trust=sealed_release_trust,
@@ -782,6 +841,7 @@ def main() -> None:
             " cli=PACKAGED"
             f" privileged_helper={'PACKAGED' if helper_executable is not None else 'ABSENT_FAIL_CLOSED'}"
             f" product_worker={'PACKAGED' if product_worker is not None else 'ABSENT_FAIL_CLOSED'}"
+            f" forge_update_controller={'PACKAGED' if forge_update_controller is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_release_trust={'PACKAGED_V2' if sealed_release_trust is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_release_provenance={'PACKAGED_V1' if sealed_release_provenance is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_composition_catalog_trust={'PACKAGED_V1' if sealed_composition_catalog_trust is not None else 'ABSENT_FAIL_CLOSED'}"
