@@ -1217,6 +1217,22 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(changedResult.workerFailure, .rejected)
     }
 
+    func testProductWorkerExitGateCompletesExactlyOnce() async {
+        let early = ManagedInstallerProductWorkerExitGate()
+        XCTAssertTrue(early.complete(true))
+        XCTAssertFalse(early.complete(false))
+        let earlyResult = await early.wait()
+        XCTAssertTrue(earlyResult)
+
+        let pending = ManagedInstallerProductWorkerExitGate()
+        let waiter = Task { await pending.wait() }
+        await Task.yield()
+        XCTAssertTrue(pending.complete(false))
+        XCTAssertFalse(pending.complete(true))
+        let pendingResult = await waiter.value
+        XCTAssertFalse(pendingResult)
+    }
+
     func testProductWorkerRunnerRejectsTimeoutAndUnboundedOutput() async throws {
         let (request, _) = try productOperationXPCFixture()
         let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)

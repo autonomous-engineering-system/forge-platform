@@ -179,6 +179,7 @@ struct MacOSManagedInstallerProductWorkerRunner:
         process.standardInput = standardInput
         process.standardOutput = standardOutput
         process.standardError = standardError
+        let holder = ManagedInstallerProductWorkerProcess(process)
 
         do {
             try process.run()
@@ -189,7 +190,6 @@ struct MacOSManagedInstallerProductWorkerRunner:
             return .failure(.unavailable)
         }
 
-        let holder = ManagedInstallerProductWorkerProcess(process)
         async let output = Self.readBounded(
             standardOutput.fileHandleForReading,
             maximumBytes: max(
@@ -379,33 +379,60 @@ struct MacOSManagedInstallerProductWorkerRunner:
 
 private final class ManagedInstallerProductWorkerProcess: @unchecked Sendable {
     private let process: Process
+    private let exit = ManagedInstallerProductWorkerExitGate()
 
     init(_ process: Process) {
         self.process = process
-    }
-
-    func wait(timeoutNanoseconds: UInt64) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { [self] in
-                await waitForExit()
-                return true
-            }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
-                return false
-            }
-            let completed = await group.next() ?? false
-            if !completed && process.isRunning { process.terminate() }
-            group.cancelAll()
-            return completed
+        // Register before run(): a short-lived worker must not exit between
+        // launch and installation of the completion observer.
+        process.terminationHandler = { [exit] _ in
+            _ = exit.complete(true)
         }
     }
 
-    private func waitForExit() async {
+    func wait(timeoutNanoseconds: UInt64) async -> Bool {
+        let timeout = Task.detached { [exit, process] in
+            do { try await Task.sleep(nanoseconds: timeoutNanoseconds) }
+            catch { return }
+            guard exit.complete(false) else { return }
+            // A worker that ignores SIGTERM must not hold the privileged
+            // helper's operation lease or its pipe readers indefinitely.
+            if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
+        }
+        let completed = await exit.wait()
+        timeout.cancel()
+        return completed
+    }
+}
+
+final class ManagedInstallerProductWorkerExitGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed: Bool?
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    func complete(_ result: Bool) -> Bool {
+        lock.lock()
+        guard completed == nil else {
+            lock.unlock()
+            return false
+        }
+        completed = result
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(returning: result)
+        return true
+    }
+
+    func wait() async -> Bool {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async { [process] in
-                process.waitUntilExit()
-                continuation.resume()
+            lock.lock()
+            if let completed {
+                lock.unlock()
+                continuation.resume(returning: completed)
+            } else {
+                self.continuation = continuation
+                lock.unlock()
             }
         }
     }
