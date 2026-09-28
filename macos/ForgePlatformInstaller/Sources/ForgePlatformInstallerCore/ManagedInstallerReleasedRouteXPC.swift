@@ -337,10 +337,14 @@ enum ManagedInstallerReleasedRouteXPCCodec {
             throw ManagedInstallerReleasedRouteXPCFailure.rejected
         }
         let components = try componentValues.map { try decodeComponent($0, legacy: legacy) }
-        guard Set(components.map(\.componentID)) == Set([
+        let supportedComponents = Set([
                   ProviderOwnerComponent.forgeRuntime.rawValue,
                   ProviderOwnerComponent.engineeringPlatformServer.rawValue,
-              ]), components.count == 2,
+              ])
+        let componentIDs = Set(components.map(\.componentID))
+        guard !componentIDs.isEmpty,
+              componentIDs.isSubset(of: supportedComponents),
+              componentIDs.count == components.count,
               !components.contains(where: { $0.change == .blocked }) else {
             throw ManagedInstallerReleasedRouteXPCFailure.rejected
         }

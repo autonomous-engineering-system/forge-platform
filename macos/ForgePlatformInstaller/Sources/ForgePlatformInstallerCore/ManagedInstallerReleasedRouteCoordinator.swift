@@ -32,10 +32,13 @@ public struct ManagedInstallerReleasedRouteSnapshot: Equatable, Sendable {
         }
         let expectedPreflight = Set(HostPreflight.defaultChecks.map(\.id))
         let actualPreflight = Set(preflight.checks.map(\.id))
-        let expectedComponents = Set([
+        let supportedComponents = Set([
             ProviderOwnerComponent.forgeRuntime.rawValue,
             ProviderOwnerComponent.engineeringPlatformServer.rawValue,
         ])
+        let expectedComponents = Set(
+            session.productVirtualEnvironments.map(\.componentIdentity)
+        )
         guard inventory.targets.contains(deployment),
               preflight.isPassed,
               preflight.checks.count == expectedPreflight.count,
@@ -43,6 +46,8 @@ public struct ManagedInstallerReleasedRouteSnapshot: Equatable, Sendable {
               review.manifestIdentity == session.compositionIdentity,
               !review.isAcknowledged,
               review.status == .compatible,
+              !expectedComponents.isEmpty,
+              expectedComponents.isSubset(of: supportedComponents),
               Set(review.components.map(\.componentID)) == expectedComponents,
               review.components.count == expectedComponents.count,
               !review.components.contains(where: { $0.change == .blocked }),
