@@ -523,6 +523,14 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         reply(data)
     }
 
+    public func executeReviewedIntent(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        reply(nil)
+    }
+
     static func routeFileName(for canonicalRequest: Data) -> String {
         let digest = SHA256.hash(data: canonicalRequest)
             .map { String(format: "%02x", $0) }
@@ -634,16 +642,29 @@ public protocol ManagedInstallerReleasedRouteHelperServing: Sendable {
     ) async throws -> ManagedInstallerReleasedRouteSnapshot
 }
 
+/// The caller sends only a reviewed-plan fingerprint and correlation identity.
+/// Plan loading, currency checks and mutation remain helper-owned.
+public protocol ManagedInstallerReviewedExecutionIntentSending: Sendable {
+    func executeReviewedIntent(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedDeploymentExecutionResult
+}
+
 @objc public protocol ManagedInstallerReleasedRouteXPCService {
     func loadManagedDeploymentInventory(withReply reply: @escaping (Data?) -> Void)
     func loadReleasedRouteSnapshot(
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     )
+    func executeReviewedIntent(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
 }
 
 public actor MacOSManagedInstallerReleasedRouteXPCTransport:
-    ManagedInstallerReleasedRouteSnapshotLoading {
+    ManagedInstallerReleasedRouteSnapshotLoading,
+    ManagedInstallerReviewedExecutionIntentSending {
     public static let machServiceName =
         "com.autonomous-engineering-system.forge-platform-installer.helper.released-route"
 
@@ -700,6 +721,15 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
         )
     }
 
+    public func executeReviewedIntent(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedDeploymentExecutionResult {
+        let data = try await call { service, reply in
+            service.executeReviewedIntent(intent.canonicalJSONData(), withReply: reply)
+        }
+        return try ManagedInstallerReviewedExecutionResultCodec.decode(data)
+    }
+
     private func call(
         _ invoke: @escaping (
             ManagedInstallerReleasedRouteXPCService,
@@ -728,9 +758,14 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
 public final class ManagedInstallerReleasedRouteXPCServiceHandler:
     NSObject, ManagedInstallerReleasedRouteXPCService, @unchecked Sendable {
     private let service: any ManagedInstallerReleasedRouteHelperServing
+    private let admission: ManagedInstallerReviewedExecutionAdmission?
 
-    public init(service: any ManagedInstallerReleasedRouteHelperServing) {
+    public init(
+        service: any ManagedInstallerReleasedRouteHelperServing,
+        admission: ManagedInstallerReviewedExecutionAdmission? = nil
+    ) {
         self.service = service
+        self.admission = admission
         super.init()
     }
 
@@ -762,6 +797,23 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
                 return
             }
             gate.complete(ManagedInstallerReleasedRouteXPCCodec.encodeSnapshot(snapshot))
+        }
+    }
+
+    public func executeReviewedIntent(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let admission,
+              let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            let result = await admission.execute(canonicalIntent: canonicalIntent)
+            gate.complete(ManagedInstallerReviewedExecutionResultCodec.encode(result))
         }
     }
 }
