@@ -168,9 +168,9 @@ final class ManagedInstallerManagedDeploymentRegistryReaderTests: XCTestCase {
                 "previous_receipt_reference": .string("receipt:forge-" + id),
                 "preserve_operation_id": .string("preserve-" + id),
                 "preserve_receipt_digest": .string("sha256:" + String(repeating: "b", count: 64)),
-                "version": .string("2.7.36"),
-                "source_revision": .string("ed1e623ef3cedd8c4f720510e0052409b2d5ab1f"),
-                "artifact_digest": .string("sha256:c10e9584649538f2f1547bb09fd3982cc3495dcf34ef807d66463661fdd5cd68"),
+                "version": .string("2.7.37"),
+                "source_revision": .string("a78523603d6ea081d07875ea6b557e73b5d4fe63"),
+                "artifact_digest": .string("sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938"),
                 "forge_runtime_id": .string(forge), "forge_installation_id": .string("Install-A"),
             ])]),
         ])) + Data([0x0A])

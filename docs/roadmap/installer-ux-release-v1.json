@@ -9,8 +9,8 @@
   "authorizes_execution": false,
   "first_canary_prerequisite": false,
   "source_pins": {
-    "forge": "ed1e623ef3cedd8c4f720510e0052409b2d5ab1f",
-    "engineering-platform": "9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2",
+    "forge": "a78523603d6ea081d07875ea6b557e73b5d4fe63",
+    "engineering-platform": "cfce69892278ee2b6c14412c171f5f33596acb0e",
     "workspace": "36d294836cb653361fda3972de38acce3d2970f8",
     "forge-platform": "e92f4e4151080f7c2a9d4fdeba1541b1407d7907"
   },
@@ -21,17 +21,19 @@
   },
   "lifecycle_producer_baselines": {
     "forge": {
-      "version": "2.7.36",
-      "source_revision": "ed1e623ef3cedd8c4f720510e0052409b2d5ab1f",
-      "release": "forge-v2.7.36",
+      "version": "2.7.37",
+      "source_revision": "a78523603d6ea081d07875ea6b557e73b5d4fe63",
+      "release": "forge-v2.7.37",
+      "wheel_sha256": "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
       "contract": "forge-server-instance-lifecycle/v1",
       "release_state": "RELEASE_COMPLETE",
       "status": "QUALIFIED"
     },
     "engineering-platform": {
-      "version": "2.3.103",
-      "source_revision": "9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2",
-      "release": "engineering-platform-v2.3.103",
+      "version": "2.3.104",
+      "source_revision": "cfce69892278ee2b6c14412c171f5f33596acb0e",
+      "release": "engineering-platform-v2.3.104",
+      "wheel_sha256": "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb",
       "contract": "engineering-platform.system-instance-lifecycle/v1",
       "release_state": "RELEASE_COMPLETE",
       "status": "QUALIFIED"
@@ -132,7 +134,7 @@
       "depends_on": [],
       "status": "QUALIFIED",
       "qualification_evidence": [
-        "https://github.com/pcvantol/forge/pull/189"
+        "https://github.com/pcvantol/forge/issues/142#issuecomment-5873771111"
       ]
     },
     {
@@ -142,8 +144,8 @@
       ],
       "status": "QUALIFIED",
       "qualification_evidence": [
-        "https://github.com/pcvantol/forge/releases/tag/forge-v2.7.36",
-        "sha256:972ec735a15476bbb2d071d0af53e74d1f437fa828b360d53f6fc3b202ad6a35"
+        "https://github.com/pcvantol/forge/releases/tag/forge-v2.7.37",
+        "sha256:e3ea01d8470daa5d6dc7e80ba8f26b4a4f82a1bc98cdb8fdff73a41a4e1d2c29"
       ]
     },
     {
@@ -151,7 +153,7 @@
       "depends_on": [],
       "status": "QUALIFIED",
       "qualification_evidence": [
-        "https://github.com/pcvantol/engineering-platform/pull/316"
+        "https://github.com/pcvantol/forge/issues/142#issuecomment-5873771111"
       ]
     },
     {
@@ -161,8 +163,8 @@
       ],
       "status": "QUALIFIED",
       "qualification_evidence": [
-        "https://github.com/pcvantol/engineering-platform/releases/tag/engineering-platform-v2.3.103",
-        "sha256:92dbd447d1fac51aa0646a76c6330b19afffc4fa1b0ba6959fbd224d64d51235"
+        "https://github.com/pcvantol/engineering-platform/releases/tag/engineering-platform-v2.3.104",
+        "sha256:872e5937ae857288d4ff48d577d339263c1beefcb080dd1e54c11a51f76ebd85"
       ]
     },
     {
