@@ -234,6 +234,57 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         }
     }
 
+    func testCLIPlansEachLifecycleOperationThroughSharedReadOnlyReview() async throws {
+        for operation in ["PRESERVE", "RESTORE", "PURGE"] {
+            let selected = try intent(operation)
+            let coordinator = LifecycleReviewCoordinator(
+                inventory: try lifecycleInventory(preserved: operation == "RESTORE"),
+                proposal: try fixture(selected)
+            )
+            let result = await InstallerCLIWorkflow(
+                currentRelease: try release(), coordinator: coordinator
+            ).planPreservedLifecycle(
+                deploymentID: "reviewed-pair", operationID: "preserve-a",
+                operation: operation, component: "forge-runtime"
+            )
+            XCTAssertEqual(result.exitCode, .success)
+            XCTAssertEqual(result.status, "lifecycle-planned")
+            XCTAssertEqual(result.details["operation"], operation)
+            XCTAssertEqual(result.details["instance_id"], "forge-a")
+            XCTAssertEqual(result.details["review_fingerprint"], try fixture(selected).reviewFingerprint)
+            let reads = await coordinator.inventoryReadCount()
+            XCTAssertEqual(reads, 2)
+        }
+    }
+
+    func testCLIPlanFailsClosedOnStaleInventoryAndForeignProposal() async throws {
+        let selected = try intent()
+        let stale = LifecycleReviewCoordinator(
+            inventory: try lifecycleInventory(preserved: false),
+            proposal: try fixture(selected),
+            secondInventory: try lifecycleInventory(preserved: true)
+        )
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release(), coordinator: stale
+        ).planPreservedLifecycle(
+            deploymentID: "reviewed-pair", operationID: "preserve-a",
+            operation: "PRESERVE", component: "forge-runtime"
+        )
+        XCTAssertEqual(result.exitCode, .blocked)
+        XCTAssertEqual(result.status, "lifecycle-review-blocked")
+        let foreign = LifecycleReviewCoordinator(
+            inventory: try lifecycleInventory(preserved: false),
+            proposal: try fixture(intent("PURGE"))
+        )
+        let foreignResult = await InstallerCLIWorkflow(
+            currentRelease: try release(), coordinator: foreign
+        ).planPreservedLifecycle(
+            deploymentID: "reviewed-pair", operationID: "preserve-a",
+            operation: "PRESERVE", component: "forge-runtime"
+        )
+        XCTAssertEqual(foreignResult.exitCode, .blocked)
+    }
+
     func testSharedLifecycleReviewRejectsWrongStateDriftAndForeignProposal() async throws {
         let selected = try intent()
         let currentRelease = try release()

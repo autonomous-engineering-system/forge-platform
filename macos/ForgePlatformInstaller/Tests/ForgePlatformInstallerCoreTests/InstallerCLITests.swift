@@ -48,6 +48,19 @@ final class InstallerCLITests: XCTestCase {
                 "production", operationID: "remove-one", component: "forge-runtime"
             )
         )
+        for operation in ["preserve", "restore", "purge"] {
+            XCTAssertEqual(
+                try InstallerCLIParser.parse([
+                    "deployment", "lifecycle", "plan", operation,
+                    "--deployment", "production", "--operation-id", "lifecycle-one",
+                    "--component", "engineering-platform-server",
+                ]).command,
+                .deploymentLifecyclePlan(
+                    "production", operationID: "lifecycle-one",
+                    operation: operation.uppercased(), component: "engineering-platform-server"
+                )
+            )
+        }
         XCTAssertThrowsError(try InstallerCLIParser.parse(["deployment", "apply"]))
         XCTAssertThrowsError(try InstallerCLIParser.parse([
             "deployment", "apply", "--deployment", "a", "--deployment", "b",
@@ -75,6 +88,18 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertThrowsError(try InstallerCLIParser.parse([
             "deployment", "remove", "--deployment", "production",
             "--operation-id", "remove-one", "--review-fingerprint", "invalid",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "lifecycle", "plan", "preserve", "--deployment", "new",
+            "--operation-id", "lifecycle-one", "--component", "forge-runtime",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "lifecycle", "plan", "preserve", "--deployment", "production",
+            "--operation-id", "lifecycle-one", "--component", "forge-runtime", "--yes",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "lifecycle", "plan", "unknown", "--deployment", "production",
+            "--operation-id", "lifecycle-one", "--component", "forge-runtime",
         ]))
     }
 

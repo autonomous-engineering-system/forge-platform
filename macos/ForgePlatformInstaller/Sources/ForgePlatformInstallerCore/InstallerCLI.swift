@@ -12,6 +12,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentApply(String)
     case deploymentRemove(String, operationID: String, component: String?)
     case deploymentRemovePlan(String, operationID: String, component: String?)
+    case deploymentLifecyclePlan(String, operationID: String, operation: String, component: String)
 }
 
 public struct InstallerCLIOptions: Equatable, Sendable {
@@ -99,6 +100,7 @@ public enum InstallerCLIParser {
       forge-platform-installer deployment apply --deployment <id|new> [--yes] [--non-interactive] [--accept-installer-update] [--json]
       forge-platform-installer deployment remove --deployment <id> --operation-id <id> [--component forge-runtime] [--review-fingerprint <sha256> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment remove plan --deployment <id> --operation-id <id> [--component forge-runtime] [--json]
+      forge-platform-installer deployment lifecycle plan <preserve|restore|purge> --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--json]
 
     Security:
       --non-interactive never bypasses provider authentication, installer update
@@ -217,6 +219,22 @@ public enum InstallerCLIParser {
             command = .deploymentRemovePlan(
                 deployment, operationID: operationID, component: component
             )
+        case _ where positional.count == 4
+            && Array(positional.prefix(3)) == ["deployment", "lifecycle", "plan"]:
+            let operation = positional[3]
+            guard let deployment, deployment != "new",
+                  let operationID,
+                  ManagedInstallerPreservedLifecycleReviewIntent.isID(operationID),
+                  let component,
+                  ["forge-runtime", "engineering-platform-server"].contains(component),
+                  ["preserve", "restore", "purge"].contains(operation),
+                  !assumeYes, reviewFingerprint == nil else {
+                throw InstallerCLIParseError.invalidArguments
+            }
+            command = .deploymentLifecyclePlan(
+                deployment, operationID: operationID,
+                operation: operation.uppercased(), component: component
+            )
         default:
             throw InstallerCLIParseError.invalidArguments
         }
@@ -224,7 +242,7 @@ public enum InstallerCLIParser {
         if deployment != nil {
             switch command {
             case .deploymentPlan, .deploymentApply, .deploymentRemove,
-                 .deploymentRemovePlan:
+                 .deploymentRemovePlan, .deploymentLifecyclePlan:
                 break
             default:
                 throw InstallerCLIParseError.invalidArguments
@@ -232,7 +250,7 @@ public enum InstallerCLIParser {
         }
         if operationID != nil || component != nil || reviewFingerprint != nil {
             switch command {
-            case .deploymentRemovePlan, .deploymentRemove: break
+            case .deploymentRemovePlan, .deploymentRemove, .deploymentLifecyclePlan: break
             default:
                 throw InstallerCLIParseError.invalidArguments
             }
@@ -295,6 +313,46 @@ public struct InstallerCLIWorkflow: Sendable {
                 message: "Managed deployments gelezen.",
                 details: ["count": String(inventory.existing.count)],
                 records: Self.inventoryRecords(inventory)
+            )
+        }
+    }
+
+    public func planPreservedLifecycle(
+        deploymentID: String,
+        operationID: String,
+        operation: String,
+        component: String
+    ) async -> InstallerCLIResult {
+        let workflow = ManagedInstallerPreservedLifecycleReviewWorkflow(
+            coordinator: coordinator, currentRelease: currentRelease
+        )
+        switch await workflow.prepare(
+            operationID: operationID, deploymentID: deploymentID,
+            operation: operation, component: component
+        ) {
+        case .failure(let failure):
+            return InstallerCLIResult(
+                exitCode: .blocked, status: "lifecycle-review-blocked",
+                message: "Het exacte lifecyclevoorstel is niet beschikbaar.",
+                details: ["reason": String(describing: failure)]
+            )
+        case .success(let session):
+            return InstallerCLIResult(
+                exitCode: .success, status: "lifecycle-planned",
+                message: "Het helpervoorstel is alleen gelezen; er is geen productmutatie uitgevoerd.",
+                details: [
+                    "operation_id": session.operationID,
+                    "deployment_id": session.intent.deploymentID,
+                    "operation": session.intent.operation,
+                    "component": session.intent.component,
+                    "instance_id": session.intent.instanceID,
+                    "installed_composition_identity":
+                        session.intent.installedCompositionIdentity,
+                    "installed_manifest_sha256": session.intent.installedManifestSHA256,
+                    "registry_revision": String(session.proposal.registryRevision),
+                    "review_fingerprint": session.reviewFingerprint,
+                    "inventory_evidence_reference": session.inventoryEvidenceReference,
+                ]
             )
         }
     }
