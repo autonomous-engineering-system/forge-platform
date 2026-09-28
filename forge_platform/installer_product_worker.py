@@ -32,6 +32,12 @@ from .managed_preserved_lifecycle_request import (
     decode_native_preserved_lifecycle_receipt,
     decode_native_preserved_lifecycle_request,
 )
+from .managed_preserve_recovery import (
+    MAXIMUM_NATIVE_PRESERVE_RECOVERY_RECEIPT_BYTES,
+    NATIVE_PRESERVE_RECOVERY_REQUEST_SCHEMA,
+    decode_native_preserve_recovery_request,
+    decode_native_preserve_recovery_receipt,
+)
 from .managed_product_operation_service import (
     MAXIMUM_NATIVE_PRODUCT_OPERATION_RECEIPT_BYTES,
     MAXIMUM_NATIVE_PRODUCT_REMOVAL_RECEIPT_BYTES,
@@ -268,6 +274,30 @@ def execute_preserved_lifecycle_request(
     return response
 
 
+def read_terminal_preserve_recovery_request(
+    canonical_request: bytes, *,
+    service_loader: ServiceLoader = load_released_product_service,
+) -> bytes:
+    """Read only helper-owned terminal recovery proof for one exact operation."""
+    request = decode_native_preserve_recovery_request(canonical_request)
+    service = service_loader()
+    if not isinstance(service, ManagedProductOperationHelperService):
+        raise InstallerProductWorkerUnavailable("preserve recovery service is unavailable")
+    response = service.read_terminal_preserve_recovery(canonical_request)
+    if (
+        not isinstance(response, bytes) or not response
+        or len(response) > MAXIMUM_NATIVE_PRESERVE_RECOVERY_RECEIPT_BYTES
+    ):
+        raise InstallerProductWorkerUnavailable("preserve recovery receipt is unavailable")
+    try:
+        decode_native_preserve_recovery_receipt(response, request=request)
+    except Exception as error:
+        raise InstallerProductWorkerUnavailable(
+            "preserve recovery receipt was rejected"
+        ) from error
+    return response
+
+
 def run(
     input_stream: BinaryIO,
     output_stream: BinaryIO,
@@ -288,6 +318,10 @@ def run(
             )
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA:
             response = execute_preserved_lifecycle_request(
+                request, service_loader=service_loader,
+            )
+        elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVE_RECOVERY_REQUEST_SCHEMA:
+            response = read_terminal_preserve_recovery_request(
                 request, service_loader=service_loader,
             )
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REQUEST_SCHEMA:
