@@ -4,6 +4,95 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
+    func testV4SingleRouteMatchesPythonBytesAndCASReplacesV3() throws {
+        let (pairSnapshot, pairBytes) = try fixture()
+        let (singleSnapshot, singleBytes) = try singleFixture()
+        let (parent, root, publisher) = try preparedPublisher()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        XCTAssertEqual(singleSnapshot.canonicalJSONData(), singleBytes)
+        XCTAssertEqual(singleSnapshot.singleRoutes.count, 1)
+        XCTAssertEqual(singleSnapshot.singleRoutes[0].componentIdentity, "forge-runtime")
+        XCTAssertNoThrow(try publisher.publishProductWorkerAuthority(pairSnapshot).get())
+        let oldDigest = "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: pairBytes)
+        let receipt = try publisher.publishProductWorkerAuthority(
+            singleSnapshot, expectedExistingSHA256: oldDigest
+        ).get()
+        XCTAssertEqual(
+            try Data(contentsOf: root.appendingPathComponent(receipt.fileName)),
+            singleBytes
+        )
+        XCTAssertEqual(
+            publisher.publishProductWorkerAuthority(singleSnapshot),
+            .success(receipt)
+        )
+        let route = singleSnapshot.singleRoutes[0]
+        XCTAssertThrowsError(try ManagedInstallerProductWorkerSingleRouteAuthority(
+            deploymentID: route.deploymentID,
+            componentIdentity: route.componentIdentity,
+            instanceID: route.instanceID,
+            serviceAccount: route.serviceAccount,
+            bindPort: route.bindPort,
+            artifactSHA256: route.artifactSHA256,
+            forgeInstallationID: route.forgeInstallationID,
+            engineeringPlatformDisplayLabel: "unreviewed EP"
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: singleSnapshot.installerRelease,
+            candidateManifests: singleSnapshot.candidateManifests,
+            routes: [],
+            singleRoutes: [route, route]
+        ))
+        let distinct = try ManagedInstallerProductWorkerSingleRouteAuthority(
+            deploymentID: "single-staging",
+            componentIdentity: "forge-runtime",
+            instanceID: "forge-staging",
+            serviceAccount: "_forge_staging",
+            bindPort: 8975,
+            artifactSHA256: route.artifactSHA256,
+            forgeInstallationID: "forge-installation-staging"
+        )
+        let mixed = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: singleSnapshot.installerRelease,
+            candidateManifests: pairSnapshot.candidateManifests
+                + singleSnapshot.candidateManifests,
+            routes: pairSnapshot.routes,
+            singleRoutes: [distinct]
+        )
+        XCTAssertEqual(mixed.routes.count, 1)
+        XCTAssertEqual(mixed.singleRoutes.count, 1)
+        let mixedWire = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: mixed.canonicalJSONData()) as? [String: Any]
+        )
+        XCTAssertEqual(
+            mixedWire["schema"] as? String,
+            ManagedInstallerProductWorkerAuthoritySnapshot.singleSchema
+        )
+        let epDigest = try XCTUnwrap(
+            pairSnapshot.candidateManifests[0].engineeringPlatformArtifactSHA256
+        )
+        let epRoute = try ManagedInstallerProductWorkerSingleRouteAuthority(
+            deploymentID: "ep-only", componentIdentity: "engineering-platform-server",
+            instanceID: "ep-only", serviceAccount: "_ep_only", bindPort: 9976,
+            artifactSHA256: epDigest,
+            engineeringPlatformDisplayLabel: "EP Only"
+        )
+        XCTAssertNoThrow(try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: pairSnapshot.installerRelease,
+            candidateManifests: pairSnapshot.candidateManifests,
+            routes: [], singleRoutes: [epRoute]
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductWorkerSingleRouteAuthority(
+            deploymentID: epRoute.deploymentID,
+            componentIdentity: epRoute.componentIdentity,
+            instanceID: epRoute.instanceID,
+            serviceAccount: epRoute.serviceAccount,
+            bindPort: epRoute.bindPort,
+            artifactSHA256: epRoute.artifactSHA256,
+            forgeInstallationID: "unreviewed-forge",
+            engineeringPlatformDisplayLabel: epRoute.engineeringPlatformDisplayLabel
+        ))
+    }
+
     func testPublishesPythonWorkerCompatibleCanonicalAuthorityAndRepeatsIdempotently() throws {
         let (snapshot, expected) = try fixture()
         let (parent, root, publisher) = try preparedPublisher()
@@ -353,6 +442,53 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
             ),
             candidateManifests: values,
             routes: routeValues
+        ), expected)
+    }
+
+    private func singleFixture() throws -> (
+        ManagedInstallerProductWorkerAuthoritySnapshot, Data
+    ) {
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/product-worker-authority-v4.json")
+        let expected = try Data(contentsOf: source)
+        let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: expected) as? [String: Any])
+        let release = try XCTUnwrap(wire["installer_release"] as? [String: Any])
+        let manifests = try XCTUnwrap(wire["candidate_manifests"] as? [[String: Any]])
+        let routes = try XCTUnwrap(wire["single_routes"] as? [[String: Any]])
+        let values = try manifests.map { item in
+            let payload = try XCTUnwrap(item["payload"])
+            let bytes = try JSONSerialization.data(
+                withJSONObject: payload, options: [.sortedKeys, .withoutEscapingSlashes]
+            )
+            return try ManagedInstallerProductWorkerManifestAuthority(
+                digest: try XCTUnwrap(item["digest"] as? String),
+                canonicalPayload: bytes
+            )
+        }
+        let singleRoutes = try routes.map { item in
+            try ManagedInstallerProductWorkerSingleRouteAuthority(
+                deploymentID: try XCTUnwrap(item["deployment_id"] as? String),
+                componentIdentity: try XCTUnwrap(item["component_identity"] as? String),
+                instanceID: try XCTUnwrap(item["instance_id"] as? String),
+                serviceAccount: try XCTUnwrap(item["service_account"] as? String),
+                bindPort: try XCTUnwrap(item["bind_port"] as? Int),
+                artifactSHA256: try XCTUnwrap(item["artifact_sha256"] as? String),
+                forgeInstallationID: item["forge_installation_id"] as? String,
+                engineeringPlatformDisplayLabel: item["ep_display_label"] as? String
+            )
+        }
+        return (try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: VerifiedInstallerRelease(
+                version: InstallerVersion(try XCTUnwrap(release["version"] as? String)),
+                releasePage: try XCTUnwrap(release["release_page"] as? String),
+                assetName: try XCTUnwrap(release["asset_name"] as? String),
+                sha256: try XCTUnwrap(release["sha256"] as? String),
+                signingKeyID: try XCTUnwrap(release["signing_key_id"] as? String)
+            ),
+            candidateManifests: values,
+            routes: [],
+            singleRoutes: singleRoutes
         ), expected)
     }
 }
