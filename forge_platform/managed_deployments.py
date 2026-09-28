@@ -40,6 +40,7 @@ TOPOLOGY_ACTIONS = frozenset({
     "ADD_COMPONENT", "UPDATE", "NO_CHANGE", "REPAIR", "REMOVE_COMPONENT",
 })
 _SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_PRODUCT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _RECEIPT = re.compile(r"^receipt:[a-z0-9][a-z0-9._-]{0,127}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -132,7 +133,12 @@ class ManagedPreservedComponentBinding:
         if self.component == "forge-runtime":
             if self.forge_runtime_id != self.instance_id:
                 raise ValueError("preserved Forge runtime identity changed")
-            _safe_id(self.forge_installation_id, "preserved Forge installation_id")
+            if (
+                not isinstance(self.forge_installation_id, str)
+                or _PRODUCT_ID.fullmatch(self.forge_installation_id) is None
+                or self.forge_installation_id in {".", ".."}
+            ):
+                raise ValueError("preserved Forge installation_id is invalid")
         elif self.forge_runtime_id is not None or self.forge_installation_id is not None:
             raise ValueError("preserved EP component carries Forge identity")
 

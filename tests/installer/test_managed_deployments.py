@@ -21,6 +21,7 @@ from forge_platform.managed_deployments import (
     ManagedDeploymentPlanner,
     ManagedDeploymentRegistry,
     ManagedPeerBinding,
+    ManagedPreservedComponentBinding,
 )
 from forge_platform.product_preserved_lifecycle import FORGE_COMPONENT, EP_COMPONENT
 from tests.installer.test_product_preserved_lifecycle import (
@@ -55,6 +56,17 @@ def deployment(
 
 
 class ManagedDeploymentTests(unittest.TestCase):
+    def test_preserved_forge_installation_identity_accepts_product_opaque_case(self) -> None:
+        artifact = _artifact(FORGE_COMPONENT)
+        preserved = ManagedPreservedComponentBinding(
+            FORGE_COMPONENT, "forge-a", "receipt:forge-a", "preserve-a",
+            "sha256:" + "e" * 64, artifact.version,
+            artifact.source_revision, artifact.digest, "forge-a", "Install-A",
+        )
+        self.assertEqual(preserved.forge_installation_id, "Install-A")
+        with self.assertRaisesRegex(ValueError, "installation_id"):
+            replace(preserved, forge_installation_id="../other")
+
     def test_preserve_commit_keeps_exact_instance_claim_and_historical_pairing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             registry = ManagedDeploymentRegistry(Path(directory).resolve())
