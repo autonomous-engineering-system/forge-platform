@@ -477,7 +477,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
 /// Read-only XPC backend over helper-owned route evidence. The app can select
 /// only a correlation request; file names are derived inside the helper and
 /// every document is read through a private root descriptor without following
-/// links. A separate verified authority publisher owns creation of these files.
+/// links. The released helper derives inventory from the Python-owned registry
+/// and durable helper-owned create candidate. A separate verified authority
+/// publisher owns creation of reviewed route snapshots.
 public final class FileManagedInstallerReleasedRouteXPCService:
     NSObject, ManagedInstallerReleasedRouteXPCService, @unchecked Sendable {
     public static let inventoryFileName = "managed-deployment-inventory.json"
@@ -489,14 +491,27 @@ public final class FileManagedInstallerReleasedRouteXPCService:
 
     private let rootDirectory: URL
     private let expectedOwner: uid_t
+    private let inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer?
 
     public convenience override init() {
-        self.init(rootDirectory: Self.productionRoot, expectedOwner: 0)
+        self.init(
+            rootDirectory: Self.productionRoot,
+            expectedOwner: 0,
+            inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer(
+                registry: FileManagedInstallerManagedDeploymentRegistryReader(),
+                candidate: FileManagedInstallerManagedDeploymentCreateCandidateStore()
+            )
+        )
     }
 
-    init(rootDirectory: URL, expectedOwner: uid_t) {
+    init(
+        rootDirectory: URL,
+        expectedOwner: uid_t,
+        inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer? = nil
+    ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
+        self.inventoryProducer = inventoryProducer
         super.init()
     }
 
@@ -539,6 +554,14 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     }
 
     private func loadInventory() -> (data: Data, inventory: ManagedDeploymentInventory)? {
+        if let inventoryProducer {
+            guard case .success(let inventory) = inventoryProducer.produce() else { return nil }
+            let data = ManagedInstallerReleasedRouteXPCCodec.encodeInventory(inventory)
+            guard data.count <= ManagedInstallerReleasedRouteXPCCodec.maximumResponseBytes else {
+                return nil
+            }
+            return (data, inventory)
+        }
         guard let data = try? readSecureFile(named: Self.inventoryFileName),
               let inventory = try? ManagedInstallerReleasedRouteXPCCodec.decodeInventory(data),
               ManagedInstallerReleasedRouteXPCCodec.encodeInventory(inventory) == data else {
