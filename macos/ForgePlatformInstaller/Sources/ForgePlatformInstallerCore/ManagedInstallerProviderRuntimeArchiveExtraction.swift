@@ -76,13 +76,18 @@ struct MacOSManagedInstallerProviderRuntimeArchiveExtractor {
             } catch { return .failure(.unavailable) }
             guard process.terminationReason == .exit,
                   process.terminationStatus == 0,
-                  try destinationIsSamePrivateDirectory(opened),
-                  Darwin.fsync(opened.descriptor) == 0 else {
+                  try destinationIsSamePrivateDirectory(opened) else {
+                return .failure(.rejected)
+            }
+            try normalizeExecutableMode(requirement: requirement)
+            guard Darwin.fsync(opened.descriptor) == 0 else {
                 return .failure(.rejected)
             }
             let treeEvidence = try MacOSManagedPythonRuntimeExtractedTreeVerifier(
                 slotRoot: destination, expectedOwner: expectedOwner
-            ).verify(members: inventory.members)
+            ).verify(members: Self.installedMembers(
+                inventory.members, requirement: requirement
+            ))
             guard try destinationIsSamePrivateDirectory(opened) else {
                 return .failure(.rejected)
             }
@@ -95,7 +100,45 @@ struct MacOSManagedInstallerProviderRuntimeArchiveExtractor {
         } catch { return .failure(.rejected) }
     }
 
-    private static func providerTreeEvidence(
+    static func installedMembers(
+        _ members: [ManagedPythonRuntimeArchiveMember],
+        requirement: ProviderRequirement
+    ) -> [ManagedPythonRuntimeArchiveMember] {
+        guard let executable = requirement.runtime?.executableRelativePath else {
+            return members
+        }
+        return members.map { member in
+            guard member.path == executable else { return member }
+            return ManagedPythonRuntimeArchiveMember(
+                path: member.path, kind: .file, mode: 0o500,
+                byteCount: member.byteCount, sha256: member.sha256
+            )
+        }
+    }
+
+    private func normalizeExecutableMode(requirement: ProviderRequirement) throws {
+        guard let relative = requirement.runtime?.executableRelativePath else {
+            throw ManagedInstallerProviderRuntimeArchiveExtractionFailure.rejected
+        }
+        let path = destination.appendingPathComponent(relative).path
+        let descriptor = path.withCString {
+            Darwin.open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard descriptor >= 0 else {
+            throw ManagedInstallerProviderRuntimeArchiveExtractionFailure.rejected
+        }
+        defer { _ = Darwin.close(descriptor) }
+        var details = stat()
+        guard Darwin.fstat(descriptor, &details) == 0,
+              (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              details.st_uid == expectedOwner, details.st_nlink == 1,
+              Darwin.fchmod(descriptor, mode_t(0o500)) == 0,
+              Darwin.fsync(descriptor) == 0 else {
+            throw ManagedInstallerProviderRuntimeArchiveExtractionFailure.rejected
+        }
+    }
+
+    static func providerTreeEvidence(
         _ treeEvidence: String,
         inspection: ManagedInstallerProviderRuntimeArchiveInspection,
         requirement: ProviderRequirement

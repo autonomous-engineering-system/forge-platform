@@ -4,6 +4,124 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
+    func testProviderRuntimeSlotsSurviveStagingDiscardWithExactCachedReadback() throws {
+        for kind in [ProviderRuntimeArchiveKind.tarGzip, .zip] {
+            let fixture = try ProviderArchiveFixture(
+                kind: kind, provider: kind == .zip ? .githubCLI : .codex
+            )
+            let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+                .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
+            let request = try ManagedInstallerProviderRuntimeMutationRequest(
+                stagedArchive: fixture.staged, requirement: fixture.requirement,
+                inspection: inspection
+            )
+            let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+                .appendingPathComponent("provider-slot-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            XCTAssertEqual(chmod(root.path, 0o700), 0)
+            let publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
+                slotsRoot: root, expectedOwner: geteuid()
+            )
+            XCTAssertNil(try providerSlotReadback(
+                publisher.readPublishedSlot(requirement: fixture.requirement,
+                                            request: request)
+            ))
+            let published = try XCTUnwrap(providerSlotReadback(publisher.publish(
+                archive: fixture.archive, requirement: fixture.requirement,
+                request: request
+            )))
+            XCTAssertEqual(published.operationID, request.operationID)
+            XCTAssertEqual(published.providerTargetID, fixture.requirement.id)
+            XCTAssertEqual(published.runtimeSlotIdentity, request.runtimeSlotIdentity)
+            XCTAssertTrue(published.treeEvidenceReference.hasPrefix("receipt:provider-tree-"))
+            XCTAssertEqual(try providerSlotReadback(publisher.readPublishedSlot(
+                requirement: fixture.requirement, request: request
+            )), published)
+            XCTAssertEqual(try providerSlotReadback(publisher.publish(
+                archive: fixture.archive, requirement: fixture.requirement,
+                request: request
+            )), published)
+            let suffix = kind == .zip ? "zip" : "tar.gz"
+            let cache = root.appendingPathComponent(
+                "archive-" + fixture.runtime.artifactSHA256.dropFirst("sha256:".count)
+                    + "." + suffix
+            )
+            XCTAssertEqual(try Data(contentsOf: cache), fixture.archive)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(
+                request.runtime.version.description
+            ).path))
+        }
+    }
+
+    func testProviderRuntimeSlotRejectsTamperedCacheAndTree() throws {
+        let fixture = try ProviderArchiveFixture()
+        let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
+        let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            stagedArchive: fixture.staged, requirement: fixture.requirement,
+            inspection: inspection
+        )
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("provider-slot-negative-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        let publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        )
+        _ = try providerSlotReadback(publisher.publish(
+            archive: fixture.archive, requirement: fixture.requirement, request: request
+        ))
+        let file = root.appendingPathComponent(request.runtime.version.description)
+            .appendingPathComponent(fixture.runtime.executableRelativePath)
+        XCTAssertEqual(chmod(file.path, 0o600), 0)
+        XCTAssertEqual(publisher.readPublishedSlot(
+            requirement: fixture.requirement, request: request
+        ).failure, .rejected)
+        XCTAssertEqual(chmod(file.path, 0o755), 0)
+        let cache = root.appendingPathComponent(
+            "archive-" + fixture.runtime.artifactSHA256.dropFirst("sha256:".count)
+                + ".tar.gz"
+        )
+        try Data("corrupt".utf8).write(to: cache)
+        XCTAssertEqual(chmod(cache.path, 0o600), 0)
+        XCTAssertEqual(publisher.readPublishedSlot(
+            requirement: fixture.requirement, request: request
+        ).failure, .rejected)
+    }
+
+    func testProviderRuntimeSlotRejectsWrongTargetAndInsecureRoot() throws {
+        let fixture = try ProviderArchiveFixture()
+        let other = try ProviderArchiveFixture(target: "other-instance")
+        let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
+        let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            stagedArchive: fixture.staged, requirement: fixture.requirement,
+            inspection: inspection
+        )
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("provider-slot-target-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        let publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        )
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.archive, requirement: other.requirement, request: request
+        ).failure, .invalidRequest)
+        XCTAssertEqual(publisher.readPublishedSlot(
+            requirement: other.requirement, request: request
+        ).failure, .invalidRequest)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+        XCTAssertEqual(chmod(root.path, 0o755), 0)
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.archive, requirement: fixture.requirement, request: request
+        ).failure, .rejected)
+    }
     func testExtractsExactTarAndZipWithIndependentCompleteTreeReadback() throws {
         for kind in [ProviderRuntimeArchiveKind.tarGzip, .zip] {
             let fixture = try ProviderArchiveFixture(
@@ -40,6 +158,12 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent(
                 fixture.runtime.executableRelativePath
             )), fixture.executable)
+            let extractedMode = try XCTUnwrap(FileManager.default.attributesOfItem(
+                atPath: destination.appendingPathComponent(
+                    fixture.runtime.executableRelativePath
+                ).path
+            )[.posixPermissions] as? NSNumber)
+            XCTAssertEqual(extractedMode.uint16Value, 0o500)
             XCTAssertEqual(extractor.extract(
                 archive: fixture.archive, requirement: fixture.requirement,
                 inspection: inventory.inspection
@@ -249,6 +373,17 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
             minimumMacOSVersion: try InstallerVersion("26.0.0"),
             evidenceReference: "bad value"
         ))
+    }
+}
+
+private func providerSlotReadback<T>(
+    _ result: Result<T, ManagedInstallerProviderRuntimeMutationFailure>
+) throws -> T {
+    switch result {
+    case .success(let value): return value
+    case .failure(let failure):
+        XCTFail("provider slot operation failed: \(failure)")
+        throw failure
     }
 }
 
