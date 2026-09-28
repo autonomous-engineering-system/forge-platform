@@ -282,7 +282,11 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 removalReviewTransport: productTransport,
                 removalTransport: productTransport,
                 preservedLifecycleReviewTransport: productTransport,
-                preservedLifecycleTransport: productTransport
+                preservedLifecycleTransport: productTransport,
+                preservedRegistryReadTransport:
+                    MacOSManagedInstallerReleasedRouteXPCTransport(
+                        helperIdentity: helperIdentity
+                    )
             ))
         } catch {
             // Do not leak a filesystem location, architecture detail, network

@@ -32,6 +32,11 @@ public struct ManagedInstallerManagedDeploymentRegistryRecord:
     public let historicalPeerReceiptReference: String?
     public let compositionReceiptReference: String?
     public let recordSHA256: String
+    private let canonicalData: Data
+
+    /// Exact canonical Python-owned registry bytes; contains bounded public
+    /// identities and receipt references, never credentials or filesystem paths.
+    public func canonicalJSONData() -> Data { canonicalData }
 
     public static func decode(
         _ data: Data,
@@ -232,7 +237,8 @@ public struct ManagedInstallerManagedDeploymentRegistryRecord:
             peerReceiptReference: peerReceipt,
             historicalPeerReceiptReference: historicalReceipt,
             compositionReceiptReference: compositionReceipt,
-            recordSHA256: "sha256:" + digest
+            recordSHA256: "sha256:" + digest,
+            canonicalData: data
         )
     }
 

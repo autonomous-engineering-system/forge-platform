@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import ForgePlatformInstallerCore
 
@@ -352,6 +353,84 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         ), request)
     }
 
+    func testExactPreservedRegistryRecordCrossesReadOnlyHelperXPC() async throws {
+        let fixture = try ReleasedRouteFixture()
+        let canonical = PreservedRegistryFixture.record()
+        let backend = ReleasedRouteHelperService(
+            snapshot: fixture.snapshot, registryData: canonical
+        )
+        let handler = ManagedInstallerReleasedRouteXPCServiceHandler(service: backend)
+        let identity = try ManagedInstallerProductOperationXPCCallerIdentity(
+            bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
+            teamIdentifier: "ZEML4LPXH4"
+        )
+        let listener = MacOSManagedInstallerReleasedRouteXPCListener(
+            listener: .anonymous(), callerIdentity: identity,
+            serviceHandler: handler,
+            installCodeSigningRequirement: { _, _ in }
+        )
+        listener.activate()
+        defer { listener.invalidate() }
+        let transport = MacOSManagedInstallerReleasedRouteXPCTransport(
+            endpoint: listener.endpoint
+        )
+        defer { Task { await transport.invalidate() } }
+        let record = try await transport.loadManagedDeploymentRegistryRecord(
+            deploymentID: "deployment-one"
+        )
+        XCTAssertEqual(record.canonicalJSONData(), canonical)
+        XCTAssertEqual(record.preservedComponents["forge-runtime"]?.preserveOperationID,
+                       "preserve-one")
+        do {
+            _ = try await transport.loadManagedDeploymentRegistryRecord(
+                deploymentID: "../other"
+            )
+            XCTFail("Unsafe deployment must fail before XPC")
+        } catch {
+            XCTAssertEqual(error as? ManagedInstallerReleasedRouteXPCFailure,
+                           .invalidRequest)
+        }
+    }
+
+    func testFileHelperReturnsOnlyCanonicalPrivateRegistryRecord() throws {
+        let parent = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let registryRoot = parent.appendingPathComponent("deployments", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: registryRoot, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: registryRoot.path
+        )
+        let file = registryRoot.appendingPathComponent("deployment-one.json")
+        let canonical = PreservedRegistryFixture.record()
+        try canonical.write(to: file)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: file.path
+        )
+        let service = FileManagedInstallerReleasedRouteXPCService(
+            rootDirectory: parent, expectedOwner: Darwin.geteuid(),
+            registryReader: FileManagedInstallerManagedDeploymentRegistryReader(
+                rootDirectory: registryRoot, expectedOwner: Darwin.geteuid()
+            )
+        )
+        var response: Data?
+        service.loadManagedDeploymentRegistryRecord("deployment-one") {
+            response = $0
+        }
+        XCTAssertEqual(response, canonical)
+        service.loadManagedDeploymentRegistryRecord("../other") { response = $0 }
+        XCTAssertNil(response)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644], ofItemAtPath: file.path
+        )
+        service.loadManagedDeploymentRegistryRecord("deployment-one") {
+            response = $0
+        }
+        XCTAssertNil(response)
+    }
+
     func testInProcessXPCRoundTripUsesExactCallerRequirement() async throws {
         let fixture = try ReleasedRouteFixture(includeManagedGit: true)
         let backend = ReleasedRouteHelperService(snapshot: fixture.snapshot)
@@ -545,16 +624,27 @@ private struct XPCExecutionRouteExecutor: ManagedDeploymentRouteCoordinating {
 
 private actor ReleasedRouteHelperService: ManagedInstallerReleasedRouteHelperServing {
     private let snapshot: ManagedInstallerReleasedRouteSnapshot
+    private let registryData: Data?
     private var failing = false
     private var requestCount = 0
 
-    init(snapshot: ManagedInstallerReleasedRouteSnapshot) { self.snapshot = snapshot }
+    init(snapshot: ManagedInstallerReleasedRouteSnapshot, registryData: Data? = nil) {
+        self.snapshot = snapshot
+        self.registryData = registryData
+    }
     func setFailure(_ value: Bool) { failing = value }
     func snapshotRequestCount() -> Int { requestCount }
 
     func loadManagedDeploymentInventory() async throws -> ManagedDeploymentInventory {
         if failing { throw ManagedInstallerReleasedRouteXPCFailure.unavailable }
         return snapshot.inventory
+    }
+
+    func loadManagedDeploymentRegistryRecord(deploymentID: String) async throws -> Data {
+        guard !failing, deploymentID == "deployment-one", let registryData else {
+            throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+        }
+        return registryData
     }
 
     func loadReleasedRouteSnapshot(
@@ -593,6 +683,13 @@ private final class RawReleasedRouteXPCService:
     var endpoint: NSXPCListenerEndpoint { listener.endpoint }
     func loadManagedDeploymentInventory(withReply reply: @escaping (Data?) -> Void) {
         reply(inventoryResponse)
+    }
+    func loadManagedDeploymentRegistryRecord(
+        _ deploymentID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = deploymentID
+        reply(nil)
     }
     func loadReleasedRouteSnapshot(
         _ canonicalRequest: Data,

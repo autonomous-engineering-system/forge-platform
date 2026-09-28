@@ -551,6 +551,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         (any ManagedInstallerPreservedLifecycleReviewTransporting)?
     private let preservedLifecycleTransport:
         (any ManagedInstallerPreservedLifecycleTransporting)?
+    private let preservedRegistryReadTransport:
+        (any ManagedInstallerPreservedRegistryReading)?
     private var productMutationInFlight = false
 
     private var pendingUpdate: PendingUpdate?
@@ -591,7 +593,9 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         preservedLifecycleReviewTransport:
             (any ManagedInstallerPreservedLifecycleReviewTransporting)? = nil,
         preservedLifecycleTransport:
-            (any ManagedInstallerPreservedLifecycleTransporting)? = nil
+            (any ManagedInstallerPreservedLifecycleTransporting)? = nil,
+        preservedRegistryReadTransport:
+            (any ManagedInstallerPreservedRegistryReading)? = nil
     ) {
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
@@ -607,6 +611,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.removalTransport = removalTransport
         self.preservedLifecycleReviewTransport = preservedLifecycleReviewTransport
         self.preservedLifecycleTransport = preservedLifecycleTransport
+        self.preservedRegistryReadTransport = preservedRegistryReadTransport
     }
 
     public func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
@@ -784,6 +789,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         guard !productMutationInFlight,
               let preservedLifecycleReviewTransport,
               let preservedLifecycleTransport,
+              let preservedRegistryReadTransport,
               session.intent.operation == "PRESERVE",
               session.inventoryEvidenceReference == session.inventory.evidenceReference,
               session.inventory.existing.contains(session.target),
@@ -876,7 +882,18 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                     installedCompositionID: session.target.installedCompositionID,
                     installedCompositionManifestSHA256:
                         session.target.installedCompositionManifestSHA256
-                  ), updated == expected else {
+                  ), updated == expected,
+                  let registry = try? await preservedRegistryReadTransport
+                    .loadManagedDeploymentRegistryRecord(deploymentID: session.target.id),
+                  registry.target == expected,
+                  registry.revision == receipt.registryRevision,
+                  let preserved = registry.preservedComponents[session.intent.component],
+                  preserved.instanceID == session.intent.instanceID,
+                  preserved.preserveOperationID == session.intent.operationID,
+                  preserved.preserveReceiptDigest == receipt.receiptDigest,
+                  case .available(let finalInventory) =
+                    await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
+                  finalInventory == after else {
                 return .failure(.rejected)
             }
             return .success(receipt)

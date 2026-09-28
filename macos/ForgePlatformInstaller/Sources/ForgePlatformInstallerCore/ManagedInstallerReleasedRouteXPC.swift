@@ -533,6 +533,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     private let rootDirectory: URL
     private let expectedOwner: uid_t
     private let inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer?
+    private let registryReader: FileManagedInstallerManagedDeploymentRegistryReader?
 
     public convenience override init() {
         self.init(
@@ -541,23 +542,38 @@ public final class FileManagedInstallerReleasedRouteXPCService:
             inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer(
                 registry: FileManagedInstallerManagedDeploymentRegistryReader(),
                 candidate: FileManagedInstallerManagedDeploymentCreateCandidateStore()
-            )
+            ),
+            registryReader: FileManagedInstallerManagedDeploymentRegistryReader()
         )
     }
 
     init(
         rootDirectory: URL,
         expectedOwner: uid_t,
-        inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer? = nil
+        inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer? = nil,
+        registryReader: FileManagedInstallerManagedDeploymentRegistryReader? = nil
     ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
         self.inventoryProducer = inventoryProducer
+        self.registryReader = registryReader
         super.init()
     }
 
     public func loadManagedDeploymentInventory(withReply reply: @escaping (Data?) -> Void) {
         reply(loadInventory()?.data)
+    }
+
+    public func loadManagedDeploymentRegistryRecord(
+        _ deploymentID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        guard ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID),
+              let registryReader,
+              let snapshot = try? registryReader.read().get(),
+              let record = snapshot.records.first(where: { $0.target.id == deploymentID })
+        else { reply(nil); return }
+        reply(record.canonicalJSONData())
     }
 
     public func loadReleasedRouteSnapshot(
@@ -701,9 +717,23 @@ public final class FileManagedInstallerReleasedRouteXPCService:
 
 public protocol ManagedInstallerReleasedRouteHelperServing: Sendable {
     func loadManagedDeploymentInventory() async throws -> ManagedDeploymentInventory
+    func loadManagedDeploymentRegistryRecord(deploymentID: String) async throws -> Data
     func loadReleasedRouteSnapshot(
         request: ManagedInstallerReleasedRouteRequest
     ) async throws -> ManagedInstallerReleasedRouteSnapshot
+}
+
+public extension ManagedInstallerReleasedRouteHelperServing {
+    func loadManagedDeploymentRegistryRecord(deploymentID: String) async throws -> Data {
+        _ = deploymentID
+        throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+    }
+}
+
+public protocol ManagedInstallerPreservedRegistryReading: Sendable {
+    func loadManagedDeploymentRegistryRecord(
+        deploymentID: String
+    ) async throws -> ManagedInstallerManagedDeploymentRegistryRecord
 }
 
 /// The caller sends only a reviewed-plan fingerprint and correlation identity.
@@ -716,6 +746,10 @@ public protocol ManagedInstallerReviewedExecutionIntentSending: Sendable {
 
 @objc public protocol ManagedInstallerReleasedRouteXPCService {
     func loadManagedDeploymentInventory(withReply reply: @escaping (Data?) -> Void)
+    func loadManagedDeploymentRegistryRecord(
+        _ deploymentID: String,
+        withReply reply: @escaping (Data?) -> Void
+    )
     func loadReleasedRouteSnapshot(
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
@@ -728,7 +762,8 @@ public protocol ManagedInstallerReviewedExecutionIntentSending: Sendable {
 
 public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     ManagedInstallerReleasedRouteSnapshotLoading,
-    ManagedInstallerReviewedExecutionIntentSending {
+    ManagedInstallerReviewedExecutionIntentSending,
+    ManagedInstallerPreservedRegistryReading {
     public static let machServiceName =
         "com.autonomous-engineering-system.forge-platform-installer.helper.released-route"
 
@@ -758,6 +793,20 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
             service.loadManagedDeploymentInventory(withReply: reply)
         }
         return try ManagedInstallerReleasedRouteXPCCodec.decodeInventory(data)
+    }
+
+    public func loadManagedDeploymentRegistryRecord(
+        deploymentID: String
+    ) async throws -> ManagedInstallerManagedDeploymentRegistryRecord {
+        guard ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID) else {
+            throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+        }
+        let data = try await call { service, reply in
+            service.loadManagedDeploymentRegistryRecord(deploymentID, withReply: reply)
+        }
+        return try ManagedInstallerManagedDeploymentRegistryRecord.decode(
+            data, expectedDeploymentID: deploymentID
+        )
     }
 
     public func loadReleasedRouteSnapshot(
@@ -842,6 +891,27 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
                 return
             }
             gate.complete(ManagedInstallerReleasedRouteXPCCodec.encodeInventory(inventory))
+        }
+    }
+
+    public func loadManagedDeploymentRegistryRecord(
+        _ deploymentID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        let service = service
+        Task {
+            guard ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID),
+                  let data = try? await service.loadManagedDeploymentRegistryRecord(
+                    deploymentID: deploymentID
+                  ),
+                  (try? ManagedInstallerManagedDeploymentRegistryRecord.decode(
+                    data, expectedDeploymentID: deploymentID
+                  )) != nil else {
+                gate.complete(nil)
+                return
+            }
+            gate.complete(data)
         }
     }
 
