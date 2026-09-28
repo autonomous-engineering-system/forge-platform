@@ -19,11 +19,19 @@ import re
 import tempfile
 from typing import Iterator, Mapping
 
+from .component_operations import QualifiedArtifact
 from .composition_identity import require_composition_identity
+from .product_preserved_lifecycle import (
+    ProductPreservedLifecycleError,
+    frozen_preserved_release,
+    validate_terminal_preserved_lifecycle,
+)
+from .universal_installer import CompositionManifest
 
 
 MANAGED_DEPLOYMENT_SCHEMA_V1 = "forge-platform.managed-deployment/v1"
 MANAGED_DEPLOYMENT_SCHEMA_V2 = "forge-platform.managed-deployment/v2"
+MANAGED_DEPLOYMENT_SCHEMA_V3 = "forge-platform.managed-deployment/v3"
 # Compatibility alias for callers that intentionally construct legacy,
 # topology-only records. Terminal composition provenance always uses V2.
 MANAGED_DEPLOYMENT_SCHEMA = MANAGED_DEPLOYMENT_SCHEMA_V1
@@ -67,9 +75,6 @@ def _label(value: object) -> str | None:
         raise ValueError("managed deployment label contains control characters")
     return value
 
-
-
-
 @dataclass(frozen=True)
 class ManagedCompositionBinding:
     """Terminal immutable composition provenance for one managed deployment."""
@@ -95,6 +100,41 @@ class ManagedComponentBinding:
             raise ValueError("managed deployment component is unsupported")
         _safe_id(self.instance_id, "managed component instance_id")
         _receipt(self.receipt_reference, "managed component receipt_reference")
+
+
+@dataclass(frozen=True)
+class ManagedPreservedComponentBinding:
+    """Product-owned preserved identity; never an active component shortcut."""
+
+    component: str
+    instance_id: str
+    previous_receipt_reference: str
+    preserve_operation_id: str
+    preserve_receipt_digest: str
+    version: str
+    source_revision: str
+    artifact_digest: str
+    forge_runtime_id: str | None = None
+    forge_installation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.component not in SERVER_COMPONENTS:
+            raise ValueError("preserved component is unsupported")
+        _safe_id(self.instance_id, "preserved instance_id")
+        _receipt(self.previous_receipt_reference, "preserved previous receipt")
+        _safe_id(self.preserve_operation_id, "preserve operation_id")
+        _digest(self.preserve_receipt_digest, "preserve receipt digest")
+        if not frozen_preserved_release(self.component, QualifiedArtifact(
+            self.version, self.source_revision, "frozen-release",
+            self.artifact_digest, "terminal-product-evidence",
+        )):
+            raise ValueError("preserved component release is not frozen")
+        if self.component == "forge-runtime":
+            if self.forge_runtime_id != self.instance_id:
+                raise ValueError("preserved Forge runtime identity changed")
+            _safe_id(self.forge_installation_id, "preserved Forge installation_id")
+        elif self.forge_runtime_id is not None or self.forge_installation_id is not None:
+            raise ValueError("preserved EP component carries Forge identity")
 
 
 @dataclass(frozen=True)
@@ -162,6 +202,64 @@ class ManagedDeployment:
     def by_component(self) -> Mapping[str, ManagedComponentBinding]:
         return {item.component: item for item in self.components}
 
+    @property
+    def active_by_component(self) -> Mapping[str, ManagedComponentBinding]:
+        return {item.component: item for item in self.components}
+
+    @property
+    def preserved_by_component(self) -> Mapping[str, ManagedPreservedComponentBinding]:
+        return {}
+
+
+@dataclass(frozen=True)
+class ManagedPreservedDeployment(ManagedDeployment):
+    """V3 registry record; legacy planners cannot treat it as installed."""
+
+    schema: str = MANAGED_DEPLOYMENT_SCHEMA_V3
+    preserved_components: tuple[ManagedPreservedComponentBinding, ...] = ()
+    historical_peer_binding: ManagedPeerBinding | None = None
+
+    def __post_init__(self) -> None:
+        if self.schema != MANAGED_DEPLOYMENT_SCHEMA_V3:
+            raise ValueError("preserved deployment schema is invalid")
+        _safe_id(self.deployment_id, "preserved deployment_id")
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision <= 0:
+            raise ValueError("preserved deployment revision must be positive")
+        _label(self.label)
+        if not isinstance(self.composition_binding, ManagedCompositionBinding):
+            raise ValueError("preserved deployment requires composition provenance")
+        if self.peer_binding is not None or not self.preserved_components:
+            raise ValueError("preserved deployment cannot retain active pairing")
+        if any(not isinstance(item, ManagedComponentBinding) for item in self.components):
+            raise ValueError("preserved deployment active components are invalid")
+        if any(not isinstance(item, ManagedPreservedComponentBinding) for item in self.preserved_components):
+            raise ValueError("preserved deployment components are invalid")
+        all_components = self.components + self.preserved_components
+        identities = [item.component for item in all_components]
+        instances = [item.instance_id for item in all_components]
+        if len(identities) != len(set(identities)) or len(instances) != len(set(instances)):
+            raise ValueError("preserved deployment contains duplicate component or instance")
+        if self.historical_peer_binding is not None:
+            if not isinstance(self.historical_peer_binding, ManagedPeerBinding):
+                raise ValueError("historical peer binding is invalid")
+            by_component = {item.component: item for item in all_components}
+            if (
+                set(by_component) != SERVER_COMPONENTS
+                or by_component["forge-runtime"].instance_id
+                    != self.historical_peer_binding.forge_instance_id
+                or by_component["engineering-platform-server"].instance_id
+                    != self.historical_peer_binding.ep_instance_id
+            ):
+                raise ValueError("historical pairing no longer targets exact instances")
+
+    @property
+    def by_component(self) -> Mapping[str, ManagedComponentBinding]:
+        raise ManagedDeploymentError("preserved deployment needs lifecycle-aware inventory")
+
+    @property
+    def preserved_by_component(self) -> Mapping[str, ManagedPreservedComponentBinding]:
+        return {item.component: item for item in self.preserved_components}
+
 
 @dataclass(frozen=True)
 class ManagedDeploymentDiff:
@@ -215,6 +313,11 @@ class ManagedDeploymentPlanner:
     ) -> ManagedDeploymentPlan:
         if current is None and desired is None:
             raise ValueError("managed deployment plan requires current or desired state")
+        if any(
+            item is not None and item.schema == MANAGED_DEPLOYMENT_SCHEMA_V3
+            for item in (current, desired)
+        ):
+            raise ManagedDeploymentError("preserved deployment requires a lifecycle plan")
         deployment_id = (desired or current).deployment_id  # type: ignore[union-attr]
         if current is not None and current.deployment_id != deployment_id:
             raise ValueError("current deployment identity changed")
@@ -285,7 +388,7 @@ class ManagedDeploymentRegistry:
             raise ManagedDeploymentError("managed deployment registry contains duplicate identities")
         claimed: dict[tuple[str, str], str] = {}
         for deployment in result:
-            for binding in deployment.components:
+            for binding in deployment.components + getattr(deployment, "preserved_components", ()):
                 key = (binding.component, binding.instance_id)
                 other = claimed.get(key)
                 if other is not None and other != deployment.deployment_id:
@@ -306,6 +409,8 @@ class ManagedDeploymentRegistry:
             raise ValueError("managed deployment is invalid")
         if deployment.revision != 1:
             raise ValueError("new managed deployment must start at revision 1")
+        if deployment.schema == MANAGED_DEPLOYMENT_SCHEMA_V3:
+            raise ManagedDeploymentError("preserved deployment requires product terminal evidence")
         with self._lock():
             if self.load(deployment.deployment_id) is not None:
                 raise ManagedDeploymentError("managed deployment already exists")
@@ -322,11 +427,110 @@ class ManagedDeploymentRegistry:
                 raise ManagedDeploymentError("managed deployment does not exist")
             if current.revision != expected_revision:
                 raise ManagedDeploymentError("managed deployment revision changed")
+            if (
+                current.schema == MANAGED_DEPLOYMENT_SCHEMA_V3
+                or deployment.schema == MANAGED_DEPLOYMENT_SCHEMA_V3
+            ):
+                raise ManagedDeploymentError("preserved deployment requires lifecycle commit")
             if deployment.revision != expected_revision + 1:
                 raise ManagedDeploymentError("managed deployment replacement revision is invalid")
             self._assert_instances_unclaimed(deployment, excluding=deployment.deployment_id)
             self._write(deployment)
         return deployment
+
+    def commit_preserved(
+        self, *, deployment_id: str, expected_revision: int,
+        component: str, instance_id: str, operation_id: str,
+        artifact: QualifiedArtifact, installed_manifest: CompositionManifest,
+        request_digest: str, receipt: Mapping[str, object],
+        status: Mapping[str, object],
+    ) -> ManagedDeployment:
+        """CAS one product-proven preserve without releasing its instance claim."""
+        _safe_id(deployment_id, "preserved deployment_id")
+        if component not in SERVER_COMPONENTS:
+            raise ManagedDeploymentError("preserved component is unsupported")
+        if not isinstance(installed_manifest, CompositionManifest):
+            raise ManagedDeploymentError("installed composition authority is unavailable")
+        try:
+            terminal = validate_terminal_preserved_lifecycle(
+                component=component, operation="PRESERVE", operation_id=operation_id,
+                instance_id=instance_id, artifact=artifact,
+                request_digest=request_digest, receipt=receipt, status=status,
+            )
+        except ProductPreservedLifecycleError as error:
+            raise ManagedDeploymentError("owning preserve evidence is invalid") from error
+        artifacts = {
+            item.identity: item.artifact for item in installed_manifest.components
+        }
+        selected = artifacts.get(component)
+        if selected is None or selected.correlation != artifact.correlation:
+            raise ManagedDeploymentError("preserved artifact is outside installed composition")
+        with self._lock():
+            current = self.load(deployment_id)
+            if current is None or current.composition_binding is None:
+                raise ManagedDeploymentError("preserved deployment lacks installed provenance")
+            if (
+                current.composition_binding.composition_id != installed_manifest.composition_id
+                or current.composition_binding.manifest_digest != installed_manifest.manifest_digest
+            ):
+                raise ManagedDeploymentError("installed composition changed before preserve commit")
+            prior = current.preserved_by_component.get(component)
+            if prior is not None:
+                if (
+                    current.schema != MANAGED_DEPLOYMENT_SCHEMA_V3
+                    or prior.instance_id != instance_id
+                    or prior.preserve_operation_id != operation_id
+                    or prior.preserve_receipt_digest != terminal.receipt_digest
+                    or (prior.version, prior.source_revision, prior.artifact_digest)
+                        != (artifact.version, artifact.source_revision, artifact.digest)
+                    or current.revision <= expected_revision
+                ):
+                    raise ManagedDeploymentError("preserve replay targets different durable evidence")
+                return current
+            if current.revision != expected_revision or current.schema not in {
+                MANAGED_DEPLOYMENT_SCHEMA_V2, MANAGED_DEPLOYMENT_SCHEMA_V3,
+            }:
+                raise ManagedDeploymentError("reviewed preserved deployment revision changed")
+            active = current.active_by_component.get(component)
+            if active is None or active.instance_id != instance_id:
+                raise ManagedDeploymentError("preserve target is not the selected active instance")
+            preserved = ManagedPreservedComponentBinding(
+                component=component,
+                instance_id=instance_id,
+                previous_receipt_reference=active.receipt_reference,
+                preserve_operation_id=operation_id,
+                preserve_receipt_digest=terminal.receipt_digest,
+                version=artifact.version,
+                source_revision=artifact.source_revision,
+                artifact_digest=artifact.digest,
+                forge_runtime_id=(
+                    receipt.get("runtime_id") if component == "forge-runtime" else None
+                ),
+                forge_installation_id=(
+                    receipt.get("installation_id") if component == "forge-runtime" else None
+                ),
+            )
+            candidate = ManagedPreservedDeployment(
+                deployment_id=current.deployment_id,
+                revision=current.revision + 1,
+                label=current.label,
+                components=tuple(
+                    item for item in current.components if item.component != component
+                ),
+                peer_binding=None,
+                schema=MANAGED_DEPLOYMENT_SCHEMA_V3,
+                composition_binding=current.composition_binding,
+                preserved_components=tuple(sorted(
+                    tuple(current.preserved_by_component.values()) + (preserved,),
+                    key=lambda item: item.component,
+                )),
+                historical_peer_binding=(
+                    getattr(current, "historical_peer_binding", None) or current.peer_binding
+                ),
+            )
+            self._assert_instances_unclaimed(candidate, excluding=deployment_id)
+            self._write(candidate)
+            return candidate
 
     def remove(self, deployment_id: str, *, expected_revision: int) -> ManagedDeployment:
         with self._lock():
@@ -335,6 +539,8 @@ class ManagedDeploymentRegistry:
                 raise ManagedDeploymentError("managed deployment does not exist")
             if current.revision != expected_revision:
                 raise ManagedDeploymentError("managed deployment revision changed")
+            if current.schema == MANAGED_DEPLOYMENT_SCHEMA_V3:
+                raise ManagedDeploymentError("preserved deployment cannot be removed without purge")
             path = self._path(deployment_id)
             path.unlink()
             directory = os.open(self.root, os.O_RDONLY)
@@ -349,9 +555,9 @@ class ManagedDeploymentRegistry:
             (binding.component, binding.instance_id): item.deployment_id
             for item in self.inventory()
             if item.deployment_id != excluding
-            for binding in item.components
+            for binding in item.components + getattr(item, "preserved_components", ())
         }
-        for binding in deployment.components:
+        for binding in deployment.components + getattr(deployment, "preserved_components", ()):
             owner = claimed.get((binding.component, binding.instance_id))
             if owner is not None:
                 raise ManagedDeploymentError(
@@ -388,6 +594,9 @@ class ManagedDeploymentRegistry:
         self._secure_root()
         target = self._path(deployment.deployment_id)
         payload = asdict(deployment)
+        if deployment.schema != MANAGED_DEPLOYMENT_SCHEMA_V3:
+            payload.pop("preserved_components", None)
+            payload.pop("historical_peer_binding", None)
         if deployment.schema == MANAGED_DEPLOYMENT_SCHEMA_V1:
             # Preserve the exact V1 wire shape so older durable records remain
             # byte-structure compatible and no implicit schema migration occurs.
@@ -421,28 +630,55 @@ class ManagedDeploymentRegistry:
                 "schema", "deployment_id", "revision", "label", "components", "peer_binding"
             }
             v2_fields = legacy_fields | {"composition_binding"}
+            v3_fields = v2_fields | {"preserved_components", "historical_peer_binding"}
             if (
                 schema == MANAGED_DEPLOYMENT_SCHEMA_V1 and set(raw) != legacy_fields
             ) or (
                 schema == MANAGED_DEPLOYMENT_SCHEMA_V2 and set(raw) != v2_fields
-            ) or schema not in {MANAGED_DEPLOYMENT_SCHEMA_V1, MANAGED_DEPLOYMENT_SCHEMA_V2}:
+            ) or (
+                schema == MANAGED_DEPLOYMENT_SCHEMA_V3 and set(raw) != v3_fields
+            ) or schema not in {
+                MANAGED_DEPLOYMENT_SCHEMA_V1, MANAGED_DEPLOYMENT_SCHEMA_V2,
+                MANAGED_DEPLOYMENT_SCHEMA_V3,
+            }:
                 raise ValueError("fields")
             components_raw = raw["components"]
             if not isinstance(components_raw, list):
                 raise ValueError("components")
             components = tuple(
-                ManagedComponentBinding(**item) if isinstance(item, dict) else (_ for _ in ()).throw(ValueError("component"))
+                ManagedComponentBinding(**item) if isinstance(item, dict)
+                and set(item) == {"component", "instance_id", "receipt_reference"}
+                else (_ for _ in ()).throw(ValueError("component"))
                 for item in components_raw
+            )
+            preserved_raw = raw["preserved_components"] if schema == MANAGED_DEPLOYMENT_SCHEMA_V3 else []
+            if not isinstance(preserved_raw, list):
+                raise ValueError("preserved_components")
+            preserved = tuple(
+                ManagedPreservedComponentBinding(**item) if isinstance(item, dict)
+                and set(item) == {
+                    "component", "instance_id", "previous_receipt_reference",
+                    "preserve_operation_id", "preserve_receipt_digest",
+                    "version", "source_revision", "artifact_digest",
+                    "forge_runtime_id", "forge_installation_id",
+                } else (_ for _ in ()).throw(ValueError("preserved component"))
+                for item in preserved_raw
             )
             peer_raw = raw["peer_binding"]
             peer = None if peer_raw is None else ManagedPeerBinding(**peer_raw)
             composition = None
-            if schema == MANAGED_DEPLOYMENT_SCHEMA_V2:
+            if schema in {MANAGED_DEPLOYMENT_SCHEMA_V2, MANAGED_DEPLOYMENT_SCHEMA_V3}:
                 composition_raw = raw["composition_binding"]
                 if not isinstance(composition_raw, dict):
                     raise ValueError("composition_binding")
                 composition = ManagedCompositionBinding(**composition_raw)
-            deployment = ManagedDeployment(
+            historical_raw = raw["historical_peer_binding"] if schema == MANAGED_DEPLOYMENT_SCHEMA_V3 else None
+            historical = None if historical_raw is None else ManagedPeerBinding(**historical_raw)
+            record_type = (
+                ManagedPreservedDeployment if schema == MANAGED_DEPLOYMENT_SCHEMA_V3
+                else ManagedDeployment
+            )
+            deployment = record_type(
                 deployment_id=raw["deployment_id"],
                 revision=raw["revision"],
                 label=raw["label"],
@@ -450,6 +686,10 @@ class ManagedDeploymentRegistry:
                 peer_binding=peer,
                 schema=schema,
                 composition_binding=composition,
+                **({
+                    "preserved_components": preserved,
+                    "historical_peer_binding": historical,
+                } if schema == MANAGED_DEPLOYMENT_SCHEMA_V3 else {}),
             )
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
             raise ManagedDeploymentError("managed deployment record is invalid") from error
