@@ -153,6 +153,7 @@ public struct ManagedInstallerPreservedLifecycleReviewProposal: Equatable, Senda
     public let operation: String
     public let component: String
     public let instanceID: String
+    public let hasPreserveEvidence: Bool
     private let canonicalData: Data
 
     public static func decodeJSON(
@@ -210,10 +211,12 @@ public struct ManagedInstallerPreservedLifecycleReviewProposal: Equatable, Senda
         let expected = "sha256:" + ManagedInstallerPreservedLifecycleReviewIntent.hash(
             StrictSignedJSON.canonicalPayload(from: .object(unsigned))
         )
+        let hasPreserveOperation = review["preserve_operation_id"]?.stringValue != nil
+        let hasPreserveReceipt = review["preserve_receipt_digest"]?.stringValue != nil
         guard fingerprint == expected,
+              hasPreserveOperation == hasPreserveReceipt,
               intent.operation != "RESTORE" || (
-                review["preserve_operation_id"]?.stringValue != nil
-                    && review["preserve_receipt_digest"]?.stringValue != nil
+                hasPreserveOperation && hasPreserveReceipt
               ),
               intent.operation != "PRESERVE" || (
                 isNull(review["preserve_operation_id"])
@@ -225,6 +228,7 @@ public struct ManagedInstallerPreservedLifecycleReviewProposal: Equatable, Senda
             intentFingerprint: intent.intentFingerprint, reviewFingerprint: fingerprint,
             registryRevision: revision, operation: intent.operation,
             component: intent.component, instanceID: intent.instanceID,
+            hasPreserveEvidence: hasPreserveOperation,
             canonicalData: data
         )
     }

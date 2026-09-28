@@ -25,8 +25,12 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         )
     }
 
-    private func fixture(_ intent: ManagedInstallerPreservedLifecycleReviewIntent) throws
+    private func fixture(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent,
+        preservedTarget: Bool? = nil
+    ) throws
         -> ManagedInstallerPreservedLifecycleReviewProposal {
+        let hasPreserveEvidence = preservedTarget ?? (intent.operation == "RESTORE")
         var review: [String: StrictJSONResourceValue] = [
             "deployment_id": .string(intent.deploymentID),
             "registry_revision": .integer("1"),
@@ -45,9 +49,9 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
                 "qualification": .string("https://example.invalid/receipt"),
             ]),
             "previous_receipt_reference": .string("receipt:forge-a"),
-            "preserve_operation_id": intent.operation == "PRESERVE" ? .null : .string("preserve-old"),
-            "preserve_receipt_digest": intent.operation == "PRESERVE"
-                ? .null : .string("sha256:" + String(repeating: "f", count: 64)),
+            "preserve_operation_id": hasPreserveEvidence ? .string("preserve-old") : .null,
+            "preserve_receipt_digest": hasPreserveEvidence
+                ? .string("sha256:" + String(repeating: "f", count: 64)) : .null,
             "historical_peer_reference": .string("receipt:pair-a"),
             "destructive_confirmation_required": .boolean(intent.operation == "PURGE"),
         ]
@@ -172,6 +176,33 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
             XCTAssertThrowsError(try ManagedInstallerPreservedLifecycleRequest(
                 intent: selected, proposal: proposal
             ))
+        }
+    }
+
+    func testLifecycleReviewRejectsInconsistentPreserveEvidenceEvenWithFreshFingerprint() throws {
+        let cases: [(String, Bool, String, StrictJSONResourceValue)] = [
+            ("PRESERVE", false, "preserve_operation_id", .string("preserve-old")),
+            ("RESTORE", true, "preserve_receipt_digest", .null),
+            ("PURGE", true, "preserve_operation_id", .null),
+            ("PURGE", false, "preserve_receipt_digest",
+                .string("sha256:" + String(repeating: "f", count: 64))),
+        ]
+        for (operation, preservedTarget, field, value) in cases {
+            let selected = try intent(operation)
+            let proposal = try fixture(selected, preservedTarget: preservedTarget)
+            var reader = try StrictJSONResourceReader(data: proposal.canonicalJSONData())
+            var fields = try XCTUnwrap(reader.parseDocument().objectValue)
+            var review = try XCTUnwrap(fields["review"]?.objectValue)
+            review[field] = value
+            review.removeValue(forKey: "review_fingerprint")
+            review["review_fingerprint"] = .string("sha256:" +
+                ManagedInstallerPreservedLifecycleReviewIntent.hash(
+                    StrictSignedJSON.canonicalPayload(from: .object(review))
+                ))
+            fields["review"] = .object(review)
+            XCTAssertThrowsError(try ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                StrictSignedJSON.canonicalPayload(from: .object(fields)), intent: selected
+            ), operation)
         }
     }
 
@@ -324,12 +355,15 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
     }
 
     func testSharedLifecycleReviewBindsExactActiveAndPreservedTargets() async throws {
-        for operation in ["PRESERVE", "RESTORE", "PURGE"] {
+        for (operation, isPreserved) in [
+            ("PRESERVE", false), ("RESTORE", true),
+            ("PURGE", false), ("PURGE", true),
+        ] {
             let selected = try intent(operation)
-            let isPreserved = operation == "RESTORE"
             let inventory = try lifecycleInventory(preserved: isPreserved)
             let coordinator = LifecycleReviewCoordinator(
-                inventory: inventory, proposal: try fixture(selected)
+                inventory: inventory,
+                proposal: try fixture(selected, preservedTarget: isPreserved)
             )
             let reviewed = try await ManagedInstallerPreservedLifecycleReviewWorkflow(
                 coordinator: coordinator, currentRelease: release()
@@ -342,6 +376,25 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
             XCTAssertEqual(reviewed.reviewFingerprint, reviewed.proposal.reviewFingerprint)
             let reads = await coordinator.inventoryReadCount()
             XCTAssertEqual(reads, 2)
+        }
+    }
+
+    func testPurgeReviewCannotSwapActiveAndPreservedEvidence() async throws {
+        let selected = try intent("PURGE")
+        for isPreserved in [false, true] {
+            let coordinator = LifecycleReviewCoordinator(
+                inventory: try lifecycleInventory(preserved: isPreserved),
+                proposal: try fixture(selected, preservedTarget: !isPreserved)
+            )
+            guard case .failure(.rejected) =
+                await ManagedInstallerPreservedLifecycleReviewWorkflow(
+                    coordinator: coordinator, currentRelease: try release()
+                ).prepare(
+                    operationID: "preserve-a", deploymentID: "reviewed-pair",
+                    operation: "PURGE", component: "forge-runtime"
+                ) else {
+                return XCTFail("PURGE review must match the inventory lifecycle state")
+            }
         }
     }
 
