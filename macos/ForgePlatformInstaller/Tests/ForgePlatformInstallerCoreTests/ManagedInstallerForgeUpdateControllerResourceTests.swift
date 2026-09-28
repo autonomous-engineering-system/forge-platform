@@ -4,6 +4,43 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerForgeUpdateControllerResourceTests: XCTestCase {
+    func testReleaseReceiptRequiresControllerAndIndependentExactByteReadback() throws {
+        let (root, app, controller, info) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controllerBytes = Data("controller fixture".utf8)
+        let receiptBytes = Data("release fixture".utf8)
+        let controllerDigest = "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: controllerBytes)
+        let receiptDigest = "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: receiptBytes)
+        let receipt = controller.deletingLastPathComponent().appendingPathComponent(
+            ManagedInstallerForgeUpdateControllerResourceResolver.releaseReceiptName
+        )
+        try controllerBytes.write(to: controller)
+        try receiptBytes.write(to: receipt)
+        try PropertyListSerialization.data(fromPropertyList: [
+            ManagedInstallerForgeUpdateControllerResourceResolver.sourceKey:
+                ManagedInstallerForgeUpdateControllerResourceResolver.sourceRevision,
+            ManagedInstallerForgeUpdateControllerResourceResolver.digestKey: controllerDigest,
+            ManagedInstallerForgeUpdateControllerResourceResolver.releaseSourceKey:
+                ManagedInstallerForgeUpdateControllerResourceResolver.releaseSourceRevision,
+            ManagedInstallerForgeUpdateControllerResourceResolver.releaseDigestKey: receiptDigest,
+        ], format: .xml, options: 0).write(to: info)
+        func check() -> Result<URL, ManagedInstallerForgeUpdateControllerResourceFailure> {
+            ManagedInstallerForgeUpdateControllerResourceResolver.verifyReleaseReceipt(
+                in: app,
+                sourceRevision: ManagedInstallerForgeUpdateControllerResourceResolver.releaseSourceRevision,
+                digest: receiptDigest,
+                controllerSourceRevision: ManagedInstallerForgeUpdateControllerResourceResolver.sourceRevision,
+                controllerDigest: controllerDigest
+            )
+        }
+        XCTAssertEqual(check(), .success(receipt))
+        try Data("tampered".utf8).write(to: receipt)
+        XCTAssertEqual(check(), .failure(.unavailable))
+        try receiptBytes.write(to: receipt)
+        try FileManager.default.removeItem(at: controller)
+        XCTAssertEqual(check(), .failure(.unavailable))
+    }
+
     func testVerifiedBundleReadsExactControllerAndRejectsTampering() throws {
         let (root, app, resource, info) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

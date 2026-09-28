@@ -32,6 +32,7 @@ from package_macos_installer_app import (  # noqa: E402
     SealedCompositionCatalogTrustResource,
     SealedProductWorkerResource,
     SealedForgeUpdateControllerResource,
+    SealedForgeReleaseCompleteReceiptResource,
     SealedReleaseProvenanceResource,
     SealedReleaseTrustResource,
     package,
@@ -243,6 +244,52 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                     output=workspace / "direct-invalid.app",
                     bundle_identifier="com.example.forge-platform-installer",
                 )
+
+    def test_release_receipt_requires_exact_bytes_and_controller(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            helper = self._helper_executable(workspace)
+            worker, _ = self._product_worker(workspace)
+            controller = workspace / "controller.py"
+            controller_bytes = b"# controller fixture\n"
+            controller.write_bytes(controller_bytes)
+            receipt = workspace / "receipt.json"
+            receipt_bytes = b'{"state":"RELEASE_COMPLETE"}\n'
+            receipt.write_bytes(receipt_bytes)
+            receipt_digest = "sha256:" + hashlib.sha256(receipt_bytes).hexdigest()
+            with (
+                patch.object(packager, "_FORGE_UPDATE_CONTROLLER_SHA256", "sha256:" + hashlib.sha256(controller_bytes).hexdigest()),
+                patch.object(packager, "_FORGE_RELEASE_RECEIPT_SHA256", receipt_digest),
+            ):
+                app = workspace / "Installer.app"
+                result = self._run(executable, app, helper_executable=helper,
+                    product_worker=worker, forge_update_controller=controller,
+                    forge_release_receipt=receipt)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("forge_release_receipt=PACKAGED", result.stdout)
+                resource = app / "Contents/Resources/forge-release-complete-2.7.38.json"
+                self.assertEqual(resource.read_bytes(), receipt_bytes)
+                with (app / "Contents/Info.plist").open("rb") as stream:
+                    info = plistlib.load(stream)
+                self.assertEqual(info[packager._FORGE_RELEASE_RECEIPT_DIGEST_INFO_KEY], receipt_digest)
+                self.assertEqual(info[packager._FORGE_RELEASE_SOURCE_INFO_KEY], packager._FORGE_RELEASE_SOURCE)
+                self.assertNotEqual(self._run(executable, workspace / "no-controller.app",
+                    helper_executable=helper, product_worker=worker,
+                    forge_release_receipt=receipt).returncode, 0)
+                receipt.write_bytes(receipt_bytes + b"tampered")
+                self.assertNotEqual(self._run(executable, workspace / "tampered.app",
+                    helper_executable=helper, product_worker=worker,
+                    forge_update_controller=controller, forge_release_receipt=receipt).returncode, 0)
+                self.assertRaises(ValueError, package,
+                    executable=executable, cli_executable=self._cli_executable(workspace),
+                    helper_executable=helper,
+                    product_worker=packager._sealed_product_worker_resource(str(worker)),
+                    forge_update_controller=packager._sealed_forge_update_controller_resource(str(controller)),
+                    forge_release_receipt=SealedForgeReleaseCompleteReceiptResource(
+                        receipt, b"wrong", receipt_digest),
+                    output=workspace / "direct-invalid.app",
+                    bundle_identifier="com.example.forge-platform-installer")
 
     def test_rejects_unsafe_noncanonical_or_aliased_product_worker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1270,6 +1317,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         helper_executable: Path | None = None,
         product_worker: Path | None = None,
         forge_update_controller: Path | None = None,
+        forge_release_receipt: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         cli_executable = PackageMacOSInstallerAppTests._cli_executable(executable.parent)
         command = [
@@ -1292,6 +1340,8 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             command.extend(("--product-worker", str(product_worker)))
         if forge_update_controller is not None:
             command.extend(("--forge-update-controller", str(forge_update_controller)))
+        if forge_release_receipt is not None:
+            command.extend(("--forge-release-complete-receipt", str(forge_release_receipt)))
         if provenance_resource is not None:
             command.extend(("--sealed-release-provenance-resource", str(provenance_resource)))
         if catalog_trust_resource is not None:
