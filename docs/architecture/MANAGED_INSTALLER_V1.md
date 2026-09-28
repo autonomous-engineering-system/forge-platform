@@ -366,7 +366,9 @@ reused across deployments. The worker reopens and rehashes the exact authority
 immediately before every coordinator mutation; the native reviewed-execution
 gate remains responsible for the preceding signed online installer-currentness
 decision. A changed local snapshot fails closed. The native atomic publisher
-for this file and a real released snapshot are still required.
+now enforces exact previous-digest CAS and full typed readback of an existing
+authority. A verified signed-composition and route producer must still publish
+real authority; a real released snapshot and live execution remain outstanding.
 
 Behind that transport, the platform-neutral helper service now composes the
 strict decoder, helper-owned authority resolution, admission and durable
@@ -440,7 +442,9 @@ Source qualification must include Python, Swift and hosted macOS validation for:
 - EP 2.3.102 provisioner command correlation;
 - Forge product-init identity binding;
 - Forge system-service target isolation;
-- fail-closed unsupported Forge update/remove semantics.
+- Forge 2.7.35 product-owned read-only update assessment, exact-target update
+  execution/resume and durable uninstall dispatch, including stale, ambiguous,
+  wrong-instance and missing-terminal-evidence failures;
 
 A source/PR PASS is not a signed installer release and is not a live Mac
 installation claim.
