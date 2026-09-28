@@ -677,6 +677,13 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
                 readinessReceiptReferences: ["receipt:readiness", "receipt:extra"],
                 completions: [completion]
             ))
+            XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+                request: request,
+                productReceiptReferences: ["receipt:product", "receipt:other-product"],
+                pairingReceiptReference: nil,
+                readinessReceiptReferences: ["receipt:readiness"],
+                completions: [completion]
+            ))
         }
     }
 

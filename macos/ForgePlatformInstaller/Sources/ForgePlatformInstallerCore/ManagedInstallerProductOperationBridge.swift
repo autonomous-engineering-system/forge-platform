@@ -620,6 +620,7 @@ public struct ManagedInstallerProductOperationReceipt: Equatable, Sendable {
         let orderedCompletions = completions.sorted { $0.componentID < $1.componentID }
         let expected = request.components.sorted { $0.componentID < $1.componentID }
         guard !products.isEmpty,
+              products.count <= expected.count,
               Set(products).count == products.count,
               products.allSatisfy(ManagedPythonRuntimeInstalledReadback.isEvidenceReference),
               readiness.count == expected.count,
