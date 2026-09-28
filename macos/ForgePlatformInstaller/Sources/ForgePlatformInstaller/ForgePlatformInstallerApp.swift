@@ -34,6 +34,7 @@ final class InstallerWizardViewModel: ObservableObject {
         case idle
         case loading
         case prepared(ManagedInstallerPreservedLifecycleReviewSession)
+        case recovered(ManagedInstallerPreserveRecoveryCompletion)
         case blocked(String)
     }
 
@@ -266,6 +267,55 @@ final class InstallerWizardViewModel: ObservableObject {
             case .failure:
                 self.lifecycleReview = .blocked(
                     "Het exacte helpervoorstel is niet beschikbaar. Lees de inventaris opnieuw."
+                )
+            }
+        }
+    }
+
+    func recoverTerminalPreserve(component: String) {
+        guard state.step == .deployment,
+              case .selected(let deployment, _) = state.deploymentSelection,
+              deployment.exists,
+              case .current(let release) = state.selfUpdate,
+              !isLifecycleReviewRequestInFlight,
+              !isRemovalExecutionInFlight,
+              ["forge-runtime", "engineering-platform-server"].contains(component),
+              (component == "forge-runtime"
+                ? deployment.preservedForgeInstanceID
+                : deployment.preservedEngineeringPlatformInstanceID) != nil else { return }
+        isLifecycleReviewRequestInFlight = true
+        lifecycleReview = .loading
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.readTerminalPreserveRecovery(
+                deploymentID: deployment.id, component: component,
+                installerRelease: release
+            )
+            guard let self,
+                  self.state.step == .deployment,
+                  case .selected(let current, _) = self.state.deploymentSelection,
+                  current == deployment,
+                  case .current(let currentRelease) = self.state.selfUpdate,
+                  currentRelease == release else { return }
+            self.isLifecycleReviewRequestInFlight = false
+            switch result {
+            case .success(let completion):
+                guard completion.intent.deploymentID == deployment.id,
+                      completion.intent.component == component,
+                      completion.intent.installerRelease == release,
+                      let request = try? ManagedInstallerPreserveRecoveryRequest(
+                        intent: completion.intent
+                      ),
+                      (try? ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+                        completion.receipt.canonicalJSONData(), request: request
+                      )) == completion.receipt else {
+                    self.lifecycleReview = .blocked("Het PRESERVE-herstelbewijs hoort niet bij dit doel.")
+                    return
+                }
+                self.lifecycleReview = .recovered(completion)
+            case .failure:
+                self.lifecycleReview = .blocked(
+                    "Exact terminal PRESERVE-bewijs is niet beschikbaar."
                 )
             }
         }
@@ -838,6 +888,16 @@ private struct ManagedDeploymentSelectionScreen: View {
                         .font(.caption.monospaced()).textSelection(.enabled)
                     Text("Dit voorstel voert geen productmutatie uit.")
                         .foregroundStyle(.secondary)
+                case .recovered(let completion):
+                    Text("PRESERVE terminaal bevestigd voor \(completion.intent.component)")
+                    Text("Instance: \(completion.intent.instanceID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Operation ID: \(completion.intent.operationID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Registerrevisie: \(completion.receipt.registryRevision)")
+                        .font(.caption.monospaced())
+                    Text("Dit herstel leest alleen helperjournal en deploymentregister.")
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -860,6 +920,9 @@ private struct ManagedDeploymentSelectionScreen: View {
                     }
                 }
                 if preserved {
+                    Button("Verifieer bewaarbewijs") {
+                        viewModel.recoverTerminalPreserve(component: component)
+                    }
                     Button("Beoordeel herstellen") {
                         viewModel.prepareLifecycleReview(operation: "RESTORE", component: component)
                     }

@@ -72,6 +72,13 @@ final class InstallerCLITests: XCTestCase {
                 "production", operationID: "preserve-one", component: "forge-runtime"
             )
         )
+        XCTAssertEqual(
+            try InstallerCLIParser.parse([
+                "deployment", "lifecycle", "recover", "--deployment", "production",
+                "--component", "forge-runtime", "--non-interactive", "--json",
+            ]).command,
+            .deploymentLifecycleRecover("production", component: "forge-runtime")
+        )
         XCTAssertThrowsError(try InstallerCLIParser.parse(["deployment", "apply"]))
         XCTAssertThrowsError(try InstallerCLIParser.parse([
             "deployment", "apply", "--deployment", "a", "--deployment", "b",
@@ -121,6 +128,68 @@ final class InstallerCLITests: XCTestCase {
             "deployment", "lifecycle", "restore", "--deployment", "production",
             "--operation-id", "restore-one", "--component", "forge-runtime",
         ]))
+        for forbidden in [
+            ["--operation-id", "caller-one"], ["--yes"],
+            ["--review-fingerprint", "sha256:" + String(repeating: "a", count: 64)],
+        ] {
+            XCTAssertThrowsError(try InstallerCLIParser.parse([
+                "deployment", "lifecycle", "recover", "--deployment", "production",
+                "--component", "forge-runtime",
+            ] + forbidden))
+        }
+    }
+
+    func testCLIRecoveryReportsOnlyExactHelperTerminalEvidence() async throws {
+        let current = try release("1.2.3")
+        let intent = try ManagedInstallerPreservedLifecycleReviewIntent(
+            operationID: "preserve-prod", deploymentID: "production",
+            operation: "PRESERVE", component: "forge-runtime", instanceID: "forge-prod",
+            installedCompositionIdentity: "forge-ep-qualified",
+            installedManifestSHA256: "sha256:" + String(repeating: "a", count: 64),
+            installerRelease: current
+        )
+        let request = try ManagedInstallerPreserveRecoveryRequest(intent: intent)
+        let bytes = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPreserveRecoveryReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "intent_fingerprint": .string(intent.intentFingerprint),
+            "record": .object([
+                "operation_id": .string(intent.operationID),
+                "deployment_id": .string(intent.deploymentID),
+                "review_fingerprint": .string("sha256:" + String(repeating: "b", count: 64)),
+                "component": .string(intent.component),
+                "instance_id": .string(intent.instanceID),
+                "state": .string("COMPLETE"),
+                "receipt_digest": .string("sha256:" + String(repeating: "c", count: 64)),
+                "registry_revision": .integer("3"),
+            ]),
+        ]))
+        let receipt = try ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+            bytes, request: request
+        )
+        let coordinator = CLIWizardCoordinator(
+            session: try session(),
+            recovery: ManagedInstallerPreserveRecoveryCompletion(
+                intent: intent, receipt: receipt
+            )
+        )
+        let workflow = InstallerCLIWorkflow(currentRelease: current, coordinator: coordinator)
+        let result = await workflow.recoverPreservedComponent(
+            deploymentID: "production", component: "forge-runtime"
+        )
+        XCTAssertEqual(result.status, "lifecycle-preserve-recovered")
+        XCTAssertEqual(result.details["operation_id"], "preserve-prod")
+        XCTAssertEqual(result.details["instance_id"], "forge-prod")
+        XCTAssertEqual(result.details["receipt_digest"], receipt.receiptDigest)
+        let wrong = await workflow.recoverPreservedComponent(
+            deploymentID: "another", component: "forge-runtime"
+        )
+        XCTAssertEqual(wrong.exitCode, .blocked)
+        let unavailable = await InstallerCLIWorkflow(
+            currentRelease: current,
+            coordinator: CLIWizardCoordinator(session: try session())
+        ).recoverPreservedComponent(deploymentID: "production", component: "forge-runtime")
+        XCTAssertEqual(unavailable.status, "lifecycle-recovery-blocked")
     }
 
     func testRemovalPlanDisplaysExactHelperDiffWithoutExecuting() async throws {
@@ -522,6 +591,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private let removalInventory: Bool
     private let preservedInventory: Bool
     private let removalState: String
+    private let recovery: ManagedInstallerPreserveRecoveryCompletion?
     private var recordedCalls: [String] = []
     private var recordedProviderActions: [ProviderAction] = []
     private var executions = 0
@@ -537,7 +607,8 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         inventoryUnavailable: Bool = false,
         removalInventory: Bool = false,
         preservedInventory: Bool = false,
-        removalState: String = "COMPLETE"
+        removalState: String = "COMPLETE",
+        recovery: ManagedInstallerPreserveRecoveryCompletion? = nil
     ) {
         selectedSession = session
         self.providerAuthenticationRequired = providerAuthenticationRequired
@@ -546,6 +617,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         self.removalInventory = removalInventory
         self.preservedInventory = preservedInventory
         self.removalState = removalState
+        self.recovery = recovery
         self.execution = execution ?? .completed(
             stages: [
                 ExecutionStage(id: "forge", title: "Forge", detail: "ready", state: .passed),
@@ -712,6 +784,21 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
             data, request: request
         ) else { return .failure(.rejected) }
         return .success(receipt)
+    }
+
+    func readTerminalPreserveRecovery(
+        deploymentID: String, component: String,
+        installerRelease: VerifiedInstallerRelease
+    ) async -> Result<
+        ManagedInstallerPreserveRecoveryCompletion,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        recordedCalls.append("preserve-recovery")
+        guard let recovery else { return .failure(.rejected) }
+        _ = deploymentID
+        _ = component
+        _ = installerRelease
+        return .success(recovery)
     }
 
     func prepareVerifiedCompositionSession(

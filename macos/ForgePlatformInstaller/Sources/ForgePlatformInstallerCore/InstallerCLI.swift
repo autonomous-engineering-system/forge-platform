@@ -14,6 +14,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentRemovePlan(String, operationID: String, component: String?)
     case deploymentLifecyclePlan(String, operationID: String, operation: String, component: String)
     case deploymentLifecyclePreserve(String, operationID: String, component: String)
+    case deploymentLifecycleRecover(String, component: String)
 }
 
 public struct InstallerCLIOptions: Equatable, Sendable {
@@ -103,6 +104,7 @@ public enum InstallerCLIParser {
       forge-platform-installer deployment remove plan --deployment <id> --operation-id <id> [--component forge-runtime] [--json]
       forge-platform-installer deployment lifecycle plan <preserve|restore|purge> --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--json]
       forge-platform-installer deployment lifecycle preserve --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--review-fingerprint <sha256:...> --yes] [--non-interactive] [--json]
+      forge-platform-installer deployment lifecycle recover --deployment <id> --component <forge-runtime|engineering-platform-server> [--json]
 
     Security:
       --non-interactive never bypasses provider authentication, installer update
@@ -249,6 +251,13 @@ public enum InstallerCLIParser {
             command = .deploymentLifecyclePreserve(
                 deployment, operationID: operationID, component: component
             )
+        case ["deployment", "lifecycle", "recover"]:
+            guard let deployment, deployment != "new",
+                  operationID == nil, reviewFingerprint == nil, !assumeYes,
+                  let component,
+                  ["forge-runtime", "engineering-platform-server"].contains(component)
+            else { throw InstallerCLIParseError.invalidArguments }
+            command = .deploymentLifecycleRecover(deployment, component: component)
         default:
             throw InstallerCLIParseError.invalidArguments
         }
@@ -257,7 +266,7 @@ public enum InstallerCLIParser {
             switch command {
             case .deploymentPlan, .deploymentApply, .deploymentRemove,
                  .deploymentRemovePlan, .deploymentLifecyclePlan,
-                 .deploymentLifecyclePreserve:
+                 .deploymentLifecyclePreserve, .deploymentLifecycleRecover:
                 break
             default:
                 throw InstallerCLIParseError.invalidArguments
@@ -266,7 +275,7 @@ public enum InstallerCLIParser {
         if operationID != nil || component != nil || reviewFingerprint != nil {
             switch command {
             case .deploymentRemovePlan, .deploymentRemove, .deploymentLifecyclePlan,
-                 .deploymentLifecyclePreserve: break
+                 .deploymentLifecyclePreserve, .deploymentLifecycleRecover: break
             default:
                 throw InstallerCLIParseError.invalidArguments
             }
@@ -442,6 +451,47 @@ public struct InstallerCLIWorkflow: Sendable {
                     "review_fingerprint": session.reviewFingerprint,
                     "registry_revision": String(receipt.registryRevision),
                     "receipt_digest": receipt.receiptDigest,
+                ]
+            )
+        }
+    }
+
+    public func recoverPreservedComponent(
+        deploymentID: String, component: String
+    ) async -> InstallerCLIResult {
+        switch await coordinator.readTerminalPreserveRecovery(
+            deploymentID: deploymentID, component: component,
+            installerRelease: currentRelease
+        ) {
+        case .failure(let failure):
+            return InstallerCLIResult(
+                exitCode: .blocked, status: "lifecycle-recovery-blocked",
+                message: "Exact terminal PRESERVE-bewijs is niet beschikbaar.",
+                details: ["reason": String(describing: failure)]
+            )
+        case .success(let completion):
+            guard completion.intent.deploymentID == deploymentID,
+                  completion.intent.component == component,
+                  completion.intent.installerRelease == currentRelease,
+                  let request = try? ManagedInstallerPreserveRecoveryRequest(
+                    intent: completion.intent
+                  ),
+                  (try? ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+                    completion.receipt.canonicalJSONData(), request: request
+                  )) == completion.receipt else {
+                return Self.blocked("Het PRESERVE-herstelbewijs hoort niet bij dit doel.")
+            }
+            return InstallerCLIResult(
+                exitCode: .success, status: "lifecycle-preserve-recovered",
+                message: "PRESERVE is alleen-lezen bevestigd uit helperjournal en deploymentregister.",
+                details: [
+                    "operation_id": completion.intent.operationID,
+                    "deployment_id": completion.intent.deploymentID,
+                    "component": completion.intent.component,
+                    "instance_id": completion.intent.instanceID,
+                    "review_fingerprint": completion.receipt.reviewFingerprint,
+                    "registry_revision": String(completion.receipt.registryRevision),
+                    "receipt_digest": completion.receipt.receiptDigest,
                 ]
             )
         }

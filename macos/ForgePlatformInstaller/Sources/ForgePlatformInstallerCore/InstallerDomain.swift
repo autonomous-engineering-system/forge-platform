@@ -1616,6 +1616,15 @@ public protocol InstallerWizardCoordinator: Sendable {
         ManagedInstallerPreservedLifecycleReceipt,
         ManagedInstallerProductOperationBridgeFailure
     >
+    /// Read-only terminal recovery of the same exact PRESERVE operation after
+    /// the reviewed execution response was lost. It grants no mutation right.
+    func readTerminalPreserveRecovery(
+        deploymentID: String, component: String,
+        installerRelease: VerifiedInstallerRelease
+    ) async -> Result<
+        ManagedInstallerPreserveRecoveryCompletion,
+        ManagedInstallerProductOperationBridgeFailure
+    >
     /// Executes only a previously reviewed exact helper proposal after a
     /// fresh installer currency and helper proposal check.
     func executeReviewedProductRemoval(
@@ -1663,6 +1672,19 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func readTerminalPreserveRecovery(
+        deploymentID: String, component: String,
+        installerRelease: VerifiedInstallerRelease
+    ) async -> Result<
+        ManagedInstallerPreserveRecoveryCompletion,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = deploymentID
+        _ = component
+        _ = installerRelease
+        return .failure(.rejected)
+    }
+
     func executeReviewedPreservedLifecycle(
         _ session: ManagedInstallerPreservedLifecycleReviewSession
     ) async -> Result<
