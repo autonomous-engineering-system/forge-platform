@@ -22,6 +22,8 @@ python3 tests/installer/test_managed_deployments.py
 python3 tests/installer/test_managed_preserved_lifecycle_plan.py
 python3 tests/installer/test_managed_preserved_product_adapters.py
 python3 tests/installer/test_managed_preserve_execution.py
+python3 tests/installer/test_managed_preserved_lifecycle_request.py
+python3 tests/installer/test_managed_preserved_lifecycle_dispatch.py
 python3 tests/installer/test_managed_preserved_lifecycle_proposal.py
 python3 tests/installer/test_managed_installer.py
 python3 tests/installer/test_managed_install_flow.py
