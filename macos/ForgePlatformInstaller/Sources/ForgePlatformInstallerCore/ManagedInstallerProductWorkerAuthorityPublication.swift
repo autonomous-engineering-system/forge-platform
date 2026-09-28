@@ -455,18 +455,104 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
     }
 
     private static func validateExisting(_ data: Data) throws {
-        var reader = try StrictJSONResourceReader(data: data)
-        let value = try reader.parseDocument()
-        guard StrictSignedJSON.canonicalPayload(from: value) == data,
-              let fields = value.objectValue,
-              Set(fields.keys) == Set([
-                "schema", "installer_release", "candidate_manifests",
-                "installed_manifests", "routes",
-              ]),
-              fields["schema"]?.stringValue ==
-                ManagedInstallerProductWorkerAuthoritySnapshot.schema else {
+        do {
+            var reader = try StrictJSONResourceReader(data: data)
+            let value = try reader.parseDocument()
+            guard let fields = value.objectValue,
+                  fields["schema"]?.stringValue ==
+                    ManagedInstallerProductWorkerAuthoritySnapshot.schema,
+                  let release = fields["installer_release"]?.objectValue,
+                  let version = release["version"]?.stringValue,
+                  let releasePage = release["release_page"]?.stringValue,
+                  let assetName = release["asset_name"]?.stringValue,
+                  let releaseSHA256 = release["sha256"]?.stringValue,
+                  let signingKeyID = release["signing_key_id"]?.stringValue,
+                  let candidates = fields["candidate_manifests"]?.arrayValue,
+                  let installed = fields["installed_manifests"]?.arrayValue,
+                  let routes = fields["routes"]?.arrayValue else {
+                throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
+            }
+            let snapshot = try ManagedInstallerProductWorkerAuthoritySnapshot(
+                installerRelease: VerifiedInstallerRelease(
+                    version: InstallerVersion(version),
+                    releasePage: releasePage,
+                    assetName: assetName,
+                    sha256: releaseSHA256,
+                    signingKeyID: signingKeyID
+                ),
+                candidateManifests: candidates.map { try decodeManifest($0) },
+                installedManifests: installed.map { try decodeManifest($0) },
+                routes: routes.map { try decodeRoute($0) }
+            )
+            guard snapshot.canonicalJSONData() == data else {
+                throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
+            }
+        } catch {
             throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
         }
+    }
+
+    private static func decodeManifest(_ value: StrictJSONResourceValue) throws
+        -> ManagedInstallerProductWorkerManifestAuthority {
+        guard let fields = value.objectValue,
+              let digest = fields["digest"]?.stringValue,
+              let payload = fields["payload"] else {
+            throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
+        }
+        return try ManagedInstallerProductWorkerManifestAuthority(
+            digest: digest,
+            canonicalPayload: StrictSignedJSON.canonicalPayload(from: payload)
+        )
+    }
+
+    private static func decodeRoute(_ value: StrictJSONResourceValue) throws
+        -> ManagedInstallerProductWorkerRouteAuthority {
+        guard let fields = value.objectValue,
+              let pairing = fields["pairing"]?.objectValue,
+              let deploymentID = fields["deployment_id"]?.stringValue,
+              let forgeInstanceID = fields["forge_instance_id"]?.stringValue,
+              let forgeInstallationID = fields["forge_installation_id"]?.stringValue,
+              let forgeServiceAccount = fields["forge_service_account"]?.stringValue,
+              let forgeBindPort = fields["forge_bind_port"]?.integerValue,
+              let forgeArtifactSHA256 = fields["forge_artifact_sha256"]?.stringValue,
+              let epArtifactSHA256 = fields["ep_artifact_sha256"]?.stringValue,
+              let epInstanceID = fields["ep_instance_id"]?.stringValue,
+              let epDisplayLabel = fields["ep_display_label"]?.stringValue,
+              let epServiceAccount = fields["ep_service_account"]?.stringValue,
+              let epBindPort = fields["ep_bind_port"]?.integerValue,
+              let bindingID = pairing["binding_id"]?.stringValue,
+              let consumerID = pairing["consumer_id"]?.stringValue,
+              let hostID = pairing["host_id"]?.stringValue,
+              let projectID = pairing["project_id"]?.stringValue,
+              let repositoryID = pairing["repository_id"]?.stringValue,
+              let repositoryIdentity = pairing["repository_identity"]?.stringValue,
+              let credentialReference = pairing["credential_reference"]?.stringValue,
+              let operatorID = pairing["operator_id"]?.stringValue else {
+            throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
+        }
+        return try ManagedInstallerProductWorkerRouteAuthority(
+            deploymentID: deploymentID,
+            forgeInstanceID: forgeInstanceID,
+            forgeInstallationID: forgeInstallationID,
+            forgeServiceAccount: forgeServiceAccount,
+            forgeBindPort: forgeBindPort,
+            forgeArtifactSHA256: forgeArtifactSHA256,
+            engineeringPlatformArtifactSHA256: epArtifactSHA256,
+            engineeringPlatformInstanceID: epInstanceID,
+            engineeringPlatformDisplayLabel: epDisplayLabel,
+            engineeringPlatformServiceAccount: epServiceAccount,
+            engineeringPlatformBindPort: epBindPort,
+            pairing: try ManagedInstallerProductWorkerPairingAuthority(
+                bindingID: bindingID,
+                consumerID: consumerID,
+                hostID: hostID,
+                projectID: projectID,
+                repositoryID: repositoryID,
+                repositoryIdentity: repositoryIdentity,
+                credentialReference: credentialReference,
+                operatorID: operatorID
+            )
+        )
     }
 
     private func openRoot() throws -> Int32 {

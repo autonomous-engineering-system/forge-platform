@@ -94,6 +94,49 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
         ))
     }
 
+    func testSemanticallyInvalidExistingAuthorityCannotBecomeCASBaseline() throws {
+        let (snapshot, expected) = try fixture()
+        let original = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: expected) as? [String: Any]
+        )
+        for defect in ["invalid-version", "empty-candidates", "wrong-route-artifact"] {
+            var wire = original
+            switch defect {
+            case "invalid-version":
+                var release = try XCTUnwrap(wire["installer_release"] as? [String: Any])
+                release["version"] = "invalid"
+                wire["installer_release"] = release
+            case "empty-candidates":
+                wire["candidate_manifests"] = [Any]()
+            default:
+                var routes = try XCTUnwrap(wire["routes"] as? [[String: Any]])
+                routes[0]["forge_artifact_sha256"] =
+                    "sha256:" + String(repeating: "0", count: 64)
+                wire["routes"] = routes
+            }
+            let corrupt = try JSONSerialization.data(
+                withJSONObject: wire, options: [.sortedKeys, .withoutEscapingSlashes]
+            )
+            let (parent, root, publisher) = try preparedPublisher()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let file = root.appendingPathComponent(
+                FileManagedInstallerProductWorkerAuthorityPublisher.fileName
+            )
+            try corrupt.write(to: file)
+            XCTAssertEqual(chmod(file.path, 0o600), 0)
+            XCTAssertEqual(
+                publisher.publishProductWorkerAuthority(
+                    snapshot,
+                    expectedExistingSHA256: "sha256:"
+                        + GitHubInstallerReleaseDescriptor.sha256(of: corrupt)
+                ),
+                .failure(.invalidAuthority),
+                defect
+            )
+            XCTAssertEqual(try Data(contentsOf: file), corrupt, defect)
+        }
+    }
+
     func testUnsafeRootAndExistingCorruptOrPermissiveFileFailClosed() throws {
         let (snapshot, _) = try fixture()
         let (parent, root, publisher) = try preparedPublisher()
