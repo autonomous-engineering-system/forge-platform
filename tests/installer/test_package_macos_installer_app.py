@@ -31,6 +31,7 @@ import package_macos_installer_app as packager  # noqa: E402
 from package_macos_installer_app import (  # noqa: E402
     SealedCompositionCatalogTrustResource,
     SealedProductWorkerResource,
+    SealedForgeUpdateControllerResource,
     SealedReleaseProvenanceResource,
     SealedReleaseTrustResource,
     package,
@@ -60,6 +61,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             self.assertIn("sealed_composition_catalog_trust=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertIn("privileged_helper=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertIn("product_worker=ABSENT_FAIL_CLOSED", result.stdout)
+            self.assertIn("forge_update_controller=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertEqual(
                 (app_bundle / "Contents" / "MacOS" / "ForgePlatformInstaller").read_bytes(),
                 executable.read_bytes(),
@@ -177,6 +179,70 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                 info["ForgePlatformProductWorkerSHA256"],
                 "sha256:" + hashlib.sha256(worker_bytes).hexdigest(),
             )
+
+    def test_packages_only_exact_protected_forge_controller_with_helper_and_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            helper = self._helper_executable(workspace)
+            worker, _ = self._product_worker(workspace)
+            controller = workspace / "update_installed_forge.py"
+            controller_bytes = b"# exact protected controller fixture\n"
+            controller.write_bytes(controller_bytes)
+            digest = "sha256:" + hashlib.sha256(controller_bytes).hexdigest()
+            with patch.object(packager, "_FORGE_UPDATE_CONTROLLER_SHA256", digest):
+                app_bundle = workspace / "ForgePlatformInstaller.app"
+                result = self._run(
+                    executable, app_bundle, helper_executable=helper,
+                    product_worker=worker, forge_update_controller=controller,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("forge_update_controller=PACKAGED", result.stdout)
+                resource = app_bundle / "Contents/Resources/forge-update-controller.py"
+                self.assertEqual(resource.read_bytes(), controller_bytes)
+                self.assertEqual(stat.S_IMODE(resource.stat().st_mode), 0o644)
+                with (app_bundle / "Contents/Info.plist").open("rb") as stream:
+                    info = plistlib.load(stream)
+                self.assertEqual(info["ForgePlatformForgeUpdateControllerSHA256"], digest)
+                self.assertEqual(
+                    info["ForgePlatformForgeUpdateControllerSourceRevision"],
+                    packager._FORGE_UPDATE_CONTROLLER_SOURCE,
+                )
+                self.assertNotEqual(self._run(
+                    executable, workspace / "no-helper.app", product_worker=worker,
+                    forge_update_controller=controller,
+                ).returncode, 0)
+                self.assertNotEqual(self._run(
+                    executable, workspace / "no-worker.app", helper_executable=helper,
+                    forge_update_controller=controller,
+                ).returncode, 0)
+                controller.write_bytes(controller_bytes + b"tampered")
+                rejected = self._run(
+                    executable, workspace / "tampered.app", helper_executable=helper,
+                    product_worker=worker, forge_update_controller=controller,
+                )
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertFalse((workspace / "tampered.app").exists())
+                linked = workspace / "linked-controller.py"
+                linked.symlink_to(controller)
+                self.assertNotEqual(self._run(
+                    executable, workspace / "linked.app", helper_executable=helper,
+                    product_worker=worker, forge_update_controller=linked,
+                ).returncode, 0)
+                controller.write_bytes(b"x" * (512 * 1_024 + 1))
+                self.assertNotEqual(self._run(
+                    executable, workspace / "oversized.app", helper_executable=helper,
+                    product_worker=worker, forge_update_controller=controller,
+                ).returncode, 0)
+                self.assertRaises(ValueError, package,
+                    executable=executable, cli_executable=self._cli_executable(workspace),
+                    helper_executable=helper, product_worker=packager._sealed_product_worker_resource(str(worker)),
+                    forge_update_controller=SealedForgeUpdateControllerResource(
+                        controller, b"wrong", digest,
+                    ),
+                    output=workspace / "direct-invalid.app",
+                    bundle_identifier="com.example.forge-platform-installer",
+                )
 
     def test_rejects_unsafe_noncanonical_or_aliased_product_worker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1203,6 +1269,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         catalog_trust_resource: Path | None = None,
         helper_executable: Path | None = None,
         product_worker: Path | None = None,
+        forge_update_controller: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         cli_executable = PackageMacOSInstallerAppTests._cli_executable(executable.parent)
         command = [
@@ -1223,6 +1290,8 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             command.extend(("--helper-executable", str(helper_executable)))
         if product_worker is not None:
             command.extend(("--product-worker", str(product_worker)))
+        if forge_update_controller is not None:
+            command.extend(("--forge-update-controller", str(forge_update_controller)))
         if provenance_resource is not None:
             command.extend(("--sealed-release-provenance-resource", str(provenance_resource)))
         if catalog_trust_resource is not None:
