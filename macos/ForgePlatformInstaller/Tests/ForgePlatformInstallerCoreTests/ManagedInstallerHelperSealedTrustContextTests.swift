@@ -166,6 +166,172 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
         XCTAssertEqual(stableReads, 2)
     }
 
+    func testHelperAdmitsOnlyExactLatestSignedCurrentRelease() async throws {
+        let resources = try makeResources()
+        let sealed = ManagedInstallerHelperSealedTrustContext(
+            codeSigning: try signingEvidence(version: resources.provenance.installerVersion),
+            resources: resources
+        )
+        let record = try makeReleaseRecord(for: sealed)
+        let admission = ManagedInstallerHelperCurrentReleaseAdmission(
+            contextLoader: SequenceTrustContextLoader([.success(sealed), .success(sealed)]),
+            operationLock: TestSelfUpdateLock(),
+            feedFactory: { loaded in
+                guard loaded == resources else { throw TestFeedError.unavailable }
+                return TestSignedReleaseFeed(.success(record))
+            }
+        )
+        let result = try await admission.admit().get()
+        XCTAssertEqual(result.record, record)
+        XCTAssertEqual(result.sealed, sealed)
+        XCTAssertEqual(result.compositionContext,
+                       CurrentVerifiedInstallerCompositionContext(release: record))
+    }
+
+    func testProductionCurrentReleaseAssemblyUsesFixedHelperInputsWithoutAdmission() {
+        // Construction alone reads no release feed, accepts no descriptor and
+        // performs no helper or product operation from this test process.
+        XCTAssertNotNil(ManagedInstallerHelperCurrentReleaseAdmission.production())
+    }
+
+    func testHelperRejectsReleaseIdentityDriftAndNewerVersion() async throws {
+        let resources = try makeResources()
+        let sealed = ManagedInstallerHelperSealedTrustContext(
+            codeSigning: try signingEvidence(version: resources.provenance.installerVersion),
+            resources: resources
+        )
+        let provenance = resources.provenance
+        let cases = try [
+            makeReleaseRecord(for: sealed, version: "1.2.4"),
+            makeReleaseRecord(for: sealed, sequence: 2),
+            makeReleaseRecord(for: sealed, channel: .candidate),
+            makeReleaseRecord(for: sealed, sourceRevision: String(repeating: "c", count: 40)),
+            makeReleaseRecord(for: sealed, bundleID: "com.example.other"),
+            makeReleaseRecord(for: sealed, team: "ABCDE12345"),
+            makeReleaseRecord(for: sealed, codeDigest: String(repeating: "c", count: 64)),
+            makeReleaseRecord(for: sealed, policyRevision: "other-policy"),
+            makeReleaseRecord(for: sealed, capabilities: ["other/v1"]),
+            makeReleaseRecord(for: sealed, provenanceDigest: String(repeating: "c", count: 64)),
+            makeReleaseRecord(for: sealed, trustDigest: String(repeating: "c", count: 64)),
+        ]
+        XCTAssertEqual(provenance.releaseSequence, 1)
+        for record in cases {
+            let admission = ManagedInstallerHelperCurrentReleaseAdmission(
+                contextLoader: SequenceTrustContextLoader([.success(sealed)]),
+                operationLock: TestSelfUpdateLock(),
+                feedFactory: { _ in TestSignedReleaseFeed(.success(record)) }
+            )
+            let result = await admission.admit()
+            XCTAssertEqual(result, .failure(.unavailable))
+        }
+    }
+
+    func testHelperRejectsUnavailableLockFeedSealedContextAndPostNetworkSwap() async throws {
+        let resources = try makeResources()
+        let sealed = ManagedInstallerHelperSealedTrustContext(
+            codeSigning: try signingEvidence(version: resources.provenance.installerVersion),
+            resources: resources
+        )
+        let record = try makeReleaseRecord(for: sealed)
+        let changed = ManagedInstallerHelperSealedTrustContext(
+            codeSigning: try MacOSInstallerBundleCodeSigningEvidence(
+                bundleIdentifier: sealed.codeSigning.bundleIdentifier,
+                installerVersion: sealed.codeSigning.installerVersion,
+                teamIdentifier: sealed.codeSigning.teamIdentifier,
+                codeDirectorySHA256: String(repeating: "c", count: 64)
+            ),
+            resources: resources
+        )
+        let cases: [ManagedInstallerHelperCurrentReleaseAdmission] = [
+            .init(
+                contextLoader: SequenceTrustContextLoader([.success(sealed)]),
+                operationLock: TestSelfUpdateLock(acquire: .failure(
+                    InstallerSelfUpdateFailure(.selfUpdateOperationInProgress)
+                )),
+                feedFactory: { _ in TestSignedReleaseFeed(.success(record)) }
+            ),
+            .init(
+                contextLoader: SequenceTrustContextLoader([.failure(.unavailable)]),
+                operationLock: TestSelfUpdateLock(),
+                feedFactory: { _ in TestSignedReleaseFeed(.success(record)) }
+            ),
+            .init(
+                contextLoader: SequenceTrustContextLoader([.success(sealed)]),
+                operationLock: TestSelfUpdateLock(),
+                feedFactory: { _ in throw TestFeedError.unavailable }
+            ),
+            .init(
+                contextLoader: SequenceTrustContextLoader([.success(sealed)]),
+                operationLock: TestSelfUpdateLock(),
+                feedFactory: { _ in TestSignedReleaseFeed(.failure(
+                    InstallerSelfUpdateFailure(.releaseMetadataRejected)
+                )) }
+            ),
+            .init(
+                contextLoader: SequenceTrustContextLoader([
+                    .success(sealed), .success(changed),
+                ]),
+                operationLock: TestSelfUpdateLock(),
+                feedFactory: { _ in TestSignedReleaseFeed(.success(record)) }
+            ),
+            .init(
+                contextLoader: SequenceTrustContextLoader([.success(sealed), .success(sealed)]),
+                operationLock: TestSelfUpdateLock(releaseFailure: true),
+                feedFactory: { _ in TestSignedReleaseFeed(.success(record)) }
+            ),
+        ]
+        for admission in cases {
+            let result = await admission.admit()
+            XCTAssertEqual(result, .failure(.unavailable))
+        }
+    }
+
+    private func makeReleaseRecord(
+        for sealed: ManagedInstallerHelperSealedTrustContext,
+        version: String = "1.2.3",
+        sequence: UInt64 = 1,
+        channel: InstallerReleaseChannel = .stable,
+        sourceRevision: String = String(repeating: "a", count: 40),
+        bundleID: String = ManagedInstallerHelperSignedParentBundleLocator.bundleIdentifier,
+        team: String = ManagedInstallerHelperSignedParentBundleLocator.teamIdentifier,
+        codeDigest: String = String(repeating: "b", count: 64),
+        policyRevision: String = "release/v1",
+        capabilities: [String] = ["composition/v2"],
+        provenanceDigest: String? = nil,
+        trustDigest: String? = nil
+    ) throws -> VerifiedInstallerReleaseRecord {
+        let asset = try GitHubInstallerReleaseAsset(
+            repository: "autonomous-engineering-system/forge-platform",
+            tag: "installer-v\(version)",
+            assetName: "ForgePlatformInstaller.app.zip"
+        )
+        return try VerifiedInstallerReleaseRecord(
+            release: VerifiedInstallerRelease(
+                version: InstallerVersion(version),
+                releasePage: asset.releasePage,
+                assetName: asset.assetName,
+                sha256: String(repeating: "d", count: 64),
+                signingKeyID: "installer-release-v1"
+            ),
+            sequence: sequence,
+            channel: channel,
+            sourceRevision: sourceRevision,
+            expectedBundleIdentifier: bundleID,
+            expectedTeamIdentifier: team,
+            expectedCodeDirectorySHA256: codeDigest,
+            policyRevision: policyRevision,
+            capabilities: capabilities,
+            provenanceSHA256: provenanceDigest ?? sealed.resources.provenance.provenanceSHA256,
+            expectedReleaseTrustConfigurationSHA256:
+                trustDigest ?? sealed.resources.releaseTrust.configurationSHA256,
+            compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
+                url: "https://example.invalid/catalog.json"
+            ),
+            notarizationReference: "receipt:installer-test",
+            githubAsset: asset
+        )
+    }
+
     private func makeResources() throws -> ManagedInstallerHelperSealedResources {
         let descriptorKey = try SealedInstallerReleaseTrustEd25519PublicKey(
             keyID: "descriptor-a",
@@ -396,4 +562,60 @@ private actor SequenceLocator: ManagedInstallerHelperSignedParentBundleLocating 
     }
 
     func readCount() -> Int { count }
+}
+
+private actor SequenceTrustContextLoader: ManagedInstallerHelperSealedTrustContextLoading {
+    private var results: [Result<ManagedInstallerHelperSealedTrustContext,
+        ManagedInstallerHelperSealedTrustFailure>]
+
+    init(_ results: [Result<ManagedInstallerHelperSealedTrustContext,
+         ManagedInstallerHelperSealedTrustFailure>]) {
+        self.results = results
+    }
+
+    func load() async -> Result<ManagedInstallerHelperSealedTrustContext,
+        ManagedInstallerHelperSealedTrustFailure> {
+        guard !results.isEmpty else { return .failure(.unavailable) }
+        return results.removeFirst()
+    }
+}
+
+private struct TestSignedReleaseFeed: SignedInstallerReleaseFeedVerifying {
+    let result: Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>
+
+    init(_ result: Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>) {
+        self.result = result
+    }
+
+    func latestVerifiedInstallerRelease() async -> Result<
+        VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure
+    > { result }
+}
+
+private enum TestFeedError: Error { case unavailable }
+
+private struct TestSelfUpdateLock: InstallerSelfUpdateOperationLocking {
+    let acquire: Result<any InstallerSelfUpdateOperationLock, InstallerSelfUpdateFailure>
+
+    init(releaseFailure: Bool = false) {
+        acquire = .success(TestSelfUpdateLease(releaseFailure: releaseFailure))
+    }
+
+    init(acquire: Result<any InstallerSelfUpdateOperationLock, InstallerSelfUpdateFailure>) {
+        self.acquire = acquire
+    }
+
+    func acquireExclusiveSelfUpdateOperationLock() -> Result<
+        any InstallerSelfUpdateOperationLock, InstallerSelfUpdateFailure
+    > { acquire }
+}
+
+private struct TestSelfUpdateLease: InstallerSelfUpdateOperationLock {
+    let releaseFailure: Bool
+
+    func releaseExclusiveSelfUpdateOperationLock() -> Result<Void, InstallerSelfUpdateFailure> {
+        releaseFailure ? .failure(InstallerSelfUpdateFailure(
+            .selfUpdateOperationLockReleaseFailed
+        )) : .success(())
+    }
 }
