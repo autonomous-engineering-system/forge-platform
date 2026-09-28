@@ -212,6 +212,91 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         ) else { return XCTFail("Noncanonical request must fail closed") }
     }
 
+    func testSharedLifecycleReviewBindsExactActiveAndPreservedTargets() async throws {
+        for operation in ["PRESERVE", "RESTORE", "PURGE"] {
+            let selected = try intent(operation)
+            let isPreserved = operation == "RESTORE"
+            let inventory = try lifecycleInventory(preserved: isPreserved)
+            let coordinator = LifecycleReviewCoordinator(
+                inventory: inventory, proposal: try fixture(selected)
+            )
+            let reviewed = try await ManagedInstallerPreservedLifecycleReviewWorkflow(
+                coordinator: coordinator, currentRelease: release()
+            ).prepare(
+                operationID: "preserve-a", deploymentID: "reviewed-pair",
+                operation: operation, component: "forge-runtime"
+            ).get()
+            XCTAssertEqual(reviewed.intent, selected)
+            XCTAssertEqual(reviewed.target, inventory.existing[0])
+            XCTAssertEqual(reviewed.reviewFingerprint, reviewed.proposal.reviewFingerprint)
+            let reads = await coordinator.inventoryReadCount()
+            XCTAssertEqual(reads, 2)
+        }
+    }
+
+    func testSharedLifecycleReviewRejectsWrongStateDriftAndForeignProposal() async throws {
+        let selected = try intent()
+        let currentRelease = try release()
+        let active = try lifecycleInventory(preserved: false)
+        let preserved = try lifecycleInventory(preserved: true)
+        let proposal = try fixture(selected)
+        let stale = LifecycleReviewCoordinator(
+            inventory: active, proposal: proposal, secondInventory: preserved
+        )
+        guard case .failure(.rejected) = await ManagedInstallerPreservedLifecycleReviewWorkflow(
+            coordinator: stale, currentRelease: currentRelease
+        ).prepare(
+            operationID: "preserve-a", deploymentID: "reviewed-pair",
+            operation: "PRESERVE", component: "forge-runtime"
+        ) else { return XCTFail("Drifted inventory must reject review") }
+
+        let wrongState = LifecycleReviewCoordinator(inventory: preserved, proposal: proposal)
+        guard case .failure(.rejected) = await ManagedInstallerPreservedLifecycleReviewWorkflow(
+            coordinator: wrongState, currentRelease: currentRelease
+        ).prepare(
+            operationID: "preserve-a", deploymentID: "reviewed-pair",
+            operation: "PRESERVE", component: "forge-runtime"
+        ) else { return XCTFail("Preserved instance cannot be preserved again") }
+        let wrongStateReads = await wrongState.inventoryReadCount()
+        XCTAssertEqual(wrongStateReads, 1)
+
+        let foreign = LifecycleReviewCoordinator(
+            inventory: active, proposal: try fixture(intent("PURGE"))
+        )
+        guard case .failure(.rejected) = await ManagedInstallerPreservedLifecycleReviewWorkflow(
+            coordinator: foreign, currentRelease: currentRelease
+        ).prepare(
+            operationID: "preserve-a", deploymentID: "reviewed-pair",
+            operation: "PRESERVE", component: "forge-runtime"
+        ) else { return XCTFail("Foreign proposal must reject review") }
+
+        let invalid = LifecycleReviewCoordinator(inventory: active, proposal: proposal)
+        guard case .failure(.invalidRequest) = await ManagedInstallerPreservedLifecycleReviewWorkflow(
+            coordinator: invalid, currentRelease: currentRelease
+        ).prepare(
+            operationID: "../other", deploymentID: "reviewed-pair",
+            operation: "PRESERVE", component: "forge-runtime"
+        ) else { return XCTFail("Unsafe operation must reject before inventory") }
+        let invalidReads = await invalid.inventoryReadCount()
+        XCTAssertEqual(invalidReads, 0)
+    }
+
+    private func lifecycleInventory(preserved: Bool) throws -> ManagedDeploymentInventory {
+        try ManagedDeploymentInventory(
+            existing: [ManagedDeploymentTarget(
+                id: "reviewed-pair", exists: true,
+                forgeInstanceID: preserved ? nil : "forge-a",
+                engineeringPlatformInstanceID: "ep-a",
+                preservedForgeInstanceID: preserved ? "forge-a" : nil,
+                installedCompositionID: "composition-a",
+                installedCompositionManifestSHA256:
+                    "sha256:" + String(repeating: "d", count: 64)
+            )],
+            createCandidate: ManagedDeploymentTarget(id: "new", exists: false),
+            evidenceReference: "inventory:reviewed-pair"
+        )
+    }
+
     func testHelperHandlerAdmitsOnlyCorrelatedLifecycleMessages() async throws {
         let selected = try intent()
         let proposal = try fixture(selected)
@@ -280,6 +365,58 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         guard case .failure(.rejected) = invalid else {
             return XCTFail("Noncanonical lifecycle worker request must be rejected")
         }
+    }
+}
+
+private actor LifecycleReviewCoordinator: InstallerWizardCoordinator {
+    private let inventory: ManagedDeploymentInventory
+    private let secondInventory: ManagedDeploymentInventory?
+    private let proposal: ManagedInstallerPreservedLifecycleReviewProposal
+    private var reads = 0
+
+    init(
+        inventory: ManagedDeploymentInventory,
+        proposal: ManagedInstallerPreservedLifecycleReviewProposal,
+        secondInventory: ManagedDeploymentInventory? = nil
+    ) {
+        self.inventory = inventory
+        self.proposal = proposal
+        self.secondInventory = secondInventory
+    }
+
+    func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
+        reads += 1
+        return .available(reads > 1 ? secondInventory ?? inventory : inventory)
+    }
+
+    func preparePreservedLifecycleReview(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = intent
+        return .success(proposal)
+    }
+
+    func inventoryReadCount() -> Int { reads }
+
+    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+        _ = currentVersion
+        return .rejected("unused")
+    }
+
+    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
+        _ = release
+        return .failed("unused")
+    }
+
+    func performProviderAction(
+        _ action: ProviderAction, for provider: ProviderID
+    ) async -> ProviderActionResult {
+        _ = action
+        _ = provider
+        return .failed(.coordinatorUnavailable)
     }
 }
 
