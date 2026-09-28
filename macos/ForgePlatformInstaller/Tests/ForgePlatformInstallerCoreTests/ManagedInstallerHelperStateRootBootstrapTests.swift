@@ -21,6 +21,17 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
                 ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
                 isDirectory: true
             ),
+            expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.stateDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.stateDirectoryName,
+                isDirectory: true
+            ).appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.deploymentsDirectoryName,
+                isDirectory: true
+            ),
         ] {
             let details = try FileManager.default.attributesOfItem(atPath: directory.path)
             XCTAssertEqual(details[.posixPermissions] as? Int, 0o700)
@@ -72,6 +83,35 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
             [.posixPermissions: 0o700], ofItemAtPath: outside.path
         )
         try FileManager.default.createSymbolicLink(at: venvs, withDestinationURL: outside)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    func testRejectsUnsafeRegistryDirectoryBeforeFollowingOrWriting() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let bootstrap = testBootstrap(parent)
+        let root = try bootstrap.prepare()
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let deployments = state.appendingPathComponent("deployments", isDirectory: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: deployments.path
+        )
+        XCTAssertThrowsError(try bootstrap.prepare())
+
+        try FileManager.default.removeItem(at: deployments)
+        let outside = parent.appendingPathComponent("outside-registry", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: outside.path
+        )
+        try FileManager.default.createSymbolicLink(at: deployments, withDestinationURL: outside)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+
+        try FileManager.default.removeItem(at: deployments)
+        try FileManager.default.removeItem(at: state)
+        try FileManager.default.createSymbolicLink(at: state, withDestinationURL: outside)
         XCTAssertThrowsError(try bootstrap.prepare())
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
