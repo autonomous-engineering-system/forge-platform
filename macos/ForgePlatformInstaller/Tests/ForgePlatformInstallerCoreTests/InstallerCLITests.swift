@@ -61,6 +61,17 @@ final class InstallerCLITests: XCTestCase {
                 )
             )
         }
+        XCTAssertEqual(
+            try InstallerCLIParser.parse([
+                "deployment", "lifecycle", "preserve", "--deployment", "production",
+                "--operation-id", "preserve-one", "--component", "forge-runtime",
+                "--review-fingerprint", "sha256:" + String(repeating: "a", count: 64),
+                "--yes", "--non-interactive",
+            ]).command,
+            .deploymentLifecyclePreserve(
+                "production", operationID: "preserve-one", component: "forge-runtime"
+            )
+        )
         XCTAssertThrowsError(try InstallerCLIParser.parse(["deployment", "apply"]))
         XCTAssertThrowsError(try InstallerCLIParser.parse([
             "deployment", "apply", "--deployment", "a", "--deployment", "b",
@@ -100,6 +111,15 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertThrowsError(try InstallerCLIParser.parse([
             "deployment", "lifecycle", "plan", "unknown", "--deployment", "production",
             "--operation-id", "lifecycle-one", "--component", "forge-runtime",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "lifecycle", "preserve", "--deployment", "production",
+            "--operation-id", "preserve-one", "--component", "forge-runtime",
+            "--review-fingerprint", String(repeating: "a", count: 64),
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "lifecycle", "restore", "--deployment", "production",
+            "--operation-id", "restore-one", "--component", "forge-runtime",
         ]))
     }
 

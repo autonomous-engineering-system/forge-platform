@@ -13,6 +13,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentRemove(String, operationID: String, component: String?)
     case deploymentRemovePlan(String, operationID: String, component: String?)
     case deploymentLifecyclePlan(String, operationID: String, operation: String, component: String)
+    case deploymentLifecyclePreserve(String, operationID: String, component: String)
 }
 
 public struct InstallerCLIOptions: Equatable, Sendable {
@@ -101,6 +102,7 @@ public enum InstallerCLIParser {
       forge-platform-installer deployment remove --deployment <id> --operation-id <id> [--component forge-runtime] [--review-fingerprint <sha256> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment remove plan --deployment <id> --operation-id <id> [--component forge-runtime] [--json]
       forge-platform-installer deployment lifecycle plan <preserve|restore|purge> --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--json]
+      forge-platform-installer deployment lifecycle preserve --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--review-fingerprint <sha256:...> --yes] [--non-interactive] [--json]
 
     Security:
       --non-interactive never bypasses provider authentication, installer update
@@ -235,6 +237,18 @@ public enum InstallerCLIParser {
                 deployment, operationID: operationID,
                 operation: operation.uppercased(), component: component
             )
+        case ["deployment", "lifecycle", "preserve"]:
+            guard let deployment, deployment != "new",
+                  let operationID,
+                  ManagedInstallerPreservedLifecycleReviewIntent.isID(operationID),
+                  let component,
+                  ["forge-runtime", "engineering-platform-server"].contains(component),
+                  reviewFingerprint.map(CompositionCatalogValidation.isTaggedSHA256) ?? true else {
+                throw InstallerCLIParseError.invalidArguments
+            }
+            command = .deploymentLifecyclePreserve(
+                deployment, operationID: operationID, component: component
+            )
         default:
             throw InstallerCLIParseError.invalidArguments
         }
@@ -242,7 +256,8 @@ public enum InstallerCLIParser {
         if deployment != nil {
             switch command {
             case .deploymentPlan, .deploymentApply, .deploymentRemove,
-                 .deploymentRemovePlan, .deploymentLifecyclePlan:
+                 .deploymentRemovePlan, .deploymentLifecyclePlan,
+                 .deploymentLifecyclePreserve:
                 break
             default:
                 throw InstallerCLIParseError.invalidArguments
@@ -250,7 +265,8 @@ public enum InstallerCLIParser {
         }
         if operationID != nil || component != nil || reviewFingerprint != nil {
             switch command {
-            case .deploymentRemovePlan, .deploymentRemove, .deploymentLifecyclePlan: break
+            case .deploymentRemovePlan, .deploymentRemove, .deploymentLifecyclePlan,
+                 .deploymentLifecyclePreserve: break
             default:
                 throw InstallerCLIParseError.invalidArguments
             }
@@ -355,6 +371,98 @@ public struct InstallerCLIWorkflow: Sendable {
                 ]
             )
         }
+    }
+
+    public func preserveComponent(
+        deploymentID: String,
+        operationID: String,
+        component: String,
+        options: InstallerCLIOptions,
+        confirm: Confirmation
+    ) async -> InstallerCLIResult {
+        let workflow = ManagedInstallerPreservedLifecycleReviewWorkflow(
+            coordinator: coordinator, currentRelease: currentRelease
+        )
+        let session: ManagedInstallerPreservedLifecycleReviewSession
+        switch await workflow.prepare(
+            operationID: operationID, deploymentID: deploymentID,
+            operation: "PRESERVE", component: component
+        ) {
+        case .failure(let failure):
+            return InstallerCLIResult(
+                exitCode: .blocked, status: "lifecycle-review-blocked",
+                message: "Het exacte PRESERVE-voorstel is niet beschikbaar.",
+                details: ["reason": String(describing: failure)]
+            )
+        case .success(let reviewed): session = reviewed
+        }
+        if let supplied = options.reviewFingerprint,
+           supplied != session.reviewFingerprint {
+            return InstallerCLIResult(
+                exitCode: .blocked, status: "lifecycle-review-drift",
+                message: "De opgegeven review-fingerprint wijkt af van het actuele helpervoorstel."
+            )
+        }
+        if options.nonInteractive || options.assumeYes {
+            guard options.assumeYes,
+                  options.reviewFingerprint == session.reviewFingerprint else {
+                return lifecycleConfirmationRequired(session)
+            }
+        } else {
+            let prompt = "Bevestig PRESERVE voor deployment \(deploymentID), component \(component), instance \(session.intent.instanceID), registerrevisie \(session.proposal.registryRevision), operation \(operationID), fingerprint \(session.reviewFingerprint)?"
+            guard await confirm(prompt) else {
+                return lifecycleConfirmationRequired(session)
+            }
+        }
+        switch await coordinator.executeReviewedPreservedLifecycle(session) {
+        case .failure(let failure):
+            return InstallerCLIResult(
+                exitCode: .executionFailed, status: "lifecycle-execution-failed",
+                message: "De helper heeft PRESERVE niet terminaal bevestigd; hervat dezelfde operation ID na verse review.",
+                details: ["reason": String(describing: failure),
+                          "operation_id": operationID]
+            )
+        case .success(let receipt):
+            guard let request = try? ManagedInstallerPreservedLifecycleRequest(
+                intent: session.intent, proposal: session.proposal
+            ),
+                  (try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+                    receipt.canonicalJSONData(), request: request
+                  )) == receipt else {
+                return Self.blocked("Het PRESERVE-receipt hoort niet bij het beoordeelde doel.")
+            }
+            return InstallerCLIResult(
+                exitCode: .success, status: "lifecycle-preserve-complete",
+                message: "Product-PRESERVE en exact registry-readback zijn terminaal bevestigd.",
+                details: [
+                    "operation_id": operationID,
+                    "deployment_id": deploymentID,
+                    "component": component,
+                    "instance_id": session.intent.instanceID,
+                    "review_fingerprint": session.reviewFingerprint,
+                    "registry_revision": String(receipt.registryRevision),
+                    "receipt_digest": receipt.receiptDigest,
+                ]
+            )
+        }
+    }
+
+    private func lifecycleConfirmationRequired(
+        _ session: ManagedInstallerPreservedLifecycleReviewSession
+    ) -> InstallerCLIResult {
+        InstallerCLIResult(
+            exitCode: .confirmationRequired, status: "lifecycle-confirmation-required",
+            message: "Bevestig interactief of herhaal met --yes en exact --review-fingerprint uit de actuele review.",
+            details: [
+                "operation_id": session.operationID,
+                "deployment_id": session.intent.deploymentID,
+                "operation": session.intent.operation,
+                "component": session.intent.component,
+                "instance_id": session.intent.instanceID,
+                "registry_revision": String(session.proposal.registryRevision),
+                "review_fingerprint": session.reviewFingerprint,
+            ]
+        )
     }
 
     public func removeDeployment(

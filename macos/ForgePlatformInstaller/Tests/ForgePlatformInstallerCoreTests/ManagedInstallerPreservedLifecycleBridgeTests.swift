@@ -285,6 +285,94 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         XCTAssertEqual(foreignResult.exitCode, .blocked)
     }
 
+    func testCLIPreserveRequiresExactReviewAcknowledgementAndTerminalReceipt() async throws {
+        let selected = try intent()
+        let proposal = try fixture(selected)
+        let request = try ManagedInstallerPreservedLifecycleRequest(
+            intent: selected, proposal: proposal
+        )
+        let terminal = try ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+            receipt(request), request: request
+        )
+        let coordinator = LifecycleReviewCoordinator(
+            inventory: try lifecycleInventory(preserved: false), proposal: proposal,
+            executionReceipt: terminal
+        )
+        let workflow = InstallerCLIWorkflow(
+            currentRelease: try release(), coordinator: coordinator
+        )
+        let pending = await workflow.preserveComponent(
+            deploymentID: "reviewed-pair", operationID: "preserve-a",
+            component: "forge-runtime",
+            options: InstallerCLIOptions(nonInteractive: true, assumeYes: true),
+            confirm: { _ in XCTFail("automation must not prompt"); return true }
+        )
+        XCTAssertEqual(pending.exitCode, .confirmationRequired)
+        XCTAssertEqual(pending.details["review_fingerprint"], proposal.reviewFingerprint)
+        let executionsBefore = await coordinator.executionCallCount()
+        XCTAssertEqual(executionsBefore, 0)
+
+        let drift = await workflow.preserveComponent(
+            deploymentID: "reviewed-pair", operationID: "preserve-a",
+            component: "forge-runtime",
+            options: InstallerCLIOptions(
+                nonInteractive: true, assumeYes: true,
+                reviewFingerprint: "sha256:" + String(repeating: "a", count: 64)
+            ),
+            confirm: { _ in XCTFail("automation must not prompt"); return true }
+        )
+        XCTAssertEqual(drift.status, "lifecycle-review-drift")
+        let executionsAfterDrift = await coordinator.executionCallCount()
+        XCTAssertEqual(executionsAfterDrift, 0)
+
+        let completed = await workflow.preserveComponent(
+            deploymentID: "reviewed-pair", operationID: "preserve-a",
+            component: "forge-runtime",
+            options: InstallerCLIOptions(
+                nonInteractive: true, assumeYes: true,
+                reviewFingerprint: proposal.reviewFingerprint
+            ),
+            confirm: { _ in XCTFail("automation must not prompt"); return false }
+        )
+        XCTAssertEqual(completed.exitCode, .success)
+        XCTAssertEqual(completed.status, "lifecycle-preserve-complete")
+        XCTAssertEqual(completed.details["receipt_digest"], terminal.receiptDigest)
+        let executionsAfterSuccess = await coordinator.executionCallCount()
+        XCTAssertEqual(executionsAfterSuccess, 1)
+    }
+
+    func testCLIPreserveCancelAndHelperFailureStayNonTerminal() async throws {
+        let selected = try intent()
+        let coordinator = LifecycleReviewCoordinator(
+            inventory: try lifecycleInventory(preserved: false),
+            proposal: try fixture(selected)
+        )
+        let workflow = InstallerCLIWorkflow(
+            currentRelease: try release(), coordinator: coordinator
+        )
+        let cancelled = await workflow.preserveComponent(
+            deploymentID: "reviewed-pair", operationID: "preserve-a",
+            component: "forge-runtime", options: InstallerCLIOptions(),
+            confirm: { prompt in
+                XCTAssertTrue(prompt.contains("forge-a"))
+                XCTAssertTrue(prompt.contains("PRESERVE"))
+                return false
+            }
+        )
+        XCTAssertEqual(cancelled.exitCode, .confirmationRequired)
+        let executionsAfterCancel = await coordinator.executionCallCount()
+        XCTAssertEqual(executionsAfterCancel, 0)
+        let failed = await workflow.preserveComponent(
+            deploymentID: "reviewed-pair", operationID: "preserve-a",
+            component: "forge-runtime", options: InstallerCLIOptions(),
+            confirm: { _ in true }
+        )
+        XCTAssertEqual(failed.exitCode, .executionFailed)
+        XCTAssertEqual(failed.status, "lifecycle-execution-failed")
+        let executionsAfterFailure = await coordinator.executionCallCount()
+        XCTAssertEqual(executionsAfterFailure, 1)
+    }
+
     func testSharedLifecycleReviewRejectsWrongStateDriftAndForeignProposal() async throws {
         let selected = try intent()
         let currentRelease = try release()
@@ -423,16 +511,20 @@ private actor LifecycleReviewCoordinator: InstallerWizardCoordinator {
     private let inventory: ManagedDeploymentInventory
     private let secondInventory: ManagedDeploymentInventory?
     private let proposal: ManagedInstallerPreservedLifecycleReviewProposal
+    private let executionReceipt: ManagedInstallerPreservedLifecycleReceipt?
     private var reads = 0
+    private var executions = 0
 
     init(
         inventory: ManagedDeploymentInventory,
         proposal: ManagedInstallerPreservedLifecycleReviewProposal,
-        secondInventory: ManagedDeploymentInventory? = nil
+        secondInventory: ManagedDeploymentInventory? = nil,
+        executionReceipt: ManagedInstallerPreservedLifecycleReceipt? = nil
     ) {
         self.inventory = inventory
         self.proposal = proposal
         self.secondInventory = secondInventory
+        self.executionReceipt = executionReceipt
     }
 
     func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
@@ -451,6 +543,20 @@ private actor LifecycleReviewCoordinator: InstallerWizardCoordinator {
     }
 
     func inventoryReadCount() -> Int { reads }
+    func executionCallCount() -> Int { executions }
+
+    func executeReviewedPreservedLifecycle(
+        _ session: ManagedInstallerPreservedLifecycleReviewSession
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        executions += 1
+        guard session.proposal == proposal, let executionReceipt else {
+            return .failure(.unavailable)
+        }
+        return .success(executionReceipt)
+    }
 
     func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
         _ = currentVersion
