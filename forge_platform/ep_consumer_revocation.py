@@ -1,4 +1,4 @@
-"""Exact EP 2.3.102 product-owned consumer revocation boundary.
+"""Exact EP 2.3.104 product-owned consumer revocation boundary.
 
 The frozen product command is run as the selected instance's service account.
 Its CENTRAL database authority is explicitly pinned to that instance's existing
@@ -79,9 +79,11 @@ class EPConsumerRevocationAdapter:
             raise TypeError("exact EP consumer scope is required")
         if (
             not isinstance(expected_artifact, QualifiedArtifact)
-            or expected_artifact.version != "2.3.102"
+            or expected_artifact.version != "2.3.104"
             or expected_artifact.source_revision
-            != "cab85a84a6a8b5b574c796713e4363781fc05519"
+            != "cfce69892278ee2b6c14412c171f5f33596acb0e"
+            or expected_artifact.digest
+            != "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb"
         ):
             raise ValueError("frozen EP release authority is required")
         if isinstance(expected_owner_uid, bool) or not isinstance(expected_owner_uid, int) or expected_owner_uid < 0:

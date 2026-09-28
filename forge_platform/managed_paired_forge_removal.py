@@ -233,16 +233,20 @@ class ManagedPairedForgeComponentRemovalCoordinator:
             or forge_request.kind != "remove"
             or forge_request.installation_identity != reviewed_current.peer_binding.forge_instance_id
             or forge_request.product_request
-            or forge_request.artifact.version != "2.7.35"
+            or forge_request.artifact.version != "2.7.37"
             or forge_request.artifact.source_revision
-            != "ff4c0d45f51161376104250cd6efcfb6f045b8ac"
+            != "a78523603d6ea081d07875ea6b557e73b5d4fe63"
+            or forge_request.artifact.digest
+            != "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938"
             or ep_readback_request.component != EP_COMPONENT
             or ep_readback_request.kind != "repair"
             or ep_readback_request.installation_identity != reviewed_current.peer_binding.ep_instance_id
             or ep_readback_request.product_request
-            or ep_readback_request.artifact.version != "2.3.102"
+            or ep_readback_request.artifact.version != "2.3.104"
             or ep_readback_request.artifact.source_revision
-            != "cab85a84a6a8b5b574c796713e4363781fc05519"
+            != "cfce69892278ee2b6c14412c171f5f33596acb0e"
+            or ep_readback_request.artifact.digest
+            != "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb"
         ):
             raise ManagedPairedForgeRemovalError("reviewed paired Forge removal changed")
         support = getattr(forge_adapter, "removal_support", None)

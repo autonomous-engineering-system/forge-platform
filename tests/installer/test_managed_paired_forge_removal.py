@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -24,12 +25,12 @@ from forge_platform.managed_pairing_revocation import (
 
 
 FORGE_ARTIFACT = QualifiedArtifact(
-    "2.7.35", "ff4c0d45f51161376104250cd6efcfb6f045b8ac", "https://example.invalid/forge.whl",
-    "sha256:" + "a" * 64, "https://example.invalid/forge-evidence",
+    "2.7.37", "a78523603d6ea081d07875ea6b557e73b5d4fe63", "https://example.invalid/forge.whl",
+    "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938", "https://example.invalid/forge-evidence",
 )
 EP_ARTIFACT = QualifiedArtifact(
-    "2.3.102", "cab85a84a6a8b5b574c796713e4363781fc05519", "https://example.invalid/ep.whl",
-    "sha256:" + "b" * 64, "https://example.invalid/ep-evidence",
+    "2.3.104", "cfce69892278ee2b6c14412c171f5f33596acb0e", "https://example.invalid/ep.whl",
+    "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb", "https://example.invalid/ep-evidence",
 )
 FORGE_RECEIPT = "forge-uninstall:sha256:" + "d" * 64
 EP_RECEIPT = "ep-consumer-revoke:sha256:" + "e" * 64
@@ -270,6 +271,27 @@ class ManagedPairedForgeRemovalTests(unittest.TestCase):
         self.revoker.scope = EPConsumerScope("consumer-b", "project-b")
         with self.assertRaises(ManagedPairingRevocationError):
             self.remove()
+        self.assertEqual(self.forge.calls, 0)
+        self.assertEqual(self.revoker.mutations, 0)
+
+    def test_historical_or_digest_drifted_producer_fails_before_mutation(self):
+        original_forge = self.forge_request
+        original_ep = self.ep_request
+        for artifact in (
+            replace(FORGE_ARTIFACT, version="2.7.36"),
+            replace(FORGE_ARTIFACT, digest="sha256:" + "0" * 64),
+        ):
+            self.forge_request = replace(original_forge, artifact=artifact)
+            with self.subTest(artifact=artifact), self.assertRaises(ManagedPairedForgeRemovalError):
+                self.remove()
+        self.forge_request = original_forge
+        for artifact in (
+            replace(EP_ARTIFACT, version="2.3.103"),
+            replace(EP_ARTIFACT, digest="sha256:" + "0" * 64),
+        ):
+            self.ep_request = replace(original_ep, artifact=artifact)
+            with self.subTest(artifact=artifact), self.assertRaises(ManagedPairedForgeRemovalError):
+                self.remove()
         self.assertEqual(self.forge.calls, 0)
         self.assertEqual(self.revoker.mutations, 0)
 

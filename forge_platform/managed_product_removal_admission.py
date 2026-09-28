@@ -204,11 +204,13 @@ def admit_native_product_removal(
     forge = artifacts.get(FORGE_COMPONENT)
     ep = artifacts.get(EP_COMPONENT)
     if (
-        forge is None or forge.version != "2.7.35"
-        or forge.source_revision != "ff4c0d45f51161376104250cd6efcfb6f045b8ac"
+        forge is None or forge.version != "2.7.37"
+        or forge.source_revision != "a78523603d6ea081d07875ea6b557e73b5d4fe63"
+        or forge.digest != "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938"
         or EP_COMPONENT in by_component and (
-            ep is None or ep.version != "2.3.102"
-            or ep.source_revision != "cab85a84a6a8b5b574c796713e4363781fc05519"
+            ep is None or ep.version != "2.3.104"
+            or ep.source_revision != "cfce69892278ee2b6c14412c171f5f33596acb0e"
+            or ep.digest != "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb"
         )
     ):
         raise ManagedProductRemovalAdmissionError("product-owned removal contract is unavailable")

@@ -29,15 +29,18 @@ def _canonical(value: object) -> bytes:
 def _manifest_payload() -> dict:
     payload = manifest_payload(composition_id="forge-ep-current")
     ep = payload["components"][0]
-    ep["artifact"]["version"] = "2.3.102"
-    ep["artifact"]["source_revision"] = "cab85a84a6a8b5b574c796713e4363781fc05519"
+    ep["artifact"]["version"] = "2.3.104"
+    ep["artifact"]["source_revision"] = "cfce69892278ee2b6c14412c171f5f33596acb0e"
+    ep["artifact"]["digest"] = "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb"
+    ep["artifact"]["source"] = "https://registry.example.invalid/engineering-platform-2.3.104.whl"
+    ep["artifact"]["qualification"] = "https://evidence.example.invalid/ep-2.3.104"
     forge = json.loads(json.dumps(ep))
     forge["identity"] = "forge-runtime"
     forge["artifact"] = {
-        "version": "2.7.35",
-        "source_revision": "ff4c0d45f51161376104250cd6efcfb6f045b8ac",
+        "version": "2.7.37",
+        "source_revision": "a78523603d6ea081d07875ea6b557e73b5d4fe63",
         "source": "https://registry.example.invalid/forge-runtime.whl",
-        "digest": "sha256:" + "4" * 64,
+        "digest": "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
         "qualification": "https://evidence.example.invalid/forge-runtime",
     }
     forge["service"]["product_service_reference"] = "forge-server-service-v1"
@@ -73,8 +76,8 @@ def _authority() -> dict:
             "forge_installation_id": "forge-installation-prod",
             "forge_service_account": "_forge_prod",
             "forge_bind_port": 8875,
-            "forge_artifact_sha256": "sha256:" + "4" * 64,
-            "ep_artifact_sha256": "sha256:" + "3" * 64,
+            "forge_artifact_sha256": "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
+            "ep_artifact_sha256": "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb",
             "ep_instance_id": "ep-prod",
             "ep_display_label": "Production",
             "ep_service_account": "_ep_prod",
@@ -118,7 +121,11 @@ def _single_authority(component: str) -> dict:
         "instance_id": "forge-prod" if forge else "ep-prod",
         "service_account": "_forge_prod" if forge else "_ep_prod",
         "bind_port": 8875 if forge else 8876,
-        "artifact_sha256": "sha256:" + ("4" if forge else "3") * 64,
+        "artifact_sha256": (
+            "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938"
+            if forge else
+            "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb"
+        ),
         "forge_installation_id": "forge-installation-prod" if forge else None,
         "ep_display_label": None if forge else "Production",
     }]
@@ -295,7 +302,10 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
         self.assertEqual(route.pairing_executor.binding.endpoint, "http://127.0.0.1:8876")
         self.assertEqual(
             set(forge.staged_artifacts),
-            {"sha256:" + "4" * 64, "sha256:" + "3" * 64},
+            {
+                "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
+                "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb",
+            },
         )
 
     def test_currency_guard_rechecks_exact_file_before_each_mutation(self) -> None:
