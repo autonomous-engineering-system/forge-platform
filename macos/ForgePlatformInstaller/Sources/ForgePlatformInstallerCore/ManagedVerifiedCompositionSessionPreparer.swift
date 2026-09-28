@@ -50,6 +50,29 @@ struct ManagedVerifiedCompositionSessionPreparer: VerifiedCompositionSessionPrep
         for currentInstaller: CurrentVerifiedInstallerCompositionContext,
         deployment: ManagedDeploymentTarget
     ) async -> ManagedVerifiedCompositionMaterialResult {
+        await prepareVerifiedCompositionMaterial(
+            for: currentInstaller,
+            deployment: deployment,
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+    }
+
+    /// Selects one exact supported component set from the signed index. The
+    /// caller cannot turn an absent component into an inferred installation or
+    /// use a set outside the two qualified producer identities.
+    func prepareVerifiedCompositionMaterial(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget,
+        componentIdentities: [String]
+    ) async -> ManagedVerifiedCompositionMaterialResult {
+        guard !componentIdentities.isEmpty,
+              componentIdentities == componentIdentities.sorted(),
+              Set(componentIdentities).count == componentIdentities.count,
+              Set(componentIdentities).isSubset(of: Set([
+                "engineering-platform-server", "forge-runtime",
+              ])) else {
+            return .unavailable(.selectionUnavailable)
+        }
         guard case .success(let admission) = await catalogAdmission
             .admitVerifiedCatalogWithEvidence(for: currentInstaller),
               let indexLocator = admission.catalog.componentCombinationCatalog else {
@@ -78,10 +101,7 @@ struct ManagedVerifiedCompositionSessionPreparer: VerifiedCompositionSessionPrep
         let request: ComponentCombinationRequest
         do {
             request = try ComponentCombinationRequest(
-                componentIdentities: [
-                    "forge-runtime",
-                    "engineering-platform-server",
-                ],
+                componentIdentities: Set(componentIdentities),
                 deployment: deployment
             )
         } catch {

@@ -194,6 +194,120 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
         XCTAssertNotNil(ManagedInstallerHelperCurrentReleaseAdmission.production())
     }
 
+    func testHelperMaterialAdmissionBindsExactManifestAndRechecksCurrentRelease() async throws {
+        let current = try makeCurrentRelease()
+        let manifest = StrictSignedJSON.canonicalPayload(from: .object([
+            "composition_id": .string("forge-ep-managed-v1"),
+        ]))
+        let material = try makeMaterial(for: current, manifest: manifest)
+        let deployment = try ManagedDeploymentTarget(id: "deployment-new", exists: false)
+        let admission = ManagedInstallerHelperVerifiedMaterialAdmission(
+            currentRelease: SequenceCurrentRelease([.success(current), .success(current)]),
+            preparerFactory: { resources in
+                XCTAssertEqual(resources, current.sealed.resources)
+                return StubHelperMaterialPreparer(.prepared(material))
+            }
+        )
+        let result = await admission.admit(
+            for: deployment,
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+        XCTAssertEqual(result, .success(ManagedInstallerHelperVerifiedMaterial(
+            currentRelease: current, material: material
+        )))
+    }
+
+    func testHelperMaterialAdmissionRejectsUnverifiedBytesAndCurrentnessDrift() async throws {
+        let current = try makeCurrentRelease()
+        let canonical = StrictSignedJSON.canonicalPayload(from: .object([
+            "composition_id": .string("forge-ep-managed-v1"),
+        ]))
+        let material = try makeMaterial(for: current, manifest: canonical)
+        let deployment = try ManagedDeploymentTarget(id: "deployment-new", exists: false)
+        let wrongBytes = ManagedVerifiedCompositionMaterial(
+            session: material.session,
+            manifestBytes: Data("{}".utf8)
+        )
+        let noncanonical = Data("{ \"composition_id\": \"forge-ep-managed-v1\" }".utf8)
+        let noncanonicalMaterial = try makeMaterial(for: current, manifest: noncanonical)
+        let changedRecord = try makeReleaseRecord(for: current.sealed, sequence: 2)
+        let changed = ManagedInstallerHelperCurrentRelease(
+            record: changedRecord, sealed: current.sealed
+        )
+        let cases: [(
+            [Result<ManagedInstallerHelperCurrentRelease,
+                ManagedInstallerHelperCurrentReleaseFailure>],
+            ManagedVerifiedCompositionMaterialResult
+        )] = [
+            ([.failure(.unavailable)], .prepared(material)),
+            ([.success(current)], .unavailable(.selectionUnavailable)),
+            ([.success(current)], .prepared(wrongBytes)),
+            ([.success(current)], .prepared(noncanonicalMaterial)),
+            ([.success(current), .failure(.unavailable)], .prepared(material)),
+            ([.success(current), .success(changed)], .prepared(material)),
+        ]
+        for (releaseResults, materialResult) in cases {
+            let admission = ManagedInstallerHelperVerifiedMaterialAdmission(
+                currentRelease: SequenceCurrentRelease(releaseResults),
+                preparerFactory: { _ in StubHelperMaterialPreparer(materialResult) }
+            )
+            let result = await admission.admit(
+                for: deployment,
+                componentIdentities: ["engineering-platform-server", "forge-runtime"]
+            )
+            XCTAssertEqual(result, .failure(.unavailable))
+        }
+    }
+
+    func testHelperMaterialProductionAssemblyHasNoAmbientCatalogFallback() throws {
+        // This constructs fixed stores/transports only; it does not fetch a
+        // catalog or produce an admitted composition from the test executable.
+        XCTAssertNotNil(ManagedInstallerHelperVerifiedMaterialAdmission.production())
+        let resources = try makeResources()
+        _ = ManagedInstallerHelperVerifiedMaterialAdmission.productionPreparer(
+            for: resources
+        )
+    }
+
+    private func makeCurrentRelease() throws -> ManagedInstallerHelperCurrentRelease {
+        let resources = try makeResources()
+        let sealed = ManagedInstallerHelperSealedTrustContext(
+            codeSigning: try signingEvidence(version: resources.provenance.installerVersion),
+            resources: resources
+        )
+        return ManagedInstallerHelperCurrentRelease(
+            record: try makeReleaseRecord(for: sealed), sealed: sealed
+        )
+    }
+
+    private func makeMaterial(
+        for current: ManagedInstallerHelperCurrentRelease,
+        manifest: Data
+    ) throws -> ManagedVerifiedCompositionMaterial {
+        let context = current.compositionContext
+        let plan = try VerifiedCompositionSessionPlan(
+            sessionID: "session-test",
+            compositionIdentity: "forge-ep-managed-v1",
+            manifestSHA256: "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: manifest),
+            installerReleaseSequence: context.installerReleaseSequence,
+            installerProvenanceSHA256: context.installerProvenanceSHA256,
+            installerReleaseTrustConfigurationSHA256:
+                context.installerReleaseTrustConfigurationSHA256,
+            compositionCatalogFeed: context.compositionCatalogFeed,
+            compositionCatalog: try VerifiedCompositionCatalogIdentity(
+                sequence: 1, sha256: "sha256:" + String(repeating: "a", count: 64)
+            ),
+            componentCombinationCatalog: try VerifiedCompositionCatalogIdentity(
+                sequence: 2, sha256: "sha256:" + String(repeating: "b", count: 64)
+            ),
+            componentSelectionSequence: 1,
+            managedPythonRuntime: managedPythonTestRuntime,
+            productVirtualEnvironments: managedPythonTestVenvs,
+            providerRequirements: []
+        )
+        return ManagedVerifiedCompositionMaterial(session: plan, manifestBytes: manifest)
+    }
+
     func testHelperRejectsReleaseIdentityDriftAndNewerVersion() async throws {
         let resources = try makeResources()
         let sealed = ManagedInstallerHelperSealedTrustContext(
@@ -617,5 +731,41 @@ private struct TestSelfUpdateLease: InstallerSelfUpdateOperationLock {
         releaseFailure ? .failure(InstallerSelfUpdateFailure(
             .selfUpdateOperationLockReleaseFailed
         )) : .success(())
+    }
+}
+
+private actor SequenceCurrentRelease: ManagedInstallerHelperCurrentReleaseAdmitting {
+    private var results: [Result<ManagedInstallerHelperCurrentRelease,
+        ManagedInstallerHelperCurrentReleaseFailure>]
+
+    init(_ results: [Result<ManagedInstallerHelperCurrentRelease,
+         ManagedInstallerHelperCurrentReleaseFailure>]) {
+        self.results = results
+    }
+
+    func admit() async -> Result<ManagedInstallerHelperCurrentRelease,
+        ManagedInstallerHelperCurrentReleaseFailure> {
+        guard !results.isEmpty else { return .failure(.unavailable) }
+        return results.removeFirst()
+    }
+}
+
+private struct StubHelperMaterialPreparer:
+    ManagedInstallerHelperCompositionMaterialPreparing {
+    let result: ManagedVerifiedCompositionMaterialResult
+
+    init(_ result: ManagedVerifiedCompositionMaterialResult) {
+        self.result = result
+    }
+
+    func prepareVerifiedCompositionMaterial(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget,
+        componentIdentities: [String]
+    ) async -> ManagedVerifiedCompositionMaterialResult {
+        _ = currentInstaller
+        _ = deployment
+        _ = componentIdentities
+        return result
     }
 }
