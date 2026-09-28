@@ -57,14 +57,18 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
     }
 
     public func canonicalJSONData() -> Data {
-        StrictSignedJSON.canonicalPayload(from: .object([
+        StrictSignedJSON.canonicalPayload(from: canonicalValue())
+    }
+
+    func canonicalValue() -> StrictJSONResourceValue {
+        .object([
             "schema": .string(Self.schema),
             "session_id": .string(sessionID),
             "composition_identity": .string(compositionIdentity),
             "manifest_sha256": .string(manifestSHA256),
             "deployment": Self.targetValue(deployment),
             "inventory_evidence_reference": .string(inventoryEvidenceReference),
-        ]))
+        ])
     }
 
     public static func decodeJSON(_ data: Data) throws -> Self {
