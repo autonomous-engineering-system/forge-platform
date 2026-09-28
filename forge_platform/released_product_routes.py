@@ -247,6 +247,7 @@ class ReleasedManagedProductRouteBuilder:
         deployment_ids = [value.deployment_id for value in configs]
         if len(deployment_ids) != len(set(deployment_ids)):
             raise ValueError("released product route deployment identities are ambiguous")
+        _require_isolated_targets(configs)
 
         authorized = _authorized_artifacts(candidates + installed)
         required = {
@@ -316,6 +317,53 @@ class ReleasedManagedProductRouteBuilder:
                 ),
             )
         return MappingProxyType(routes)
+
+
+def _require_isolated_targets(
+    configurations: tuple[
+        ReleasedManagedProductRouteConfiguration | ReleasedManagedSingleProductRouteConfiguration,
+        ...,
+    ],
+) -> None:
+    """Reject cross-deployment product identity and OS-state aliases before route construction."""
+
+    forge_ids: set[str] = set()
+    ep_ids: set[str] = set()
+    forge_data_roots: list[Path] = []
+    forge_credential_files: set[Path] = set()
+    service_accounts: set[str] = set()
+    bind_ports: set[int] = set()
+    for configuration in configurations:
+        if isinstance(configuration, ReleasedManagedProductRouteConfiguration):
+            targets = (configuration.forge_target, configuration.engineering_platform_target)
+        else:
+            targets = (configuration.target,)
+        for target in targets:
+            ids = forge_ids if isinstance(target, ForgeServerTarget) else ep_ids
+            if target.instance_id in ids:
+                raise ValueError("released product instance is claimed by multiple deployments")
+            ids.add(target.instance_id)
+            if target.service_account in service_accounts or target.bind_port in bind_ports:
+                raise ValueError("released product OS authority is shared across instances")
+            service_accounts.add(target.service_account)
+            bind_ports.add(target.bind_port)
+            if isinstance(target, ForgeServerTarget):
+                try:
+                    data_root = target.data_root.resolve(strict=False)
+                    credential_file = target.api_credential_file.resolve(strict=False)
+                except (OSError, RuntimeError) as error:
+                    raise ValueError("released Forge target paths cannot be resolved") from error
+                if any(
+                    data_root == existing
+                    or data_root.is_relative_to(existing)
+                    or existing.is_relative_to(data_root)
+                    for existing in forge_data_roots
+                ):
+                    raise ValueError("released Forge data roots overlap across deployments")
+                if credential_file in forge_credential_files:
+                    raise ValueError("released Forge API credential path is shared")
+                forge_data_roots.append(data_root)
+                forge_credential_files.add(credential_file)
 
 
 def _authorized_artifacts(
