@@ -89,7 +89,7 @@ def route(*, forge="forge-new", ep="ep-new", pending_ep=False, degrade_ep=False)
 
 
 class ManagedProductOperationDispatchTests(unittest.TestCase):
-    def test_single_component_route_is_exact_and_dispatch_stays_fail_closed(self) -> None:
+    def test_forge_only_route_dispatches_exact_durable_product_saga(self) -> None:
         candidate = composition_manifest(
             composition_id="forge-only", forge_version="2.7.35",
             forge_digest=FORGE_DIGEST, ep_version="2.3.102",
@@ -117,12 +117,49 @@ class ManagedProductOperationDispatchTests(unittest.TestCase):
             dispatcher = ManagedProductOperationDispatcher(
                 coordinator=coordinator(root, registry), resolver=resolver,
             )
-            with self.assertRaisesRegex(
-                ManagedProductOperationDispatchError, "not yet available"
-            ):
-                dispatcher.dispatch(admitted)
-            self.assertIsNone(registry.load("production"))
-            self.assertFalse((root / "operations").exists())
+            receipt = dispatcher.dispatch(admitted)
+            self.assertIsNone(receipt.pairing_receipt_reference)
+            self.assertEqual(len(receipt.product_receipt_references), 1)
+            self.assertEqual(len(receipt.readiness_receipt_references), 1)
+            self.assertEqual(
+                [item["component_identity"] for item in
+                 json.loads(receipt.canonical_json_bytes())["completions"]],
+                ["forge-runtime"],
+            )
+            stored = registry.load("production")
+            self.assertEqual(set(stored.by_component), {"forge-runtime"})
+            self.assertIsNone(stored.peer_binding)
+            self.assertEqual(stored.composition_binding.composition_id, "forge-only")
+
+    def test_ep_only_route_dispatches_without_forge_or_pairing(self) -> None:
+        candidate = composition_manifest(
+            composition_id="ep-only", forge_version="2.7.35",
+            forge_digest=FORGE_DIGEST, ep_version="2.3.102",
+            ep_digest=EP_DIGEST,
+            components=("engineering-platform-server",),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            registry = ManagedDeploymentRegistry(root / "registry")
+            admitted = admit_native_product_operation(
+                decoded(request_payload(candidate, installed=None, exists=False)),
+                manifest=candidate, registry=registry,
+                current_installer_release=installer_release(),
+            )
+            ep = Adapter("engineering-platform-server", "ep-only-instance")
+            selected = ResolvedManagedProductRoute(
+                None, "ep-only-instance", {"engineering-platform-server": ep}, None,
+            )
+            receipt = ManagedProductOperationDispatcher(
+                coordinator=coordinator(root, registry),
+                resolver=PinnedManagedProductRouteResolver({"production": selected}),
+            ).dispatch(admitted)
+            self.assertIsNone(receipt.pairing_receipt_reference)
+            self.assertEqual(ep.execute_calls, 1)
+            self.assertEqual(
+                set(registry.load("production").by_component),
+                {"engineering-platform-server"},
+            )
 
     def test_update_component_request_binds_reviewed_product_assessment(self) -> None:
         installed, candidate = manifests()
