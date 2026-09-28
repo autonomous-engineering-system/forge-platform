@@ -84,6 +84,10 @@ class ManagedPreservedLifecycleDispatcher:
         current = self.registry.load(request.review.deployment_id)
         if current is None:
             raise ManagedPreservedLifecycleDispatchError("reviewed deployment is unavailable")
+        if current.peer_binding is not None or getattr(current, "historical_peer_binding", None) is not None:
+            raise ManagedPreservedLifecycleDispatchError(
+                "paired preserve requires product-owned consumer revocation"
+            )
         claimed_components = set(current.active_by_component) | set(current.preserved_by_component)
         if isinstance(config, ReleasedManagedSingleProductRouteConfiguration) and (
             claimed_components != {config.component_identity}

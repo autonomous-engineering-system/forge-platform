@@ -249,6 +249,11 @@ product data or manufactures replacement lifecycle evidence. After interruption,
 it reloads product status and resumes the same product operation before any
 service or registry continuation.
 
+For an active or historical Forge↔EP pairing, the current PRESERVE executor
+fails before journal creation, service quiescence or product mutation. A paired
+PRESERVE route requires exact product-owned EP consumer revocation evidence
+bound to the reviewed operation before this gate can be lifted.
+
 Preserved configuration and provider bytes remain product-owned, but preserved
 authentication is never `VERIFIED`. Restore must run fresh provider readback and,
 when required, an explicit authentication/repair ceremony for each exact target.

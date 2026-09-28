@@ -102,8 +102,10 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
             launch_daemons_directory=root / "daemons",
         )
 
-    def _service(self, root):
+    def _service(self, root, *, paired=False):
         manifest, active, _ = _fixture()
+        if not paired:
+            active = replace(active, peer_binding=None)
         registry = ManagedDeploymentRegistry(root / "registry")
         registry.create(active)
         currency = preserve_helpers.Currency()
@@ -128,6 +130,27 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
             preserved_dispatcher=preserved,
         )
         return manifest, registry, currency, config, service
+
+    def test_paired_worker_route_fails_before_journal_service_or_product_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, currency, _, service = self._service(root, paired=True)
+            request_bytes = _wire(_request(manifest, registry))
+            supervisor = preserve_helpers.Supervisor()
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_adapter(root)[1]
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+                self.assertRaises(ManagedProductOperationServiceError) as failure,
+            ):
+                service.execute_preserved_lifecycle(request_bytes)
+            self.assertIsInstance(failure.exception.__cause__, ManagedPreservedLifecycleDispatchError)
+            self.assertIn("consumer revocation", str(failure.exception.__cause__))
+            self.assertEqual(registry.load("reviewed-pair").revision, 1)
+            self.assertFalse((root / "operations").exists())
+            self.assertEqual(currency.calls, [])
+            self.assertEqual(supervisor.calls, [])
+            self.assertEqual(runner.calls, [])
 
     def test_released_worker_executes_exact_review_and_replays_without_product_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -284,7 +307,7 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
             with self.assertRaises(ManagedProductOperationServiceError):
                 service.execute_preserved_lifecycle(_wire(_request(manifest, registry)))
 
-    def test_ep_preserve_uses_paired_route_and_product_owned_service(self):
+    def test_ep_preserve_uses_unpaired_route_and_product_owned_service(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             manifest, registry, currency, _, service = self._service(root)

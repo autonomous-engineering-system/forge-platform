@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -81,6 +82,7 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
 
     def _state(self, root, component=FORGE_COMPONENT):
         manifest, active, _ = _fixture()
+        active = replace(active, peer_binding=None)
         registry = ManagedDeploymentRegistry(root / "registry")
         registry.create(active)
         instance = "forge-a" if component == FORGE_COMPONENT else "ep-a"
@@ -135,6 +137,65 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
             launch_daemons_directory=root / "daemons", runner=runner,
         )
         return adapter, runner, receipt
+
+    def test_paired_preserve_requires_product_owned_revocation_before_any_mutation(self):
+        for component in (FORGE_COMPONENT, EP_COMPONENT):
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                manifest, active, _ = _fixture()
+                registry = ManagedDeploymentRegistry(root / "registry")
+                registry.create(active)
+                review = prepare_preserved_lifecycle_review(
+                    current=active, installed_manifest=manifest, operation="PRESERVE",
+                    operation_id="preserve-a", component=component,
+                    instance_id="forge-a" if component == FORGE_COMPONENT else "ep-a",
+                )
+                currency = Currency()
+                supervisor = Supervisor()
+                coordinator = ManagedPreserveExecutionCoordinator(
+                    operations_root=root / "operations", registry=registry,
+                    currency_guard=currency, forge_supervisor=supervisor,
+                    expected_owner_uid=os.getuid(),
+                )
+                adapter, runner, _ = (
+                    self._forge_adapter(root) if component == FORGE_COMPONENT
+                    else self._ep_adapter(root)
+                )
+                with self.assertRaisesRegex(ManagedPreserveExecutionError, "consumer revocation"):
+                    coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+                self.assertEqual(registry.load(active.deployment_id), active)
+                self.assertFalse((root / "operations").exists())
+                self.assertEqual(currency.calls, [])
+                self.assertEqual(supervisor.calls, [])
+                self.assertEqual(runner.calls, [])
+
+    def test_historical_pairing_cannot_be_preserved_again_without_revocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, active, partly_preserved = _fixture()
+            registry = ManagedDeploymentRegistry(root / "registry")
+            registry.create(active)
+            review = prepare_preserved_lifecycle_review(
+                current=partly_preserved, installed_manifest=manifest,
+                operation="PRESERVE", operation_id="preserve-a",
+                component=EP_COMPONENT, instance_id="ep-a",
+            )
+            currency = Currency()
+            coordinator = ManagedPreserveExecutionCoordinator(
+                operations_root=root / "operations", registry=registry,
+                currency_guard=currency, forge_supervisor=Supervisor(),
+                expected_owner_uid=os.getuid(),
+            )
+            adapter, runner, _ = self._ep_adapter(root)
+            with (
+                patch.object(registry, "load", return_value=partly_preserved),
+                self.assertRaisesRegex(ManagedPreserveExecutionError, "consumer revocation"),
+            ):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(registry.load(active.deployment_id), active)
+            self.assertFalse((root / "operations").exists())
+            self.assertEqual(currency.calls, [])
+            self.assertEqual(runner.calls, [])
 
     def test_forge_preserve_commits_only_selected_instance_and_replay(self):
         with tempfile.TemporaryDirectory() as directory:
