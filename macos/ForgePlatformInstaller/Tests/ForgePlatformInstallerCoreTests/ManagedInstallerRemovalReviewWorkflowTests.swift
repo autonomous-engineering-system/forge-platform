@@ -72,7 +72,7 @@ final class ManagedInstallerRemovalReviewWorkflowTests: XCTestCase {
         let calls = await coordinator.reviewCalls()
         XCTAssertTrue(calls.isEmpty)
 
-        let duplicate = try ManagedDeploymentInventory(
+        XCTAssertThrowsError(try ManagedDeploymentInventory(
             existing: available.existing + [
                 ManagedDeploymentTarget(
                     id: "deployment-two", exists: true,
@@ -83,19 +83,10 @@ final class ManagedInstallerRemovalReviewWorkflowTests: XCTestCase {
             ],
             createCandidate: available.createCandidate,
             evidenceReference: available.evidenceReference
-        )
-        let duplicateCoordinator = RemovalReviewWorkflowCoordinator(
-            inventories: [.available(duplicate)]
-        )
-        let ambiguous = await ManagedInstallerRemovalReviewWorkflow(
-            coordinator: duplicateCoordinator, currentRelease: try makeRelease()
-        ).prepare(
-            operationID: "remove-one", deploymentID: "deployment-one",
-            action: "REMOVE_DEPLOYMENT"
-        )
-        XCTAssertEqual(ambiguous, .failure(.rejected))
-        let duplicateCalls = await duplicateCoordinator.reviewCalls()
-        XCTAssertTrue(duplicateCalls.isEmpty)
+        )) { error in
+            XCTAssertEqual(error as? ManagedDeploymentInventoryError,
+                           .duplicateForgeInstanceIdentity)
+        }
     }
 
     func testHelperFailureAndInventoryDriftRejectProposal() async throws {
