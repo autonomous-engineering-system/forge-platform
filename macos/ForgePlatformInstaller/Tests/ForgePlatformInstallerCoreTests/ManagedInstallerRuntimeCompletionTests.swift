@@ -834,6 +834,10 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             return XCTFail("Expected a terminal completed result")
         }
         XCTAssertEqual(stages.map(\.id), ["product-operations", "pairing", "readiness"])
+        XCTAssertEqual(
+            stages[1].detail,
+            "Producteigen relatiebewijs voor de geselecteerde operatie"
+        )
         XCTAssertTrue(stages.allSatisfy { $0.state == .passed })
         XCTAssertEqual(summaries.count, 2)
         XCTAssertEqual(summaries[0].componentID, "engineering-platform-server")
@@ -846,6 +850,40 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(summaries[1].status, "Gereed")
         XCTAssertEqual(summaries[1].dashboardURL?.absoluteString, "https://127.0.0.1:8443/")
         XCTAssertEqual(summaries[1].serviceScope, .systemLaunchDaemon)
+    }
+
+    func testSingleProductReceiptDoesNotClaimForgeEPPairing() async throws {
+        let fixture = try RuntimeCompletionFixture(singleComponent: "forge-runtime")
+        let runtimeReceipt = try fixture.transactionReceipt()
+        let transport = ProductBridgeTransport { data in
+            do {
+                let request = try ManagedInstallerProductOperationRequest.decodeJSON(data)
+                let receipt = try ManagedInstallerProductOperationReceipt(
+                    request: request,
+                    productReceiptReferences: ["receipt:forge-product"],
+                    pairingReceiptReference: nil,
+                    readinessReceiptReferences: ["receipt:forge-readiness"],
+                    completions: [try ManagedInstallerProductCompletion(
+                        componentID: "forge-runtime", state: .ready
+                    )]
+                )
+                return .success(receipt.canonicalJSONData())
+            } catch {
+                return .failure(.rejected)
+            }
+        }
+
+        let result = await ManagedInstallerCanonicalProductOperationsExecutor(
+            transport: transport
+        ).executeProductOperations(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: runtimeReceipt
+        )
+        guard case .completed(let stages, let summary) = result else {
+            return XCTFail("Expected exact single-product completion")
+        }
+        XCTAssertEqual(stages.map(\.id), ["product-operations", "readiness"])
+        XCTAssertEqual(summary.map(\.componentID), ["forge-runtime"])
     }
 
     func testCanonicalProductExecutorFailsClosedForTransportAndResponseDrift() async throws {
