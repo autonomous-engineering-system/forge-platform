@@ -4,6 +4,114 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
+    func testExtractsExactTarAndZipWithIndependentCompleteTreeReadback() throws {
+        for kind in [ProviderRuntimeArchiveKind.tarGzip, .zip] {
+            let fixture = try ProviderArchiveFixture(
+                kind: kind, provider: kind == .zip ? .githubCLI : .codex
+            )
+            let inventory = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+                .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement)
+            XCTAssertEqual(inventory.members.count, kind == .zip ? 4 : 3)
+            let executable = try XCTUnwrap(inventory.members.first {
+                $0.path == fixture.runtime.executableRelativePath
+            })
+            XCTAssertEqual(executable.sha256, providerTaggedDigest(fixture.executable))
+            XCTAssertEqual(executable.mode & 0o111, 0o111)
+
+            let parent = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent(
+                "provider-extraction-\(UUID().uuidString)", isDirectory: true
+            )
+            let destination = parent.appendingPathComponent("slot", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: destination, withIntermediateDirectories: true
+            )
+            defer { try? FileManager.default.removeItem(at: parent) }
+            XCTAssertEqual(chmod(parent.path, 0o700), 0)
+            XCTAssertEqual(chmod(destination.path, 0o700), 0)
+            let extractor = MacOSManagedInstallerProviderRuntimeArchiveExtractor(
+                destination: destination, expectedOwner: geteuid()
+            )
+            let result = try providerArchiveExtractionSuccess(extractor.extract(
+                archive: fixture.archive, requirement: fixture.requirement,
+                inspection: inventory.inspection
+            ))
+            XCTAssertEqual(result.inspection, inventory.inspection)
+            XCTAssertTrue(result.treeEvidenceReference.hasPrefix("receipt:provider-tree-"))
+            XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent(
+                fixture.runtime.executableRelativePath
+            )), fixture.executable)
+            XCTAssertEqual(extractor.extract(
+                archive: fixture.archive, requirement: fixture.requirement,
+                inspection: inventory.inspection
+            ).failure, .rejected)
+        }
+    }
+
+    func testExtractorRejectsStaleInspectionDirtyAndInsecureDestinations() throws {
+        let fixture = try ProviderArchiveFixture()
+        let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
+        let parent = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent(
+            "provider-extraction-negative-\(UUID().uuidString)", isDirectory: true
+        )
+        let destination = parent.appendingPathComponent("slot", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        XCTAssertEqual(chmod(parent.path, 0o700), 0)
+        XCTAssertEqual(chmod(destination.path, 0o700), 0)
+        let extractor = MacOSManagedInstallerProviderRuntimeArchiveExtractor(
+            destination: destination, expectedOwner: geteuid()
+        )
+        let staleInspection = try ManagedInstallerProviderRuntimeArchiveInspection(
+            providerTargetID: inspection.providerTargetID,
+            provider: inspection.provider,
+            runtime: inspection.runtime,
+            archiveEntryCount: inspection.archiveEntryCount,
+            expandedByteCount: inspection.expandedByteCount,
+            executableArchitectures: inspection.executableArchitectures,
+            minimumMacOSVersion: inspection.minimumMacOSVersion,
+            evidenceReference: "provider-archive-inspection-stale"
+        )
+        XCTAssertEqual(extractor.extract(
+            archive: fixture.archive, requirement: fixture.requirement,
+            inspection: staleInspection
+        ).failure, .rejected)
+        var corrupt = fixture.archive
+        corrupt[corrupt.startIndex] ^= 1
+        XCTAssertEqual(extractor.extract(
+            archive: corrupt, requirement: fixture.requirement, inspection: inspection
+        ).failure, .rejected)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(
+            atPath: destination.path
+        ), [])
+
+        try Data("dirty".utf8).write(to: destination.appendingPathComponent("other"))
+        XCTAssertEqual(extractor.extract(
+            archive: fixture.archive, requirement: fixture.requirement,
+            inspection: inspection
+        ).failure, .rejected)
+        XCTAssertEqual(MacOSManagedInstallerProviderRuntimeArchiveExtractor(
+            destination: destination, expectedOwner: geteuid() + 1
+        ).extract(
+            archive: fixture.archive, requirement: fixture.requirement,
+            inspection: inspection
+        ).failure, .rejected)
+        try FileManager.default.removeItem(at: destination.appendingPathComponent("other"))
+        XCTAssertEqual(chmod(destination.path, 0o755), 0)
+        XCTAssertEqual(extractor.extract(
+            archive: fixture.archive, requirement: fixture.requirement,
+            inspection: inspection
+        ).failure, .rejected)
+        XCTAssertEqual(chmod(destination.path, 0o700), 0)
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.createSymbolicLink(
+            at: destination, withDestinationURL: parent
+        )
+        XCTAssertEqual(extractor.extract(
+            archive: fixture.archive, requirement: fixture.requirement,
+            inspection: inspection
+        ).failure, .rejected)
+    }
     func testInspectsExactTarGzipProviderArchiveWithoutExtractionOrExecution() async throws {
         let fixture = try ProviderArchiveFixture(kind: .tarGzip, provider: .codex)
         let staging = ProviderArchiveStaging(fixture: fixture)
@@ -144,6 +252,17 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
     }
 }
 
+private func providerArchiveExtractionSuccess<T>(
+    _ result: Result<T, ManagedInstallerProviderRuntimeArchiveExtractionFailure>
+) throws -> T {
+    switch result {
+    case .success(let value): return value
+    case .failure(let failure):
+        XCTFail("provider archive extraction failed: \(failure)")
+        throw failure
+    }
+}
+
 private extension Result {
     var failure: Failure? {
         if case .failure(let value) = self { return value }
@@ -160,6 +279,8 @@ private enum ProviderArchiveMutation: String, CaseIterable, Sendable {
     case symbolicLink
     case permissive
     case nonExecutable
+    case unreadableFile
+    case unsearchableDirectory
     case executableDigest
     case wrongMachO
     case badEnvelope
@@ -175,6 +296,7 @@ private enum ProviderArchiveMutation: String, CaseIterable, Sendable {
     static let tarCases: [Self] = [
         .missingExecutable, .missingParent, .duplicatePath, .caseCollision,
         .unsafePath, .symbolicLink, .permissive, .nonExecutable,
+        .unreadableFile, .unsearchableDirectory,
         .executableDigest, .wrongMachO, .badEnvelope, .badChecksum,
         .nonZeroPadding,
     ]
@@ -182,6 +304,7 @@ private enum ProviderArchiveMutation: String, CaseIterable, Sendable {
     static let zipCases: [Self] = [
         .missingExecutable, .missingParent, .duplicatePath, .caseCollision,
         .unsafePath, .symbolicLink, .permissive, .nonExecutable,
+        .unreadableFile, .unsearchableDirectory,
         .executableDigest, .wrongMachO, .badEnvelope, .badChecksum,
         .badLocalName, .zip64, .unsupportedFlags, .trailingComment,
         .interEntryGap, .directoryChecksum,
@@ -351,7 +474,10 @@ private func providerArchiveEntries(
     if mutation != .missingParent {
         for component in parentComponents {
             current = current.isEmpty ? String(component) : "\(current)/\(component)"
-            entries.append(.directory(path: current + "/", mode: 0o755))
+            entries.append(.directory(
+                path: current + "/",
+                mode: mutation == .unsearchableDirectory ? 0o600 : 0o755
+            ))
         }
     }
     let targetPath = mutation == .unsafePath ? "../\(executablePath)" : executablePath
@@ -371,7 +497,7 @@ private func providerArchiveEntries(
     entries.append(.file(
         path: current.isEmpty ? "README.txt" : "\(current)/README.txt",
         body: Data("provider runtime".utf8),
-        mode: 0o644,
+        mode: mutation == .unreadableFile ? 0o200 : 0o644,
         deflate: false
     ))
     if mutation == .duplicatePath {
