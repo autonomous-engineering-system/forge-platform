@@ -2,13 +2,21 @@
 
 **Assignment:** `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923`  
 **Owning repository:** `autonomous-engineering-system/forge-platform`
-**Producer baselines for first functional release:** Forge 2.7.36
+**Producer qualification hold (2026-09-28):** Forge 2.7.36
 (`ed1e623ef3cedd8c4f720510e0052409b2d5ab1f`) and Engineering Platform
-2.3.103 (`9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2`). Both producer
-releases and their additive preserved-instance lifecycle contracts are
-`QUALIFIED`; Forge Platform consumption is `DESIGNED`/`PLANNED`, not released
-or live-qualified.
-**Status:** source implementation under protected qualification; no live installation claim.
+2.3.103 (`9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2`) are the currently
+modelled source contracts, not approved first-release production pins. The
+released Forge 2.7.36 wheel has a proven unsafe PRESERVE ownership admission;
+the Forge 2.7.37 security change is merged but has no public release or
+published-wheel conformance yet. EP 2.3.103 has a separate lifecycle ownership
+gap under protected remediation. The exact producer disposition is owned by
+[forge#142](https://github.com/pcvantol/forge/issues/142). Forge Platform must
+keep production composition and live lifecycle qualification on hold until
+immutable corrected producer evidence is delivered and accepted in
+[forge#141](https://github.com/pcvantol/forge/issues/141).
+**Status:** source implementation under protected qualification; public
+installer 0.2.4 is an earlier qualification release, not the first functional
+installer. No live Forge/EP lifecycle PASS is claimed.
 
 ## Purpose
 

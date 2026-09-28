@@ -1,5 +1,16 @@
 # Universal macOS Installer contract
 
+**Current qualification hold (2026-09-28):** The historical implementation
+snapshot below is not production admission. Forge 2.7.36 has a proven released
+PRESERVE ownership gap, Forge 2.7.37 is not yet publicly released and
+published-wheel-qualified, and EP 2.3.103 lifecycle ownership remediation is
+under protected review in [forge#142](https://github.com/pcvantol/forge/issues/142).
+Production composition and live Forge/EP lifecycle qualification remain blocked
+until exact immutable producer evidence is accepted in
+[forge#141](https://github.com/pcvantol/forge/issues/141). The installer 0.2.4
+qualification helper is registered on one Mac, but that observation does not
+prove the first functional release or cold reboot before interactive login.
+
 **Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a durable platform-neutral managed-Python executor kernel with an atomic terminal-receipt-to-installer-journal bridge, a native wizard shell, an internal read-only C-3a catalog-admission coordinator that composes sealed trust, exact transport, independently injected time evidence and a read-only anti-replay anchor, a native source-level exact component-combination selector for the digest-pinned index, credential-free native transport plus private no-follow staging/readback for the four exact managed-Python identity assets, a read-only native archive/Mach-O inspector, a closed source-level runtime-slot mutation coordinator behind an injected privilege seam, a cleanup-enforcing preparation coordinator with a host-wide nonblocking operation lease, private atomic pending-record, cleanup-only restart integration and descriptor-safe acquisition-orphan reconciliation, separately locked native coordination for exact product-venv readiness, activation, rollback retention, final readback, durable private `READY`-receipt recovery, platform-neutral `COMPLETE`-receipt handoff and exact typed `TOOLS_VERIFIED` evidence projection, a private atomic/idempotent active parent-journal store behind the admission bridge, a source-level exact `PLANNED` journal seeder with durable readback, and a strict context-bound post-tool snapshot reader with a durable single-assignment store, capture/persist/readback producer coordinator, closed canonical host-observation request/response adapter, fixed privileged NSXPC client transport and atomic helper-owned host-state publication with exact durable readback. The released bundle path now includes a separate thin-arm64 helper code object, exact SMAppService LaunchDaemon plist and explicit nested Developer ID signing/readback, while the helper exports fail-closed unavailable handlers until its production backend is wired. No independently reviewed production time-evidence adapter, concrete privileged helper backend, live signed helper registration, released executor-journal wiring, composition-session producer, product provisioner adapter, published production runtime, released mutation wiring, or production deployment is certified.
 
 Exact V3 provider archives additionally have credential-free transport, private
@@ -733,12 +744,12 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 ## Managed Installer V1 implementation — 2026-09-23
 
 The active `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923` source slice
-implements the ADR-0007 management model. Its accepted producer baseline is now
+implements the ADR-0007 management model. Its source contracts currently model
 Forge 2.7.36 at `ed1e623ef3cedd8c4f720510e0052409b2d5ab1f` and Engineering
 Platform 2.3.103 at `9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2`.
-Both protected releases and their additive lifecycle contracts are `QUALIFIED`;
-binding those versions into the production composition and released installer
-remains consumer work. The exact implementation/limitations
+The lifecycle producer hold above supersedes any earlier qualification claim
+for those exact artifacts. Binding corrected qualified producers into the
+production composition and released installer remains consumer work. The exact implementation/limitations
 are documented in [Managed Installer V1](MANAGED_INSTALLER_V1.md).
 
 This source now contains a durable managed-deployment registry and execution
