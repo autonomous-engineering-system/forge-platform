@@ -595,6 +595,14 @@ private struct ManagedDeploymentSelectionScreen: View {
                         if let ep = deployment.engineeringPlatformInstanceID {
                             Text("EP: \(ep)").font(.caption).foregroundStyle(.secondary)
                         }
+                        if let forge = deployment.preservedForgeInstanceID {
+                            Text("Forge bewaard: \(forge)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let ep = deployment.preservedEngineeringPlatformInstanceID {
+                            Text("EP bewaard: \(ep)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         Text(deployment.exists ? "Bestaande deployment" : "Nieuwe deployment")
                             .font(.caption)
                             .foregroundStyle(.secondary)

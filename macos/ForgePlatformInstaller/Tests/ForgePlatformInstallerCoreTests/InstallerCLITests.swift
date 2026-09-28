@@ -197,6 +197,21 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(inventoryCalls1, 2)
     }
 
+    func testListSeparatesPreservedFromActiveProductIdentity() async throws {
+        let coordinator = CLIWizardCoordinator(
+            session: try session(), preservedInventory: true
+        )
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        ).listDeployments()
+        XCTAssertEqual(result.exitCode, .success)
+        XCTAssertEqual(result.records.first?["preserved_forge_instance_id"], "forge-prod")
+        XCTAssertEqual(result.records.first?["engineering_platform_instance_id"], "ep-prod")
+        XCTAssertNil(result.records.first?["forge_instance_id"])
+        let executionCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(executionCalls, 0)
+    }
+
 
     func testDeploymentPlanShowsExactReviewAndNeverRequestsCurrencyOrExecution() async throws {
         let coordinator = CLIWizardCoordinator(session: try session())
@@ -460,6 +475,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private let execution: ManagedDeploymentExecutionResult
     private let inventoryUnavailable: Bool
     private let removalInventory: Bool
+    private let preservedInventory: Bool
     private let removalState: String
     private var recordedCalls: [String] = []
     private var recordedProviderActions: [ProviderAction] = []
@@ -475,6 +491,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         execution: ManagedDeploymentExecutionResult? = nil,
         inventoryUnavailable: Bool = false,
         removalInventory: Bool = false,
+        preservedInventory: Bool = false,
         removalState: String = "COMPLETE"
     ) {
         selectedSession = session
@@ -482,6 +499,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         self.currency = currency
         self.inventoryUnavailable = inventoryUnavailable
         self.removalInventory = removalInventory
+        self.preservedInventory = preservedInventory
         self.removalState = removalState
         self.execution = execution ?? .completed(
             stages: [
@@ -528,8 +546,9 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
                         id: "production",
                         label: "Production",
                         exists: true,
-                        forgeInstanceID: "forge-prod",
+                        forgeInstanceID: preservedInventory ? nil : "forge-prod",
                         engineeringPlatformInstanceID: "ep-prod",
+                        preservedForgeInstanceID: preservedInventory ? "forge-prod" : nil,
                         installedCompositionID: removalInventory
                             ? "forge-ep-qualified" : nil,
                         installedCompositionManifestSHA256: removalInventory

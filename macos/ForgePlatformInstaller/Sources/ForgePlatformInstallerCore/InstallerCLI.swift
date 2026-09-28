@@ -841,6 +841,12 @@ public struct InstallerCLIWorkflow: Sendable {
             if let ep = deployment.engineeringPlatformInstanceID {
                 record["engineering_platform_instance_id"] = ep
             }
+            if let forge = deployment.preservedForgeInstanceID {
+                record["preserved_forge_instance_id"] = forge
+            }
+            if let ep = deployment.preservedEngineeringPlatformInstanceID {
+                record["preserved_engineering_platform_instance_id"] = ep
+            }
             return record
         }
     }
