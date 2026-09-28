@@ -12,18 +12,21 @@ from forge_platform.engineering_platform_system_adapter import (
     EPSystemInstanceTarget,
     EngineeringPlatformSystemProvisionerAdapter,
 )
+from forge_platform.ep_consumer_revocation import EPConsumerRevocationAdapter, EPConsumerScope
 from forge_platform.forge_ep_pairing_executor import (
     ForgeEPProductPairingBinding,
     ForgeEPProductPairingExecutor,
 )
-from forge_platform.forge_server_adapter import ForgeServerProductAdapter, ForgeServerTarget
+from forge_platform.forge_server_adapter import ForgeServerProductAdapter, ForgeServerTarget, ForgeUninstallBinding
 from forge_platform.managed_deployments import ManagedDeploymentRegistry
 from forge_platform.managed_product_operation_service import (
     ManagedProductOperationHelperBuilder,
 )
+from forge_platform.managed_product_removal_dispatch import ManagedProductRemovalDispatcher
 from forge_platform.released_product_routes import (
     ReleasedManagedProductRouteBuilder,
     ReleasedManagedProductRouteConfiguration,
+    ReleasedManagedSingleProductRouteConfiguration,
 )
 from forge_platform.universal_installer import VerifiedCompositionSelection
 from tests.installer.test_managed_product_operation_dispatch import coordinator
@@ -44,14 +47,19 @@ from tests.installer.test_universal_installer import (
 FORGE_DIGEST = "sha256:" + "4" * 64
 
 
-def verified_forge_ep_selection(context, composition_id="forge-ep-current"):
+def verified_forge_ep_selection(
+    context, composition_id="forge-ep-current",
+    components=("engineering-platform-server", "forge-runtime"),
+):
     payload = manifest_payload(composition_id=composition_id)
     ep = payload["components"][0]
+    ep["artifact"]["version"] = "2.3.102"
+    ep["artifact"]["source_revision"] = "cab85a84a6a8b5b574c796713e4363781fc05519"
     forge = json.loads(json.dumps(ep))
     forge["identity"] = "forge-runtime"
     forge["artifact"] = {
-        "version": "2.7.34",
-        "source_revision": "f" * 40,
+        "version": "2.7.35",
+        "source_revision": "ff4c0d45f51161376104250cd6efcfb6f045b8ac",
         "source": "https://registry.example.invalid/forge-runtime.whl",
         "digest": FORGE_DIGEST,
         "qualification": "https://evidence.example.invalid/forge-runtime",
@@ -63,6 +71,13 @@ def verified_forge_ep_selection(context, composition_id="forge-ep-current"):
         "venv_identity": "forge-runtime-primary",
         "python_runtime_identity": payload["python_runtime"]["identity_digest"],
     })
+    payload["components"] = [
+        item for item in payload["components"] if item["identity"] in components
+    ]
+    payload["product_venvs"] = [
+        item for item in payload["product_venvs"]
+        if item["component_identity"] in components
+    ]
     raw_manifest = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     catalog = {
         "schema": COMPOSITION_CATALOG_SCHEMA,
@@ -129,6 +144,9 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
             "forge_executable": self.root / "venvs/forge/bin/forge",
             "forge_target": forge_target,
             "forge_installed_artifact": self.components["forge-runtime"].artifact,
+            "engineering_platform_installed_artifact": self.components[
+                "engineering-platform-server"
+            ].artifact,
             "engineering_platform_provisioner": self.root / "venvs/ep/bin/engineering-platform-system-provisioner",
             "engineering_platform_product_root": self.root / "products/ep",
             "engineering_platform_target": ep_target,
@@ -167,10 +185,44 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
             EngineeringPlatformSystemProvisionerAdapter,
         )
         self.assertIsInstance(route.pairing_executor, ForgeEPProductPairingExecutor)
+        self.assertIsInstance(route.ep_consumer_revoker, EPConsumerRevocationAdapter)
+        self.assertIs(
+            route.ep_consumer_revoker.provisioner,
+            route.adapters["engineering-platform-server"],
+        )
+        self.assertEqual(
+            route.ep_consumer_revoker.scope,
+            EPConsumerScope("forge-consumer", "forge-project"),
+        )
+        self.assertEqual(
+            route.ep_consumer_revoker.expected_artifact,
+            self.components["engineering-platform-server"].artifact,
+        )
         self.assertEqual(route.forge_instance_id, "forge-prod")
         self.assertEqual(route.engineering_platform_instance_id, "ep-prod")
         with self.assertRaises(TypeError):
             routes["other"] = route
+
+    def test_lifecycle_executable_is_fixed_by_helper_route(self):
+        lifecycle = self.root / "lifecycle/forge-2.7.35/bin/forge"
+        uninstall = ForgeUninstallBinding("forge-prod", "installation-1")
+        config = self.configuration(
+            forge_lifecycle_executable=lifecycle, forge_uninstall_binding=uninstall,
+        )
+        routes = ReleasedManagedProductRouteBuilder.build(
+            configurations=(config,), candidate_selections=(self.selection,),
+        )
+        self.assertEqual(routes["production"].adapters["forge-runtime"].lifecycle_executable, lifecycle)
+        self.assertEqual(routes["production"].adapters["forge-runtime"].uninstall_binding, uninstall)
+        self.assertEqual(routes["production"].adapters["forge-runtime"].removal_support(), "SUPPORTED")
+        with self.assertRaisesRegex(ValueError, "lifecycle executable must be absolute"):
+            self.configuration(forge_lifecycle_executable=Path("relative/forge"))
+        with self.assertRaisesRegex(TypeError, "uninstall binding is invalid"):
+            self.configuration(forge_uninstall_binding="foreign")
+        with self.assertRaisesRegex(ValueError, "different instance"):
+            self.configuration(
+                forge_uninstall_binding=ForgeUninstallBinding("foreign", "installation-1")
+            )
 
     def test_closed_helper_builder_constructs_routes_and_authority_together(self):
         product_coordinator = coordinator(
@@ -186,6 +238,8 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
         )
 
         self.assertIs(service.dispatcher.coordinator, product_coordinator)
+        self.assertIsInstance(service.removal_dispatcher, ManagedProductRemovalDispatcher)
+        self.assertIs(service.removal_dispatcher.coordinator, product_coordinator)
         self.assertEqual(
             service.authority_resolver.current_installer_release.version,
             "1.1.0",
@@ -300,6 +354,89 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
                 configurations=(self.config, self.config),
                 candidate_selections=(self.selection,),
             )
+
+    def test_routes_reject_shared_ep_consumer_scope_across_deployments(self):
+        other = self.configuration(
+            deployment_id="production-other",
+            forge_target=replace(self.config.forge_target, instance_id="forge-other"),
+            engineering_platform_target=replace(
+                self.config.engineering_platform_target, instance_id="ep-other"
+            ),
+            pairing_binding=replace(
+                self.config.pairing_binding, expected_ep_instance_id="ep-other"
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "scope is shared"):
+            ReleasedManagedProductRouteBuilder.build(
+                configurations=(self.config, other),
+                candidate_selections=(self.selection,),
+            )
+
+    def test_builds_exact_forge_only_route_without_ep_or_pairing_authority(self):
+        selection = verified_forge_ep_selection(
+            self.context, "forge-only", ("forge-runtime",)
+        )
+        artifact = selection.manifest.components[0].artifact
+        config = ReleasedManagedSingleProductRouteConfiguration(
+            deployment_id="forge-only-deployment",
+            component_identity="forge-runtime",
+            executable=self.config.forge_executable,
+            target=self.config.forge_target,
+            installed_artifact=artifact,
+            staged_artifacts={artifact.digest: self.root / "staged/forge.whl"},
+            forge_lifecycle_executable=self.root / "venvs/forge/bin/forge",
+            forge_uninstall_binding=ForgeUninstallBinding("forge-prod", "installation-1"),
+        )
+        routes = ReleasedManagedProductRouteBuilder.build_from_manifests(
+            configurations=(config,), candidate_manifests=(selection.manifest,),
+        )
+        route = routes[config.deployment_id]
+        self.assertEqual(set(route.adapters), {"forge-runtime"})
+        self.assertEqual(route.forge_instance_id, "forge-prod")
+        self.assertIsNone(route.engineering_platform_instance_id)
+        self.assertIsNone(route.pairing_executor)
+        self.assertIsNone(route.ep_consumer_revoker)
+        self.assertEqual(route.adapters["forge-runtime"].removal_support(), "SUPPORTED")
+
+        with self.assertRaisesRegex(ValueError, "catalog authority"):
+            ReleasedManagedProductRouteBuilder.build_from_manifests(
+                configurations=(replace(config, staged_artifacts={
+                    **config.staged_artifacts,
+                    self.components["engineering-platform-server"].artifact.digest:
+                        self.root / "staged/ep.whl",
+                }),),
+                candidate_manifests=(selection.manifest,),
+            )
+        with self.assertRaisesRegex(ValueError, "different instance"):
+            replace(config, forge_uninstall_binding=ForgeUninstallBinding(
+                "forge-other", "installation-1"
+            ))
+
+    def test_builds_exact_ep_only_route_without_forge_or_pairing_authority(self):
+        selection = verified_forge_ep_selection(
+            self.context, "ep-only", ("engineering-platform-server",)
+        )
+        artifact = selection.manifest.components[0].artifact
+        config = ReleasedManagedSingleProductRouteConfiguration(
+            deployment_id="ep-only-deployment",
+            component_identity="engineering-platform-server",
+            executable=self.config.engineering_platform_provisioner,
+            target=self.config.engineering_platform_target,
+            installed_artifact=artifact,
+            staged_artifacts={artifact.digest: self.root / "staged/ep.whl"},
+            engineering_platform_product_root=self.config.engineering_platform_product_root,
+        )
+        route = ReleasedManagedProductRouteBuilder.build(
+            configurations=(config,), candidate_selections=(selection,),
+        )[config.deployment_id]
+        self.assertEqual(set(route.adapters), {"engineering-platform-server"})
+        self.assertIsNone(route.forge_instance_id)
+        self.assertEqual(route.engineering_platform_instance_id, "ep-prod")
+        self.assertIsNone(route.pairing_executor)
+        with self.assertRaisesRegex(ValueError, "Forge lifecycle"):
+            replace(config, forge_lifecycle_executable=self.config.forge_executable)
+        with self.assertRaisesRegex(TypeError, "exact EP target"):
+            replace(config, target=self.config.forge_target)
 
 
 if __name__ == "__main__":

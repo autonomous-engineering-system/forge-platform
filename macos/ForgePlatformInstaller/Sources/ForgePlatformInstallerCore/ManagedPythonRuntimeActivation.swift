@@ -52,12 +52,18 @@ public struct ManagedPythonRuntimeInstalledReadback: Equatable, Sendable {
             && activeRuntimeSlotIdentity == request.initialReadback.activeRuntimeSlotIdentity
             && retainedRuntimeIdentitySHA256s
                 == request.initialReadback.retainedRuntimeIdentitySHA256s
+            && evidenceReference == request.initialReadback.evidenceReference
     }
 
     func matchesFinal(_ request: ManagedPythonRuntimeActivationRequest) -> Bool {
         activeRuntimeIdentitySHA256 == request.runtimeIdentitySHA256
             && activeRuntimeSlotIdentity == request.runtimeSlotIdentity
             && retainedRuntimeIdentitySHA256s == request.requiredRetainedRuntimeIdentitySHA256s
+    }
+
+    fileprivate func matchesResumableFinal(_ request: ManagedPythonRuntimeActivationRequest) -> Bool {
+        matchesFinal(request)
+            && evidenceReference == request.expectedResumeEvidenceReference
     }
 
     static func isEvidenceReference(_ value: String) -> Bool {
@@ -230,6 +236,22 @@ public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
     public let initialReadback: ManagedPythonRuntimeInstalledReadback
     public let executionRequestFingerprint: String
 
+    var expectedResumeEvidenceReference: String {
+        let material: StrictJSONResourceValue = .object([
+            "schema": .string("forge-platform.managed-python-active-resume/v1"),
+            "operation_id": .string(operationID),
+            "deployment_id": .string(deploymentID),
+            "execution_fingerprint": .string(executionRequestFingerprint),
+            "runtime_identity": .string(runtimeIdentitySHA256),
+            "runtime_slot_identity": .string(runtimeSlotIdentity),
+            "runtime_slot_evidence": .string(preparationReceipt.slotEvidenceReference),
+            "initial_evidence": .string(initialReadback.evidenceReference),
+        ])
+        return "receipt:managed-python-active-" + SHA256.hash(
+            data: StrictSignedJSON.canonicalPayload(from: material)
+        ).map { String(format: "%02x", $0) }.joined()
+    }
+
     public init(
         session: VerifiedCompositionSessionPlan,
         deployment: ManagedDeploymentTarget,
@@ -278,21 +300,27 @@ public struct ManagedPythonRuntimeActivationRequest: Equatable, Sendable {
 
 public struct ManagedPythonProductVenvMutationRequest: Equatable, Sendable {
     public let operationID: String
+    public let deploymentID: String
     public let componentIdentity: String
     public let venvIdentity: String
     public let runtimeIdentitySHA256: String
     public let runtimeSlotIdentity: String
+    public let runtimeSlotEvidenceReference: String
 
     init(
         operationID: String,
+        deploymentID: String,
         environment: ManagedProductVirtualEnvironmentIdentity,
-        runtimeSlotIdentity: String
+        runtimeSlotIdentity: String,
+        runtimeSlotEvidenceReference: String
     ) {
         self.operationID = operationID
+        self.deploymentID = deploymentID
         componentIdentity = environment.componentIdentity
         venvIdentity = environment.venvIdentity
         runtimeIdentitySHA256 = environment.pythonRuntimeIdentitySHA256
         self.runtimeSlotIdentity = runtimeSlotIdentity
+        self.runtimeSlotEvidenceReference = runtimeSlotEvidenceReference
     }
 }
 
@@ -300,23 +328,28 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
     public enum State: String, Equatable, Sendable { case ready = "READY" }
 
     public let operationID: String
+    public let deploymentID: String
     public let componentIdentity: String
     public let venvIdentity: String
     public let runtimeIdentitySHA256: String
     public let runtimeSlotIdentity: String
+    public let runtimeSlotEvidenceReference: String
     public let state: State
     public let evidenceReference: String
 
     public init(
         operationID: String,
+        deploymentID: String,
         componentIdentity: String,
         venvIdentity: String,
         runtimeIdentitySHA256: String,
         runtimeSlotIdentity: String,
+        runtimeSlotEvidenceReference: String,
         state: State,
         evidenceReference: String
     ) throws {
         guard ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+              ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID),
               !componentIdentity.isEmpty,
               !venvIdentity.isEmpty,
               CompositionCatalogValidation.isTaggedSHA256(runtimeIdentitySHA256),
@@ -324,24 +357,29 @@ public struct ManagedPythonProductVenvReceipt: Equatable, Sendable {
                 == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
                     for: runtimeIdentitySHA256
                 ),
+              ManagedPythonRuntimeInstalledReadback.isEvidenceReference(runtimeSlotEvidenceReference),
               ManagedPythonRuntimeInstalledReadback.isEvidenceReference(evidenceReference) else {
             throw ManagedPythonRuntimeActivationFailure.invalidRequest
         }
         self.operationID = operationID
+        self.deploymentID = deploymentID
         self.componentIdentity = componentIdentity
         self.venvIdentity = venvIdentity
         self.runtimeIdentitySHA256 = runtimeIdentitySHA256
         self.runtimeSlotIdentity = runtimeSlotIdentity
+        self.runtimeSlotEvidenceReference = runtimeSlotEvidenceReference
         self.state = state
         self.evidenceReference = evidenceReference
     }
 
     func matches(_ request: ManagedPythonProductVenvMutationRequest) -> Bool {
         operationID == request.operationID
+            && deploymentID == request.deploymentID
             && componentIdentity == request.componentIdentity
             && venvIdentity == request.venvIdentity
             && runtimeIdentitySHA256 == request.runtimeIdentitySHA256
             && runtimeSlotIdentity == request.runtimeSlotIdentity
+            && runtimeSlotEvidenceReference == request.runtimeSlotEvidenceReference
             && state == .ready
     }
 }
@@ -551,6 +589,9 @@ public protocol ManagedPythonRuntimeActivationReading: Sendable {
         _ request: ManagedPythonProductVenvMutationRequest
     ) async -> Result<ManagedPythonProductVenvReceipt?, ManagedPythonRuntimeActivationFailure>
 
+    /// A final active readback may be returned only when this exact request's
+    /// durable activation evidence is independently verified; the coordinator
+    /// uses it to resume after a crash between mutation and receipt storage.
     func readActiveRuntime(
         _ request: ManagedPythonRuntimeActivationRequest
     ) async -> Result<ManagedPythonRuntimeInstalledReadback, ManagedPythonRuntimeActivationFailure>
@@ -620,6 +661,8 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
         switch await mutation.readActiveRuntime(request) {
         case .success(let readback) where readback.matchesInitial(request):
             break
+        case .success(let readback) where readback.matchesResumableFinal(request):
+            break
         case .success:
             return .failure(.rejected)
         case .failure(let failure):
@@ -630,8 +673,10 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
         for environment in request.productVirtualEnvironments {
             let venvRequest = ManagedPythonProductVenvMutationRequest(
                 operationID: request.operationID,
+                deploymentID: request.deploymentID,
                 environment: environment,
-                runtimeSlotIdentity: request.runtimeSlotIdentity
+                runtimeSlotIdentity: request.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: request.preparationReceipt.slotEvidenceReference
             )
             switch await ensureVenv(venvRequest) {
             case .success(let receipt):
@@ -740,8 +785,10 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
         for environment in request.productVirtualEnvironments {
             let venvRequest = ManagedPythonProductVenvMutationRequest(
                 operationID: request.operationID,
+                deploymentID: request.deploymentID,
                 environment: environment,
-                runtimeSlotIdentity: request.runtimeSlotIdentity
+                runtimeSlotIdentity: request.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: request.preparationReceipt.slotEvidenceReference
             )
             switch await mutation.readProductVenv(venvRequest) {
             case .success(let readback?) where readback.matches(venvRequest):

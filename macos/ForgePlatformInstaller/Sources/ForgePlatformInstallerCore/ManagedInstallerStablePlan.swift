@@ -262,6 +262,9 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
             "installed_version": component.installedVersion.map { .string($0) } ?? .null,
             "candidate_version": component.candidateVersion.map { .string($0) } ?? .null,
             "artifact_digest": component.artifactDigest.map { .string($0) } ?? .null,
+            "update_assessment_reference": component.updateAssessmentReference.map {
+                .string($0)
+            } ?? .null,
             "detail": .string(component.detail),
         ])
     }

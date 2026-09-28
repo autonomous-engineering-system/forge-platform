@@ -46,6 +46,7 @@ def composition_manifest(
     ep_version: str,
     ep_digest: str,
     upgrade_from: tuple[str, ...] = (),
+    components: tuple[str, ...] = ("engineering-platform-server", "forge-runtime"),
 ) -> CompositionManifest:
     payload = manifest_payload(
         composition_id=composition_id,
@@ -70,6 +71,14 @@ def composition_manifest(
         "venv_identity": "forge-runtime-primary",
         "python_runtime_identity": payload["python_runtime"]["identity_digest"],
     })
+    payload["components"] = [
+        component for component in payload["components"]
+        if component["identity"] in components
+    ]
+    payload["product_venvs"] = [
+        venv for venv in payload["product_venvs"]
+        if venv["component_identity"] in components
+    ]
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     digest = "sha256:" + sha256(raw).hexdigest()
     requirement = InstallerRequirement(
@@ -114,7 +123,7 @@ def request_payload(
         }
     )
     components = []
-    for identity in ("engineering-platform-server", "forge-runtime"):
+    for identity in sorted(candidate_by):
         artifact = candidate_by[identity].artifact
         previous = installed_by.get(identity)
         components.append({
@@ -123,17 +132,21 @@ def request_payload(
             "installed_version": None if previous is None else previous.artifact.version,
             "candidate_version": artifact.version,
             "artifact_sha256": artifact.digest,
+            "update_assessment_reference": (
+                ("forge-update-assess:" if identity == "forge-runtime" else "ep-update-assess:")
+                + "sha256:" + ("a" if identity == "forge-runtime" else "b") * 64
+            ) if exists else None,
         })
     release = installer_release()
     payload: dict[str, object] = {
-        "schema": "forge-platform.native-product-operation-request/v2",
+        "schema": "forge-platform.native-product-operation-request/v3",
         "stable_plan_fingerprint": "1" * 64,
         "operation_id": "operation-one",
         "session_id": "session-one",
         "deployment_id": "production",
         "deployment_exists": exists,
-        "forge_instance_id": "forge-prod" if exists else None,
-        "engineering_platform_instance_id": "ep-prod" if exists else None,
+        "forge_instance_id": "forge-prod" if exists and "forge-runtime" in installed_by else None,
+        "engineering_platform_instance_id": "ep-prod" if exists and "engineering-platform-server" in installed_by else None,
         "installed_composition_identity": None if installed is None else installed.composition_id,
         "installed_composition_manifest_sha256": None if installed is None else installed.manifest_digest,
         "inventory_evidence_reference": "evidence:inventory-one",
@@ -161,16 +174,19 @@ def decoded(payload: dict[str, object]):
 
 
 def stored_deployment(installed: CompositionManifest) -> ManagedDeployment:
+    components = {component.identity for component in installed.components}
     return ManagedDeployment(
         "production",
         1,
         "Production",
-        (
-            ManagedComponentBinding("forge-runtime", "forge-prod", "receipt:forge-prod"),
-            ManagedComponentBinding(
+        tuple(binding for identity, binding in (
+            ("forge-runtime", ManagedComponentBinding(
+                "forge-runtime", "forge-prod", "receipt:forge-prod"
+            )),
+            ("engineering-platform-server", ManagedComponentBinding(
                 "engineering-platform-server", "ep-prod", "receipt:ep-prod"
-            ),
-        ),
+            )),
+        ) if identity in components),
         schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
         composition_binding=ManagedCompositionBinding(
             installed.composition_id,
@@ -210,6 +226,23 @@ class ManagedProductOperationRequestDecodingTests(unittest.TestCase):
             tuple(component.identity for component in request.components),
             ("engineering-platform-server", "forge-runtime"),
         )
+        self.assertEqual(
+            request.components[1].update_assessment_reference,
+            "forge-update-assess:sha256:" + "a" * 64,
+        )
+
+    def test_update_requires_exact_reviewed_product_assessment(self) -> None:
+        for changed in (None, "forge-update-assess:unavailable", "ep-update-assess:sha256:" + "a" * 64):
+            payload = request_payload(self.candidate, installed=self.installed)
+            payload["components"][1]["update_assessment_reference"] = changed
+            with self.subTest(changed=changed), self.assertRaises(ManagedProductOperationAdmissionError):
+                decoded(_refingerprint(payload))
+        legacy = request_payload(self.candidate, installed=self.installed)
+        legacy["schema"] = "forge-platform.native-product-operation-request/v2"
+        for component in legacy["components"]:
+            component.pop("update_assessment_reference")
+        with self.assertRaises(ManagedProductOperationAdmissionError):
+            decoded(_refingerprint(legacy))
 
     def test_rejects_duplicate_noncanonical_oversized_and_changed_requests(self) -> None:
         payload = request_payload(self.candidate, installed=self.installed)
@@ -333,6 +366,70 @@ class ManagedProductOperationAuthorityTests(unittest.TestCase):
             )
             self.assertIsNone(admitted.current_deployment)
 
+    def test_admits_exact_single_component_install_and_existing_update(self) -> None:
+        for identity in ("forge-runtime", "engineering-platform-server"):
+            with self.subTest(identity=identity):
+                installed = composition_manifest(
+                    composition_id=f"{identity}-old",
+                    forge_version="1.0.0", forge_digest=OLD_FORGE_DIGEST,
+                    ep_version="2.0.0", ep_digest=OLD_EP_DIGEST,
+                    components=(identity,),
+                )
+                candidate = composition_manifest(
+                    composition_id=f"{identity}-current",
+                    forge_version="1.1.0", forge_digest=FORGE_DIGEST,
+                    ep_version="2.1.0", ep_digest=EP_DIGEST,
+                    upgrade_from=(installed.composition_id,),
+                    components=(identity,),
+                )
+                with tempfile.TemporaryDirectory() as directory:
+                    registry = ManagedDeploymentRegistry(Path(directory).resolve())
+                    fresh = decoded(request_payload(candidate, installed=None, exists=False))
+                    admitted = admit_native_product_operation(
+                        fresh, manifest=candidate, registry=registry,
+                        current_installer_release=installer_release(),
+                    )
+                    self.assertIsNone(admitted.current_deployment)
+                    registry.create(stored_deployment(installed))
+                    update = decoded(request_payload(candidate, installed=installed))
+                    admitted = admit_native_product_operation(
+                        update, manifest=candidate, installed_manifest=installed,
+                        registry=registry, current_installer_release=installer_release(),
+                    )
+                    self.assertEqual(set(admitted.current_deployment.by_component), {identity})
+
+    def test_single_component_rejects_extra_and_missing_instance_authority(self) -> None:
+        forge = composition_manifest(
+            composition_id="forge-alone", forge_version="1.1.0",
+            forge_digest=FORGE_DIGEST, ep_version="2.1.0", ep_digest=EP_DIGEST,
+            components=("forge-runtime",),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ManagedDeploymentRegistry(Path(directory).resolve())
+            registry.create(stored_deployment(forge))
+            valid = request_payload(forge, installed=forge)
+            valid["components"][0]["change"] = "retain"
+            valid["components"][0]["update_assessment_reference"] = None
+            for field, value in (
+                ("engineering_platform_instance_id", "ep-other"),
+                ("forge_instance_id", None),
+            ):
+                payload = json.loads(json.dumps(valid))
+                payload[field] = value
+                with self.subTest(field=field), self.assertRaises(ManagedProductOperationAdmissionError):
+                    decoded(_refingerprint(payload))
+            pair = composition_manifest(
+                composition_id="pair", forge_version="1.1.0",
+                forge_digest=FORGE_DIGEST, ep_version="2.1.0", ep_digest=EP_DIGEST,
+            )
+            valid["composition_identity"] = pair.composition_id
+            valid["manifest_sha256"] = pair.manifest_digest
+            with self.assertRaisesRegex(ManagedProductOperationAdmissionError, "topology"):
+                admit_native_product_operation(
+                    decoded(_refingerprint(valid)), manifest=pair, registry=registry,
+                    installed_manifest=forge, current_installer_release=installer_release(),
+                )
+
     def test_rejects_release_manifest_candidate_and_provider_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             registry = self._registry(Path(directory).resolve())
@@ -416,6 +513,7 @@ class ManagedProductOperationAuthorityTests(unittest.TestCase):
                 )
             payload = request_payload(self.candidate, installed=self.installed)
             payload["components"][0]["change"] = "retain"
+            payload["components"][0]["update_assessment_reference"] = None
             with self.assertRaisesRegex(ManagedProductOperationAdmissionError, "non-update"):
                 admit_native_product_operation(
                     decoded(_refingerprint(payload)),

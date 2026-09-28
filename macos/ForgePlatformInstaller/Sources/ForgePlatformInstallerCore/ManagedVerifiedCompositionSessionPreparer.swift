@@ -1,6 +1,19 @@
 import CryptoKit
 import Foundation
 
+/// Exact public manifest bytes admitted by the signed catalog selection and
+/// bound to the same verified session. This internal value is source material
+/// for later helper-owned authority validation; it grants no mutation right.
+struct ManagedVerifiedCompositionMaterial: Equatable, Sendable {
+    let session: VerifiedCompositionSessionPlan
+    let manifestBytes: Data
+}
+
+enum ManagedVerifiedCompositionMaterialResult: Equatable, Sendable {
+    case prepared(ManagedVerifiedCompositionMaterial)
+    case unavailable(InstallerSessionPreparationFailure)
+}
+
 /// Read-only production composition/session preparation. Every network locator
 /// is already admitted by signed metadata; every downloaded document is
 /// digest-checked by its owning verifier/builder. No product mutation,
@@ -24,6 +37,42 @@ struct ManagedVerifiedCompositionSessionPreparer: VerifiedCompositionSessionPrep
         for currentInstaller: CurrentVerifiedInstallerCompositionContext,
         deployment: ManagedDeploymentTarget
     ) async -> InstallerSessionPreparationResult {
+        switch await prepareVerifiedCompositionMaterial(
+            for: currentInstaller,
+            deployment: deployment
+        ) {
+        case .prepared(let material): return .prepared(material.session)
+        case .unavailable(let failure): return .unavailable(failure)
+        }
+    }
+
+    func prepareVerifiedCompositionMaterial(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget
+    ) async -> ManagedVerifiedCompositionMaterialResult {
+        await prepareVerifiedCompositionMaterial(
+            for: currentInstaller,
+            deployment: deployment,
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+    }
+
+    /// Selects one exact supported component set from the signed index. The
+    /// caller cannot turn an absent component into an inferred installation or
+    /// use a set outside the two qualified producer identities.
+    func prepareVerifiedCompositionMaterial(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget,
+        componentIdentities: [String]
+    ) async -> ManagedVerifiedCompositionMaterialResult {
+        guard !componentIdentities.isEmpty,
+              componentIdentities == componentIdentities.sorted(),
+              Set(componentIdentities).count == componentIdentities.count,
+              Set(componentIdentities).isSubset(of: Set([
+                "engineering-platform-server", "forge-runtime",
+              ])) else {
+            return .unavailable(.selectionUnavailable)
+        }
         guard case .success(let admission) = await catalogAdmission
             .admitVerifiedCatalogWithEvidence(for: currentInstaller),
               let indexLocator = admission.catalog.componentCombinationCatalog else {
@@ -52,10 +101,7 @@ struct ManagedVerifiedCompositionSessionPreparer: VerifiedCompositionSessionPrep
         let request: ComponentCombinationRequest
         do {
             request = try ComponentCombinationRequest(
-                componentIdentities: [
-                    "forge-runtime",
-                    "engineering-platform-server",
-                ],
+                componentIdentities: Set(componentIdentities),
                 deployment: deployment
             )
         } catch {
@@ -97,7 +143,10 @@ struct ManagedVerifiedCompositionSessionPreparer: VerifiedCompositionSessionPrep
             selectedDeployment: deployment
         ) {
         case .success(let plan):
-            return .prepared(plan)
+            return .prepared(ManagedVerifiedCompositionMaterial(
+                session: plan,
+                manifestBytes: manifestBytes
+            ))
         case .failure:
             return .unavailable(.selectionUnavailable)
         }

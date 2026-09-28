@@ -2,6 +2,41 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
+    func testReviewedExecutionSendsOnlyExactIntentAfterFreshSnapshot() async throws {
+        let fixture = try ReleasedRouteFixture()
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        guard case .prepared(let plan) = await coordinator.prepareStablePlan(
+            for: fixture.operation
+        ) else { return XCTFail("expected stable plan") }
+
+        let result = await coordinator.executeReviewedManagedDeployment(fixture.operation)
+
+        XCTAssertEqual(result, .failed(.executionFailed, stages: []))
+        let sent = await loader.sentIntents()
+        XCTAssertEqual(sent, [try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)])
+    }
+
+    func testReviewedExecutionRejectsDriftBeforeSendingIntent() async throws {
+        let fixture = try ReleasedRouteFixture()
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        _ = await coordinator.prepareStablePlan(for: fixture.operation)
+        await loader.setFailure(true)
+
+        let result = await coordinator.executeReviewedManagedDeployment(fixture.operation)
+
+        XCTAssertEqual(result, .failed(.staleSession, stages: []))
+        let sent = await loader.sentIntents()
+        XCTAssertTrue(sent.isEmpty)
+    }
+
     func testExactSnapshotBuildsPreflightReviewAndStablePlan() async throws {
         let fixture = try ReleasedRouteFixture()
         let loader = ReleasedRouteLoader(snapshot: fixture.snapshot)
@@ -150,6 +185,95 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
             ))
         }
     }
+
+    func testSingleComponentSnapshotBindsExactSelectedVirtualEnvironment() throws {
+        let pair = try ReleasedRouteFixture()
+        for identity in ["forge-runtime", "engineering-platform-server"] {
+            let single = try ReleasedRouteFixture(componentIdentity: identity)
+            XCTAssertEqual(single.session.productVirtualEnvironments.count, 1)
+            XCTAssertEqual(single.review.components.map(\.componentID), [identity])
+            XCTAssertEqual(single.snapshot.review, single.review)
+            XCTAssertThrowsError(try single.snapshot(review: pair.review))
+            XCTAssertThrowsError(try pair.snapshot(review: single.review))
+        }
+    }
+
+    func testSingleComponentReviewedRouteBuildsStablePlan() async throws {
+        for identity in ["forge-runtime", "engineering-platform-server"] {
+            let fixture = try ReleasedRouteFixture(componentIdentity: identity)
+            let coordinator = ManagedInstallerReleasedRouteCoordinator(
+                loader: ReleasedRouteLoader(snapshot: fixture.snapshot)
+            )
+            let preflight = await coordinator.prepareHostPreflight(
+                session: fixture.session, deployment: fixture.deployment
+            )
+            XCTAssertEqual(preflight, .prepared(PreparedHostPreflight(
+                sessionID: fixture.session.sessionID,
+                deploymentID: fixture.deployment.id,
+                preflight: fixture.preflight
+            )))
+            let review = await coordinator.prepareCompositionReview(
+                session: fixture.session, deployment: fixture.deployment
+            )
+            XCTAssertEqual(review, .prepared(PreparedCompositionReview(
+                sessionID: fixture.session.sessionID,
+                deploymentID: fixture.deployment.id,
+                review: fixture.review
+            )))
+            guard case .prepared(let plan) = await coordinator.prepareStablePlan(
+                for: fixture.operation
+            ) else { return XCTFail("expected exact single-component stable plan") }
+            XCTAssertEqual(plan.reviewedOperation.components.map(\.componentID), [identity])
+        }
+    }
+
+    func testSingleComponentSnapshotRejectsDuplicateOrForeignReviewIdentity() throws {
+        let single = try ReleasedRouteFixture(componentIdentity: "forge-runtime")
+        var duplicate = single.review
+        duplicate.components.append(single.review.components[0])
+        XCTAssertThrowsError(try single.snapshot(review: duplicate))
+        var foreign = single.review
+        foreign.components[0] = ComponentDiff(
+            componentID: "foreign-product", title: "Foreign", change: .install,
+            candidateVersion: "1.0", artifactDigest: "sha256:" + String(repeating: "2", count: 64),
+            detail: "foreign"
+        )
+        XCTAssertThrowsError(try single.snapshot(review: foreign))
+    }
+}
+
+private actor ExecutionRouteLoader:
+    ManagedInstallerReleasedRouteSnapshotLoading,
+    ManagedInstallerReviewedExecutionIntentSending {
+    let snapshot: ManagedInstallerReleasedRouteSnapshot
+    private var failing = false
+    private var sent: [ManagedInstallerReviewedExecutionIntent] = []
+
+    init(snapshot: ManagedInstallerReleasedRouteSnapshot) { self.snapshot = snapshot }
+    func setFailure(_ value: Bool) { failing = value }
+    func sentIntents() -> [ManagedInstallerReviewedExecutionIntent] { sent }
+
+    func loadManagedDeploymentInventory() async throws -> ManagedDeploymentInventory {
+        if failing { throw TestFailure.failed }
+        return snapshot.inventory
+    }
+
+    func loadReleasedRouteSnapshot(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async throws -> ManagedInstallerReleasedRouteSnapshot {
+        if failing || session != snapshot.session || deployment != snapshot.deployment {
+            throw TestFailure.failed
+        }
+        return snapshot
+    }
+
+    func executeReviewedIntent(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedDeploymentExecutionResult {
+        sent.append(intent)
+        return .failed(.executionFailed, stages: [])
+    }
 }
 
 private actor ReleasedRouteLoader: ManagedInstallerReleasedRouteSnapshotLoading {
@@ -205,7 +329,7 @@ struct ReleasedRouteFixture {
     let snapshot: ManagedInstallerReleasedRouteSnapshot
     let operation: ReviewedManagedDeploymentOperation
 
-    init(includeManagedGit: Bool = false) throws {
+    init(includeManagedGit: Bool = false, componentIdentity: String? = nil) throws {
         let managedTools: [ManagedToolRequirement]
         if includeManagedGit {
             managedTools = [ManagedToolRequirement(
@@ -239,7 +363,9 @@ struct ReleasedRouteFixture {
             ),
             componentSelectionSequence: 4,
             managedPythonRuntime: managedPythonTestRuntime,
-            productVirtualEnvironments: managedPythonTestVenvs,
+            productVirtualEnvironments: managedPythonTestVenvs.filter {
+                componentIdentity == nil || $0.componentIdentity == componentIdentity
+            },
             providerRequirements: [],
             managedTools: managedTools
         )
@@ -281,7 +407,7 @@ struct ReleasedRouteFixture {
                     artifactDigest: "sha256:" + String(repeating: "2", count: 64),
                     detail: "qualified"
                 ),
-            ]
+            ].filter { componentIdentity == nil || $0.componentID == componentIdentity }
         )
         python = try ManagedPythonRuntimeInstalledReadback(
             activeRuntimeIdentitySHA256: nil,

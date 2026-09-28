@@ -36,6 +36,86 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
         XCTAssertEqual(acceptanceReadCount, 1)
     }
 
+    func testMaterialRetainsOnlyExactManifestBoundToSelectedSession() async throws {
+        let fixture = try Fixture(verifiedAt: verifiedAt)
+        let result = await fixture.preparer().prepareVerifiedCompositionMaterial(
+            for: fixture.currentInstaller,
+            deployment: fixture.freshDeployment
+        )
+        guard case .prepared(let material) = result else {
+            return XCTFail("expected verified composition material")
+        }
+        XCTAssertEqual(material.manifestBytes, fixture.manifestBytes)
+        XCTAssertEqual(
+            material.session.manifestSHA256,
+            "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: material.manifestBytes)
+        )
+        XCTAssertEqual(material.session.compositionIdentity, "forge-ep-managed-v1")
+
+        let rejectedDocuments = DocumentFetcherStub(responses: [
+            fixture.indexLocator.url: .success(fixture.indexBytes),
+            fixture.manifestLocator.url: .success(Data("{}".utf8)),
+        ])
+        let rejected = await fixture.preparer(documents: rejectedDocuments)
+            .prepareVerifiedCompositionMaterial(
+                for: fixture.currentInstaller,
+                deployment: fixture.freshDeployment
+            )
+        XCTAssertEqual(rejected, .unavailable(.selectionUnavailable))
+    }
+
+    func testSelectsExactForgeOnlyAndEPOnlySignedCompositions() async throws {
+        for (identities, expected) in [
+            (["forge-runtime"], "forge-managed-v1"),
+            (["engineering-platform-server"], "ep-managed-v1"),
+        ] {
+            let fixture = try Fixture(
+                verifiedAt: verifiedAt,
+                componentIdentities: identities
+            )
+            let result = await fixture.preparer().prepareVerifiedCompositionMaterial(
+                for: fixture.currentInstaller,
+                deployment: fixture.freshDeployment,
+                componentIdentities: identities
+            )
+            guard case .prepared(let material) = result else {
+                return XCTFail("expected signed single-component selection")
+            }
+            XCTAssertEqual(material.session.compositionIdentity, expected)
+            XCTAssertEqual(material.session.productVirtualEnvironments.map(\.componentIdentity),
+                           identities)
+            XCTAssertEqual(material.session.manifestSHA256,
+                           "sha256:" + GitHubInstallerReleaseDescriptor.sha256(
+                               of: material.manifestBytes
+                           ))
+            let wrongSet = await fixture.preparer().prepareVerifiedCompositionMaterial(
+                for: fixture.currentInstaller,
+                deployment: fixture.freshDeployment,
+                componentIdentities: ["engineering-platform-server", "forge-runtime"]
+            )
+            XCTAssertEqual(wrongSet, .unavailable(.selectionUnavailable))
+        }
+    }
+
+    func testRejectsUnsupportedDuplicateOrUnsortedComponentSetBeforeFetch() async throws {
+        let fixture = try Fixture(verifiedAt: verifiedAt)
+        for identities in [
+            [],
+            ["workspace"],
+            ["forge-runtime", "forge-runtime"],
+            ["forge-runtime", "engineering-platform-server"],
+        ] {
+            let result = await fixture.preparer().prepareVerifiedCompositionMaterial(
+                for: fixture.currentInstaller,
+                deployment: fixture.freshDeployment,
+                componentIdentities: identities
+            )
+            XCTAssertEqual(result, .unavailable(.selectionUnavailable))
+        }
+        let requested = await fixture.documents.requestedURLs()
+        XCTAssertTrue(requested.isEmpty)
+    }
+
     func testAdmissionOrMissingIndexFailsBeforeDocumentFetch() async throws {
         let fixture = try Fixture(verifiedAt: verifiedAt)
         let unavailable = ManagedVerifiedCompositionSessionPreparer(
@@ -172,7 +252,8 @@ private final class Fixture: @unchecked Sendable {
 
     init(
         verifiedAt: Date,
-        minimumInstallerVersion: String = "1.0.0"
+        minimumInstallerVersion: String = "1.0.0",
+        componentIdentities: [String] = ["engineering-platform-server", "forge-runtime"]
     ) throws {
         let context = try Self.currentContext()
         let deployment = try ManagedDeploymentTarget(
@@ -180,14 +261,25 @@ private final class Fixture: @unchecked Sendable {
             label: "New deployment",
             exists: false
         )
-        let manifest = Self.manifestData()
+        let compositionID: String
+        switch componentIdentities {
+        case ["forge-runtime"]: compositionID = "forge-managed-v1"
+        case ["engineering-platform-server"]: compositionID = "ep-managed-v1"
+        default: compositionID = "forge-ep-managed-v1"
+        }
+        let manifest = Self.manifestData(
+            compositionID: compositionID,
+            componentIdentities: componentIdentities
+        )
         let manifestLocation = VerifiedCompositionCatalogDocumentLocator(
-            url: "https://catalog.example.invalid/manifests/forge-ep-managed-v1.json",
+            url: "https://catalog.example.invalid/manifests/\(compositionID).json",
             sha256: "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: manifest)
         )
         let index = try Self.indexData(
             manifest: manifestLocation,
-            minimumInstallerVersion: minimumInstallerVersion
+            minimumInstallerVersion: minimumInstallerVersion,
+            compositionID: compositionID,
+            componentIdentities: componentIdentities
         )
         let indexLocation = VerifiedCompositionCatalogDocumentLocator(
             url: "https://catalog.example.invalid/index.json",
@@ -306,7 +398,10 @@ private final class Fixture: @unchecked Sendable {
         return CurrentVerifiedInstallerCompositionContext(release: record)
     }
 
-    private static func manifestData() -> Data {
+    private static func manifestData(
+        compositionID: String,
+        componentIdentities: [String]
+    ) -> Data {
         let components: [[String: Any]] = [
             [
                 "identity": "forge-runtime",
@@ -322,11 +417,11 @@ private final class Fixture: @unchecked Sendable {
                 "python_runtime_qualification": [:],
                 "service": [:],
             ],
-        ]
+        ].filter { componentIdentities.contains($0["identity"] as? String ?? "") }
         return try! JSONSerialization.data(
             withJSONObject: [
                 "schema": "forge-platform.composition/v2",
-                "composition_id": "forge-ep-managed-v1",
+                "composition_id": compositionID,
                 "channel": "stable",
                 "requires_installer": [
                     "minimum_version": "1.0.0",
@@ -377,7 +472,7 @@ private final class Fixture: @unchecked Sendable {
                         "venv_identity": "ep-test-v1",
                         "python_runtime_identity": managedPythonTestRuntime.identitySHA256,
                     ],
-                ],
+                ].filter { componentIdentities.contains($0["component_identity"] as? String ?? "") },
                 "providers": [],
                 "components": components,
                 "upgrade_from": [],
@@ -388,7 +483,9 @@ private final class Fixture: @unchecked Sendable {
 
     private static func indexData(
         manifest: VerifiedCompositionCatalogDocumentLocator,
-        minimumInstallerVersion: String
+        minimumInstallerVersion: String,
+        compositionID: String,
+        componentIdentities: [String]
     ) throws -> Data {
         let components: [[String: Any]] = [
             [
@@ -399,7 +496,7 @@ private final class Fixture: @unchecked Sendable {
                 "identity": "engineering-platform-server",
                 "requires_capabilities": ["catalog-component-set/v1"],
             ],
-        ]
+        ].filter { componentIdentities.contains($0["identity"] as? String ?? "") }
         return try JSONSerialization.data(
             withJSONObject: [
                 "schema": "forge-platform.component-combination-catalog/v1",
@@ -408,7 +505,7 @@ private final class Fixture: @unchecked Sendable {
                 "published_at": "2026-09-10T11:00:00Z",
                 "expires_at": "2026-10-10T12:00:00Z",
                 "compositions": [[
-                    "composition_id": "forge-ep-managed-v1",
+                    "composition_id": compositionID,
                     "selection_sequence": 7,
                     "channel": "stable",
                     "manifest": [

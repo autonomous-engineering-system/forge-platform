@@ -2,7 +2,7 @@
 
 **Assignment:** `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923`  
 **Owning repository:** `autonomous-engineering-system/forge-platform`
-**Producer baselines:** Forge 2.7.34 and Engineering Platform 2.3.102  
+**Producer baselines for first functional release:** Forge 2.7.35 and Engineering Platform 2.3.102
 **Status:** source implementation under protected qualification; no live installation claim.
 
 ## Purpose
@@ -127,7 +127,7 @@ component request.
 
 ## Forge adapter
 
-Forge 2.7.34 has a deliberately different frozen boundary.
+Forge 2.7.35 has a deliberately different frozen boundary from EP.
 
 Forge itself owns:
 
@@ -136,23 +136,37 @@ Forge itself owns:
 - EP execution-host configuration/preflight;
 - health/readiness;
 - the qualified external installed updater.
+- the read-only, exact-instance/candidate `server update-assess` decision;
+- the durable exact-instance `server uninstall` and `server uninstall-status`
+  dispatcher.
 
 Forge Platform owns the macOS system LaunchDaemon and installed filesystem
 layout assigned to it by the Forge deployment contract. The LaunchDaemon uses
 an exact absolute Forge executable, exact data root, non-root service account,
 loopback endpoint and private bearer-file reference.
 
-Two important fail-closed limitations remain on the 2.7.34 producer contract:
+The installer consumes the 2.7.35 assessment only from an explicitly bound
+2.7.35 lifecycle executable, exact installed artifact, qualified staged wheel
+and exact product instance/installation IDs. Missing or contradictory evidence
+remains `UNKNOWN` or fails closed. A positive assessment alone does not
+complete the reviewed-update, updater-resume, readiness or registry gates.
+The adapter accepts a completed external update only with Forge's exact
+`forge-installed-update/v1` operation/request digest, selected artifact and
+instance, migration evidence and installed preservation readback. A successful
+process exit without that terminal receipt is rejected.
+For a fresh update dispatch the adapter rechecks exact product inventory and a
+new positive assessment before service mutation, stops the selected service,
+delegates to Forge's updater, registers the selected resolver, restarts the
+service and requires exact instance readiness. Interrupted post-updater
+recovery and reviewed-assessment equivalence remain separate open gates.
 
-1. **Update:** Forge publishes a durable updater but no separate product-owned
-   read-only `UPDATE_AVAILABLE` assessment. Forge Platform therefore does not
-   infer update authorization merely because an updater exists.
-2. **Remove:** Forge 2.7.34 publishes no product-owned uninstall dispatcher.
-   Forge component/deployment removal remains unsupported rather than deleting
-   a Forge data root as an installer invention.
-
-Those are producer-contract gaps, not permission for Forge Platform to
-duplicate Forge lifecycle logic.
+The Forge adapter binds the product-owned uninstall dispatcher to one exact
+instance and durable operation ID. It stops the selected LaunchDaemon, requires
+Forge's terminal receipt and matching status, then removes only the
+deployment-owned service definition. A same-operation replay is idempotent;
+Forge alone removes verified mutable instance data. The higher-level managed
+deployment remove route and GUI/CLI confirmation remain blocked until their
+reviewed target, pairing and registry-commit gates are integrated and qualified.
 
 ## Durable execution
 
@@ -313,9 +327,10 @@ Python zipapp, copy its captured bytes to the fixed worker resource name and
 bind their exact `sha256:` digest into `Info.plist`. It rejects leaf symlinks,
 non-zipapps, duplicate or unordered entries, traversal names, non-regular or
 non-`0644` entries, variable timestamps, encryption and oversized expansion.
-The release workflow does not yet build or supply that worker, so the installed
-product route remains fail-closed until the executable worker and its native
-published authority are supplied and qualified.
+The unsigned candidate workflow and local offline signer now build and supply
+that worker. The strict archive producer rejects a missing or empty worker
+resource. The installed product route remains fail-closed until a native
+published authority and managed Python runtime are independently qualified.
 
 The repository now also has a deterministic worker builder. It packages the
 complete dependency-closed `forge_platform` Python package with one generated
@@ -351,7 +366,9 @@ reused across deployments. The worker reopens and rehashes the exact authority
 immediately before every coordinator mutation; the native reviewed-execution
 gate remains responsible for the preceding signed online installer-currentness
 decision. A changed local snapshot fails closed. The native atomic publisher
-for this file and a real released snapshot are still required.
+now enforces exact previous-digest CAS and full typed readback of an existing
+authority. A verified signed-composition and route producer must still publish
+real authority; a real released snapshot and live execution remain outstanding.
 
 Behind that transport, the platform-neutral helper service now composes the
 strict decoder, helper-owned authority resolution, admission and durable
@@ -425,7 +442,9 @@ Source qualification must include Python, Swift and hosted macOS validation for:
 - EP 2.3.102 provisioner command correlation;
 - Forge product-init identity binding;
 - Forge system-service target isolation;
-- fail-closed unsupported Forge update/remove semantics.
+- Forge 2.7.35 product-owned read-only update assessment, exact-target update
+  execution/resume and durable uninstall dispatch, including stale, ambiguous,
+  wrong-instance and missing-terminal-evidence failures;
 
 A source/PR PASS is not a signed installer release and is not a live Mac
 installation claim.

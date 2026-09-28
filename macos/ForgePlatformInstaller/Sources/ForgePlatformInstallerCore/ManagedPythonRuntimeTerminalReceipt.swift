@@ -283,8 +283,10 @@ public struct ManagedPythonRuntimeTerminalReceiptCoordinator: Sendable {
         for environment in request.productVirtualEnvironments {
             let venvRequest = ManagedPythonProductVenvMutationRequest(
                 operationID: request.operationID,
+                deploymentID: request.deploymentID,
                 environment: environment,
-                runtimeSlotIdentity: request.runtimeSlotIdentity
+                runtimeSlotIdentity: request.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: request.preparationReceipt.slotEvidenceReference
             )
             switch await readback.readProductVenv(venvRequest) {
             case .success(let receipt?) where receipt.matches(venvRequest):

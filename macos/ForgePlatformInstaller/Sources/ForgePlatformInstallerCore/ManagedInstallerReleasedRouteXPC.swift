@@ -159,7 +159,8 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
 
 enum ManagedInstallerReleasedRouteXPCCodec {
     static let inventorySchema = "forge-platform.managed-deployment-inventory/v1"
-    static let snapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v1"
+    static let snapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v2"
+    static let legacySnapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v1"
     static let maximumResponseBytes = 128 * 1_024
 
     static func encodeInventory(_ inventory: ManagedDeploymentInventory) -> Data {
@@ -191,6 +192,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
                 "installed_version": $0.installedVersion.map(StrictJSONResourceValue.string) ?? .null,
                 "candidate_version": $0.candidateVersion.map(StrictJSONResourceValue.string) ?? .null,
                 "artifact_digest": $0.artifactDigest.map(StrictJSONResourceValue.string) ?? .null,
+                "update_assessment_reference": $0.updateAssessmentReference.map(
+                    StrictJSONResourceValue.string
+                ) ?? .null,
                 "detail": .string($0.detail),
             ])
         }
@@ -226,12 +230,7 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         session: VerifiedCompositionSessionPlan,
         deployment: ManagedDeploymentTarget
     ) throws -> ManagedInstallerReleasedRouteSnapshot {
-        let fields = try root(data, schema: snapshotSchema, keys: [
-            "schema", "inventory", "session_id", "composition_identity",
-            "manifest_sha256", "deployment", "passed_preflight_ids", "review_status",
-            "review_acknowledged", "components", "python_runtime",
-            "managed_tool_actions", "evidence_reference",
-        ])
+        let (fields, legacy) = try snapshotFields(data)
         guard fields["session_id"]?.stringValue == request.sessionID,
               fields["composition_identity"]?.stringValue == request.compositionIdentity,
               fields["manifest_sha256"]?.stringValue == request.manifestSHA256,
@@ -289,7 +288,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
             review: CompositionReview(
                 manifestIdentity: session.compositionIdentity,
                 status: .compatible,
-                components: try componentValues.map(decodeComponent),
+                components: try componentValues.map {
+                    try decodeComponent($0, legacy: legacy)
+                },
                 isAcknowledged: false
             ),
             initialPythonRuntime: ManagedInstallerPostToolReadbackSnapshot.decodePython(pythonValue),
@@ -303,12 +304,7 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         request: ManagedInstallerReleasedRouteRequest,
         inventory: ManagedDeploymentInventory
     ) throws {
-        let fields = try root(data, schema: snapshotSchema, keys: [
-            "schema", "inventory", "session_id", "composition_identity",
-            "manifest_sha256", "deployment", "passed_preflight_ids", "review_status",
-            "review_acknowledged", "components", "python_runtime",
-            "managed_tool_actions", "evidence_reference",
-        ])
+        let (fields, legacy) = try snapshotFields(data)
         guard fields["session_id"]?.stringValue == request.sessionID,
               fields["composition_identity"]?.stringValue == request.compositionIdentity,
               fields["manifest_sha256"]?.stringValue == request.manifestSHA256,
@@ -340,11 +336,15 @@ enum ManagedInstallerReleasedRouteXPCCodec {
               passedIDs.count == HostPreflight.defaultChecks.count else {
             throw ManagedInstallerReleasedRouteXPCFailure.rejected
         }
-        let components = try componentValues.map(decodeComponent)
-        guard Set(components.map(\.componentID)) == Set([
+        let components = try componentValues.map { try decodeComponent($0, legacy: legacy) }
+        let supportedComponents = Set([
                   ProviderOwnerComponent.forgeRuntime.rawValue,
                   ProviderOwnerComponent.engineeringPlatformServer.rawValue,
-              ]), components.count == 2,
+              ])
+        let componentIDs = Set(components.map(\.componentID))
+        guard !componentIDs.isEmpty,
+              componentIDs.isSubset(of: supportedComponents),
+              componentIDs.count == components.count,
               !components.contains(where: { $0.change == .blocked }) else {
             throw ManagedInstallerReleasedRouteXPCFailure.rejected
         }
@@ -399,17 +399,64 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         return fields
     }
 
-    private static func decodeComponent(_ value: StrictJSONResourceValue) throws -> ComponentDiff {
+    private static func snapshotFields(
+        _ data: Data
+    ) throws -> ([String: StrictJSONResourceValue], Bool) {
+        let keys: Set<String> = [
+            "schema", "inventory", "session_id", "composition_identity",
+            "manifest_sha256", "deployment", "passed_preflight_ids", "review_status",
+            "review_acknowledged", "components", "python_runtime",
+            "managed_tool_actions", "evidence_reference",
+        ]
+        if let current = try? root(data, schema: snapshotSchema, keys: keys) {
+            return (current, false)
+        }
+        return (try root(data, schema: legacySnapshotSchema, keys: keys), true)
+    }
+
+    private static func decodeComponent(
+        _ value: StrictJSONResourceValue, legacy: Bool
+    ) throws -> ComponentDiff {
+        var requiredKeys: Set<String> = [
+            "id", "title", "change", "installed_version", "candidate_version",
+            "artifact_digest", "detail",
+        ]
+        if !legacy { requiredKeys.insert("update_assessment_reference") }
         guard let fields = value.objectValue,
-              Set(fields.keys) == Set([
-                "id", "title", "change", "installed_version", "candidate_version",
-                "artifact_digest", "detail",
-              ]),
+              Set(fields.keys) == requiredKeys,
               let id = fields["id"]?.stringValue,
               let title = fields["title"]?.stringValue,
               let changeValue = fields["change"]?.stringValue,
               let change = ComponentChange(rawValue: changeValue),
               let detail = fields["detail"]?.stringValue else {
+            throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+        }
+        let assessment = legacy ? nil : try ManagedInstallerReleasedRouteRequest.optionalString(
+            fields["update_assessment_reference"]
+        )
+        if legacy && change == .update {
+            throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+        }
+        if let assessment {
+            guard change == .update, assessment.utf8.count <= 256,
+                  assessment.unicodeScalars.allSatisfy({ scalar in
+                      (48...57).contains(scalar.value)
+                        || (65...90).contains(scalar.value)
+                        || (97...122).contains(scalar.value)
+                        || [45, 46, 58, 95].contains(scalar.value)
+                  }) else {
+                throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+            }
+            if id == ProviderOwnerComponent.forgeRuntime.rawValue {
+                let prefix = "forge-update-assess:"
+                guard assessment.hasPrefix(prefix),
+                      CompositionCatalogValidation.isTaggedSHA256(
+                          String(assessment.dropFirst(prefix.count))
+                      ) else {
+                    throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+                }
+            }
+        } else if change == .update && !legacy {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
         }
         return ComponentDiff(
@@ -425,6 +472,7 @@ enum ManagedInstallerReleasedRouteXPCCodec {
             artifactDigest: try ManagedInstallerReleasedRouteRequest.optionalString(
                 fields["artifact_digest"]
             ),
+            updateAssessmentReference: assessment,
             detail: detail
         )
     }
@@ -433,7 +481,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
 /// Read-only XPC backend over helper-owned route evidence. The app can select
 /// only a correlation request; file names are derived inside the helper and
 /// every document is read through a private root descriptor without following
-/// links. A separate verified authority publisher owns creation of these files.
+/// links. The released helper derives inventory from the Python-owned registry
+/// and durable helper-owned create candidate. A separate verified authority
+/// publisher owns creation of reviewed route snapshots.
 public final class FileManagedInstallerReleasedRouteXPCService:
     NSObject, ManagedInstallerReleasedRouteXPCService, @unchecked Sendable {
     public static let inventoryFileName = "managed-deployment-inventory.json"
@@ -445,14 +495,27 @@ public final class FileManagedInstallerReleasedRouteXPCService:
 
     private let rootDirectory: URL
     private let expectedOwner: uid_t
+    private let inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer?
 
     public convenience override init() {
-        self.init(rootDirectory: Self.productionRoot, expectedOwner: 0)
+        self.init(
+            rootDirectory: Self.productionRoot,
+            expectedOwner: 0,
+            inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer(
+                registry: FileManagedInstallerManagedDeploymentRegistryReader(),
+                candidate: FileManagedInstallerManagedDeploymentCreateCandidateStore()
+            )
+        )
     }
 
-    init(rootDirectory: URL, expectedOwner: uid_t) {
+    init(
+        rootDirectory: URL,
+        expectedOwner: uid_t,
+        inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer? = nil
+    ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
+        self.inventoryProducer = inventoryProducer
         super.init()
     }
 
@@ -479,6 +542,14 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         reply(data)
     }
 
+    public func executeReviewedIntent(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        reply(nil)
+    }
+
     static func routeFileName(for canonicalRequest: Data) -> String {
         let digest = SHA256.hash(data: canonicalRequest)
             .map { String(format: "%02x", $0) }
@@ -487,6 +558,14 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     }
 
     private func loadInventory() -> (data: Data, inventory: ManagedDeploymentInventory)? {
+        if let inventoryProducer {
+            guard case .success(let inventory) = inventoryProducer.produce() else { return nil }
+            let data = ManagedInstallerReleasedRouteXPCCodec.encodeInventory(inventory)
+            guard data.count <= ManagedInstallerReleasedRouteXPCCodec.maximumResponseBytes else {
+                return nil
+            }
+            return (data, inventory)
+        }
         guard let data = try? readSecureFile(named: Self.inventoryFileName),
               let inventory = try? ManagedInstallerReleasedRouteXPCCodec.decodeInventory(data),
               ManagedInstallerReleasedRouteXPCCodec.encodeInventory(inventory) == data else {
@@ -590,16 +669,29 @@ public protocol ManagedInstallerReleasedRouteHelperServing: Sendable {
     ) async throws -> ManagedInstallerReleasedRouteSnapshot
 }
 
+/// The caller sends only a reviewed-plan fingerprint and correlation identity.
+/// Plan loading, currency checks and mutation remain helper-owned.
+public protocol ManagedInstallerReviewedExecutionIntentSending: Sendable {
+    func executeReviewedIntent(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedDeploymentExecutionResult
+}
+
 @objc public protocol ManagedInstallerReleasedRouteXPCService {
     func loadManagedDeploymentInventory(withReply reply: @escaping (Data?) -> Void)
     func loadReleasedRouteSnapshot(
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     )
+    func executeReviewedIntent(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
 }
 
 public actor MacOSManagedInstallerReleasedRouteXPCTransport:
-    ManagedInstallerReleasedRouteSnapshotLoading {
+    ManagedInstallerReleasedRouteSnapshotLoading,
+    ManagedInstallerReviewedExecutionIntentSending {
     public static let machServiceName =
         "com.autonomous-engineering-system.forge-platform-installer.helper.released-route"
 
@@ -656,6 +748,15 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
         )
     }
 
+    public func executeReviewedIntent(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedDeploymentExecutionResult {
+        let data = try await call { service, reply in
+            service.executeReviewedIntent(intent.canonicalJSONData(), withReply: reply)
+        }
+        return try ManagedInstallerReviewedExecutionResultCodec.decode(data)
+    }
+
     private func call(
         _ invoke: @escaping (
             ManagedInstallerReleasedRouteXPCService,
@@ -684,9 +785,14 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
 public final class ManagedInstallerReleasedRouteXPCServiceHandler:
     NSObject, ManagedInstallerReleasedRouteXPCService, @unchecked Sendable {
     private let service: any ManagedInstallerReleasedRouteHelperServing
+    private let admission: ManagedInstallerReviewedExecutionAdmission?
 
-    public init(service: any ManagedInstallerReleasedRouteHelperServing) {
+    public init(
+        service: any ManagedInstallerReleasedRouteHelperServing,
+        admission: ManagedInstallerReviewedExecutionAdmission? = nil
+    ) {
         self.service = service
+        self.admission = admission
         super.init()
     }
 
@@ -718,6 +824,23 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
                 return
             }
             gate.complete(ManagedInstallerReleasedRouteXPCCodec.encodeSnapshot(snapshot))
+        }
+    }
+
+    public func executeReviewedIntent(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let admission,
+              let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            let result = await admission.execute(canonicalIntent: canonicalIntent)
+            gate.complete(ManagedInstallerReviewedExecutionResultCodec.encode(result))
         }
     }
 }

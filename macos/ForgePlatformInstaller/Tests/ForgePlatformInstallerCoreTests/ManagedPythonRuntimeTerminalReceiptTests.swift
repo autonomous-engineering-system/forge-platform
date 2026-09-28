@@ -362,10 +362,12 @@ private struct TerminalReceiptReadback: ManagedPythonRuntimeActivationReading {
         default:
             return .success(try! ManagedPythonProductVenvReceipt(
                 operationID: venvRequest.operationID,
+                deploymentID: venvRequest.deploymentID,
                 componentIdentity: venvRequest.componentIdentity,
                 venvIdentity: venvRequest.venvIdentity,
                 runtimeIdentitySHA256: venvRequest.runtimeIdentitySHA256,
                 runtimeSlotIdentity: venvRequest.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: venvRequest.runtimeSlotEvidenceReference,
                 state: .ready,
                 evidenceReference: "receipt:current-venv-\(venvRequest.componentIdentity)"
             ))

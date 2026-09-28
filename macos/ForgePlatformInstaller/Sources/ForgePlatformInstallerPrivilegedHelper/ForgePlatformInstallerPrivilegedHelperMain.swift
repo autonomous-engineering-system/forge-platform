@@ -18,9 +18,8 @@ protocol ManagedInstallerPrivilegedHelperRuntimeRunning: AnyObject {
     func invalidate()
 }
 
-/// Post-tool observation remains fail-closed until its released backend is
-/// composed. Released-route reads and product execution use separate concrete
-/// helper-owned services and never enter this fallback.
+/// An explicit denial backend retained for failure-path qualification. The
+/// released helper composes separate concrete services for its active routes.
 final class UnavailableManagedInstallerPrivilegedHelperBackend:
     NSObject,
     ManagedInstallerPostToolObservationXPCService,
@@ -45,6 +44,14 @@ final class UnavailableManagedInstallerPrivilegedHelperBackend:
         _ = canonicalRequest
         reply(nil)
     }
+
+    func executeReviewedIntent(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        reply(nil)
+    }
 }
 
 final class MacOSManagedInstallerPrivilegedHelperRuntime:
@@ -53,6 +60,13 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
     private let invalidateListeners: [() -> Void]
 
     convenience init() throws {
+        try self.init(prepareStateRoot: {
+            try ManagedInstallerHelperStateRootBootstrap().prepare()
+        })
+    }
+
+    convenience init(prepareStateRoot: () throws -> Void) throws {
+        try prepareStateRoot()
         let postToolIdentity = try ManagedInstallerPostToolXPCCallerIdentity(
             bundleIdentifier: ManagedInstallerPrivilegedHelperProcessContract
                 .installerBundleIdentifier,
@@ -65,14 +79,16 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
             teamIdentifier: ManagedInstallerPrivilegedHelperProcessContract
                 .appleTeamIdentifier
         )
-        let backend = UnavailableManagedInstallerPrivilegedHelperBackend()
+        let postToolBackend = Self.makePostToolService(
+            rootDirectory: FileManagedInstallerReleasedRouteXPCService.productionRoot
+        )
         let productBackend = ManagedInstallerProductOperationXPCServiceHandler(
             executor: ManagedInstallerPythonProductOperationExecutor()
         )
         let releasedRouteBackend = FileManagedInstallerReleasedRouteXPCService()
         let postToolListener = MacOSManagedInstallerPostToolObservationXPCListener(
             callerIdentity: postToolIdentity,
-            serviceHandler: backend
+            serviceHandler: postToolBackend
         )
         let productListener = MacOSManagedInstallerProductOperationXPCListener(
             callerIdentity: productIdentity,
@@ -93,6 +109,21 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
                 productListener.invalidate,
                 routeListener.invalidate,
             ]
+        )
+    }
+
+    static func makePostToolService(
+        rootDirectory: URL
+    ) -> ManagedInstallerPostToolObservationXPCServiceHandler {
+        ManagedInstallerPostToolObservationXPCServiceHandler(
+            snapshotCapturer: ManagedInstallerPostToolLockedHelperSnapshotCapturer(
+                operationLock: FileManagedPythonRuntimeOperationLock(
+                    rootDirectory: rootDirectory
+                ),
+                hostReader: FileManagedInstallerPostToolAtomicHostReader(
+                    rootDirectory: rootDirectory
+                )
+            )
         )
     }
 

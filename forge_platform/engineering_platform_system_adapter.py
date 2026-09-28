@@ -135,7 +135,10 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
             raise EngineeringPlatformAdapterError("EP adapter supports only the EP Server role")
         if request.installation_identity != self.target.instance_id:
             raise EngineeringPlatformAdapterError("EP request does not target the configured instance")
-        if request.product_request:
+        if request.product_request and (
+            request.kind != "update"
+            or set(request.product_request) != {"reviewed_update_assessment_reference"}
+        ):
             raise EngineeringPlatformAdapterError("EP system provisioner accepts no generic product_request extension")
 
     def _artifact_path(self, artifact: QualifiedArtifact) -> Path:
@@ -301,6 +304,14 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
                 *self._release_arguments(request.artifact),
             )
         elif request.kind == "update":
+            reviewed = request.product_request.get("reviewed_update_assessment_reference")
+            assessment = self.assess_update(request)
+            if (
+                not isinstance(reviewed, str)
+                or assessment.state != "UPDATE_AVAILABLE"
+                or assessment.evidence_reference != reviewed
+            ):
+                raise EngineeringPlatformAdapterError("EP update assessment drifted after review")
             result = self._run(
                 "update-execute",
                 "--instance-id", self.target.instance_id,

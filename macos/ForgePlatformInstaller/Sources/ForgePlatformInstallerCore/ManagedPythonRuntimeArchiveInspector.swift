@@ -103,6 +103,24 @@ public struct ManagedPythonRuntimeArchiveInspection: Equatable, Sendable {
     }
 }
 
+/// Exact entry inventory obtained from the same bounded USTAR parser used for
+/// archive admission. A later privileged extractor can compare every materialized
+/// member to these path, mode, size and content commitments.
+struct ManagedPythonRuntimeArchiveMember: Equatable, Sendable {
+    enum Kind: Equatable, Sendable { case file, directory }
+
+    let path: String
+    let kind: Kind
+    let mode: UInt16
+    let byteCount: UInt64
+    let sha256: String?
+}
+
+struct ManagedPythonRuntimeArchiveExtractionInventory: Equatable, Sendable {
+    let inspection: ManagedPythonRuntimeArchiveInspection
+    let members: [ManagedPythonRuntimeArchiveMember]
+}
+
 /// Read-only admission of one exact staged managed-Python runtime archive.
 /// The implementation neither extracts nor executes archive content and never
 /// accepts a URL, path, command, environment variable or credential.
@@ -133,44 +151,64 @@ public struct MacOSManagedPythonRuntimeArchiveInspector: Sendable {
             _ = try await read(.sourceProvenance, from: stagedAssets, for: runtime)
             _ = try await read(.buildProvenance, from: stagedAssets, for: runtime)
 
-            var tar = try ManagedPythonTarInspector(
-                maximumExpandedBytes: Self.maximumExpandedArchiveBytes,
-                maximumEntries: Self.maximumArchiveEntries,
-                maximumPathBytes: Self.maximumPathBytes,
-                maximumManifestBytes: Self.maximumManifestBytes,
-                maximumInterpreterBytes: Self.maximumInterpreterBytes
-            )
-            try ManagedPythonGZIP.inspect(runtimeArchive, feeding: &tar)
-            let contents = try tar.finish()
-            try ManagedPythonRuntimeArchiveManifest.verify(contents.manifest, runtime: runtime)
-            let deploymentTarget = try ManagedPythonMachOInspector.inspect(contents.interpreter)
-            guard deploymentTarget == runtime.minimumMacOSVersion else {
-                throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
-            }
-            return .success(try ManagedPythonRuntimeArchiveInspection(
-                runtimeIdentitySHA256: runtime.identitySHA256,
-                archiveSHA256: runtime.artifact.sha256,
-                sourceSHA256: runtime.source.sha256,
-                sourceProvenanceSHA256: runtime.sourceProvenance.sha256,
-                buildProvenanceSHA256: runtime.buildProvenance.sha256,
-                archiveLayout: ManagedPythonRuntimeArchiveInspection.layout,
-                interpreterPath: ManagedPythonRuntimeArchiveInspection.interpreterRelativePath,
-                executableArchitectures: [ManagedPythonRuntimeIdentity.architecture],
-                minimumMacOSVersion: deploymentTarget,
-                implementation: ManagedPythonRuntimeIdentity.implementation,
-                version: runtime.version,
-                buildVariant: ManagedPythonRuntimeIdentity.buildVariant,
-                pythonTag: runtime.pythonTag,
-                abiTag: runtime.abiTag,
-                platformTag: ManagedPythonRuntimeIdentity.platformTag,
-                policyRevision: runtime.policyRevision,
-                evidenceReference: Self.evidenceReference(runtime: runtime, contents: contents)
-            ))
+            return .success(try Self.inspectArchiveForExtraction(
+                runtimeArchive, for: runtime
+            ).inspection)
         } catch let failure as ManagedPythonRuntimeArchiveInspectionFailure {
             return .failure(failure)
         } catch {
             return .failure(.rejected)
         }
+    }
+
+    /// Rechecks the exact archive digest and complete runtime contract from
+    /// bytes, without a staged path. Only the helper's closed byte resolver may
+    /// supply this input during a future slot-installation transaction.
+    static func inspectArchiveForExtraction(
+        _ runtimeArchive: Data,
+        for runtime: ManagedPythonRuntimeIdentity
+    ) throws -> ManagedPythonRuntimeArchiveExtractionInventory {
+        guard "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: runtimeArchive)
+            == runtime.artifact.sha256 else {
+            throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
+        }
+        var tar = try ManagedPythonTarInspector(
+            maximumExpandedBytes: Self.maximumExpandedArchiveBytes,
+            maximumEntries: Self.maximumArchiveEntries,
+            maximumPathBytes: Self.maximumPathBytes,
+            maximumManifestBytes: Self.maximumManifestBytes,
+            maximumInterpreterBytes: Self.maximumInterpreterBytes
+        )
+        try ManagedPythonGZIP.inspect(runtimeArchive, feeding: &tar)
+        let contents = try tar.finish()
+        try ManagedPythonRuntimeArchiveManifest.verify(contents.manifest, runtime: runtime)
+        let deploymentTarget = try ManagedPythonMachOInspector.inspect(contents.interpreter)
+        guard deploymentTarget == runtime.minimumMacOSVersion else {
+            throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
+        }
+        let inspection = try ManagedPythonRuntimeArchiveInspection(
+            runtimeIdentitySHA256: runtime.identitySHA256,
+            archiveSHA256: runtime.artifact.sha256,
+            sourceSHA256: runtime.source.sha256,
+            sourceProvenanceSHA256: runtime.sourceProvenance.sha256,
+            buildProvenanceSHA256: runtime.buildProvenance.sha256,
+            archiveLayout: ManagedPythonRuntimeArchiveInspection.layout,
+            interpreterPath: ManagedPythonRuntimeArchiveInspection.interpreterRelativePath,
+            executableArchitectures: [ManagedPythonRuntimeIdentity.architecture],
+            minimumMacOSVersion: deploymentTarget,
+            implementation: ManagedPythonRuntimeIdentity.implementation,
+            version: runtime.version,
+            buildVariant: ManagedPythonRuntimeIdentity.buildVariant,
+            pythonTag: runtime.pythonTag,
+            abiTag: runtime.abiTag,
+            platformTag: ManagedPythonRuntimeIdentity.platformTag,
+            policyRevision: runtime.policyRevision,
+            evidenceReference: Self.evidenceReference(runtime: runtime, contents: contents)
+        )
+        return ManagedPythonRuntimeArchiveExtractionInventory(
+            inspection: inspection,
+            members: contents.members
+        )
     }
 
     private func read(
@@ -354,6 +392,7 @@ private enum ManagedPythonGZIP {
 private struct ManagedPythonTarContents {
     let manifest: Data
     let interpreter: Data
+    let members: [ManagedPythonRuntimeArchiveMember]
     let entryCount: Int
     let expandedByteCount: UInt64
 }
@@ -361,7 +400,10 @@ private struct ManagedPythonTarContents {
 private struct ManagedPythonTarInspector {
     private enum State {
         case header
-        case payload(path: String, remaining: UInt64, padding: Int, collected: Data?)
+        case payload(
+            path: String, mode: UInt16, size: UInt64, remaining: UInt64,
+            padding: Int, collected: Data?, hasher: SHA256
+        )
         case padding(Int)
         case trailer
     }
@@ -374,6 +416,8 @@ private struct ManagedPythonTarInspector {
     private var state: State = .header
     private var buffer = Data()
     private var paths = Set<String>()
+    private var directories = Set<String>()
+    private var members: [ManagedPythonRuntimeArchiveMember] = []
     private var manifest: Data?
     private var interpreter: Data?
     private var entryCount = 0
@@ -416,6 +460,7 @@ private struct ManagedPythonTarInspector {
         guard case .trailer = state,
               buffer.allSatisfy({ $0 == 0 }),
               sawBinDirectory,
+              members.count == entryCount,
               let manifest,
               let interpreter else {
             throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
@@ -423,6 +468,7 @@ private struct ManagedPythonTarInspector {
         return ManagedPythonTarContents(
             manifest: manifest,
             interpreter: interpreter,
+            members: members,
             entryCount: entryCount,
             expandedByteCount: expandedByteCount
         )
@@ -444,9 +490,15 @@ private struct ManagedPythonTarInspector {
                     throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
                 }
                 try beginEntry(header)
-            case .payload(let path, let remaining, let padding, let collected):
+            case .payload(
+                let path, let mode, let size, let remaining, let padding,
+                let collected, let hasher
+            ):
                 guard remaining > 0 else {
-                    try completeEntry(path: path, collected: collected)
+                    try completeEntry(
+                        path: path, mode: mode, size: size,
+                        collected: collected, hasher: hasher
+                    )
                     state = .padding(padding)
                     continue
                 }
@@ -456,11 +508,16 @@ private struct ManagedPythonTarInspector {
                 buffer.removeFirst(amount)
                 var next = collected
                 next?.append(chunk)
+                var nextHasher = hasher
+                nextHasher.update(data: chunk)
                 state = .payload(
                     path: path,
+                    mode: mode,
+                    size: size,
                     remaining: remaining - UInt64(amount),
                     padding: padding,
-                    collected: next
+                    collected: next,
+                    hasher: nextHasher
                 )
             case .padding(let remaining):
                 guard remaining > 0 else {
@@ -496,23 +553,30 @@ private struct ManagedPythonTarInspector {
         let name = try text(header[0..<100])
         let prefix = try text(header[345..<500])
         let path = prefix.isEmpty ? name : "\(prefix)/\(name)"
-        guard isSafePath(path), paths.insert(path).inserted else {
+        guard isSafePath(path),
+              parentDirectory(for: path).map({ directories.contains($0) }) ?? true,
+              paths.insert(path).inserted else {
             throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
         }
         let mode = try octal(header[100..<108])
         let size = try octal(header[124..<136])
         let type = header[156]
+        guard mode <= 0o777,
+              mode & 0o022 == 0 else {
+            throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
+        }
         entryCount += 1
         switch type {
         case 0, 0x30:
-            guard !path.hasSuffix("/"), size <= maximumExpandedBytes else {
+            guard !path.hasSuffix("/"), size <= maximumExpandedBytes,
+                  mode & 0o400 != 0 else {
                 throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
             }
             let limit: UInt64?
             if path == ManagedPythonRuntimeArchiveInspection.manifestPath {
                 limit = maximumManifestBytes
             } else if path == ManagedPythonRuntimeArchiveInspection.interpreterRelativePath {
-                guard mode & 0o111 != 0 else {
+                guard mode & 0o100 != 0 else {
                     throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
                 }
                 limit = maximumInterpreterBytes
@@ -524,22 +588,41 @@ private struct ManagedPythonTarInspector {
             }
             state = .payload(
                 path: path,
+                mode: UInt16(mode),
+                size: size,
                 remaining: size,
                 padding: padding(for: size),
-                collected: limit == nil ? nil : Data()
+                collected: limit == nil ? nil : Data(),
+                hasher: SHA256()
             )
         case 0x35:
-            guard size == 0, path.hasSuffix("/") else {
+            guard size == 0, path.hasSuffix("/"), mode & 0o500 == 0o500 else {
                 throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
             }
             if path == "bin/" { sawBinDirectory = true }
+            directories.insert(path)
+            members.append(ManagedPythonRuntimeArchiveMember(
+                path: path, kind: .directory, mode: UInt16(mode),
+                byteCount: 0, sha256: nil
+            ))
             state = .padding(0)
         default:
             throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
         }
     }
 
-    private mutating func completeEntry(path: String, collected: Data?) throws {
+    private mutating func completeEntry(
+        path: String, mode: UInt16, size: UInt64,
+        collected: Data?, hasher: SHA256
+    ) throws {
+        var completedHasher = hasher
+        let digest = completedHasher.finalize().map {
+            String(format: "%02x", $0)
+        }.joined()
+        members.append(ManagedPythonRuntimeArchiveMember(
+            path: path, kind: .file, mode: mode,
+            byteCount: size, sha256: "sha256:" + digest
+        ))
         if path == ManagedPythonRuntimeArchiveInspection.manifestPath {
             guard manifest == nil, let collected, !collected.isEmpty else {
                 throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
@@ -564,6 +647,12 @@ private struct ManagedPythonTarInspector {
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
         let effective = path.hasSuffix("/") ? components.dropLast() : components[...]
         return !effective.isEmpty && effective.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
+    private func parentDirectory(for path: String) -> String? {
+        let name = path.hasSuffix("/") ? String(path.dropLast()) : path
+        guard let separator = name.lastIndex(of: "/") else { return nil }
+        return String(name[...separator])
     }
 
     private func text(_ bytes: Data.SubSequence) throws -> String {

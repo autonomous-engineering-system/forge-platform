@@ -32,10 +32,13 @@ public struct ManagedInstallerReleasedRouteSnapshot: Equatable, Sendable {
         }
         let expectedPreflight = Set(HostPreflight.defaultChecks.map(\.id))
         let actualPreflight = Set(preflight.checks.map(\.id))
-        let expectedComponents = Set([
+        let supportedComponents = Set([
             ProviderOwnerComponent.forgeRuntime.rawValue,
             ProviderOwnerComponent.engineeringPlatformServer.rawValue,
         ])
+        let expectedComponents = Set(
+            session.productVirtualEnvironments.map(\.componentIdentity)
+        )
         guard inventory.targets.contains(deployment),
               preflight.isPassed,
               preflight.checks.count == expectedPreflight.count,
@@ -43,6 +46,8 @@ public struct ManagedInstallerReleasedRouteSnapshot: Equatable, Sendable {
               review.manifestIdentity == session.compositionIdentity,
               !review.isAcknowledged,
               review.status == .compatible,
+              !expectedComponents.isEmpty,
+              expectedComponents.isSubset(of: supportedComponents),
               Set(review.components.map(\.componentID)) == expectedComponents,
               review.components.count == expectedComponents.count,
               !review.components.contains(where: { $0.change == .blocked }),
@@ -84,6 +89,7 @@ public actor ManagedInstallerReleasedRouteCoordinator:
     ManagedDeploymentRouteCoordinating, ManagedInstallerStablePlanPreparing {
     private let loader: any ManagedInstallerReleasedRouteSnapshotLoading
     private var admitted: ManagedInstallerReleasedRouteSnapshot?
+    private var reviewedPlan: ManagedInstallerStablePlan?
 
     public init(loader: any ManagedInstallerReleasedRouteSnapshotLoading) {
         self.loader = loader
@@ -93,9 +99,11 @@ public actor ManagedInstallerReleasedRouteCoordinator:
         do {
             let inventory = try await loader.loadManagedDeploymentInventory()
             admitted = nil
+            reviewedPlan = nil
             return .available(inventory)
         } catch {
             admitted = nil
+            reviewedPlan = nil
             return .unavailable(.inventoryUnavailable)
         }
     }
@@ -111,9 +119,11 @@ public actor ManagedInstallerReleasedRouteCoordinator:
             )
             guard snapshot.session == session, snapshot.deployment == deployment else {
                 admitted = nil
+                reviewedPlan = nil
                 return .unavailable(.staleSession)
             }
             admitted = snapshot
+            reviewedPlan = nil
             return .prepared(PreparedHostPreflight(
                 sessionID: session.sessionID,
                 deploymentID: deployment.id,
@@ -121,6 +131,7 @@ public actor ManagedInstallerReleasedRouteCoordinator:
             ))
         } catch {
             admitted = nil
+            reviewedPlan = nil
             return .unavailable(.preflightUnavailable)
         }
     }
@@ -132,6 +143,7 @@ public actor ManagedInstallerReleasedRouteCoordinator:
         guard let admitted,
               admitted.session == session,
               admitted.deployment == deployment else {
+            reviewedPlan = nil
             return .unavailable(.staleSession)
         }
         do {
@@ -141,6 +153,7 @@ public actor ManagedInstallerReleasedRouteCoordinator:
             )
             guard current == admitted else {
                 self.admitted = nil
+                reviewedPlan = nil
                 return .unavailable(.staleSession)
             }
             return .prepared(PreparedCompositionReview(
@@ -150,6 +163,7 @@ public actor ManagedInstallerReleasedRouteCoordinator:
             ))
         } catch {
             self.admitted = nil
+            reviewedPlan = nil
             return .unavailable(.reviewUnavailable)
         }
     }
@@ -165,6 +179,7 @@ public actor ManagedInstallerReleasedRouteCoordinator:
               operation.deploymentExists == admitted.deployment.exists,
               operation.inventoryEvidenceReference == admitted.inventory.evidenceReference,
               operation.components == admitted.review.components else {
+            reviewedPlan = nil
             return .unavailable(.staleSession)
         }
         do {
@@ -188,9 +203,11 @@ public actor ManagedInstallerReleasedRouteCoordinator:
                 reviewedOperation: operation,
                 originalManagedToolActions: admitted.managedToolActions
             )
+            reviewedPlan = plan
             return .prepared(plan)
         } catch {
             self.admitted = nil
+            reviewedPlan = nil
             return .unavailable(.staleSession)
         }
     }
@@ -198,7 +215,22 @@ public actor ManagedInstallerReleasedRouteCoordinator:
     public func executeReviewedManagedDeployment(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedDeploymentExecutionResult {
-        _ = operation
-        return .failed(.coordinatorUnavailable, stages: [])
+        guard let reviewed = reviewedPlan,
+              reviewed.reviewedOperation == operation,
+              let sender = loader as? any ManagedInstallerReviewedExecutionIntentSending else {
+            return .failed(.coordinatorUnavailable, stages: [])
+        }
+        switch await prepareStablePlan(for: operation) {
+        case .prepared(let refreshed) where refreshed == reviewed
+            && reviewedPlan == reviewed:
+            do {
+                let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: reviewed)
+                return try await sender.executeReviewedIntent(intent)
+            } catch {
+                return .failed(.coordinatorUnavailable, stages: [])
+            }
+        case .prepared, .unavailable:
+            return .failed(.staleSession, stages: [])
+        }
     }
 }

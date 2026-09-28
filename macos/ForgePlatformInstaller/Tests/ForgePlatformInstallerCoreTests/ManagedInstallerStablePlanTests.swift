@@ -49,6 +49,31 @@ final class ManagedInstallerStablePlanTests: XCTestCase {
             components: changedComponents
         )
         XCTAssertNotEqual(drift.fingerprint, first.fingerprint)
+
+        func assessed(_ digit: Character) throws -> ManagedInstallerStablePlan {
+            try managedInstallerTestStablePlan(
+                session: fixture.session,
+                deployment: fixture.deployment,
+                activationPlan: activation,
+                actions: [],
+                components: first.reviewedOperation.components.map { component in
+                    ComponentDiff(
+                        componentID: component.componentID,
+                        title: component.title,
+                        change: component.change,
+                        installedVersion: component.installedVersion,
+                        candidateVersion: component.candidateVersion,
+                        artifactDigest: component.artifactDigest,
+                        updateAssessmentReference: component.componentID == "forge-runtime"
+                            ? "forge-update-assess:sha256:"
+                                + String(repeating: digit, count: 64)
+                            : nil,
+                        detail: component.detail
+                    )
+                }
+            )
+        }
+        XCTAssertNotEqual(try assessed("a").fingerprint, try assessed("b").fingerprint)
     }
 
     func testFingerprintBindsFullForgeEPDeploymentProviderToolAndRollbackMaterial() throws {
