@@ -49,13 +49,12 @@ struct MacOSManagedPythonInitialRuntimeActivator: ManagedPythonRuntimeActivating
               case .success = runtime.verifiedInterpreter(for: venvRequest(
                   request, environment: firstEnvironment
               )) else { return .failure(.rejected) }
-        if request.action == .noChange, state == request.initialReadback {
-            return .success(state)
-        }
-        guard state.evidenceReference == request.expectedResumeEvidenceReference,
-              state.retainedRuntimeIdentitySHA256s
-                == request.requiredRetainedRuntimeIdentitySHA256s else {
-            return .failure(.rejected)
+        if request.action != .noChange || state != request.initialReadback {
+            guard state.evidenceReference == request.expectedResumeEvidenceReference,
+                  state.retainedRuntimeIdentitySHA256s
+                    == request.requiredRetainedRuntimeIdentitySHA256s else {
+                return .failure(.rejected)
+            }
         }
         for environment in request.productVirtualEnvironments {
             let exact = venvRequest(request, environment: environment)

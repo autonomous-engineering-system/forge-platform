@@ -506,6 +506,37 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         XCTAssertEqual(staleResult.failure, .rejected)
     }
 
+    func testInitialRuntimeNoChangeStillReadsEveryProductVenv() async throws {
+        let host = try InitialActivationHostFixture()
+        defer { host.cleanup() }
+        let initial = try host.bootstrap.readOrBootstrap().get()
+        let fixture = try ActivationFixture()
+        let install = try fixture.request(initial: initial)
+        let venvs = InitialActivationVenvStub()
+        let mutation = MacOSManagedPythonInitialRuntimeActivator(
+            venvs: venvs,
+            runtime: InitialActivationSlotStub(
+                expectedEvidence: install.preparationReceipt.slotEvidenceReference
+            ),
+            hostState: host.bootstrap,
+            persister: FileManagedInstallerManagedPythonHostStateStore(rootDirectory: host.root)
+        )
+        _ = try activationSuccess(await ManagedPythonRuntimeActivationCoordinator(
+            mutation: mutation,
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
+        ).activate(install))
+        let active = try host.bootstrap.readOrBootstrap().get()
+        let noChange = try fixture.request(initial: active)
+        XCTAssertEqual(noChange.action, .noChange)
+        let verified = await mutation.readActiveRuntime(noChange)
+        XCTAssertEqual(verified, .success(active))
+        let second = try XCTUnwrap(noChange.productVirtualEnvironments.last)
+        await venvs.dropReceipt(for: second.componentIdentity)
+        let missing = await mutation.readActiveRuntime(noChange)
+        XCTAssertEqual(missing, .failure(.rejected))
+    }
+
     private func activationSuccess(
         _ result: Result<ManagedPythonRuntimeActivationReceipt, ManagedPythonRuntimeActivationFailure>
     ) throws -> ManagedPythonRuntimeActivationReceipt {
@@ -592,6 +623,10 @@ private actor InitialActivationVenvStub: ManagedPythonProductVenvCreating {
     }
 
     func recordedEnsureCount() -> Int { ensureCount }
+
+    func dropReceipt(for componentIdentity: String) {
+        receipts.removeValue(forKey: componentIdentity)
+    }
 }
 
 struct ActivationFixture {
