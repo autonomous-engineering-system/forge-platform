@@ -201,6 +201,56 @@ final class ManagedInstallerReleasedRouteStatePublicationTests: XCTestCase {
         )
     }
 
+    func testProductionInventoryGateRejectsUnavailableOrMismatchedSelection() throws {
+        let fixture = try ReleasedRouteFixture()
+        let prepared = try preparePublisher()
+        defer { try? FileManager.default.removeItem(at: prepared.parent) }
+        let unavailable = FileManagedInstallerReleasedRouteStatePublisher(
+            rootDirectory: prepared.root, expectedOwner: geteuid(),
+            currentInventory: { nil }
+        )
+        XCTAssertEqual(unavailable.publishReleasedRouteState(fixture.snapshot),
+                       .failure(.invalidState))
+
+        let other = try ManagedDeploymentInventory(
+            existing: fixture.inventory.existing,
+            createCandidate: fixture.inventory.createCandidate,
+            evidenceReference: "inventory:sha256:" + String(repeating: "b", count: 64)
+        )
+        let mismatched = FileManagedInstallerReleasedRouteStatePublisher(
+            rootDirectory: prepared.root, expectedOwner: geteuid(),
+            currentInventory: { other }
+        )
+        XCTAssertEqual(mismatched.publishReleasedRouteState(fixture.snapshot),
+                       .failure(.invalidState))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: prepared.root
+            .appendingPathComponent(FileManagedInstallerReleasedRouteXPCService.inventoryFileName)
+            .path))
+    }
+
+    func testProductionInventoryGateRejectsDriftBeforePublication() throws {
+        let fixture = try ReleasedRouteFixture()
+        let prepared = try preparePublisher()
+        defer { try? FileManager.default.removeItem(at: prepared.parent) }
+        let inventory = fixture.inventory
+        let sequence = PublicationInventorySequence([inventory, nil])
+        let publisher = FileManagedInstallerReleasedRouteStatePublisher(
+            rootDirectory: prepared.root, expectedOwner: geteuid(),
+            currentInventory: { sequence.next() }
+        )
+        XCTAssertEqual(publisher.publishReleasedRouteState(fixture.snapshot),
+                       .failure(.invalidState))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: prepared.root
+            .appendingPathComponent(FileManagedInstallerReleasedRouteXPCService.inventoryFileName)
+            .path))
+
+        let stable = FileManagedInstallerReleasedRouteStatePublisher(
+            rootDirectory: prepared.root, expectedOwner: geteuid(),
+            currentInventory: { inventory }
+        )
+        XCTAssertNotNil(try? stable.publishReleasedRouteState(fixture.snapshot).get())
+    }
+
     private func preparePublisher() throws -> (
         parent: URL,
         root: URL,
@@ -230,5 +280,15 @@ final class ManagedInstallerReleasedRouteStatePublicationTests: XCTestCase {
     private func write(_ data: Data, to url: URL) throws {
         try data.write(to: url, options: .withoutOverwriting)
         XCTAssertEqual(chmod(url.path, 0o600), 0)
+    }
+}
+
+private final class PublicationInventorySequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [ManagedDeploymentInventory?]
+
+    init(_ values: [ManagedDeploymentInventory?]) { self.values = values }
+    func next() -> ManagedDeploymentInventory? {
+        lock.withLock { values.isEmpty ? nil : values.removeFirst() }
     }
 }
