@@ -12,10 +12,13 @@ from forge_platform.provider_fanout import (
     ProviderBootstrapHandle,
     ProviderFanoutCoordinator,
     ProviderFanoutError,
+    ProviderTargetReceipt,
 )
 from forge_platform.universal_installer import (
+    DownloadIdentity,
     ProviderReadback,
     ProviderRequirement,
+    ProviderRuntimeRequirement,
     SemanticVersion,
 )
 
@@ -38,10 +41,15 @@ class Authenticator:
 
 
 class Target:
-    def __init__(self, *, verified: bool = True, wrong_target: bool = False) -> None:
+    def __init__(
+        self, *, verified: bool = True, wrong_target: bool = False,
+        version: str = "1.1.0", digest: str | None = None,
+    ) -> None:
         self.calls = 0
         self.verified = verified
         self.wrong_target = wrong_target
+        self.version = version
+        self.digest = digest
 
     def provision_and_verify(self, requirement, bootstrap):
         self.calls += 1
@@ -49,11 +57,12 @@ class Target:
         return ProviderReadback(
             requirement.identity,
             "VERIFIED" if self.verified else "AUTHENTICATION_REQUIRED",
-            SemanticVersion.parse("1.1.0") if self.verified else None,
+            SemanticVersion.parse(self.version) if self.verified else None,
             f"executable:{requirement.key}" if self.verified else None,
             f"evidence:{requirement.key}",
             requirement.owner_component,
             target,
+            self.digest,
         )
 
 
@@ -147,6 +156,50 @@ class ProviderFanoutTests(unittest.TestCase):
                 authenticators={"codex": Authenticator()},
                 targets={"codex": Target()},
             ).execute((legacy,))
+
+    def test_verified_target_below_minimum_version_fails_closed(self) -> None:
+        ep = req("codex", "engineering-platform-server", "ep-prod")
+        with self.assertRaisesRegex(ProviderFanoutError, "below the required version"):
+            ProviderFanoutCoordinator(
+                authenticators={"codex": Authenticator()},
+                targets={ep.key: Target(version="0.9.9")},
+            ).execute((ep,))
+
+    def test_selected_runtime_requires_exact_version_and_executable_digest(self) -> None:
+        digest = "sha256:" + "a" * 64
+        runtime = ProviderRuntimeRequirement(
+            SemanticVersion.parse("1.1.0"), "tar.gz",
+            DownloadIdentity("https://example.invalid/codex.tar.gz", "sha256:" + "b" * 64),
+            "bin/codex", digest,
+        )
+        ep = ProviderRequirement(
+            "codex", True, SemanticVersion.parse("1.0.0"), "component",
+            "engineering-platform-server", "ep-prod", runtime,
+        )
+        for target in (
+            Target(version="1.1.1", digest=digest),
+            Target(version="1.1.0", digest="sha256:" + "c" * 64),
+            Target(version="1.1.0"),
+        ):
+            with self.subTest(version=target.version, digest=target.digest):
+                with self.assertRaisesRegex(ProviderFanoutError, "differs from the selected runtime"):
+                    ProviderFanoutCoordinator(
+                        authenticators={"codex": Authenticator()},
+                        targets={ep.key: target},
+                    ).execute((ep,))
+        receipts = ProviderFanoutCoordinator(
+            authenticators={"codex": Authenticator()},
+            targets={ep.key: Target(version="1.1.0", digest=digest)},
+        ).execute((ep,))
+        self.assertEqual(receipts[0].targets[0].target_key, ep.key)
+        self.assertEqual(receipts[0].targets[0].executable_digest, digest)
+
+    def test_receipt_rejects_malformed_executable_digest(self) -> None:
+        with self.assertRaisesRegex(ValueError, "executable digest is invalid"):
+            ProviderTargetReceipt(
+                "codex:forge-runtime:forge-prod", "codex", "ceremony-codex",
+                "evidence:codex", "executable:codex", "1.1.0", "sha256:wrong",
+            )
 
 
 if __name__ == "__main__":

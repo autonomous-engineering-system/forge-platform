@@ -10,6 +10,7 @@ and verifies its own runtime/config/auth state independently.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Mapping, Protocol, Sequence
 
 from .universal_installer import ProviderReadback, ProviderRequirement
@@ -46,6 +47,7 @@ class ProviderTargetReceipt:
     evidence_reference: str
     executable_identity: str
     version: str
+    executable_digest: str | None = None
 
     def __post_init__(self) -> None:
         for value in (
@@ -54,6 +56,10 @@ class ProviderTargetReceipt:
         ):
             if not isinstance(value, str) or not value:
                 raise ValueError("provider target receipt is incomplete")
+        if self.executable_digest is not None and re.fullmatch(
+            r"sha256:[0-9a-f]{64}", self.executable_digest
+        ) is None:
+            raise ValueError("provider target receipt executable digest is invalid")
 
 
 @dataclass(frozen=True)
@@ -155,6 +161,20 @@ class ProviderFanoutCoordinator:
                     raise ProviderFanoutError("provider target returned mismatched readback")
                 if readback.state != "VERIFIED" or readback.version is None or readback.executable_identity is None:
                     raise ProviderFanoutError(f"provider target {requirement.key} did not independently verify")
+                if (
+                    requirement.minimum_version is not None
+                    and readback.version < requirement.minimum_version
+                ):
+                    raise ProviderFanoutError(
+                        f"provider target {requirement.key} is below the required version"
+                    )
+                if requirement.runtime is not None and (
+                    readback.version != requirement.runtime.version
+                    or readback.executable_digest != requirement.runtime.executable_digest
+                ):
+                    raise ProviderFanoutError(
+                        f"provider target {requirement.key} differs from the selected runtime"
+                    )
                 target_receipts.append(ProviderTargetReceipt(
                     requirement.key,
                     provider,
@@ -162,6 +182,7 @@ class ProviderFanoutCoordinator:
                     readback.evidence_reference,
                     readback.executable_identity,
                     str(readback.version),
+                    readback.executable_digest,
                 ))
             receipts.append(ProviderFanoutReceipt(
                 provider,
