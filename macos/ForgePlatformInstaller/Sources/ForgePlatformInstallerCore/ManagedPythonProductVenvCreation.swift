@@ -4,7 +4,17 @@ import Foundation
 /// Helper-side creation of one exact product venv using the admitted runtime.
 /// The activation coordinator owns the operation lock; retries only adopt a
 /// published venv after independent runtime and venv readback succeeds.
-struct MacOSManagedPythonProductVenvCreator: Sendable {
+protocol ManagedPythonProductVenvCreating: Sendable {
+    func readProductVenv(
+        _ request: ManagedPythonProductVenvMutationRequest
+    ) async -> Result<ManagedPythonProductVenvReceipt?, ManagedPythonRuntimeActivationFailure>
+
+    func ensureProductVenv(
+        _ request: ManagedPythonProductVenvMutationRequest
+    ) async -> Result<ManagedPythonProductVenvReceipt, ManagedPythonRuntimeActivationFailure>
+}
+
+struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, Sendable {
     private let layout: MacOSManagedPythonProductVenvSlotLayout
     private let runtimeVerifier: MacOSManagedPythonProductVenvRuntimeVerifier
     private let readback: MacOSManagedPythonProductVenvReadback

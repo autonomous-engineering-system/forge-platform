@@ -4,7 +4,14 @@ import Foundation
 /// Reopens the exact qualified runtime slot before a product venv may use its
 /// interpreter. The archive member inventory is helper-owned input from the
 /// admitted runtime artifact; no caller-selected executable path is accepted.
-struct MacOSManagedPythonProductVenvRuntimeVerifier: Sendable {
+protocol ManagedPythonProductVenvRuntimeVerifying: Sendable {
+    func verifiedInterpreter(
+        for request: ManagedPythonProductVenvMutationRequest
+    ) -> Result<URL, ManagedPythonRuntimeActivationFailure>
+}
+
+struct MacOSManagedPythonProductVenvRuntimeVerifier:
+    ManagedPythonProductVenvRuntimeVerifying, Sendable {
     private let slotsRoot: URL
     private let expectedOwner: uid_t
     private let runtimeIdentitySHA256: String

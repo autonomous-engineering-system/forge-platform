@@ -5,7 +5,12 @@ import Foundation
 /// Establishes an observed ABSENT state only on a truly empty private helper
 /// runtime/venv root. A missing state record beside any prior slot is ambiguous
 /// and remains blocked. The caller holds the host-wide Python mutation lease.
-struct MacOSManagedPythonInitialHostState: Sendable {
+protocol ManagedPythonInitialHostStateReading: Sendable {
+    func readOrBootstrap() -> Result<ManagedPythonRuntimeInstalledReadback,
+        ManagedPythonRuntimeActivationFailure>
+}
+
+struct MacOSManagedPythonInitialHostState: ManagedPythonInitialHostStateReading, Sendable {
     private let helperRoot: URL
     private let expectedOwner: uid_t
 
