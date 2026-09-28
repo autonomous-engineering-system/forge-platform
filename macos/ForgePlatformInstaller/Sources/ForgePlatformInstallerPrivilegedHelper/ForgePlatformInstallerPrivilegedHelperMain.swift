@@ -44,6 +44,14 @@ final class UnavailableManagedInstallerPrivilegedHelperBackend:
         _ = canonicalRequest
         reply(nil)
     }
+
+    func executeReviewedIntent(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        reply(nil)
+    }
 }
 
 final class MacOSManagedInstallerPrivilegedHelperRuntime:

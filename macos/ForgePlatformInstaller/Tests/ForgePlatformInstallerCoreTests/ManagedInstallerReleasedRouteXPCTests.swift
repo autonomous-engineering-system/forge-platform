@@ -2,6 +2,66 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
+    func testReviewedIntentXPCUsesHelperAdmissionAndRejectsMalformedInput() async throws {
+        let fixture = try ReleasedRouteFixture()
+        let activation = try ManagedPythonRuntimeActivationPlan(
+            session: fixture.session, deployment: fixture.deployment,
+            initialReadback: fixture.snapshot.initialPythonRuntime
+        )
+        let plan = try ManagedInstallerStablePlan(
+            session: fixture.session, deployment: fixture.deployment,
+            activationPlan: activation, reviewedOperation: fixture.operation,
+            originalManagedToolActions: fixture.snapshot.managedToolActions
+        )
+        let admission = ManagedInstallerReviewedExecutionAdmission(
+            loader: XPCExecutionPlanLoader(plan: plan),
+            preparer: XPCExecutionPlanPreparer(plan: plan),
+            executor: XPCExecutionRouteExecutor()
+        )
+        let handler = ManagedInstallerReleasedRouteXPCServiceHandler(
+            service: ReleasedRouteHelperService(snapshot: fixture.snapshot),
+            admission: admission
+        )
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+        let malformed = await callIntent(handler, Data("{}".utf8))
+        let noncanonical = await callIntent(
+            handler, Data(" ".utf8) + intent.canonicalJSONData()
+        )
+        XCTAssertNil(malformed)
+        XCTAssertNil(noncanonical)
+        let reply = await callIntent(handler, intent.canonicalJSONData())
+        let response = try XCTUnwrap(reply)
+        XCTAssertEqual(
+            try ManagedInstallerReviewedExecutionResultCodec.decode(response),
+            .failed(.executionFailed, stages: [])
+        )
+
+        let listener = MacOSManagedInstallerReleasedRouteXPCListener(
+            listener: .anonymous(),
+            callerIdentity: try ManagedInstallerProductOperationXPCCallerIdentity(
+                bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
+                teamIdentifier: "ZEML4LPXH4"
+            ),
+            serviceHandler: handler,
+            installCodeSigningRequirement: { _, _ in }
+        )
+        listener.activate()
+        defer { listener.invalidate() }
+        let transport = MacOSManagedInstallerReleasedRouteXPCTransport(endpoint: listener.endpoint)
+        let transported = try await transport.executeReviewedIntent(intent)
+        XCTAssertEqual(
+            transported,
+            .failed(.executionFailed, stages: [])
+        )
+        await transport.invalidate()
+
+        let unavailable = ManagedInstallerReleasedRouteXPCServiceHandler(
+            service: ReleasedRouteHelperService(snapshot: fixture.snapshot)
+        )
+        let denied = await callIntent(unavailable, intent.canonicalJSONData())
+        XCTAssertNil(denied)
+    }
+
     func testInventoryCodecRejectsCrossDeploymentInstanceReuse() throws {
         let inventory = try ManagedDeploymentInventory(
             existing: [
@@ -317,6 +377,54 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
     }
 }
 
+private struct XPCExecutionPlanLoader: ManagedInstallerHelperOwnedStablePlanLoading {
+    let plan: ManagedInstallerStablePlan
+    func loadStablePlan(
+        for intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedInstallerStablePlan {
+        _ = intent
+        return plan
+    }
+}
+
+private struct XPCExecutionPlanPreparer: ManagedInstallerStablePlanPreparing {
+    let plan: ManagedInstallerStablePlan
+    func prepareStablePlan(
+        for operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerStablePlanPreparationResult {
+        _ = operation
+        return .prepared(plan)
+    }
+}
+
+private struct XPCExecutionRouteExecutor: ManagedDeploymentRouteCoordinating {
+    func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
+        .unavailable(.coordinatorUnavailable)
+    }
+    func prepareHostPreflight(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> HostPreflightPreparationResult {
+        _ = session
+        _ = deployment
+        return .unavailable(.coordinatorUnavailable)
+    }
+    func prepareCompositionReview(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> CompositionReviewPreparationResult {
+        _ = session
+        _ = deployment
+        return .unavailable(.coordinatorUnavailable)
+    }
+    func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult {
+        _ = operation
+        return .failed(.executionFailed, stages: [])
+    }
+}
+
 private actor ReleasedRouteHelperService: ManagedInstallerReleasedRouteHelperServing {
     private let snapshot: ManagedInstallerReleasedRouteSnapshot
     private var failing = false
@@ -375,6 +483,13 @@ private final class RawReleasedRouteXPCService:
         _ = canonicalRequest
         reply(snapshotResponse)
     }
+    func executeReviewedIntent(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        reply(nil)
+    }
     func listener(
         _ listener: NSXPCListener,
         shouldAcceptNewConnection connection: NSXPCConnection
@@ -403,5 +518,14 @@ private func callSnapshot(
 ) async -> Data? {
     await withCheckedContinuation { continuation in
         service.loadReleasedRouteSnapshot(request) { continuation.resume(returning: $0) }
+    }
+}
+
+private func callIntent(
+    _ service: ManagedInstallerReleasedRouteXPCService,
+    _ intent: Data
+) async -> Data? {
+    await withCheckedContinuation { continuation in
+        service.executeReviewedIntent(intent) { continuation.resume(returning: $0) }
     }
 }

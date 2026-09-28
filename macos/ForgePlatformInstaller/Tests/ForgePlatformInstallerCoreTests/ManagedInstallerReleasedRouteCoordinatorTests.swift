@@ -2,6 +2,41 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
+    func testReviewedExecutionSendsOnlyExactIntentAfterFreshSnapshot() async throws {
+        let fixture = try ReleasedRouteFixture()
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        guard case .prepared(let plan) = await coordinator.prepareStablePlan(
+            for: fixture.operation
+        ) else { return XCTFail("expected stable plan") }
+
+        let result = await coordinator.executeReviewedManagedDeployment(fixture.operation)
+
+        XCTAssertEqual(result, .failed(.executionFailed, stages: []))
+        let sent = await loader.sentIntents()
+        XCTAssertEqual(sent, [try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)])
+    }
+
+    func testReviewedExecutionRejectsDriftBeforeSendingIntent() async throws {
+        let fixture = try ReleasedRouteFixture()
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        _ = await coordinator.prepareStablePlan(for: fixture.operation)
+        await loader.setFailure(true)
+
+        let result = await coordinator.executeReviewedManagedDeployment(fixture.operation)
+
+        XCTAssertEqual(result, .failed(.staleSession, stages: []))
+        let sent = await loader.sentIntents()
+        XCTAssertTrue(sent.isEmpty)
+    }
+
     func testExactSnapshotBuildsPreflightReviewAndStablePlan() async throws {
         let fixture = try ReleasedRouteFixture()
         let loader = ReleasedRouteLoader(snapshot: fixture.snapshot)
@@ -149,6 +184,40 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
                 evidenceReference: evidence
             ))
         }
+    }
+}
+
+private actor ExecutionRouteLoader:
+    ManagedInstallerReleasedRouteSnapshotLoading,
+    ManagedInstallerReviewedExecutionIntentSending {
+    let snapshot: ManagedInstallerReleasedRouteSnapshot
+    private var failing = false
+    private var sent: [ManagedInstallerReviewedExecutionIntent] = []
+
+    init(snapshot: ManagedInstallerReleasedRouteSnapshot) { self.snapshot = snapshot }
+    func setFailure(_ value: Bool) { failing = value }
+    func sentIntents() -> [ManagedInstallerReviewedExecutionIntent] { sent }
+
+    func loadManagedDeploymentInventory() async throws -> ManagedDeploymentInventory {
+        if failing { throw TestFailure.failed }
+        return snapshot.inventory
+    }
+
+    func loadReleasedRouteSnapshot(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async throws -> ManagedInstallerReleasedRouteSnapshot {
+        if failing || session != snapshot.session || deployment != snapshot.deployment {
+            throw TestFailure.failed
+        }
+        return snapshot
+    }
+
+    func executeReviewedIntent(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedDeploymentExecutionResult {
+        sent.append(intent)
+        return .failed(.executionFailed, stages: [])
     }
 }
 
