@@ -24,6 +24,76 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
         XCTAssertEqual(details.st_mode & mode_t(0o7777), mode_t(0o600))
     }
 
+    func testChangedAuthorityRequiresExactExistingDigest() throws {
+        let (snapshot, _) = try fixture()
+        let (parent, root, publisher) = try preparedPublisher()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let release = snapshot.installerRelease
+        let changed = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: VerifiedInstallerRelease(
+                version: InstallerVersion("1.2.4"),
+                releasePage: release.releasePage,
+                assetName: release.assetName,
+                sha256: release.sha256,
+                signingKeyID: release.signingKeyID
+            ),
+            candidateManifests: snapshot.candidateManifests,
+            routes: snapshot.routes
+        )
+        let first = try publisher.publishProductWorkerAuthority(snapshot).get()
+        let file = root.appendingPathComponent(first.fileName)
+        let firstBytes = try Data(contentsOf: file)
+        XCTAssertEqual(
+            publisher.publishProductWorkerAuthority(changed),
+            .failure(.staleAuthority)
+        )
+        XCTAssertEqual(
+            publisher.publishProductWorkerAuthority(
+                changed, expectedExistingSHA256: "sha256:" + String(repeating: "0", count: 64)
+            ),
+            .failure(.staleAuthority)
+        )
+        XCTAssertEqual(try Data(contentsOf: file), firstBytes)
+        let second = try publisher.publishProductWorkerAuthority(
+            changed, expectedExistingSHA256: first.sha256
+        ).get()
+        XCTAssertNotEqual(first.sha256, second.sha256)
+        XCTAssertEqual(try Data(contentsOf: file), changed.canonicalJSONData())
+        XCTAssertEqual(
+            publisher.publishProductWorkerAuthority(
+                snapshot, expectedExistingSHA256: first.sha256
+            ),
+            .failure(.staleAuthority)
+        )
+        XCTAssertEqual(
+            publisher.publishProductWorkerAuthority(changed),
+            .success(second)
+        )
+    }
+
+    func testExpectedDigestRequiresExistingAuthorityAndValidDigest() throws {
+        let (snapshot, _) = try fixture()
+        let (parent, root, publisher) = try preparedPublisher()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        XCTAssertEqual(
+            publisher.publishProductWorkerAuthority(
+                snapshot, expectedExistingSHA256: "sha256:" + String(repeating: "0", count: 64)
+            ),
+            .failure(.staleAuthority)
+        )
+        XCTAssertEqual(
+            publisher.publishProductWorkerAuthority(
+                snapshot, expectedExistingSHA256: "not-a-digest"
+            ),
+            .failure(.invalidAuthority)
+        )
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(
+                FileManagedInstallerProductWorkerAuthorityPublisher.fileName
+            ).path
+        ))
+    }
+
     func testUnsafeRootAndExistingCorruptOrPermissiveFileFailClosed() throws {
         let (snapshot, _) = try fixture()
         let (parent, root, publisher) = try preparedPublisher()

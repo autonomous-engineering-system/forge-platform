@@ -7,6 +7,7 @@ enum ManagedInstallerProductWorkerAuthorityPublicationFailure:
     case invalidAuthority
     case unavailable
     case operationInProgress
+    case staleAuthority
 }
 
 struct ManagedInstallerProductWorkerManifestAuthority: Equatable, Sendable {
@@ -363,7 +364,8 @@ struct ManagedInstallerProductWorkerAuthorityPublicationReceipt:
 
 protocol ManagedInstallerProductWorkerAuthorityPublishing: Sendable {
     func publishProductWorkerAuthority(
-        _ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot
+        _ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
+        expectedExistingSHA256: String?
     ) -> Result<
         ManagedInstallerProductWorkerAuthorityPublicationReceipt,
         ManagedInstallerProductWorkerAuthorityPublicationFailure
@@ -401,13 +403,15 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
     }
 
     func publishProductWorkerAuthority(
-        _ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot
+        _ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
+        expectedExistingSHA256: String? = nil
     ) -> Result<
         ManagedInstallerProductWorkerAuthorityPublicationReceipt,
         ManagedInstallerProductWorkerAuthorityPublicationFailure
     > {
         let data = snapshot.canonicalJSONData()
-        guard !data.isEmpty, data.count <= ManagedInstallerProductWorkerAuthoritySnapshot.maximumBytes
+        guard !data.isEmpty, data.count <= ManagedInstallerProductWorkerAuthoritySnapshot.maximumBytes,
+              expectedExistingSHA256.map(CompositionCatalogValidation.isTaggedSHA256) ?? true
         else { return .failure(.invalidAuthority) }
         do {
             let root = try openRoot()
@@ -422,6 +426,11 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
                 if existing == data {
                     return .success(Self.receipt(for: data))
                 }
+                guard Self.receipt(for: existing).sha256 == expectedExistingSHA256 else {
+                    throw ManagedInstallerProductWorkerAuthorityPublicationFailure.staleAuthority
+                }
+            } else if expectedExistingSHA256 != nil {
+                throw ManagedInstallerProductWorkerAuthorityPublicationFailure.staleAuthority
             }
             try replace(data, in: root)
             guard try readExisting(in: root) == data else {
