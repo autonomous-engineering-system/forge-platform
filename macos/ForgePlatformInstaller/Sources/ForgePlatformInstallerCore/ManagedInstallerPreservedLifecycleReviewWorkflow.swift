@@ -4,6 +4,7 @@ import Foundation
 /// A proposal is display evidence only; execution must recheck currency and
 /// request fresh helper review before any product-owned mutation.
 public struct ManagedInstallerPreservedLifecycleReviewSession: Equatable, Sendable {
+    public let inventory: ManagedDeploymentInventory
     public let target: ManagedDeploymentTarget
     public let inventoryEvidenceReference: String
     public let intent: ManagedInstallerPreservedLifecycleReviewIntent
@@ -98,7 +99,8 @@ public struct ManagedInstallerPreservedLifecycleReviewWorkflow: Sendable {
             return .failure(.rejected)
         }
         return .success(ManagedInstallerPreservedLifecycleReviewSession(
-            target: target, inventoryEvidenceReference: inventory.evidenceReference,
+            inventory: inventory, target: target,
+            inventoryEvidenceReference: inventory.evidenceReference,
             intent: intent, proposal: proposal
         ))
     }
