@@ -35,9 +35,11 @@ class InstallerUXReleaseRoadmapTests(unittest.TestCase):
 
     def test_lifecycle_producer_evidence_and_consumer_status_are_separate(self):
         baselines = self.graph["lifecycle_producer_baselines"]
-        self.assertEqual(baselines["forge"]["version"], "2.7.37")
+        self.assertEqual(baselines["forge"]["version"], "2.7.38")
+        self.assertEqual(baselines["forge"]["source_revision"],
+                         "0a3d6e35b01da93bb5a674ae7795558655c16c7d")
         self.assertEqual(baselines["forge"]["wheel_sha256"],
-                         "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938")
+                         "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8")
         self.assertEqual(baselines["forge"]["contract"],
                          "forge-server-instance-lifecycle/v1")
         self.assertEqual(baselines["engineering-platform"]["version"], "2.3.104")

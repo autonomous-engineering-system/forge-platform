@@ -2,11 +2,12 @@
 
 **Assignment:** `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923`  
 **Owning repository:** `autonomous-engineering-system/forge-platform`
-**Producer qualification (2026-09-28):** Forge 2.7.37
-(`a78523603d6ea081d07875ea6b557e73b5d4fe63`) and Engineering Platform
+**Producer qualification (2026-09-28):** Forge 2.7.38
+(`0a3d6e35b01da93bb5a674ae7795558655c16c7d`) and Engineering Platform
 2.3.104 (`cfce69892278ee2b6c14412c171f5f33596acb0e`) have exact
 `RELEASE_COMPLETE` receipts and released-wheel lifecycle conformance in
-[forge#142 revision 24](https://github.com/pcvantol/forge/issues/142#issuecomment-5873771111).
+[forge#142 revision 25](https://github.com/pcvantol/forge/issues/142#issuecomment-5877275912).
+Existing exact Forge 2.7.37 managed instances retain lifecycle admission.
 Forge 2.7.36 and EP 2.3.103 remain historical `GAP_PROVEN` artifacts. Producer
 qualification alone does not approve a production composition or live installer
 claim; those remain held under [forge#141](https://github.com/pcvantol/forge/issues/141).
@@ -154,7 +155,7 @@ and is terminal only with the product-owned purge tombstone.
 
 ## Forge adapter
 
-Forge 2.7.37 has a deliberately different frozen boundary from EP. It retains
+Forge 2.7.38 has a deliberately different frozen boundary from EP. It retains
 the existing `forge-server-runtime-lifecycle/v1` update/uninstall boundary and
 adds `forge-server-instance-lifecycle/v1` for preserved instances.
 
@@ -176,11 +177,15 @@ layout assigned to it by the Forge deployment contract. The LaunchDaemon uses
 an exact absolute Forge executable, exact data root, non-root service account,
 loopback endpoint and private bearer-file reference.
 
-The installer consumes the 2.7.37 assessment only from an explicitly bound
-2.7.37 lifecycle executable, exact installed artifact, qualified staged wheel
+The installer consumes the owning assessment only from an explicitly bound
+qualified lifecycle executable or external controller, exact installed artifact, qualified staged wheel
 and exact product instance/installation IDs. Missing or contradictory evidence
 remains `UNKNOWN` or fails closed. A positive assessment alone does not
 complete the reviewed-update, updater-resume, readiness or registry gates.
+The current adapter still invokes the older lifecycle executable for assessment.
+The separately protected 2.7.38 external controller and its byte-for-byte
+read-only assessment remain a consumer-wiring gate; the 2.7.38 release pin and
+lifecycle admission in this increment do not claim update execution.
 The adapter accepts a completed external update only with Forge's exact
 `forge-installed-update/v1` operation/request digest, selected artifact and
 instance, migration evidence and installed preservation readback. A successful
@@ -544,7 +549,7 @@ Source qualification must include Python, Swift and hosted macOS validation for:
 - EP 2.3.104 provisioner and instance-lifecycle command correlation;
 - Forge product-init identity binding;
 - Forge system-service target isolation;
-- Forge 2.7.37 product-owned read-only update assessment, exact-target update
+- Forge product-owned read-only update assessment, exact-target update
   execution/resume, durable legacy uninstall and preserve/purge/restore dispatch,
   including stale, ambiguous, tampered, purged, wrong-instance and
   missing-terminal-evidence failures;

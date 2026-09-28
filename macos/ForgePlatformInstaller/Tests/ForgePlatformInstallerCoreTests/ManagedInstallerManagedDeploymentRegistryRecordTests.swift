@@ -3,6 +3,29 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerManagedDeploymentRegistryRecordTests: XCTestCase {
+    func testPreservedForgeAcceptsExactQualifiedReleasesOnly() throws {
+        let codec = ManagedInstallerManagedDeploymentRegistryRecord.self
+        let historical = v3Record()
+        XCTAssertNoThrow(try codec.decode(
+            wire(historical), expectedDeploymentID: "deployment-one"
+        ))
+        var current = historical
+        var entries = try XCTUnwrap(current["preserved_components"]?.arrayValue)
+        var forge = try XCTUnwrap(entries[0].objectValue)
+        forge["version"] = .string("2.7.38")
+        forge["source_revision"] = .string("0a3d6e35b01da93bb5a674ae7795558655c16c7d")
+        forge["artifact_digest"] = .string("sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8")
+        entries[0] = .object(forge)
+        current["preserved_components"] = .array(entries)
+        let decoded = try codec.decode(wire(current), expectedDeploymentID: "deployment-one")
+        XCTAssertEqual(decoded.preservedComponents["forge-runtime"]?.version, "2.7.38")
+
+        forge["artifact_digest"] = .string("sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938")
+        entries[0] = .object(forge)
+        current["preserved_components"] = .array(entries)
+        XCTAssertThrowsError(try codec.decode(wire(current), expectedDeploymentID: "deployment-one"))
+    }
+
     func testAcceptsPythonCanonicalUnicodeEscapingAndRejectsRawUnicode() throws {
         let python = #"{"components":[{"component":"forge-runtime","instance_id":"forge-one","receipt_reference":"receipt:forge-one"}],"deployment_id":"deployment-one","label":"Caf\u00e9","peer_binding":null,"revision":2,"schema":"forge-platform.managed-deployment/v1"}"#
         let decoded = try ManagedInstallerManagedDeploymentRegistryRecord.decode(

@@ -751,7 +751,7 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 
 The active `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923` source slice
 implements the ADR-0007 management model. Its source contracts currently model
-Forge 2.7.37 at `a78523603d6ea081d07875ea6b557e73b5d4fe63` and Engineering
+Forge 2.7.38 at `0a3d6e35b01da93bb5a674ae7795558655c16c7d` and Engineering
 Platform 2.3.104 at `cfce69892278ee2b6c14412c171f5f33596acb0e`.
 The lifecycle producer hold above supersedes any earlier qualification claim
 for those exact artifacts. Binding corrected qualified producers into the
@@ -765,7 +765,7 @@ provider fan-out coordination, the EP system-provisioner adapter, and the Forge
 Server deployment/service adapter.
 
 These source surfaces do not by themselves claim installer publication or live
-Mac success. Forge 2.7.37 supplies product-owned update assessment, legacy
+Mac success. Forge 2.7.38 supplies product-owned update assessment, legacy
 uninstall and preserve/purge/restore boundaries; EP 2.3.104 supplies the matching
 system-instance lifecycle. Forge Platform must still bind the exact producer
 executables and artifacts and complete reviewed lifecycle execution before those

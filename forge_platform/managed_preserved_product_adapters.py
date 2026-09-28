@@ -116,7 +116,7 @@ def _fresh_review(
 
 
 class ForgePreservedProductAdapter:
-    """Invoke only the exact released Forge 2.7.37 instance-lifecycle CLI."""
+    """Invoke only an exact qualified released Forge instance-lifecycle CLI."""
 
     def __init__(
         self, *, lifecycle_executable: Path, target: ForgeServerTarget,

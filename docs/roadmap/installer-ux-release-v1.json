@@ -9,7 +9,7 @@
   "authorizes_execution": false,
   "first_canary_prerequisite": false,
   "source_pins": {
-    "forge": "a78523603d6ea081d07875ea6b557e73b5d4fe63",
+    "forge": "0a3d6e35b01da93bb5a674ae7795558655c16c7d",
     "engineering-platform": "cfce69892278ee2b6c14412c171f5f33596acb0e",
     "workspace": "36d294836cb653361fda3972de38acce3d2970f8",
     "forge-platform": "e92f4e4151080f7c2a9d4fdeba1541b1407d7907"
@@ -21,10 +21,10 @@
   },
   "lifecycle_producer_baselines": {
     "forge": {
-      "version": "2.7.37",
-      "source_revision": "a78523603d6ea081d07875ea6b557e73b5d4fe63",
-      "release": "forge-v2.7.37",
-      "wheel_sha256": "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
+      "version": "2.7.38",
+      "source_revision": "0a3d6e35b01da93bb5a674ae7795558655c16c7d",
+      "release": "forge-v2.7.38",
+      "wheel_sha256": "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8",
       "contract": "forge-server-instance-lifecycle/v1",
       "release_state": "RELEASE_COMPLETE",
       "status": "QUALIFIED"
@@ -144,8 +144,8 @@
       ],
       "status": "QUALIFIED",
       "qualification_evidence": [
-        "https://github.com/pcvantol/forge/releases/tag/forge-v2.7.37",
-        "sha256:e3ea01d8470daa5d6dc7e80ba8f26b4a4f82a1bc98cdb8fdff73a41a4e1d2c29"
+        "https://github.com/pcvantol/forge/releases/tag/forge-v2.7.38",
+        "sha256:7f8f4646a369ea565e52f8420df665acb64d032e5004e1b45ef7dc8427548c49"
       ]
     },
     {
