@@ -60,6 +60,14 @@ final class UnavailableManagedInstallerPrivilegedHelperBackend:
         _ = canonicalIntent
         reply(nil)
     }
+
+    func registerReviewedSelection(
+        _ canonicalSelection: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalSelection
+        reply(nil)
+    }
 }
 
 final class MacOSManagedInstallerPrivilegedHelperRuntime:

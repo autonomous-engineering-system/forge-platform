@@ -55,6 +55,12 @@ final class ManagedInstallerReviewedSelectionTests: XCTestCase {
                 "\"path\":\"/tmp/unsafe\",\"schema\":"),
             text.replacingOccurrences(of: ManagedInstallerReviewedSelection.schema,
                 with: "other-schema"),
+            text.replacingOccurrences(of:
+                "\"component_identities\":[\"engineering-platform-server\",\"forge-runtime\"]",
+                with: "\"component_identities\":[\"forge-runtime\",\"forge-runtime\"]"),
+            text.replacingOccurrences(of:
+                "\"component_identities\":[\"engineering-platform-server\",\"forge-runtime\"]",
+                with: "\"component_identities\":[\"foreign-component\"]"),
             text + String(repeating: " ", count: 8_192),
         ]
         for candidate in invalid {
@@ -106,6 +112,17 @@ final class ManagedInstallerReviewedSelectionTests: XCTestCase {
         )
         XCTAssertThrowsError(try ManagedInstallerHelperReviewedPlanAdmission().prepare(
             selection: changedIntent,
+            helperSnapshot: fixture.snapshot,
+            helperCurrentRelease: fixture.release
+        ))
+        let changedComponents = bytes.replacingOccurrences(of:
+            "\"component_identities\":[\"engineering-platform-server\",\"forge-runtime\"]",
+            with: "\"component_identities\":[\"forge-runtime\"]")
+        let wrongSelection = try ManagedInstallerReviewedSelection.decodeJSON(
+            Data(changedComponents.utf8)
+        )
+        XCTAssertThrowsError(try ManagedInstallerHelperReviewedPlanAdmission().prepare(
+            selection: wrongSelection,
             helperSnapshot: fixture.snapshot,
             helperCurrentRelease: fixture.release
         ))

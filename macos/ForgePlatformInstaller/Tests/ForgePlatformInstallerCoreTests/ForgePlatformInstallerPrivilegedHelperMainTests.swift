@@ -93,8 +93,10 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
             responses.append($0)
         }
         backend.loadReleasedRouteSnapshot(request) { responses.append($0) }
+        backend.registerReviewedSelection(request) { responses.append($0) }
+        backend.executeReviewedIntent(request) { responses.append($0) }
 
-        XCTAssertEqual(responses.count, 4)
+        XCTAssertEqual(responses.count, 6)
         XCTAssertTrue(responses.allSatisfy { $0 == nil })
     }
 

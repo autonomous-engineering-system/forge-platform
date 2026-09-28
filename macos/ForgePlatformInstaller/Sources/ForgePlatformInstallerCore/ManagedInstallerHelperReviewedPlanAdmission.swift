@@ -17,6 +17,8 @@ public struct ManagedInstallerHelperReviewedPlanAdmission: Sendable {
         helperCurrentRelease: VerifiedInstallerRelease
     ) throws -> ManagedInstallerStablePlan {
         guard selection.routeRequest.matches(helperSnapshot),
+              selection.componentIdentities == helperSnapshot.session
+                .productVirtualEnvironments.map(\.componentIdentity).sorted(),
               Set(helperSnapshot.session.providerRequirements.map(\.id)).count
                 == helperSnapshot.session.providerRequirements.count else {
             throw ManagedInstallerHelperReviewedPlanAdmissionFailure.staleReview

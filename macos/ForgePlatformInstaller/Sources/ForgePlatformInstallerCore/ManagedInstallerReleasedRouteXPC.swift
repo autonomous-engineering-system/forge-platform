@@ -538,6 +538,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     private let expectedOwner: uid_t
     private let inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer?
     private let registryReader: FileManagedInstallerManagedDeploymentRegistryReader?
+    private let registration: ManagedInstallerHelperReviewedSelectionRegistration?
 
     public convenience override init() {
         self.init(
@@ -547,7 +548,8 @@ public final class FileManagedInstallerReleasedRouteXPCService:
                 registry: FileManagedInstallerManagedDeploymentRegistryReader(),
                 candidate: FileManagedInstallerManagedDeploymentCreateCandidateStore()
             ),
-            registryReader: FileManagedInstallerManagedDeploymentRegistryReader()
+            registryReader: FileManagedInstallerManagedDeploymentRegistryReader(),
+            registration: ManagedInstallerHelperReviewedSelectionRegistration.production()
         )
     }
 
@@ -555,12 +557,14 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         rootDirectory: URL,
         expectedOwner: uid_t,
         inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer? = nil,
-        registryReader: FileManagedInstallerManagedDeploymentRegistryReader? = nil
+        registryReader: FileManagedInstallerManagedDeploymentRegistryReader? = nil,
+        registration: ManagedInstallerHelperReviewedSelectionRegistration? = nil
     ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
         self.inventoryProducer = inventoryProducer
         self.registryReader = registryReader
+        self.registration = registration
         super.init()
     }
 
@@ -605,6 +609,25 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     ) {
         _ = canonicalIntent
         reply(nil)
+    }
+
+    public func registerReviewedSelection(
+        _ canonicalSelection: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let registration,
+              let selection = try? ManagedInstallerReviewedSelection.decodeJSON(
+                canonicalSelection
+              ) else { gate.complete(nil); return }
+        Task {
+            do {
+                try await registration.register(canonicalSelection)
+                gate.complete(selection.intent.canonicalJSONData())
+            } catch {
+                gate.complete(nil)
+            }
+        }
     }
 
     static func routeFileName(for canonicalRequest: Data) -> String {
@@ -748,6 +771,12 @@ public protocol ManagedInstallerReviewedExecutionIntentSending: Sendable {
     ) async throws -> ManagedDeploymentExecutionResult
 }
 
+public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
+    func registerReviewedSelection(
+        _ selection: ManagedInstallerReviewedSelection
+    ) async throws
+}
+
 @objc public protocol ManagedInstallerReleasedRouteXPCService {
     func loadManagedDeploymentInventory(withReply reply: @escaping (Data?) -> Void)
     func loadManagedDeploymentRegistryRecord(
@@ -762,11 +791,16 @@ public protocol ManagedInstallerReviewedExecutionIntentSending: Sendable {
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     )
+    func registerReviewedSelection(
+        _ canonicalSelection: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
 }
 
 public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     ManagedInstallerReleasedRouteSnapshotLoading,
     ManagedInstallerReviewedExecutionIntentSending,
+    ManagedInstallerReviewedSelectionRegistering,
     ManagedInstallerPreservedRegistryReading {
     public static let machServiceName =
         "com.autonomous-engineering-system.forge-platform-installer.helper.released-route"
@@ -847,6 +881,18 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
         return try ManagedInstallerReviewedExecutionResultCodec.decode(data)
     }
 
+    public func registerReviewedSelection(
+        _ selection: ManagedInstallerReviewedSelection
+    ) async throws {
+        let data = try await call { service, reply in
+            service.registerReviewedSelection(selection.canonicalJSONData(), withReply: reply)
+        }
+        guard try ManagedInstallerReviewedExecutionIntent.decodeJSON(data)
+                == selection.intent else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+    }
+
     private func call(
         _ invoke: @escaping (
             ManagedInstallerReleasedRouteXPCService,
@@ -876,6 +922,7 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
     NSObject, ManagedInstallerReleasedRouteXPCService, @unchecked Sendable {
     private let service: any ManagedInstallerReleasedRouteHelperServing
     private let admission: ManagedInstallerReviewedExecutionAdmission?
+    private let registration: ManagedInstallerHelperReviewedSelectionRegistration?
 
     public init(
         service: any ManagedInstallerReleasedRouteHelperServing,
@@ -883,6 +930,18 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
     ) {
         self.service = service
         self.admission = admission
+        registration = nil
+        super.init()
+    }
+
+    init(
+        service: any ManagedInstallerReleasedRouteHelperServing,
+        admission: ManagedInstallerReviewedExecutionAdmission?,
+        registration: ManagedInstallerHelperReviewedSelectionRegistration?
+    ) {
+        self.service = service
+        self.admission = admission
+        self.registration = registration
         super.init()
     }
 
@@ -952,6 +1011,25 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
         Task {
             let result = await admission.execute(canonicalIntent: canonicalIntent)
             gate.complete(ManagedInstallerReviewedExecutionResultCodec.encode(result))
+        }
+    }
+
+    public func registerReviewedSelection(
+        _ canonicalSelection: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let registration,
+              let selection = try? ManagedInstallerReviewedSelection.decodeJSON(
+                canonicalSelection
+              ) else { gate.complete(nil); return }
+        Task {
+            do {
+                try await registration.register(canonicalSelection)
+                gate.complete(selection.intent.canonicalJSONData())
+            } catch {
+                gate.complete(nil)
+            }
         }
     }
 }
