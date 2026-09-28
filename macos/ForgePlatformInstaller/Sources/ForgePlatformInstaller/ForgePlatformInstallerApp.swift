@@ -30,8 +30,16 @@ final class InstallerWizardViewModel: ObservableObject {
         case blocked(String)
     }
 
+    enum LifecycleReviewState {
+        case idle
+        case loading
+        case prepared(ManagedInstallerPreservedLifecycleReviewSession)
+        case blocked(String)
+    }
+
     @Published private(set) var state: InstallerWizardState
     @Published private(set) var removalReview: RemovalReviewState = .idle
+    @Published private(set) var lifecycleReview: LifecycleReviewState = .idle
 
     private let coordinator: any InstallerWizardCoordinator
     @Published private(set) var isPreflightRequestInFlight = false
@@ -39,6 +47,7 @@ final class InstallerWizardViewModel: ObservableObject {
     @Published private(set) var isExecutionRequestInFlight = false
     @Published private(set) var isRemovalReviewRequestInFlight = false
     @Published private(set) var isRemovalExecutionInFlight = false
+    @Published private(set) var isLifecycleReviewRequestInFlight = false
     private var removalOperationKey: String?
     private var removalOperationID: String?
 
@@ -76,6 +85,7 @@ final class InstallerWizardViewModel: ObservableObject {
             return
         }
         resetRemovalReview()
+        resetLifecycleReview()
         let coordinator = coordinator
         Task { @MainActor [weak self] in
             let result = await coordinator.prepareManagedDeploymentInventory()
@@ -87,6 +97,7 @@ final class InstallerWizardViewModel: ObservableObject {
         guard !isRemovalExecutionInFlight else { return }
         if state.selectManagedDeployment(deploymentID) {
             resetRemovalReview()
+            resetLifecycleReview()
         }
     }
 
@@ -214,6 +225,55 @@ final class InstallerWizardViewModel: ObservableObject {
         removalOperationKey = nil
         removalOperationID = nil
         isRemovalReviewRequestInFlight = false
+    }
+
+    func prepareLifecycleReview(operation: String, component: String) {
+        guard state.step == .deployment,
+              case .selected(let deployment, _) = state.deploymentSelection,
+              deployment.exists,
+              case .current(let release) = state.selfUpdate,
+              !isLifecycleReviewRequestInFlight,
+              !isRemovalExecutionInFlight,
+              let operationID = try? ManagedInstallerPreservedLifecycleOperationIdentity.derive(
+                target: deployment, operation: operation, component: component,
+                installerRelease: release
+              ) else { return }
+        isLifecycleReviewRequestInFlight = true
+        lifecycleReview = .loading
+        let workflow = ManagedInstallerPreservedLifecycleReviewWorkflow(
+            coordinator: coordinator, currentRelease: release
+        )
+        Task { @MainActor [weak self] in
+            let result = await workflow.prepare(
+                operationID: operationID, deploymentID: deployment.id,
+                operation: operation, component: component
+            )
+            guard let self,
+                  self.state.step == .deployment,
+                  case .selected(let current, _) = self.state.deploymentSelection,
+                  current == deployment,
+                  case .current(let currentRelease) = self.state.selfUpdate,
+                  currentRelease == release else { return }
+            self.isLifecycleReviewRequestInFlight = false
+            switch result {
+            case .success(let session):
+                guard session.operationID == operationID,
+                      session.target == deployment else {
+                    self.lifecycleReview = .blocked("Het exacte lifecyclevoorstel is gewijzigd.")
+                    return
+                }
+                self.lifecycleReview = .prepared(session)
+            case .failure:
+                self.lifecycleReview = .blocked(
+                    "Het exacte helpervoorstel is niet beschikbaar. Lees de inventaris opnieuw."
+                )
+            }
+        }
+    }
+
+    private func resetLifecycleReview() {
+        lifecycleReview = .idle
+        isLifecycleReviewRequestInFlight = false
     }
 
     /// The coordinator must return one typed, immutable composition session
@@ -620,6 +680,9 @@ private struct ManagedDeploymentSelectionScreen: View {
                 if deployment.exists, deployment.forgeInstanceID != nil {
                     removalReviewPanel(for: deployment)
                 }
+                if deployment.exists {
+                    lifecycleReviewPanel(for: deployment)
+                }
 
             case .unavailable(let failure):
                 FailureCallout(reason: failure.userFacingMessage)
@@ -737,6 +800,77 @@ private struct ManagedDeploymentSelectionScreen: View {
             confirmingRemoval = true
         }
         .disabled(viewModel.isRemovalExecutionInFlight)
+    }
+
+    @ViewBuilder
+    private func lifecycleReviewPanel(for deployment: ManagedDeploymentTarget) -> some View {
+        GroupBox("Productgegevens bewaren, herstellen of definitief wissen") {
+            VStack(alignment: .leading, spacing: 10) {
+                lifecycleActionButtons(
+                    component: "forge-runtime", label: "Forge",
+                    active: deployment.forgeInstanceID != nil,
+                    preserved: deployment.preservedForgeInstanceID != nil
+                )
+                lifecycleActionButtons(
+                    component: "engineering-platform-server", label: "EP",
+                    active: deployment.engineeringPlatformInstanceID != nil,
+                    preserved: deployment.preservedEngineeringPlatformInstanceID != nil
+                )
+                switch viewModel.lifecycleReview {
+                case .idle:
+                    Text("Kies een actie om het product-eigen voorstel alleen te lezen.")
+                        .foregroundStyle(.secondary)
+                case .loading:
+                    ProgressView("Exacte lifecycle-review wordt gelezen…")
+                case .blocked(let reason):
+                    FailureCallout(reason: reason)
+                case .prepared(let session):
+                    Text("Actie: \(session.intent.operation) / \(session.intent.component)")
+                    Text("Deployment: \(session.intent.deploymentID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Instance: \(session.intent.instanceID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Operation ID: \(session.operationID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Registerrevisie: \(session.proposal.registryRevision)")
+                        .font(.caption.monospaced())
+                    Text("Review-fingerprint: \(session.reviewFingerprint)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Dit voorstel voert geen productmutatie uit.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func lifecycleActionButtons(
+        component: String, label: String, active: Bool, preserved: Bool
+    ) -> some View {
+        if active || preserved {
+            HStack {
+                Text(label).fontWeight(.semibold)
+                if active {
+                    Button("Beoordeel bewaren") {
+                        viewModel.prepareLifecycleReview(operation: "PRESERVE", component: component)
+                    }
+                    Button("Beoordeel wissen") {
+                        viewModel.prepareLifecycleReview(operation: "PURGE", component: component)
+                    }
+                }
+                if preserved {
+                    Button("Beoordeel herstellen") {
+                        viewModel.prepareLifecycleReview(operation: "RESTORE", component: component)
+                    }
+                    Button("Beoordeel definitief wissen") {
+                        viewModel.prepareLifecycleReview(operation: "PURGE", component: component)
+                    }
+                }
+            }
+            .disabled(viewModel.isLifecycleReviewRequestInFlight
+                || viewModel.isRemovalExecutionInFlight)
+        }
     }
 }
 

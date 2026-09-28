@@ -1,9 +1,54 @@
+import CryptoKit
 import XCTest
 @testable import ForgePlatformInstaller
 @testable import ForgePlatformInstallerCore
 
 @MainActor
 final class InstallerWizardViewModelTests: XCTestCase {
+    func testLifecycleReviewShowsExactReadOnlyHelperProposalAndStableOperation() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = LifecycleReviewGUICoordinator(inventory: inventory)
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.prepareLifecycleReview(operation: "PRESERVE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .prepared(let first) = model.lifecycleReview else {
+            return XCTFail("Exact helper lifecycle review should be visible")
+        }
+        XCTAssertEqual(first.intent.deploymentID, "deployment-prod")
+        XCTAssertEqual(first.intent.instanceID, "forge-prod")
+        XCTAssertEqual(first.proposal.operation, "PRESERVE")
+        XCTAssertTrue(first.reviewFingerprint.hasPrefix("sha256:"))
+        XCTAssertFalse(model.isLifecycleReviewRequestInFlight)
+
+        model.prepareLifecycleReview(operation: "PRESERVE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .prepared(let repeated) = model.lifecycleReview else {
+            return XCTFail("Repeated review should remain read-only")
+        }
+        XCTAssertEqual(repeated.operationID, first.operationID)
+        let restarted = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        restarted.prepareLifecycleReview(operation: "PRESERVE", component: "forge-runtime")
+        await waitForLifecycleReview(on: restarted)
+        guard case .prepared(let resumed) = restarted.lifecycleReview else {
+            return XCTFail("Restarted review should resolve same exact operation")
+        }
+        XCTAssertEqual(resumed.operationID, first.operationID)
+        let calls = await coordinator.reviewCalls()
+        XCTAssertEqual(calls, 3)
+    }
+
+    func testLifecycleReviewFailsClosedWhenHelperUnavailable() async throws {
+        let (state, _) = try removalSelectionState()
+        let model = InstallerWizardViewModel(
+            state: state, coordinator: UnavailableInstallerWizardCoordinator()
+        )
+        model.prepareLifecycleReview(operation: "PRESERVE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .blocked = model.lifecycleReview else {
+            return XCTFail("Unavailable lifecycle helper must block review")
+        }
+        XCTAssertFalse(model.isLifecycleReviewRequestInFlight)
+    }
     func testSelectedPairedDeploymentShowsReadOnlyForgeRemovalProposal() async throws {
         let (state, inventory) = try removalSelectionState()
         let coordinator = RemovalReviewGUICoordinator(inventory: inventory)
@@ -223,6 +268,16 @@ final class InstallerWizardViewModelTests: XCTestCase {
             }
         }
         XCTFail("The view model did not receive the removal review result")
+    }
+
+    private func waitForLifecycleReview(on model: InstallerWizardViewModel) async {
+        for _ in 0..<400 {
+            switch model.lifecycleReview {
+            case .prepared, .blocked: return
+            case .idle, .loading: try? await Task.sleep(nanoseconds: 2_000_000)
+            }
+        }
+        XCTFail("Lifecycle review did not settle")
     }
 
     private func waitForRemovalExecution(on model: InstallerWizardViewModel) async {
@@ -455,4 +510,83 @@ private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
 
     func reviewCalls() -> [ManagedInstallerProductRemovalReviewIntent] { intents }
     func executionCallCount() -> Int { executionCalls }
+}
+
+private actor LifecycleReviewGUICoordinator: InstallerWizardCoordinator {
+    let inventory: ManagedDeploymentInventory
+    private var reviewCount = 0
+
+    init(inventory: ManagedDeploymentInventory) { self.inventory = inventory }
+
+    func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
+        .available(inventory)
+    }
+
+    func preparePreservedLifecycleReview(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        reviewCount += 1
+        do {
+            var review: [String: StrictJSONResourceValue] = [
+                "deployment_id": .string(intent.deploymentID),
+                "registry_revision": .integer("3"),
+                "registry_fingerprint": .string("sha256:" + String(repeating: "b", count: 64)),
+                "composition_id": .string(intent.installedCompositionIdentity),
+                "composition_digest": .string(intent.installedManifestSHA256),
+                "operation": .string(intent.operation),
+                "operation_id": .string(intent.operationID),
+                "component": .string(intent.component),
+                "instance_id": .string(intent.instanceID),
+                "artifact": .object([
+                    "version": .string("2.7.36"),
+                    "source_revision": .string(String(repeating: "e", count: 40)),
+                    "source": .string("https://example.invalid/forge.whl"),
+                    "digest": .string("sha256:" + String(repeating: "c", count: 64)),
+                    "qualification": .string("https://example.invalid/receipt"),
+                ]),
+                "previous_receipt_reference": .string("receipt:forge-prod"),
+                "preserve_operation_id": .null,
+                "preserve_receipt_digest": .null,
+                "historical_peer_reference": .string("receipt:pair-prod"),
+                "destructive_confirmation_required": .boolean(false),
+            ]
+            let unsigned = StrictSignedJSON.canonicalPayload(from: .object(review))
+            let digest = SHA256.hash(data: unsigned)
+                .map { String(format: "%02x", $0) }.joined()
+            review["review_fingerprint"] = .string("sha256:" + digest)
+            let data = StrictSignedJSON.canonicalPayload(from: .object([
+                "schema": .string(ManagedInstallerPreservedLifecycleReviewProposal.schema),
+                "intent_fingerprint": .string(intent.intentFingerprint),
+                "review": .object(review),
+            ]))
+            return .success(try ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                data, intent: intent
+            ))
+        } catch {
+            return .failure(.rejected)
+        }
+    }
+
+    func reviewCalls() -> Int { reviewCount }
+
+    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+        _ = currentVersion
+        return .rejected("unused")
+    }
+
+    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
+        _ = release
+        return .failed("unused")
+    }
+
+    func performProviderAction(
+        _ action: ProviderAction, for provider: ProviderID
+    ) async -> ProviderActionResult {
+        _ = action
+        _ = provider
+        return .failed(.coordinatorUnavailable)
+    }
 }
