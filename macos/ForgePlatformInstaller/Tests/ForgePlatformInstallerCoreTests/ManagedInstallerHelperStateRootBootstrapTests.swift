@@ -32,6 +32,22 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
                 ManagedInstallerHelperStateRootBootstrap.deploymentsDirectoryName,
                 isDirectory: true
             ),
+            expected.appendingPathComponent("state", isDirectory: true)
+                .appendingPathComponent(
+                    ManagedInstallerHelperStateRootBootstrap.productOperationsDirectoryName,
+                    isDirectory: true
+                ),
+            expected.appendingPathComponent("state", isDirectory: true)
+                .appendingPathComponent("product-operations", isDirectory: true)
+                .appendingPathComponent(
+                    ManagedInstallerHelperStateRootBootstrap.deploymentSagaDirectoryName,
+                    isDirectory: true
+                ),
+            expected.appendingPathComponent("state", isDirectory: true)
+                .appendingPathComponent(
+                    ManagedInstallerHelperStateRootBootstrap.componentOperationsDirectoryName,
+                    isDirectory: true
+                ),
         ] {
             let details = try FileManager.default.attributesOfItem(atPath: directory.path)
             XCTAssertEqual(details[.posixPermissions] as? Int, 0o700)
@@ -112,6 +128,28 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
         try FileManager.default.removeItem(at: deployments)
         try FileManager.default.removeItem(at: state)
         try FileManager.default.createSymbolicLink(at: state, withDestinationURL: outside)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    func testRejectsUnsafeProductWorkerJournalRoot() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let bootstrap = testBootstrap(parent)
+        let root = try bootstrap.prepare()
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let product = state.appendingPathComponent("product-operations", isDirectory: true)
+        let saga = product.appendingPathComponent("deployment-saga", isDirectory: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: saga.path)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: saga.path)
+
+        let component = state.appendingPathComponent("component-operations", isDirectory: true)
+        try FileManager.default.removeItem(at: component)
+        let outside = parent.appendingPathComponent("outside-journals", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: outside.path)
+        try FileManager.default.createSymbolicLink(at: component, withDestinationURL: outside)
         XCTAssertThrowsError(try bootstrap.prepare())
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }

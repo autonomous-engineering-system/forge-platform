@@ -14,6 +14,9 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
     static let productVenvsDirectoryName = "managed-python-product-venvs"
     static let stateDirectoryName = "state"
     static let deploymentsDirectoryName = "deployments"
+    static let productOperationsDirectoryName = "product-operations"
+    static let componentOperationsDirectoryName = "component-operations"
+    static let deploymentSagaDirectoryName = "deployment-saga"
 
     private let parentDirectory: URL
     private let expectedOwner: uid_t
@@ -73,12 +76,27 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
             Self.deploymentsDirectoryName, in: state
         )
         defer { Darwin.close(deployments) }
+        let productOperations = try createPrivateChild(
+            Self.productOperationsDirectoryName, in: state
+        )
+        defer { Darwin.close(productOperations) }
+        let deploymentSaga = try createPrivateChild(
+            Self.deploymentSagaDirectoryName, in: productOperations
+        )
+        defer { Darwin.close(deploymentSaga) }
+        let componentOperations = try createPrivateChild(
+            Self.componentOperationsDirectoryName, in: state
+        )
+        defer { Darwin.close(componentOperations) }
         guard Self.isPrivateDirectory(vendor, owner: expectedOwner),
               Self.isPrivateDirectory(installer, owner: expectedOwner),
               Self.isPrivateDirectory(runtimeSlots, owner: expectedOwner),
               Self.isPrivateDirectory(productVenvs, owner: expectedOwner),
               Self.isPrivateDirectory(state, owner: expectedOwner),
               Self.isPrivateDirectory(deployments, owner: expectedOwner),
+              Self.isPrivateDirectory(productOperations, owner: expectedOwner),
+              Self.isPrivateDirectory(deploymentSaga, owner: expectedOwner),
+              Self.isPrivateDirectory(componentOperations, owner: expectedOwner),
               Self.isSecureParent(parent, owner: expectedOwner) else {
             throw ManagedInstallerHelperStateRootBootstrapFailure.unavailable
         }
