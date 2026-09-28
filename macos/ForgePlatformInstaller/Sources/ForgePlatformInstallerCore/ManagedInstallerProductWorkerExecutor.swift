@@ -48,6 +48,22 @@ protocol ManagedInstallerProductWorkerRunning: Sendable {
     ) async -> Result<Data, ManagedInstallerProductWorkerFailure>
 }
 
+protocol ManagedInstallerForgeUpdateResourcesChecking: Sendable {
+    func check() async -> Bool
+}
+
+struct SignedManagedInstallerForgeUpdateResourcesChecker:
+    ManagedInstallerForgeUpdateResourcesChecking {
+    func check() async -> Bool {
+        guard let resolver = ManagedInstallerForgeUpdateControllerResourceResolver
+            .forCurrentProcess(),
+              case .success = await resolver.resolveReleaseReceipt() else {
+            return false
+        }
+        return true
+    }
+}
+
 /// Resolves one active helper-owned CPython slot and the exact code-sealed
 /// worker resource. Neither path, digest nor process option crosses XPC.
 struct FileManagedInstallerProductWorkerInvocationResolver:
@@ -147,6 +163,12 @@ struct MacOSManagedInstallerProductWorkerRunner:
     ManagedInstallerProductWorkerRunning, Sendable {
     private static let maximumErrorBytes = 8 * 1_024
     private static let maximumWorkerBytes = 16 * 1_024 * 1_024
+    private let forgeUpdateResources: any ManagedInstallerForgeUpdateResourcesChecking
+
+    init(forgeUpdateResources: any ManagedInstallerForgeUpdateResourcesChecking =
+        SignedManagedInstallerForgeUpdateResourcesChecker()) {
+        self.forgeUpdateResources = forgeUpdateResources
+    }
 
     func runProductWorker(
         _ invocation: ManagedInstallerProductWorkerInvocation,
@@ -177,9 +199,20 @@ struct MacOSManagedInstallerProductWorkerRunner:
                 || reviewIntent?.canonicalJSONData() == canonicalRequest
                 || lifecycleIntent?.canonicalJSONData() == canonicalRequest
                 || lifecycleRequest?.canonicalJSONData() == canonicalRequest
-                || preserveRecovery?.canonicalJSONData() == canonicalRequest,
-              secureInterpreter(invocation),
-              secureWorker(invocation) else {
+                || preserveRecovery?.canonicalJSONData() == canonicalRequest else {
+            return .failure(.rejected)
+        }
+        let forgeUpdateRequested = productRequest?.components.contains {
+            $0.componentID == "forge-runtime" && $0.change == .update
+        } == true || lifecycleIntent?.component == "forge-runtime"
+            || lifecycleRequest?.intent.component == "forge-runtime"
+            || preserveRecovery?.intent.component == "forge-runtime"
+        if forgeUpdateRequested {
+            guard await forgeUpdateResources.check() else {
+                return .failure(.unavailable)
+            }
+        }
+        guard secureInterpreter(invocation), secureWorker(invocation) else {
             return .failure(.rejected)
         }
 

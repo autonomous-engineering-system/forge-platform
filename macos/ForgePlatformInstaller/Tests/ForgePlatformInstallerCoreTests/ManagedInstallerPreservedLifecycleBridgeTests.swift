@@ -686,7 +686,9 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
             expectedInterpreterOwner: 0, requireSingleInterpreterLink: false,
             timeoutNanoseconds: 5_000_000_000
         )
-        let runner = MacOSManagedInstallerProductWorkerRunner()
+        let runner = MacOSManagedInstallerProductWorkerRunner(
+            forgeUpdateResources: AllowedForgeUpdateResources()
+        )
         let reviewOutput = try await runner.runProductWorker(
             invocation, canonicalRequest: selected.canonicalJSONData()
         ).get()
@@ -700,6 +702,14 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
             invocation, canonicalRequest: recovery.canonicalJSONData()
         ).get()
         XCTAssertEqual(recoveryOutput, recovery.canonicalJSONData())
+        for gated in [
+            selected.canonicalJSONData(), request.canonicalJSONData(),
+            recovery.canonicalJSONData(),
+        ] {
+            let blocked = await MacOSManagedInstallerProductWorkerRunner()
+                .runProductWorker(invocation, canonicalRequest: gated)
+            XCTAssertEqual(blocked, .failure(.unavailable))
+        }
         let invalid = await runner.runProductWorker(
             invocation, canonicalRequest: request.canonicalJSONData() + Data(" ".utf8)
         )
@@ -867,4 +877,8 @@ private actor LifecycleFixtureRunner: ManagedInstallerProductWorkerRunning {
     }
 
     func calls() -> [Data] { requests }
+}
+
+private struct AllowedForgeUpdateResources: ManagedInstallerForgeUpdateResourcesChecking {
+    func check() async -> Bool { true }
 }

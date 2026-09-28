@@ -1223,7 +1223,9 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             requireSingleInterpreterLink: true,
             timeoutNanoseconds: 1
         )
-        let runner = MacOSManagedInstallerProductWorkerRunner()
+        let runner = MacOSManagedInstallerProductWorkerRunner(
+            forgeUpdateResources: FixedForgeUpdateResourcesChecker(ready: true)
+        )
         XCTAssertTrue(runner.secureInterpreter(invocation))
 
         try FileManager.default.setAttributes(
@@ -1312,7 +1314,9 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             requireSingleInterpreterLink: false,
             timeoutNanoseconds: 5_000_000_000
         )
-        let runner = MacOSManagedInstallerProductWorkerRunner()
+        let runner = MacOSManagedInstallerProductWorkerRunner(
+            forgeUpdateResources: FixedForgeUpdateResourcesChecker(ready: true)
+        )
         XCTAssertNil(invocation.interpreterURL.baseURL)
         XCTAssertNil(invocation.workerURL.baseURL)
         XCTAssertTrue(runner.secureInterpreter(invocation))
@@ -1332,11 +1336,21 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             requireSingleInterpreterLink: false,
             timeoutNanoseconds: 5_000_000_000
         )
-        let changedResult = await MacOSManagedInstallerProductWorkerRunner().runProductWorker(
+        let changedResult = await MacOSManagedInstallerProductWorkerRunner(
+            forgeUpdateResources: FixedForgeUpdateResourcesChecker(ready: true)
+        ).runProductWorker(
             changedDigest,
             canonicalRequest: request.canonicalJSONData()
         )
         XCTAssertEqual(changedResult.workerFailure, .rejected)
+        if request.components.contains(where: {
+            $0.componentID == "forge-runtime" && $0.change == .update
+        }) {
+            let blocked = await MacOSManagedInstallerProductWorkerRunner(
+                forgeUpdateResources: FixedForgeUpdateResourcesChecker(ready: false)
+            ).runProductWorker(invocation, canonicalRequest: request.canonicalJSONData())
+            XCTAssertEqual(blocked.workerFailure, .unavailable)
+        }
     }
 
     func testProductWorkerExitGateCompletesExactlyOnce() async {
@@ -2301,4 +2315,10 @@ private struct FixedProductWorkerAuthorityReader:
     func readAuthorityDigest() -> Result<
         String, ManagedInstallerProductWorkerAuthorityReadFailure
     > { result }
+}
+
+private struct FixedForgeUpdateResourcesChecker:
+    ManagedInstallerForgeUpdateResourcesChecking {
+    let ready: Bool
+    func check() async -> Bool { ready }
 }
