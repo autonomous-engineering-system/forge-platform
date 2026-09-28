@@ -2145,6 +2145,20 @@ final class RawProductOperationXPCService:
         executeProductOperation(canonicalIntent, withReply: reply)
     }
 
+    func preparePreservedLifecycleReview(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalIntent, withReply: reply)
+    }
+
+    func executePreservedLifecycle(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalRequest, withReply: reply)
+    }
+
     func capturedRequests() -> [Data] {
         lock.lock()
         defer { lock.unlock() }

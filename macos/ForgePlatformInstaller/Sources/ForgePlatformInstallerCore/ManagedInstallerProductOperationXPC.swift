@@ -22,6 +22,18 @@ public protocol ManagedInstallerProductOperationHelperExecuting: Sendable {
         ManagedInstallerProductRemovalReviewProposal,
         ManagedInstallerProductOperationBridgeFailure
     >
+    func preparePreservedLifecycleReview(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    >
+    func executePreservedLifecycle(
+        _ request: ManagedInstallerPreservedLifecycleRequest
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    >
 }
 
 public extension ManagedInstallerProductOperationHelperExecuting {
@@ -44,6 +56,38 @@ public extension ManagedInstallerProductOperationHelperExecuting {
         _ = intent
         return .failure(.rejected)
     }
+
+    func preparePreservedLifecycleReview(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = intent
+        return .failure(.rejected)
+    }
+
+    func executePreservedLifecycle(
+        _ request: ManagedInstallerPreservedLifecycleRequest
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = request
+        return .failure(.rejected)
+    }
+}
+
+public protocol ManagedInstallerPreservedLifecycleReviewTransporting: Sendable {
+    func preparePreservedLifecycleReview(
+        _ canonicalIntent: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure>
+}
+
+public protocol ManagedInstallerPreservedLifecycleTransporting: Sendable {
+    func executePreservedLifecycle(
+        _ canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure>
 }
 
 /// Fixed XPC interface exported by the separately installed privileged helper.
@@ -60,6 +104,14 @@ public extension ManagedInstallerProductOperationHelperExecuting {
     )
     func prepareProductRemovalReview(
         _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
+    func preparePreservedLifecycleReview(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
+    func executePreservedLifecycle(
+        _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     )
 }
@@ -104,7 +156,9 @@ public struct ManagedInstallerProductOperationXPCCallerIdentity: Equatable, Send
 public actor MacOSManagedInstallerProductOperationXPCTransport:
     ManagedInstallerProductOperationTransporting,
     ManagedInstallerProductRemovalReviewTransporting,
-    ManagedInstallerProductRemovalTransporting {
+    ManagedInstallerProductRemovalTransporting,
+    ManagedInstallerPreservedLifecycleReviewTransporting,
+    ManagedInstallerPreservedLifecycleTransporting {
     public static let machServiceName =
         "com.autonomous-engineering-system.forge-platform-installer.helper.product-operations"
 
@@ -244,6 +298,66 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
             }
         }
     }
+
+    public func preparePreservedLifecycleReview(
+        _ canonicalIntent: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        guard let intent = try? ManagedInstallerPreservedLifecycleReviewIntent.decodeJSON(
+            canonicalIntent
+        ), intent.canonicalJSONData() == canonicalIntent else {
+            return .failure(.invalidRequest)
+        }
+        return await withCheckedContinuation { continuation in
+            let gate = ManagedInstallerProductOperationXPCReplyGate(continuation: continuation)
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+                gate.complete(.failure(.unavailable))
+            }) as? ManagedInstallerProductOperationXPCService else {
+                gate.complete(.failure(.unavailable))
+                return
+            }
+            proxy.preparePreservedLifecycleReview(canonicalIntent) { response in
+                guard let response,
+                      response.count <= ManagedInstallerPreservedLifecycleReviewProposal.maximumBytes,
+                      let proposal = try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                          response, intent: intent
+                      ), proposal.canonicalJSONData() == response else {
+                    gate.complete(.failure(.rejected))
+                    return
+                }
+                gate.complete(.success(response))
+            }
+        }
+    }
+
+    public func executePreservedLifecycle(
+        _ canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        guard let request = try? ManagedInstallerPreservedLifecycleRequest.decodeJSON(
+            canonicalRequest
+        ), request.canonicalJSONData() == canonicalRequest else {
+            return .failure(.invalidRequest)
+        }
+        return await withCheckedContinuation { continuation in
+            let gate = ManagedInstallerProductOperationXPCReplyGate(continuation: continuation)
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+                gate.complete(.failure(.unavailable))
+            }) as? ManagedInstallerProductOperationXPCService else {
+                gate.complete(.failure(.unavailable))
+                return
+            }
+            proxy.executePreservedLifecycle(canonicalRequest) { response in
+                guard let response,
+                      response.count <= ManagedInstallerPreservedLifecycleReceipt.maximumBytes,
+                      let receipt = try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+                          response, request: request
+                      ), receipt.canonicalJSONData() == response else {
+                    gate.complete(.failure(.rejected))
+                    return
+                }
+                gate.complete(.success(response))
+            }
+        }
+    }
 }
 
 /// Fail-closed helper handler. It accepts one exact canonical request and emits
@@ -359,6 +473,70 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
                 return
             }
             replyGate.complete(response)
+        }
+    }
+
+    public func preparePreservedLifecycleReview(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
+        let executor = executor
+        Task {
+            guard let intent = try? ManagedInstallerPreservedLifecycleReviewIntent.decodeJSON(
+                canonicalIntent
+            ), intent.canonicalJSONData() == canonicalIntent else {
+                gate.complete(nil)
+                return
+            }
+            let proposal: ManagedInstallerPreservedLifecycleReviewProposal
+            switch await executor.preparePreservedLifecycleReview(intent) {
+            case .success(let completed): proposal = completed
+            case .failure:
+                gate.complete(nil)
+                return
+            }
+            let response = proposal.canonicalJSONData()
+            guard response.count <= ManagedInstallerPreservedLifecycleReviewProposal.maximumBytes,
+                  (try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                      response, intent: intent
+                  )) == proposal else {
+                gate.complete(nil)
+                return
+            }
+            gate.complete(response)
+        }
+    }
+
+    public func executePreservedLifecycle(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
+        let executor = executor
+        Task {
+            guard let request = try? ManagedInstallerPreservedLifecycleRequest.decodeJSON(
+                canonicalRequest
+            ), request.canonicalJSONData() == canonicalRequest else {
+                gate.complete(nil)
+                return
+            }
+            let receipt: ManagedInstallerPreservedLifecycleReceipt
+            switch await executor.executePreservedLifecycle(request) {
+            case .success(let completed): receipt = completed
+            case .failure:
+                gate.complete(nil)
+                return
+            }
+            let response = receipt.canonicalJSONData()
+            guard response.count <= ManagedInstallerPreservedLifecycleReceipt.maximumBytes,
+                  (try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+                      response, request: request
+                  )) == receipt else {
+                gate.complete(nil)
+                return
+            }
+            gate.complete(response)
         }
     }
 }
