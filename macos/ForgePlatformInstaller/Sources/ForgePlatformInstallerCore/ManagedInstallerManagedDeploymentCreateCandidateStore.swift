@@ -1,6 +1,13 @@
 import Darwin
 import Foundation
 
+public enum ManagedInstallerCreateCandidateRotationFailure: Error, Equatable, Sendable {
+    case unavailable
+    case staleState
+    case terminalEvidenceMissing
+    case operationInProgress
+}
+
 /// A fixed, private helper-state file supplies the next opaque deployment ID.
 /// The first caller publishes a random ID with exclusive atomic rename. Later
 /// callers, including after a daemon restart, read the same durable bytes.
@@ -80,6 +87,115 @@ public struct FileManagedInstallerManagedDeploymentCreateCandidateStore:
         guard Darwin.fsync(root) == 0, Self.privateDirectory(root, owner: expectedOwner),
               readCandidate(in: root) == candidate else { return nil }
         return candidate
+    }
+
+    /// Rotate only after the exact consumed deployment appears in the
+    /// Python-owned registry with a terminal v2 composition receipt. The
+    /// caller must separately qualify product terminal evidence before using
+    /// this helper-local method; it is not exposed over XPC. Repeating the
+    /// same request returns the already rotated candidate without mutation.
+    public func rotateAfterTerminalCreate(
+        consumedDeploymentID: String,
+        registry: any ManagedInstallerManagedDeploymentRegistrySnapshotLoading
+    ) -> Result<String, ManagedInstallerCreateCandidateRotationFailure> {
+        guard let root = openRoot() else { return .failure(.unavailable) }
+        defer { Darwin.close(root) }
+        guard let lock = acquireRotationLock(in: root) else {
+            return .failure(.operationInProgress)
+        }
+        defer {
+            _ = flock(lock, LOCK_UN)
+            Darwin.close(lock)
+        }
+        guard let current = readCandidate(in: root) else { return .failure(.unavailable) }
+        guard case .success(let first) = registry.read(),
+              first.evidenceReference.hasPrefix("registry:sha256:"),
+              CompositionCatalogValidation.isTaggedSHA256(
+                  String(first.evidenceReference.dropFirst("registry:".count))
+              ),
+              let consumed = first.records.first(where: {
+                  $0.target.id == consumedDeploymentID
+              }),
+              consumed.compositionReceiptReference != nil else {
+            return .failure(.terminalEvidenceMissing)
+        }
+        guard case .success(let second) = registry.read(), first == second else {
+            return .failure(.staleState)
+        }
+        if current != consumedDeploymentID { return .success(current) }
+
+        let next = "deployment-" + UUID().uuidString.lowercased()
+        guard !first.records.contains(where: { $0.target.id == next }) else {
+            return .failure(.staleState)
+        }
+        let data = Data((next + "\n").utf8)
+        let temporaryName = ".create-candidate.rotate-" + UUID().uuidString.lowercased()
+        let file = temporaryName.withCString {
+            Darwin.openat(
+                root, $0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW_ANY,
+                mode_t(0o600)
+            )
+        }
+        guard file >= 0 else { return .failure(.unavailable) }
+        var renamed = false
+        defer {
+            Darwin.close(file)
+            if !renamed {
+                temporaryName.withCString { _ = Darwin.unlinkat(root, $0, 0) }
+            }
+        }
+        guard data.withUnsafeBytes({ bytes in
+            guard let base = bytes.baseAddress else { return false }
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(file, base.advanced(by: offset), bytes.count - offset)
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { return false }
+                offset += count
+            }
+            return true
+        }), Darwin.fsync(file) == 0,
+           Self.privateFile(file, owner: expectedOwner, size: data.count),
+           readCandidate(in: root) == current else {
+            return .failure(.staleState)
+        }
+        let result = temporaryName.withCString { source in
+            Self.fileName.withCString { destination in
+                Darwin.renameat(root, source, root, destination)
+            }
+        }
+        guard result == 0 else { return .failure(.unavailable) }
+        renamed = true
+        guard Darwin.fsync(root) == 0,
+              readCandidate(in: root) == next,
+              case .success(let third) = registry.read(), third == first else {
+            return .failure(.staleState)
+        }
+        return .success(next)
+    }
+
+    private func acquireRotationLock(in root: Int32) -> Int32? {
+        let name = ".create-candidate.lock"
+        var file = name.withCString {
+            Darwin.openat(
+                root, $0, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW_ANY,
+                mode_t(0o600)
+            )
+        }
+        if file < 0, errno == EEXIST {
+            file = name.withCString {
+                Darwin.openat(root, $0, O_RDWR | O_CLOEXEC | O_NOFOLLOW_ANY)
+            }
+        }
+        guard file >= 0 else { return nil }
+        var details = stat()
+        guard Darwin.fstat(file, &details) == 0,
+              Self.privateFile(details, owner: expectedOwner),
+              flock(file, LOCK_EX | LOCK_NB) == 0 else {
+            Darwin.close(file)
+            return nil
+        }
+        return file
     }
 
     private func openRoot() -> Int32? {
