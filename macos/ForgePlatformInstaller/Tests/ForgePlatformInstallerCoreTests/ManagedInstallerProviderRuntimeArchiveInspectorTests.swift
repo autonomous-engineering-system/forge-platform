@@ -4,6 +4,81 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
+    func testSlotAdapterUsesExactStagingThenCachedRestartReadback() async throws {
+        let fixture = try ProviderArchiveFixture()
+        let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
+        let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            stagedArchive: fixture.staged, requirement: fixture.requirement,
+            inspection: inspection
+        )
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("provider-slot-adapter-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        let staging = ProviderArchiveStaging(fixture: fixture)
+        let publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        )
+        let adapter = MacOSManagedInstallerProviderRuntimeSlotAdapter(
+            requirement: fixture.requirement, staging: staging, publisher: publisher
+        )
+        let installed = try providerSlotReadback(await adapter.installRuntimeSlot(request))
+        XCTAssertEqual(installed.providerTargetID, fixture.requirement.id)
+        let stagingReads = await staging.readCount()
+        XCTAssertEqual(stagingReads, 1)
+        let restarted = MacOSManagedInstallerProviderRuntimeSlotAdapter(
+            requirement: fixture.requirement,
+            staging: ProviderArchiveStaging(fixture: fixture, failure: .unavailable),
+            publisher: publisher
+        )
+        XCTAssertEqual(try providerSlotReadback(restarted.readRuntimeSlot(request)), installed)
+    }
+
+    func testSlotAdapterRejectsStagingDriftAndFailureBeforeMutation() async throws {
+        let fixture = try ProviderArchiveFixture()
+        let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
+        let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            stagedArchive: fixture.staged, requirement: fixture.requirement,
+            inspection: inspection
+        )
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("provider-slot-adapter-negative-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        let publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        )
+        for drift in ProviderArchiveStaging.Drift.allCases {
+            let adapter = MacOSManagedInstallerProviderRuntimeSlotAdapter(
+                requirement: fixture.requirement,
+                staging: ProviderArchiveStaging(fixture: fixture, drift: drift),
+                publisher: publisher
+            )
+            let result = await adapter.installRuntimeSlot(request)
+            XCTAssertEqual(result.failure, .rejected)
+        }
+        for (failure, expected) in [
+            (ManagedInstallerProviderRuntimeStagingFailure.invalidRequest,
+             ManagedInstallerProviderRuntimeMutationFailure.invalidRequest),
+            (.unavailable, .unavailable),
+            (.rejected, .rejected),
+        ] {
+            let adapter = MacOSManagedInstallerProviderRuntimeSlotAdapter(
+                requirement: fixture.requirement,
+                staging: ProviderArchiveStaging(fixture: fixture, failure: failure),
+                publisher: publisher
+            )
+            let result = await adapter.installRuntimeSlot(request)
+            XCTAssertEqual(result.failure, expected)
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+    }
     func testProviderRuntimeSlotsSurviveStagingDiscardWithExactCachedReadback() throws {
         for kind in [ProviderRuntimeArchiveKind.tarGzip, .zip] {
             let fixture = try ProviderArchiveFixture(

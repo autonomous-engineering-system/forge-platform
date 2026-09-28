@@ -948,8 +948,10 @@ cleanup-enforcing provider preparation transaction are implemented. The
 canonical stable-plan fanout and its complete plan-bound receipt are also
 implemented. Exact parent-journal seeding is ordered before provider and
 managed-Python preparation by a source-level stable-plan admission coordinator.
-Provider archive extraction, target-bound runtime slot publication and exact cached tree readback are source-qualified. Credential-home provisioning, the provider mutation adapter and service-account secure-store
-integration, other four live gate observers, signed service registration and
+Provider archive extraction, target-bound runtime slot publication, exact
+staged-archive-to-slot binding and cached tree readback are source-qualified.
+Credential-home provisioning, the complete provider mutation adapter and
+service-account secure-store integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,
 separate gate router and fixed-layout macOS component-provider inspector are
 implemented. A descriptor-safe reader, atomic publisher and complete-set exact
