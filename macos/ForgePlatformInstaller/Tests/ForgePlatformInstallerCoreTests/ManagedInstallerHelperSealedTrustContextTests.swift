@@ -124,6 +124,48 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
         XCTAssertEqual(absent, .failure(.unavailable))
     }
 
+    func testSignedParentCannotChangeWhileSealedResourcesAreRead() async throws {
+        let resources = try makeResources()
+        let evidence = try signingEvidence(version: resources.provenance.installerVersion)
+        let app = URL(fileURLWithPath: "/private/tmp/Installer.app")
+        let first = ManagedInstallerHelperSignedParentBundle(
+            bundleURL: app, codeSigning: evidence
+        )
+        let changedEvidence = try MacOSInstallerBundleCodeSigningEvidence(
+            bundleIdentifier: evidence.bundleIdentifier,
+            installerVersion: evidence.installerVersion,
+            teamIdentifier: evidence.teamIdentifier,
+            codeDirectorySHA256: String(repeating: "c", count: 64)
+        )
+        let changed = ManagedInstallerHelperSignedParentBundle(
+            bundleURL: app, codeSigning: changedEvidence
+        )
+        for final in [
+            Result<ManagedInstallerHelperSignedParentBundle,
+                ManagedInstallerHelperSignedParentBundleFailure>.success(changed),
+            .failure(.unavailable),
+        ] {
+            let locator = SequenceLocator(results: [.success(first), final])
+            let result = await ManagedInstallerHelperSealedTrustContextLoader(
+                locator: locator,
+                resources: StaticResources(result: .success(resources))
+            ).load()
+            XCTAssertEqual(result, .failure(.unavailable))
+            let reads = await locator.readCount()
+            XCTAssertEqual(reads, 2)
+        }
+        let stable = SequenceLocator(results: [.success(first), .success(first)])
+        let accepted = await ManagedInstallerHelperSealedTrustContextLoader(
+            locator: stable,
+            resources: StaticResources(result: .success(resources))
+        ).load()
+        XCTAssertEqual(accepted, .success(ManagedInstallerHelperSealedTrustContext(
+            codeSigning: evidence, resources: resources
+        )))
+        let stableReads = await stable.readCount()
+        XCTAssertEqual(stableReads, 2)
+    }
+
     private func makeResources() throws -> ManagedInstallerHelperSealedResources {
         let descriptorKey = try SealedInstallerReleaseTrustEd25519PublicKey(
             keyID: "descriptor-a",
@@ -328,4 +370,30 @@ private struct StaticResources: ManagedInstallerHelperSealedResourcesReading {
         _ = bundleURL
         return result
     }
+}
+
+private actor SequenceLocator: ManagedInstallerHelperSignedParentBundleLocating {
+    private var results: [Result<
+        ManagedInstallerHelperSignedParentBundle,
+        ManagedInstallerHelperSignedParentBundleFailure
+    >]
+    private var count = 0
+
+    init(results: [Result<
+        ManagedInstallerHelperSignedParentBundle,
+        ManagedInstallerHelperSignedParentBundleFailure
+    >]) {
+        self.results = results
+    }
+
+    func locate() async -> Result<
+        ManagedInstallerHelperSignedParentBundle,
+        ManagedInstallerHelperSignedParentBundleFailure
+    > {
+        count += 1
+        guard !results.isEmpty else { return .failure(.unavailable) }
+        return results.removeFirst()
+    }
+
+    func readCount() -> Int { count }
 }

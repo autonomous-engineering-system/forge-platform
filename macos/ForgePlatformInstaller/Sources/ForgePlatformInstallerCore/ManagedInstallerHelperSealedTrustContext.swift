@@ -94,6 +94,8 @@ struct ManagedInstallerHelperSealedTrustContextLoader: Sendable {
               case .success(let sealed) = await resources.readResources(
                   at: parent.bundleURL
               ),
+              case .success(let confirmedParent) = await locator.locate(),
+              confirmedParent == parent,
               parent.codeSigning.bundleIdentifier
                 == sealed.releaseTrust.expectedBundleIdentifier,
               parent.codeSigning.teamIdentifier
