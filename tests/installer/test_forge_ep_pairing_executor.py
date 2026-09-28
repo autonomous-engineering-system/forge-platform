@@ -5,6 +5,7 @@ from pathlib import Path
 from forge_platform.component_operations import ComponentOperationRequest, QualifiedArtifact
 from forge_platform.engineering_platform_system_adapter import (
     EPSystemInstanceTarget,
+    EngineeringPlatformAdapterError,
     EngineeringPlatformSystemProvisionerAdapter,
     ProductCommandResult,
 )
@@ -84,6 +85,7 @@ class EPRunner:
     def __init__(self):
         self.ready = True
         self.calls = []
+        self.provider_override = {}
 
     def run(self, argv):
         self.calls.append(tuple(argv))
@@ -100,11 +102,30 @@ class EPRunner:
         if "inventory" in argv:
             payload = {"state": "READY", "instances": [descriptor]}
         else:
+            providers = {
+                provider: {
+                    "provider": provider,
+                    "instance_id": "ep-prod",
+                    "state": "READY",
+                    "executable": "/opt/ep/providers/" + provider + "/runtime/bin/" + (
+                        "codex" if provider == "codex" else "gh"
+                    ),
+                    "executable_sha256": "sha256:" + ("d" if provider == "codex" else "e") * 64,
+                    "version": "1.0.0",
+                    "home": "/opt/ep/providers/" + provider + "/home",
+                    "credential_scope": "COMPONENT_INSTANCE",
+                    "authentication": {"state": "READY", "reference": provider + "-owned-reference"},
+                    "cold_boot_ready": True,
+                }
+                for provider in ("codex", "github")
+            }
+            providers["github"].update(self.provider_override)
             payload = {
                 "contract": "engineering-platform.system-provisioner/v1",
                 "state": "READY" if self.ready else "DEGRADED",
                 "ready": self.ready,
                 "descriptor": descriptor,
+                "providers": providers,
             }
         import json
 
@@ -237,6 +258,11 @@ class ForgeEPProductPairingExecutorTests(unittest.TestCase):
     def test_ep_must_read_back_exact_artifact_healthy(self):
         self.ep_runner.ready = False
         with self.assertRaisesRegex(ForgeEPProductPairingError, "readiness did not pass"):
+            self.pair()
+
+    def test_pairing_rejects_wrong_ep_provider_instance(self):
+        self.ep_runner.provider_override["instance_id"] = "ep-other"
+        with self.assertRaisesRegex(EngineeringPlatformAdapterError, "provider context does not match"):
             self.pair()
 
     def test_route_and_concrete_adapter_types_are_enforced(self):
