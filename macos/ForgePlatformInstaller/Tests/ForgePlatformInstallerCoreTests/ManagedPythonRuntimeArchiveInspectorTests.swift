@@ -252,6 +252,53 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
         ), .failure(.rejected))
     }
 
+    func testCachedRuntimeVerifierReconstructsInventoryAfterStagingAndRejectsDrift() throws {
+        let fixture = try ArchiveInspectionFixture()
+        let root = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let slotRequest = try slotRequest(fixture)
+        let receipt = try MacOSManagedPythonRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        ).publish(
+            archive: fixture.runtimeArchive, runtime: fixture.runtime, request: slotRequest
+        ).get()
+        let venvRequest = ManagedPythonProductVenvMutationRequest(
+            operationID: "venv-cache-1", deploymentID: "deployment-a",
+            environment: try ManagedProductVirtualEnvironmentIdentity(
+                componentIdentity: "forge-runtime", venvIdentity: "forge-venv-1",
+                pythonRuntimeIdentitySHA256: fixture.runtime.identitySHA256
+            ),
+            runtimeSlotIdentity: receipt.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: receipt.evidenceReference
+        )
+        let verifier = MacOSManagedPythonCachedProductVenvRuntimeVerifier(
+            slotsRoot: root, runtime: fixture.runtime, expectedOwner: geteuid()
+        )
+        let interpreter = root.appendingPathComponent(receipt.runtimeSlotIdentity)
+            .appendingPathComponent(ManagedPythonRuntimeArchiveInspection.interpreterRelativePath)
+        XCTAssertEqual(verifier.verifiedInterpreter(for: venvRequest), .success(interpreter))
+
+        let wrongRuntimeRequest = ManagedPythonProductVenvMutationRequest(
+            operationID: "venv-cache-1", deploymentID: "deployment-a",
+            environment: try ManagedProductVirtualEnvironmentIdentity(
+                componentIdentity: "forge-runtime", venvIdentity: "forge-venv-1",
+                pythonRuntimeIdentitySHA256: "sha256:" + String(repeating: "b", count: 64)
+            ),
+            runtimeSlotIdentity: receipt.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: receipt.evidenceReference
+        )
+        XCTAssertEqual(verifier.verifiedInterpreter(for: wrongRuntimeRequest), .failure(.rejected))
+        let cache = root.appendingPathComponent(
+            "archive-" + fixture.runtime.artifact.sha256.dropFirst("sha256:".count)
+                + ".tar.gz"
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: cache.path)
+        XCTAssertEqual(verifier.verifiedInterpreter(for: venvRequest), .failure(.rejected))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cache.path)
+        try Data("drift".utf8).write(to: interpreter)
+        XCTAssertEqual(verifier.verifiedInterpreter(for: venvRequest), .failure(.rejected))
+    }
+
     private func slotRequest(
         _ fixture: ArchiveInspectionFixture
     ) throws -> ManagedPythonRuntimeSlotMutationRequest {
