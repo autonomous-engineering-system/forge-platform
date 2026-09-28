@@ -187,8 +187,11 @@ bounded deterministic `.pyz`. It requires canonical sorted regular `0644`
 entries, a fixed ZIP timestamp, safe relative names and `__main__.py`, copies
 the captured bytes to
 `Contents/Resources/forge-platform-product-worker.pyz`, and writes their exact
-tagged SHA-256 to `ForgePlatformProductWorkerSHA256` in `Info.plist`. This binds
-the helper's fixed worker lookup to the later app signature. The release
+tagged SHA-256 to `ForgePlatformProductWorkerSHA256` in `Info.plist`. For each
+product operation the helper locates its own signed parent app, takes the
+worker URL and digest from that exact bundle, and repeats the full signing
+inspection after the read. The runner verifies the worker bytes against that
+digest immediately before invocation. The release
 workflow does not yet construct or pass a production worker.
 
 `scripts/build_installer_product_worker.py --output PATH.pyz` builds the exact
