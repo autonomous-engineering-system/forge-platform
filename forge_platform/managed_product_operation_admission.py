@@ -1,4 +1,4 @@
-"""Fail-closed helper admission for the native Forge+EP product request.
+"""Fail-closed helper admission for a native managed-product request.
 
 The native installer may describe reviewed public intent, but it is not the
 authority for product artifacts, managed topology, provider targets, or the
@@ -241,8 +241,13 @@ def decode_native_product_operation_request(
             "product request value is invalid"
         ) from error
 
-    if tuple(component.identity for component in components) != tuple(sorted(_COMPONENTS)):
-        raise ManagedProductOperationAdmissionError("exact Forge and EP components are required")
+    requested_components = tuple(component.identity for component in components)
+    if (
+        not requested_components
+        or requested_components != tuple(sorted(set(requested_components)))
+        or not set(requested_components) <= _COMPONENTS
+    ):
+        raise ManagedProductOperationAdmissionError("product components are unsupported or ambiguous")
     if providers != tuple(sorted(providers)) or len(set(providers)) != len(providers) or any(
         _PROVIDER_TARGET.fullmatch(value) is None for value in providers
     ):
@@ -256,7 +261,13 @@ def decode_native_product_operation_request(
     ):
         raise ManagedProductOperationAdmissionError("installed composition binding is incomplete")
     if request.deployment_exists:
-        if request.forge_instance_id is None or request.engineering_platform_instance_id is None:
+        instance_components = {
+            component for component, instance in (
+                ("forge-runtime", request.forge_instance_id),
+                ("engineering-platform-server", request.engineering_platform_instance_id),
+            ) if instance is not None
+        }
+        if instance_components != set(requested_components):
             raise ManagedProductOperationAdmissionError("existing deployment topology is incomplete")
     elif any((
         request.forge_instance_id,
@@ -293,8 +304,8 @@ def admit_native_product_operation(
         raise ManagedProductOperationAdmissionError("composition manifest authority changed")
 
     manifest_components = {component.identity: component for component in manifest.components}
-    if set(manifest_components) != _COMPONENTS:
-        raise ManagedProductOperationAdmissionError("manifest is not the exact Forge and EP composition")
+    if set(manifest_components) != {component.identity for component in request.components}:
+        raise ManagedProductOperationAdmissionError("manifest and requested product topology differ")
     operations = {component.identity: component for component in request.components}
     for identity, operation in operations.items():
         artifact = manifest_components[identity].artifact
@@ -319,12 +330,18 @@ def admit_native_product_operation(
         if installed_manifest is not None:
             raise ManagedProductOperationAdmissionError("fresh deployment cannot have an installed manifest")
     else:
-        if set(current.by_component) != _COMPONENTS:
-            raise ManagedProductOperationAdmissionError("registered topology is not exact Forge and EP")
+        expected_instances = {
+            component: instance for component, instance in (
+                ("forge-runtime", request.forge_instance_id),
+                ("engineering-platform-server", request.engineering_platform_instance_id),
+            ) if instance is not None
+        }
         if (
-            current.by_component["forge-runtime"].instance_id != request.forge_instance_id
-            or current.by_component["engineering-platform-server"].instance_id
-            != request.engineering_platform_instance_id
+            set(current.by_component) != set(expected_instances)
+            or any(
+                current.by_component[component].instance_id != instance
+                for component, instance in expected_instances.items()
+            )
         ):
             raise ManagedProductOperationAdmissionError("registered product topology changed after review")
         binding = current.composition_binding
@@ -362,8 +379,8 @@ def _admit_installed_manifest(
     ):
         raise ManagedProductOperationAdmissionError("installed manifest authority changed")
     installed_components = {component.identity: component for component in installed.components}
-    if set(installed_components) != _COMPONENTS:
-        raise ManagedProductOperationAdmissionError("installed manifest is not exact Forge and EP")
+    if set(installed_components) != {component.identity for component in request.components}:
+        raise ManagedProductOperationAdmissionError("installed product topology changed")
     for operation in request.components:
         if operation.installed_version != installed_components[operation.identity].artifact.version:
             raise ManagedProductOperationAdmissionError("installed component version changed after review")
