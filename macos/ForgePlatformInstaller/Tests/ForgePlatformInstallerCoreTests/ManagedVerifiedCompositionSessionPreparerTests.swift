@@ -36,6 +36,34 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
         XCTAssertEqual(acceptanceReadCount, 1)
     }
 
+    func testMaterialRetainsOnlyExactManifestBoundToSelectedSession() async throws {
+        let fixture = try Fixture(verifiedAt: verifiedAt)
+        let result = await fixture.preparer().prepareVerifiedCompositionMaterial(
+            for: fixture.currentInstaller,
+            deployment: fixture.freshDeployment
+        )
+        guard case .prepared(let material) = result else {
+            return XCTFail("expected verified composition material")
+        }
+        XCTAssertEqual(material.manifestBytes, fixture.manifestBytes)
+        XCTAssertEqual(
+            material.session.manifestSHA256,
+            "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: material.manifestBytes)
+        )
+        XCTAssertEqual(material.session.compositionIdentity, "forge-ep-managed-v1")
+
+        let rejectedDocuments = DocumentFetcherStub(responses: [
+            fixture.indexLocator.url: .success(fixture.indexBytes),
+            fixture.manifestLocator.url: .success(Data("{}".utf8)),
+        ])
+        let rejected = await fixture.preparer(documents: rejectedDocuments)
+            .prepareVerifiedCompositionMaterial(
+                for: fixture.currentInstaller,
+                deployment: fixture.freshDeployment
+            )
+        XCTAssertEqual(rejected, .unavailable(.selectionUnavailable))
+    }
+
     func testAdmissionOrMissingIndexFailsBeforeDocumentFetch() async throws {
         let fixture = try Fixture(verifiedAt: verifiedAt)
         let unavailable = ManagedVerifiedCompositionSessionPreparer(
