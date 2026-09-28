@@ -1602,6 +1602,14 @@ public protocol InstallerWizardCoordinator: Sendable {
         ManagedInstallerProductRemovalReviewProposal,
         ManagedInstallerProductOperationBridgeFailure
     >
+    /// Read-only product-owned PRESERVE/RESTORE/PURGE proposal. Execution has
+    /// its own reviewed and currency-bound boundary.
+    func preparePreservedLifecycleReview(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    >
     /// Executes only a previously reviewed exact helper proposal after a
     /// fresh installer currency and helper proposal check.
     func executeReviewedProductRemoval(
@@ -1649,6 +1657,16 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func preparePreservedLifecycleReview(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = intent
+        return .failure(.rejected)
+    }
+
     func executeReviewedProductRemoval(
         _ session: ManagedInstallerRemovalReviewSession
     ) async -> Result<

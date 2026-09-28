@@ -547,6 +547,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     private let managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating
     private let removalReviewTransport: (any ManagedInstallerProductRemovalReviewTransporting)?
     private let removalTransport: (any ManagedInstallerProductRemovalTransporting)?
+    private let preservedLifecycleReviewTransport:
+        (any ManagedInstallerPreservedLifecycleReviewTransporting)?
     private var removalMutationInFlight = false
 
     private var pendingUpdate: PendingUpdate?
@@ -583,7 +585,9 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator(),
         managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator(),
         removalReviewTransport: (any ManagedInstallerProductRemovalReviewTransporting)? = nil,
-        removalTransport: (any ManagedInstallerProductRemovalTransporting)? = nil
+        removalTransport: (any ManagedInstallerProductRemovalTransporting)? = nil,
+        preservedLifecycleReviewTransport:
+            (any ManagedInstallerPreservedLifecycleReviewTransporting)? = nil
     ) {
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
@@ -597,6 +601,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.managedDeploymentRouteCoordinator = managedDeploymentRouteCoordinator
         self.removalReviewTransport = removalReviewTransport
         self.removalTransport = removalTransport
+        self.preservedLifecycleReviewTransport = preservedLifecycleReviewTransport
     }
 
     public func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
@@ -727,6 +732,38 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             guard let proposal = try? ManagedInstallerProductRemovalReviewProposal.decodeJSON(
                 response, intent: intent
             ), proposal.canonicalJSONData() == response else {
+                return .failure(.rejected)
+            }
+            return .success(proposal)
+        }
+    }
+
+    public func preparePreservedLifecycleReview(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard let currentVerifiedReleaseRecord,
+              currentVerifiedReleaseRecord.release == intent.installerRelease,
+              let preservedLifecycleReviewTransport,
+              (try? ManagedInstallerPreservedLifecycleReviewIntent.decodeJSON(
+                  intent.canonicalJSONData()
+              )) == intent else {
+            return .failure(.rejected)
+        }
+        let result = await preservedLifecycleReviewTransport.preparePreservedLifecycleReview(
+            intent.canonicalJSONData()
+        )
+        guard self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+            return .failure(.rejected)
+        }
+        switch result {
+        case .failure(let failure): return .failure(failure)
+        case .success(let bytes):
+            guard let proposal = try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                bytes, intent: intent
+            ), proposal.canonicalJSONData() == bytes else {
                 return .failure(.rejected)
             }
             return .success(proposal)
