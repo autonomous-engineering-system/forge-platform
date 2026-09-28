@@ -216,6 +216,13 @@ enum ForgePlatformInstallerCLIApplication {
                     operationID: operationID,
                     component: component
                 )
+            case .deploymentLifecyclePlan(
+                let deployment, let operationID, let operation, let component
+            ):
+                result = await workflow.planPreservedLifecycle(
+                    deploymentID: deployment, operationID: operationID,
+                    operation: operation, component: component
+                )
             case .help, .version, .selfUpdateCheck, .selfUpdateApply:
                 result = InstallerCLIResult(
                     exitCode: .usage,

@@ -359,6 +359,25 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
+    func testLifecyclePlanCommandUsesSharedReviewAndFailsClosedWithoutInstalledProvenance() async throws {
+        let startup = CLIStartupSpy(outcome: .ready(
+            currentRelease: try release("1.2.3"),
+            coordinator: CLIReadyCoordinator()
+        ))
+        let result = await run(
+            [
+                "deployment", "lifecycle", "plan", "preserve",
+                "--deployment", "production",
+                "--operation-id", "preserve-one",
+                "--component", "forge-runtime", "--json",
+            ],
+            startup: startup, version: "1.2.3"
+        )
+        XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(result.stdout.joined().contains("lifecycle-review-blocked"))
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
     func testReadySelfUpdateApplyIsNoOpCurrentAndRemoveRequiresExactOperation() async throws {
         let coordinator = CLIReadyCoordinator()
         let current = try release("1.2.3")
