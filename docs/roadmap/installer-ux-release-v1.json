@@ -9,10 +9,33 @@
   "authorizes_execution": false,
   "first_canary_prerequisite": false,
   "source_pins": {
-    "forge": "1cea418a5fa8f59d303f2a0d6ff27573c4a11752",
-    "engineering-platform": "395e61781965fa8e232d1db6bed8f82af7d00509",
+    "forge": "ed1e623ef3cedd8c4f720510e0052409b2d5ab1f",
+    "engineering-platform": "9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2",
     "workspace": "36d294836cb653361fda3972de38acce3d2970f8",
-    "forge-platform": "cb6a10a4ffca90e2b689af62349da2075fe47a77"
+    "forge-platform": "e92f4e4151080f7c2a9d4fdeba1541b1407d7907"
+  },
+  "status_semantics": {
+    "QUALIFIED": "Owning protected evidence is complete for this exact node only",
+    "DESIGNED": "Canonical consumer contract is documented without implementation qualification",
+    "PLANNED": "Implementation or acceptance remains unproven"
+  },
+  "lifecycle_producer_baselines": {
+    "forge": {
+      "version": "2.7.36",
+      "source_revision": "ed1e623ef3cedd8c4f720510e0052409b2d5ab1f",
+      "release": "forge-v2.7.36",
+      "contract": "forge-server-instance-lifecycle/v1",
+      "release_state": "RELEASE_COMPLETE",
+      "status": "QUALIFIED"
+    },
+    "engineering-platform": {
+      "version": "2.3.103",
+      "source_revision": "9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2",
+      "release": "engineering-platform-v2.3.103",
+      "contract": "engineering-platform.system-instance-lifecycle/v1",
+      "release_state": "RELEASE_COMPLETE",
+      "status": "QUALIFIED"
+    }
   },
   "roadmap": "docs/roadmap/INSTALLER_UX_AND_RELEASE_QUALIFICATION_V1.md",
   "parent_lanes": [
@@ -105,11 +128,118 @@
       "qualification_evidence": []
     },
     {
+      "id": "IUR-LC-FORGE-CONTRACT",
+      "depends_on": [],
+      "status": "QUALIFIED",
+      "qualification_evidence": [
+        "https://github.com/pcvantol/forge/pull/189"
+      ]
+    },
+    {
+      "id": "IUR-LC-FORGE-RELEASE",
+      "depends_on": [
+        "IUR-LC-FORGE-CONTRACT"
+      ],
+      "status": "QUALIFIED",
+      "qualification_evidence": [
+        "https://github.com/pcvantol/forge/releases/tag/forge-v2.7.36",
+        "sha256:972ec735a15476bbb2d071d0af53e74d1f437fa828b360d53f6fc3b202ad6a35"
+      ]
+    },
+    {
+      "id": "IUR-LC-EP-CONTRACT",
+      "depends_on": [],
+      "status": "QUALIFIED",
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/pull/316"
+      ]
+    },
+    {
+      "id": "IUR-LC-EP-RELEASE",
+      "depends_on": [
+        "IUR-LC-EP-CONTRACT"
+      ],
+      "status": "QUALIFIED",
+      "qualification_evidence": [
+        "https://github.com/pcvantol/engineering-platform/releases/tag/engineering-platform-v2.3.103",
+        "sha256:92dbd447d1fac51aa0646a76c6330b19afffc4fa1b0ba6959fbd224d64d51235"
+      ]
+    },
+    {
+      "id": "IUR-LC-PRODUCER-REBASELINE",
+      "depends_on": [
+        "IUR-LC-FORGE-RELEASE",
+        "IUR-LC-EP-RELEASE"
+      ],
+      "status": "DESIGNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-LC-PRESERVED-INVENTORY",
+      "depends_on": [
+        "IUR-CONTRACT",
+        "IUR-LC-PRODUCER-REBASELINE"
+      ],
+      "status": "DESIGNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-LC-RESTORE-PLAN",
+      "depends_on": [
+        "IUR-LC-PRESERVED-INVENTORY"
+      ],
+      "status": "DESIGNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-LC-PURGE-PLAN",
+      "depends_on": [
+        "IUR-LC-PRESERVED-INVENTORY"
+      ],
+      "status": "DESIGNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-LC-HELPER-PRODUCT-ADAPTERS",
+      "depends_on": [
+        "IUR-LC-RESTORE-PLAN",
+        "IUR-LC-PURGE-PLAN"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-LC-PROVIDER-PAIRING-REVALIDATION",
+      "depends_on": [
+        "IUR-LC-HELPER-PRODUCT-ADAPTERS"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-LC-GUI-CLI-PARITY",
+      "depends_on": [
+        "IUR-LC-HELPER-PRODUCT-ADAPTERS",
+        "IUR-LC-PROVIDER-PAIRING-REVALIDATION"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-LC-PRODUCTION-COMPOSITION",
+      "depends_on": [
+        "IUR-LC-GUI-CLI-PARITY"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
       "id": "IUR-RELEASE",
       "depends_on": [
         "IUR-UX-Q",
         "IUR-COVERAGE",
-        "IUR-RUNNER"
+        "IUR-RUNNER",
+        "IUR-LC-PRODUCTION-COMPOSITION"
       ],
       "status": "PLANNED",
       "qualification_evidence": []
@@ -118,6 +248,24 @@
       "id": "IUR-INSTALL-Q",
       "depends_on": [
         "IUR-RELEASE"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-LC-FRESH-MAC-ACCEPTANCE",
+      "depends_on": [
+        "IUR-RELEASE",
+        "IUR-LC-PRODUCTION-COMPOSITION"
+      ],
+      "status": "PLANNED",
+      "qualification_evidence": []
+    },
+    {
+      "id": "IUR-LC-TERMINAL-HANDOFF",
+      "depends_on": [
+        "IUR-INSTALL-Q",
+        "IUR-LC-FRESH-MAC-ACCEPTANCE"
       ],
       "status": "PLANNED",
       "qualification_evidence": []
@@ -131,8 +279,32 @@
     "untrusted_pr_on_signer": false,
     "gui_signing_implies_runner_ready": false,
     "selection_is_uninstall_authority": false,
+    "preserve_falls_back_to_purge": false,
+    "preserved_auth_is_verified": false,
+    "preserved_instance_is_absent": false,
+    "legacy_remove_receipt_is_preserve_evidence": false,
+    "purge_mutates_unrelated_deployments": false,
     "screenshots_are_real_app_captures": true,
     "server_install_requires_user_login": false
+  },
+  "lifecycle": {
+    "states": [
+      "INSTALLED",
+      "UNINSTALLED_DATA_PRESERVED",
+      "PURGED_OR_ABSENT"
+    ],
+    "operations": [
+      "PRESERVE",
+      "PURGE",
+      "RESTORE"
+    ],
+    "safe_remove_default": "PRESERVE",
+    "purge_confirmation": "FRESH_EXACT_DEPLOYMENT_COMPONENT_INSTANCE",
+    "provider_state_after_preserve_or_restore": "PRESERVED_REQUIRES_REVERIFICATION",
+    "pairing_after_restore": "PRODUCT_OWNED_REVALIDATION_REQUIRED",
+    "identity_after_restore": "SAME_OPAQUE_PRODUCT_INSTANCE_ID",
+    "recovery": "SAME_OPERATION_ID_AND_REQUEST_DIGEST",
+    "gui_cli_helper_semantics": "IDENTICAL_REVIEWED_PLAN_AND_TERMINAL_RECEIPT"
   },
   "external_evidence_gates": {
     "IUR-RELEASE": [
@@ -141,6 +313,18 @@
     "IUR-INSTALL-Q": [
       "SELECTED_ROLE_PRODUCT_PROVISIONER_AND_HEALTH",
       "AUTHORIZED_CLEAN_TEST_HOST"
+    ],
+    "IUR-LC-PRODUCTION-COMPOSITION": [
+      "FORGE_2_7_36_EXACT_RELEASE_ARTIFACT_AND_RECEIPT",
+      "EP_2_3_103_EXACT_RELEASE_ARTIFACT_AND_RECEIPT"
+    ],
+    "IUR-LC-FRESH-MAC-ACCEPTANCE": [
+      "SIGNED_NOTARIZED_INSTALLER_RELEASE",
+      "AUTHORIZED_FRESH_MAC_TEST_DEPLOYMENT",
+      "PRODUCT_OWNED_LIFECYCLE_RECEIPTS_AND_READBACK"
+    ],
+    "IUR-LC-TERMINAL-HANDOFF": [
+      "ALL_FIRST_RELEASE_LIFECYCLE_GATES_PASS"
     ]
   },
   "owner_routes": {
@@ -197,6 +381,56 @@
     {
       "id": "IUR-T10",
       "requirement": "Real clean system-service install survives reboot/logout with same identity",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T11",
+      "requirement": "Forge preserve then relaunch/reboot restore retains exact instance/runtime/installation identity and data/config",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T12",
+      "requirement": "EP preserve then relaunch/reboot restore retains exact instance and CENTRAL/data/config with inactive service until provider repair",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T13",
+      "requirement": "Paired Forge and EP restore requires independent provider reverification, pairing revalidation and both readiness results",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T14",
+      "requirement": "Explicit purge is exact-instance destructive, writes owning tombstone and permanently rejects restore",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T15",
+      "requirement": "Install after purge is clean/new state with no prior data, provider or pairing resurrection",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T16",
+      "requirement": "Lifecycle crash, reboot, lost response and terminal replay resume the same operation without duplicate mutation",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T17",
+      "requirement": "Wrong instance, stale plan, changed request, tamper, symlink, foreign root, artifact/source/schema drift and concurrency fail closed",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T18",
+      "requirement": "GUI and CLI use identical reviewed lifecycle plan and receipt while purge requires fresh exact-target destructive confirmation",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T19",
+      "requirement": "Sibling instances, unrelated deployments, shared provider accounts and user-owned EP Project Agents remain unaffected",
+      "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T20",
+      "requirement": "Partial service, provider or pairing failure remains recoverable and cannot prematurely commit installed/ready state",
       "status": "PLANNED"
     }
   ]
