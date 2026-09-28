@@ -167,13 +167,17 @@ struct MacOSManagedInstallerProductWorkerRunner:
         let lifecycleRequest = try? ManagedInstallerPreservedLifecycleRequest.decodeJSON(
             canonicalRequest
         )
+        let preserveRecovery = try? ManagedInstallerPreserveRecoveryRequest.decodeJSON(
+            canonicalRequest
+        )
         guard !canonicalRequest.isEmpty,
               canonicalRequest.count <= ManagedInstallerProductOperationRequest.maximumBytes,
               productRequest?.canonicalJSONData() == canonicalRequest
                 || removalRequest?.canonicalJSONData() == canonicalRequest
                 || reviewIntent?.canonicalJSONData() == canonicalRequest
                 || lifecycleIntent?.canonicalJSONData() == canonicalRequest
-                || lifecycleRequest?.canonicalJSONData() == canonicalRequest,
+                || lifecycleRequest?.canonicalJSONData() == canonicalRequest
+                || preserveRecovery?.canonicalJSONData() == canonicalRequest,
               secureInterpreter(invocation),
               secureWorker(invocation) else {
             return .failure(.rejected)
@@ -210,7 +214,8 @@ struct MacOSManagedInstallerProductWorkerRunner:
                 ManagedInstallerProductOperationReceipt.maximumBytes,
                 ManagedInstallerProductRemovalReceipt.maximumBytes,
                 ManagedInstallerPreservedLifecycleReviewProposal.maximumBytes,
-                ManagedInstallerPreservedLifecycleReceipt.maximumBytes
+                ManagedInstallerPreservedLifecycleReceipt.maximumBytes,
+                ManagedInstallerPreserveRecoveryReceipt.maximumBytes
             ),
             timeoutNanoseconds: invocation.timeoutNanoseconds
         )
