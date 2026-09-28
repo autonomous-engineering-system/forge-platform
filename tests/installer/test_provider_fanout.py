@@ -98,6 +98,38 @@ class ProviderFanoutTests(unittest.TestCase):
                 targets={forge.key: Target(), ep.key: Target(verified=False)},
             ).execute((forge, ep))
 
+    def test_missing_later_target_blocks_before_any_authentication_or_provisioning(self) -> None:
+        forge = req("codex", "forge-runtime", "forge-prod")
+        ep = req("codex", "engineering-platform-server", "ep-prod")
+        github = req("github-cli", "engineering-platform-server", "ep-prod")
+        codex_auth, github_auth = Authenticator(), Authenticator()
+        forge_target, ep_target = Target(), Target()
+        coordinator = ProviderFanoutCoordinator(
+            authenticators={"codex": codex_auth, "github-cli": github_auth},
+            targets={forge.key: forge_target, ep.key: ep_target},
+        )
+        with self.assertRaisesRegex(ProviderFanoutError, "no provisioner"):
+            coordinator.execute((forge, ep, github))
+        self.assertEqual(codex_auth.calls, [])
+        self.assertEqual(github_auth.calls, [])
+        self.assertEqual(forge_target.calls, 0)
+        self.assertEqual(ep_target.calls, 0)
+
+    def test_missing_later_strategy_blocks_before_first_provider_ceremony(self) -> None:
+        codex = req("codex", "forge-runtime", "forge-prod")
+        github = req("github-cli", "engineering-platform-server", "ep-prod")
+        codex_auth = Authenticator()
+        codex_target, github_target = Target(), Target()
+        coordinator = ProviderFanoutCoordinator(
+            authenticators={"codex": codex_auth},
+            targets={codex.key: codex_target, github.key: github_target},
+        )
+        with self.assertRaisesRegex(ProviderFanoutError, "no supported"):
+            coordinator.execute((codex, github))
+        self.assertEqual(codex_auth.calls, [])
+        self.assertEqual(codex_target.calls, 0)
+        self.assertEqual(github_target.calls, 0)
+
     def test_mismatched_target_readback_and_missing_strategy_fail_closed(self) -> None:
         ep = req("codex", "engineering-platform-server", "ep-prod")
         with self.assertRaisesRegex(ProviderFanoutError, "mismatched"):

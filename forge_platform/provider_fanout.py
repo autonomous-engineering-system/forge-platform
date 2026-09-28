@@ -123,21 +123,33 @@ class ProviderFanoutCoordinator:
             observed_keys.add(requirement.key)
             by_provider.setdefault(requirement.identity, []).append(requirement)
 
+        # Check the complete selected topology before any human ceremony or
+        # target provisioning can begin. A missing later target must not leave
+        # an earlier provider partially bootstrapped.
+        for provider in sorted(by_provider):
+            if not callable(getattr(self.authenticators.get(provider), "authenticate", None)):
+                raise ProviderFanoutError(
+                    f"provider {provider} has no supported human authentication strategy"
+                )
+            for requirement in by_provider[provider]:
+                if not callable(getattr(
+                    self.targets.get(requirement.key), "provision_and_verify", None
+                )):
+                    raise ProviderFanoutError(
+                        f"provider target {requirement.key} has no provisioner"
+                    )
+
         receipts: list[ProviderFanoutReceipt] = []
         for provider in sorted(by_provider):
             group = tuple(sorted(by_provider[provider], key=lambda item: item.key))
-            authenticator = self.authenticators.get(provider)
-            if authenticator is None:
-                raise ProviderFanoutError(f"provider {provider} has no supported human authentication strategy")
+            authenticator = self.authenticators[provider]
             bootstrap = authenticator.authenticate(provider, group)
             if not isinstance(bootstrap, ProviderBootstrapHandle) or bootstrap.provider != provider:
                 raise ProviderFanoutError("provider authenticator returned an invalid bootstrap handle")
 
             target_receipts: list[ProviderTargetReceipt] = []
             for requirement in group:
-                provisioner = self.targets.get(requirement.key)
-                if provisioner is None:
-                    raise ProviderFanoutError(f"provider target {requirement.key} has no provisioner")
+                provisioner = self.targets[requirement.key]
                 readback = provisioner.provision_and_verify(requirement, bootstrap)
                 if not isinstance(readback, ProviderReadback) or readback.key != requirement.key:
                     raise ProviderFanoutError("provider target returned mismatched readback")
