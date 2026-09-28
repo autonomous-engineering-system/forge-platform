@@ -248,6 +248,12 @@ returns `READY`. An exact existing slot is idempotent; any existing, returned
 or read-back drift fails closed. The protocol does not itself provide the
 privileged implementation or authorize a live installation.
 
+The helper retains the exact admitted archive in a private digest-named cache.
+After staging discard or reboot, slot readback re-inspects those cached bytes
+and every extracted member independently. A slot whose cache is missing or
+corrupt is ambiguous and fails closed; an absent cache with an absent slot is
+still an uninstalled state.
+
 The native preparation coordinator composes these existing boundaries for one
 already verified composition session and one deployment target. It derives a
 deterministic operation identity from the session, composition, manifest,
