@@ -17,6 +17,7 @@ public struct ManagedInstallerProviderRuntimePreparationReceipt:
     }
 
     public let operationID: String
+    public let deploymentID: String
     public let providerTargetID: ProviderTargetID
     public let provider: ProviderID
     public let runtime: ProviderRuntimeRequirement
@@ -29,12 +30,14 @@ public struct ManagedInstallerProviderRuntimePreparationReceipt:
 
     public init(
         operationID: String,
+        deploymentID: String,
         requirement: ProviderRequirement,
         stagedArchive: ManagedInstallerProviderStagedArchive,
         inspection: ManagedInstallerProviderRuntimeArchiveInspection,
         mutation: ManagedInstallerProviderRuntimeMutationReceipt
     ) throws {
         guard ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+              (try? ManagedDeploymentTarget(id: deploymentID, exists: false)) != nil,
               requirement.credentialScope == .component,
               requirement.ownerComponent != nil,
               requirement.targetIdentity != nil,
@@ -51,6 +54,7 @@ public struct ManagedInstallerProviderRuntimePreparationReceipt:
         let request: ManagedInstallerProviderRuntimeMutationRequest
         do {
             request = try ManagedInstallerProviderRuntimeMutationRequest(
+                deploymentID: deploymentID,
                 stagedArchive: stagedArchive,
                 requirement: requirement,
                 inspection: inspection
@@ -62,6 +66,7 @@ public struct ManagedInstallerProviderRuntimePreparationReceipt:
             throw ManagedInstallerProviderRuntimePreparationFailure.invalidRequest
         }
         self.operationID = operationID
+        self.deploymentID = deploymentID
         providerTargetID = requirement.id
         provider = requirement.provider
         self.runtime = runtime
@@ -76,6 +81,7 @@ public struct ManagedInstallerProviderRuntimePreparationReceipt:
 
 public protocol ManagedInstallerProviderRuntimeEnsuring: Sendable {
     func ensureProviderRuntime(
+        deploymentID: String,
         stagedArchive: ManagedInstallerProviderStagedArchive,
         requirement: ProviderRequirement,
         inspection: ManagedInstallerProviderRuntimeArchiveInspection
@@ -114,12 +120,14 @@ public struct ManagedInstallerProviderRuntimePreparationCoordinator: Sendable {
 
     public func prepareProviderRuntime(
         operationID: String,
+        deploymentID: String,
         requirement: ProviderRequirement
     ) async -> Result<
         ManagedInstallerProviderRuntimePreparationReceipt,
         ManagedInstallerProviderRuntimePreparationFailure
     > {
         guard ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+              (try? ManagedDeploymentTarget(id: deploymentID, exists: false)) != nil,
               Self.isExactComponentRequirement(requirement) else {
             return .failure(.invalidRequest)
         }
@@ -132,6 +140,7 @@ public struct ManagedInstallerProviderRuntimePreparationCoordinator: Sendable {
 
         let result = await prepareWithLeaseHeld(
             operationID: operationID,
+            deploymentID: deploymentID,
             requirement: requirement
         )
         guard case .success = lease.releaseExclusiveManagedInstallerProviderOperationLock() else {
@@ -142,6 +151,7 @@ public struct ManagedInstallerProviderRuntimePreparationCoordinator: Sendable {
 
     private func prepareWithLeaseHeld(
         operationID: String,
+        deploymentID: String,
         requirement: ProviderRequirement
     ) async -> Result<
         ManagedInstallerProviderRuntimePreparationReceipt,
@@ -173,6 +183,7 @@ public struct ManagedInstallerProviderRuntimePreparationCoordinator: Sendable {
             terminal = await prepareStagedRuntime(
                 staged,
                 operationID: operationID,
+                deploymentID: deploymentID,
                 requirement: requirement
             )
         }
@@ -186,6 +197,7 @@ public struct ManagedInstallerProviderRuntimePreparationCoordinator: Sendable {
     private func prepareStagedRuntime(
         _ staged: ManagedInstallerProviderStagedArchive,
         operationID: String,
+        deploymentID: String,
         requirement: ProviderRequirement
     ) async -> Result<
         ManagedInstallerProviderRuntimePreparationReceipt,
@@ -199,6 +211,7 @@ public struct ManagedInstallerProviderRuntimePreparationCoordinator: Sendable {
 
         let mutation: ManagedInstallerProviderRuntimeMutationReceipt
         switch await runtimeCoordinator.ensureProviderRuntime(
+            deploymentID: deploymentID,
             stagedArchive: staged,
             requirement: requirement,
             inspection: inspection
@@ -210,6 +223,7 @@ public struct ManagedInstallerProviderRuntimePreparationCoordinator: Sendable {
         do {
             return .success(try ManagedInstallerProviderRuntimePreparationReceipt(
                 operationID: operationID,
+                deploymentID: deploymentID,
                 requirement: requirement,
                 stagedArchive: staged,
                 inspection: inspection,

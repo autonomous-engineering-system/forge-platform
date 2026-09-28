@@ -9,6 +9,7 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
             .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
         let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-a",
             stagedArchive: fixture.staged, requirement: fixture.requirement,
             inspection: inspection
         )
@@ -20,12 +21,13 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         XCTAssertEqual(chmod(root.path, 0o700), 0)
         let staging = ProviderArchiveStaging(fixture: fixture)
         let publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
-            slotsRoot: root, expectedOwner: geteuid()
+            slotsRoot: root, expectedDeploymentID: "deployment-a", expectedOwner: geteuid()
         )
         let adapter = MacOSManagedInstallerProviderRuntimeSlotAdapter(
             requirement: fixture.requirement, staging: staging, publisher: publisher
         )
         let installed = try providerSlotReadback(await adapter.installRuntimeSlot(request))
+        XCTAssertEqual(installed.deploymentID, "deployment-a")
         XCTAssertEqual(installed.providerTargetID, fixture.requirement.id)
         let stagingReads = await staging.readCount()
         XCTAssertEqual(stagingReads, 1)
@@ -42,6 +44,7 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
             .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
         let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-a",
             stagedArchive: fixture.staged, requirement: fixture.requirement,
             inspection: inspection
         )
@@ -52,7 +55,7 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         XCTAssertEqual(chmod(root.path, 0o700), 0)
         let publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
-            slotsRoot: root, expectedOwner: geteuid()
+            slotsRoot: root, expectedDeploymentID: "deployment-a", expectedOwner: geteuid()
         )
         for drift in ProviderArchiveStaging.Drift.allCases {
             let adapter = MacOSManagedInstallerProviderRuntimeSlotAdapter(
@@ -87,6 +90,7 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
             let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
                 .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
             let request = try ManagedInstallerProviderRuntimeMutationRequest(
+                deploymentID: "deployment-a",
                 stagedArchive: fixture.staged, requirement: fixture.requirement,
                 inspection: inspection
             )
@@ -96,7 +100,7 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
             defer { try? FileManager.default.removeItem(at: root) }
             XCTAssertEqual(chmod(root.path, 0o700), 0)
             let publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
-                slotsRoot: root, expectedOwner: geteuid()
+                slotsRoot: root, expectedDeploymentID: "deployment-a", expectedOwner: geteuid()
             )
             XCTAssertNil(try providerSlotReadback(
                 publisher.readPublishedSlot(requirement: fixture.requirement,
@@ -134,6 +138,7 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
             .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
         let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-a",
             stagedArchive: fixture.staged, requirement: fixture.requirement,
             inspection: inspection
         )
@@ -144,7 +149,7 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         XCTAssertEqual(chmod(root.path, 0o700), 0)
         let publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
-            slotsRoot: root, expectedOwner: geteuid()
+            slotsRoot: root, expectedDeploymentID: "deployment-a", expectedOwner: geteuid()
         )
         _ = try providerSlotReadback(publisher.publish(
             archive: fixture.archive, requirement: fixture.requirement, request: request
@@ -173,6 +178,7 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
             .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
         let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-a",
             stagedArchive: fixture.staged, requirement: fixture.requirement,
             inspection: inspection
         )
@@ -183,13 +189,25 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         XCTAssertEqual(chmod(root.path, 0o700), 0)
         let publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
-            slotsRoot: root, expectedOwner: geteuid()
+            slotsRoot: root, expectedDeploymentID: "deployment-a", expectedOwner: geteuid()
         )
         XCTAssertEqual(publisher.publish(
             archive: fixture.archive, requirement: other.requirement, request: request
         ).failure, .invalidRequest)
         XCTAssertEqual(publisher.readPublishedSlot(
             requirement: other.requirement, request: request
+        ).failure, .invalidRequest)
+        let foreignDeployment = try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-b",
+            stagedArchive: fixture.staged, requirement: fixture.requirement,
+            inspection: inspection
+        )
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.archive, requirement: fixture.requirement,
+            request: foreignDeployment
+        ).failure, .invalidRequest)
+        XCTAssertEqual(publisher.readPublishedSlot(
+            requirement: fixture.requirement, request: foreignDeployment
         ).failure, .invalidRequest)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
         XCTAssertEqual(chmod(root.path, 0o755), 0)

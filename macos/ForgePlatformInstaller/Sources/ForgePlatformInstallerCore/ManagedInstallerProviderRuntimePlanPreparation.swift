@@ -66,6 +66,7 @@ public struct ManagedInstallerProviderRuntimePlanPreparationReceipt:
             stablePlan: stablePlan,
             requirement: requirement
         )
+            && receipt.deploymentID == stablePlan.deployment.id
             && receipt.providerTargetID == requirement.id
             && receipt.provider == requirement.provider
             && receipt.runtime == requirement.runtime
@@ -95,6 +96,7 @@ public struct ManagedInstallerProviderRuntimePlanPreparationReceipt:
 public protocol ManagedInstallerProviderRuntimePreparing: Sendable {
     func prepareProviderRuntime(
         operationID: String,
+        deploymentID: String,
         requirement: ProviderRequirement
     ) async -> Result<
         ManagedInstallerProviderRuntimePreparationReceipt,
@@ -143,6 +145,7 @@ public struct ManagedInstallerProviderRuntimePlanPreparationCoordinator: Sendabl
             }
             switch await providerPreparation.prepareProviderRuntime(
                 operationID: operationID,
+                deploymentID: stablePlan.deployment.id,
                 requirement: requirement
             ) {
             case .success(let receipt):

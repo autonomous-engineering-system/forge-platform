@@ -3,6 +3,7 @@ import Foundation
 
 struct ManagedInstallerProviderRuntimeSlotReadback: Equatable, Sendable {
     let operationID: String
+    let deploymentID: String
     let providerTargetID: ProviderTargetID
     let runtimeSlotIdentity: String
     let archiveSHA256: String
@@ -16,10 +17,12 @@ struct ManagedInstallerProviderRuntimeSlotReadback: Equatable, Sendable {
 /// every installed file without depending on the discarded staging operation.
 struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
     private let slotsRoot: URL
+    private let expectedDeploymentID: String
     private let expectedOwner: uid_t
 
-    init(slotsRoot: URL, expectedOwner: uid_t = 0) {
+    init(slotsRoot: URL, expectedDeploymentID: String, expectedOwner: uid_t = 0) {
         self.slotsRoot = slotsRoot
+        self.expectedDeploymentID = expectedDeploymentID
         self.expectedOwner = expectedOwner
     }
 
@@ -131,16 +134,17 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         requirement: ProviderRequirement,
         request: ManagedInstallerProviderRuntimeMutationRequest
     ) -> Bool {
-        requirement.id == request.providerTargetID
+        request.deploymentID == expectedDeploymentID
+            && requirement.id == request.providerTargetID
             && requirement.provider == request.provider
             && requirement.runtime == request.runtime
             && request.runtimeSlotIdentity
                 == ManagedInstallerProviderRuntimeMutationRequest.runtimeSlotIdentity(
-                    for: requirement
+                    for: requirement, deploymentID: expectedDeploymentID
                 )
             && request.providerHomeIdentity
                 == ManagedInstallerProviderRuntimeMutationRequest.providerHomeIdentity(
-                    for: requirement
+                    for: requirement, deploymentID: expectedDeploymentID
                 )
     }
 
@@ -217,6 +221,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
             .installedMembers(inventory.members, requirement: requirement))
         return ManagedInstallerProviderRuntimeSlotReadback(
             operationID: request.operationID,
+            deploymentID: request.deploymentID,
             providerTargetID: request.providerTargetID,
             runtimeSlotIdentity: request.runtimeSlotIdentity,
             archiveSHA256: request.runtime.artifactSHA256,
