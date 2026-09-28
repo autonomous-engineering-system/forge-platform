@@ -87,6 +87,41 @@ def route(*, forge="forge-new", ep="ep-new", pending_ep=False, degrade_ep=False)
 
 
 class ManagedProductOperationDispatchTests(unittest.TestCase):
+    def test_single_component_route_is_exact_and_dispatch_stays_fail_closed(self) -> None:
+        candidate = composition_manifest(
+            composition_id="forge-only", forge_version="2.7.35",
+            forge_digest=FORGE_DIGEST, ep_version="2.3.102",
+            ep_digest=EP_DIGEST, components=("forge-runtime",),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            registry = ManagedDeploymentRegistry(root / "registry")
+            admitted = admit_native_product_operation(
+                decoded(request_payload(candidate, installed=None, exists=False)),
+                manifest=candidate, registry=registry,
+                current_installer_release=installer_release(),
+            )
+            selected = ResolvedManagedProductRoute(
+                "forge-only-instance", None,
+                {"forge-runtime": Adapter("forge-runtime", "forge-only-instance")},
+                None,
+            )
+            resolver = PinnedManagedProductRouteResolver({"production": selected})
+            self.assertIs(resolver.resolve(admitted), selected)
+            with self.assertRaisesRegex(
+                ManagedProductOperationDispatchError, "component topology"
+            ):
+                PinnedManagedProductRouteResolver({"production": route()}).resolve(admitted)
+            dispatcher = ManagedProductOperationDispatcher(
+                coordinator=coordinator(root, registry), resolver=resolver,
+            )
+            with self.assertRaisesRegex(
+                ManagedProductOperationDispatchError, "not yet available"
+            ):
+                dispatcher.dispatch(admitted)
+            self.assertIsNone(registry.load("production"))
+            self.assertFalse((root / "operations").exists())
+
     def test_update_component_request_binds_reviewed_product_assessment(self) -> None:
         installed, candidate = manifests()
         native = decoded(request_payload(candidate, installed=installed))
@@ -277,7 +312,7 @@ class ManagedProductOperationDispatchTests(unittest.TestCase):
                 valid.adapters,
                 valid.pairing_executor,
             )
-        with self.assertRaisesRegex(ValueError, "exact Forge and EP"):
+        with self.assertRaisesRegex(ValueError, "inconsistent component targets"):
             ResolvedManagedProductRoute(
                 "forge-new",
                 "ep-new",

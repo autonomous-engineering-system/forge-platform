@@ -60,29 +60,38 @@ class ManagedProductOperationDispatchError(RuntimeError):
 
 @dataclass(frozen=True)
 class ResolvedManagedProductRoute:
-    forge_instance_id: str
-    engineering_platform_instance_id: str
+    forge_instance_id: str | None
+    engineering_platform_instance_id: str | None
     adapters: Mapping[str, ProductOperationAdapter]
-    pairing_executor: ForgeEPPairingExecutor
+    pairing_executor: ForgeEPPairingExecutor | None
     ep_consumer_revoker: EPConsumerRevocationAdapter | None = None
 
     def __post_init__(self) -> None:
         adapters = MappingProxyType(dict(self.adapters))
         object.__setattr__(self, "adapters", adapters)
         # ManagedComponentBinding owns the common safe opaque-ID grammar.
-        ManagedComponentBinding(FORGE_COMPONENT, self.forge_instance_id, "receipt:route")
-        ManagedComponentBinding(
-            EP_COMPONENT, self.engineering_platform_instance_id, "receipt:route"
-        )
-        if self.forge_instance_id == self.engineering_platform_instance_id:
+        identities = {
+            component: instance for component, instance in (
+                (FORGE_COMPONENT, self.forge_instance_id),
+                (EP_COMPONENT, self.engineering_platform_instance_id),
+            ) if instance is not None
+        }
+        if not identities or set(adapters) != set(identities):
+            raise ValueError("resolved product route has inconsistent component targets")
+        for component, instance in identities.items():
+            ManagedComponentBinding(component, instance, "receipt:route")
+        if len(set(identities.values())) != len(identities):
             raise ValueError("Forge and EP routes require distinct product instance identities")
-        if set(adapters) != set(_COMPONENTS):
-            raise ValueError("resolved product route requires exact Forge and EP adapters")
-        if any(not _is_adapter(adapters[component]) for component in _COMPONENTS):
+        if any(not _is_adapter(adapters[component]) for component in identities):
             raise ValueError("resolved product route contains an invalid adapter")
-        if not _is_pairer(self.pairing_executor):
-            raise ValueError("resolved product route requires a pairing executor")
+        if len(identities) == 2:
+            if not _is_pairer(self.pairing_executor):
+                raise ValueError("paired product route requires a pairing executor")
+        elif self.pairing_executor is not None:
+            raise ValueError("single-component route cannot carry pairing authority")
         if self.ep_consumer_revoker is not None:
+            if len(identities) != 2:
+                raise ValueError("single-component route cannot carry EP consumer revocation")
             revoker = self.ep_consumer_revoker
             binding = getattr(self.pairing_executor, "binding", None)
             if (
@@ -126,8 +135,11 @@ class PinnedManagedProductRouteResolver:
             if not isinstance(route, ResolvedManagedProductRoute):
                 raise TypeError("helper-owned product route is invalid")
             claims = {
-                (FORGE_COMPONENT, route.forge_instance_id),
-                (EP_COMPONENT, route.engineering_platform_instance_id),
+                (component, instance)
+                for component, instance in (
+                    (FORGE_COMPONENT, route.forge_instance_id),
+                    (EP_COMPONENT, route.engineering_platform_instance_id),
+                ) if instance is not None
             }
             if claimed_instances.intersection(claims):
                 raise ValueError("helper-owned product routes reuse a product instance")
@@ -144,16 +156,27 @@ class PinnedManagedProductRouteResolver:
             raise ManagedProductOperationDispatchError(
                 "helper-owned product route is unavailable"
             )
+        if (
+            {component.identity for component in admitted.manifest.components}
+                != set(route.adapters)
+            or {component.identity for component in admitted.request.components}
+                != set(route.adapters)
+        ):
+            raise ManagedProductOperationDispatchError(
+                "helper-owned product route conflicts with reviewed component topology"
+            )
         current = admitted.current_deployment
         if current is not None:
             by_component = current.by_component
-            forge = by_component.get(FORGE_COMPONENT)
-            ep = by_component.get(EP_COMPONENT)
-            if (
-                forge is None
-                or ep is None
-                or forge.instance_id != route.forge_instance_id
-                or ep.instance_id != route.engineering_platform_instance_id
+            expected = {
+                component: instance for component, instance in (
+                    (FORGE_COMPONENT, route.forge_instance_id),
+                    (EP_COMPONENT, route.engineering_platform_instance_id),
+                ) if instance is not None
+            }
+            if set(by_component) != set(expected) or any(
+                by_component[component].instance_id != instance
+                for component, instance in expected.items()
             ):
                 raise ManagedProductOperationDispatchError(
                     "helper-owned product route conflicts with existing topology"
@@ -222,6 +245,10 @@ class ManagedProductOperationDispatcher:
         route = self.resolver.resolve(admitted)
         if not isinstance(route, ResolvedManagedProductRoute):
             raise ManagedProductOperationDispatchError("product resolver returned an invalid route")
+        if set(route.adapters) != set(_COMPONENTS) or route.pairing_executor is None:
+            raise ManagedProductOperationDispatchError(
+                "single-component durable product execution is not yet available"
+            )
         request = admitted.request
         current = admitted.current_deployment
         observed = self.coordinator.registry.load(request.deployment_id)
