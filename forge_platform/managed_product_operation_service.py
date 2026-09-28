@@ -41,6 +41,7 @@ from .managed_install_flow import ManagedForgeEPInstallationCoordinator
 from .released_product_routes import (
     ReleasedManagedProductRouteBuilder,
     ReleasedManagedProductRouteConfiguration,
+    ReleasedManagedSingleProductRouteConfiguration,
 )
 from .universal_installer import (
     CompositionManifest,
@@ -471,7 +472,10 @@ class ManagedProductOperationHelperBuilder:
         candidate_selections: Iterable[VerifiedCompositionSelection],
         installed_selections: Iterable[VerifiedCompositionSelection] = (),
         coordinator: ManagedForgeEPInstallationCoordinator,
-        route_configurations: Iterable[ReleasedManagedProductRouteConfiguration],
+        route_configurations: Iterable[
+            ReleasedManagedProductRouteConfiguration
+            | ReleasedManagedSingleProductRouteConfiguration
+        ],
     ) -> ManagedProductOperationHelperService:
         """Construct concrete adapters and the closed helper service together."""
 
@@ -497,7 +501,10 @@ class ManagedProductOperationHelperBuilder:
         candidate_manifests: Iterable[CompositionManifest],
         installed_manifests: Iterable[CompositionManifest] = (),
         coordinator: ManagedForgeEPInstallationCoordinator,
-        route_configurations: Iterable[ReleasedManagedProductRouteConfiguration],
+        route_configurations: Iterable[
+            ReleasedManagedProductRouteConfiguration
+            | ReleasedManagedSingleProductRouteConfiguration
+        ],
     ) -> ManagedProductOperationHelperService:
         """Compose a worker service from one immutable helper-owned snapshot.
 

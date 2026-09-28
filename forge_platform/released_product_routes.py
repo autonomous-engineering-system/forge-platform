@@ -121,13 +121,79 @@ class ReleasedManagedProductRouteConfiguration:
         object.__setattr__(self, "staged_artifacts", MappingProxyType(artifacts))
 
 
+@dataclass(frozen=True)
+class ReleasedManagedSingleProductRouteConfiguration:
+    """Sealed route for exactly one product, with no pairing authority."""
+
+    deployment_id: str
+    component_identity: str
+    executable: Path
+    target: ForgeServerTarget | EPSystemInstanceTarget
+    installed_artifact: QualifiedArtifact
+    staged_artifacts: Mapping[str, Path]
+    engineering_platform_product_root: Path | None = None
+    launch_daemons_directory: Path = Path("/Library/LaunchDaemons")
+    forge_update_binding: ForgeUpdateBinding | None = None
+    forge_lifecycle_executable: Path | None = None
+    forge_uninstall_binding: ForgeUninstallBinding | None = None
+
+    def __post_init__(self) -> None:
+        ManagedComponentBinding(FORGE_COMPONENT, self.deployment_id, "receipt:route")
+        if self.component_identity == FORGE_COMPONENT:
+            if not isinstance(self.target, ForgeServerTarget):
+                raise TypeError("single Forge route requires an exact Forge target")
+            if self.engineering_platform_product_root is not None:
+                raise ValueError("single Forge route cannot carry an EP product root")
+            if self.forge_uninstall_binding is not None and (
+                not isinstance(self.forge_uninstall_binding, ForgeUninstallBinding)
+                or self.forge_uninstall_binding.runtime_id != self.target.instance_id
+            ):
+                raise ValueError("single Forge uninstall targets a different instance")
+            if self.forge_update_binding is not None and not isinstance(
+                self.forge_update_binding, ForgeUpdateBinding
+            ):
+                raise TypeError("single Forge update binding is invalid")
+        elif self.component_identity == EP_COMPONENT:
+            if not isinstance(self.target, EPSystemInstanceTarget):
+                raise TypeError("single EP route requires an exact EP target")
+            if (
+                not isinstance(self.engineering_platform_product_root, Path)
+                or not self.engineering_platform_product_root.is_absolute()
+            ):
+                raise ValueError("single EP route requires an absolute product root")
+            if any((
+                self.forge_update_binding,
+                self.forge_lifecycle_executable,
+                self.forge_uninstall_binding,
+            )):
+                raise ValueError("single EP route cannot carry Forge lifecycle authority")
+        else:
+            raise ValueError("single product route component is unsupported")
+        if not isinstance(self.installed_artifact, QualifiedArtifact):
+            raise TypeError("single product route requires an exact installed artifact")
+        for path in (
+            self.executable, self.launch_daemons_directory,
+            self.forge_lifecycle_executable,
+        ):
+            if path is not None and (not isinstance(path, Path) or not path.is_absolute()):
+                raise ValueError("single product route executable and service paths must be absolute")
+        staged = dict(self.staged_artifacts)
+        if not staged or any(
+            _DIGEST.fullmatch(digest) is None
+            or not isinstance(path, Path) or not path.is_absolute()
+            for digest, path in staged.items()
+        ) or len(set(staged.values())) != len(staged):
+            raise ValueError("single product route staged artifacts are invalid or ambiguous")
+        object.__setattr__(self, "staged_artifacts", MappingProxyType(staged))
+
+
 class ReleasedManagedProductRouteBuilder:
     """Construct concrete routes only for exact catalog-authorized artifacts."""
 
     @staticmethod
     def build(
         *,
-        configurations: Iterable[ReleasedManagedProductRouteConfiguration],
+        configurations: Iterable[ReleasedManagedProductRouteConfiguration | ReleasedManagedSingleProductRouteConfiguration],
         candidate_selections: Iterable[VerifiedCompositionSelection],
         installed_selections: Iterable[VerifiedCompositionSelection] = (),
     ) -> Mapping[str, ResolvedManagedProductRoute]:
@@ -135,7 +201,7 @@ class ReleasedManagedProductRouteBuilder:
         candidates = tuple(candidate_selections)
         installed = tuple(installed_selections)
         if not configs or any(
-            not isinstance(value, ReleasedManagedProductRouteConfiguration)
+            not isinstance(value, (ReleasedManagedProductRouteConfiguration, ReleasedManagedSingleProductRouteConfiguration))
             for value in configs
         ):
             raise TypeError("released product route configurations are required")
@@ -158,7 +224,7 @@ class ReleasedManagedProductRouteBuilder:
     @staticmethod
     def build_from_manifests(
         *,
-        configurations: Iterable[ReleasedManagedProductRouteConfiguration],
+        configurations: Iterable[ReleasedManagedProductRouteConfiguration | ReleasedManagedSingleProductRouteConfiguration],
         candidate_manifests: Iterable[CompositionManifest],
         installed_manifests: Iterable[CompositionManifest] = (),
     ) -> Mapping[str, ResolvedManagedProductRoute]:
@@ -168,7 +234,7 @@ class ReleasedManagedProductRouteBuilder:
         candidates = tuple(candidate_manifests)
         installed = tuple(installed_manifests)
         if not configs or any(
-            not isinstance(value, ReleasedManagedProductRouteConfiguration)
+            not isinstance(value, (ReleasedManagedProductRouteConfiguration, ReleasedManagedSingleProductRouteConfiguration))
             for value in configs
         ):
             raise TypeError("released product route configurations are required")
@@ -192,6 +258,11 @@ class ReleasedManagedProductRouteBuilder:
         routes: dict[str, ResolvedManagedProductRoute] = {}
         claimed_scopes: set[EPConsumerScope] = set()
         for config in configs:
+            if isinstance(config, ReleasedManagedSingleProductRouteConfiguration):
+                routes[config.deployment_id] = _build_single_route(
+                    config, candidates, authorized
+                )
+                continue
             scope = EPConsumerScope(
                 config.pairing_binding.consumer_id, config.pairing_binding.project_id
             )
@@ -260,12 +331,58 @@ def _authorized_artifacts(
             if existing is not None and existing != candidate:
                 raise ValueError("catalog artifact digest authority is ambiguous")
             authorized[component.artifact.digest] = candidate
-    if {identity for identity, _artifact in authorized.values()} != {
-        FORGE_COMPONENT,
-        EP_COMPONENT,
-    }:
-        raise ValueError("catalog authority lacks exact Forge and EP artifacts")
+    if not authorized:
+        raise ValueError("catalog authority lacks supported product artifacts")
     return authorized
+
+
+def _build_single_route(
+    config: ReleasedManagedSingleProductRouteConfiguration,
+    candidates: tuple[CompositionManifest, ...],
+    authorized: Mapping[str, tuple[str, QualifiedArtifact]],
+) -> ResolvedManagedProductRoute:
+    component = config.component_identity
+    required = {
+        item.artifact.digest
+        for manifest in candidates for item in manifest.components
+        if item.identity == component
+    }
+    staged = set(config.staged_artifacts)
+    if (
+        not required or not required.issubset(staged)
+        or any(authorized.get(digest, (None,))[0] != component for digest in staged)
+        or authorized.get(config.installed_artifact.digest)
+            != (component, config.installed_artifact)
+    ):
+        raise ValueError("single product route artifact lacks exact catalog authority")
+    if component == FORGE_COMPONENT:
+        assert isinstance(config.target, ForgeServerTarget)
+        adapter = ForgeServerProductAdapter(
+            forge_executable=config.executable,
+            target=config.target,
+            installed_artifact=config.installed_artifact,
+            staged_artifacts=config.staged_artifacts,
+            supervisor=MacOSForgeLaunchDaemonSupervisor(
+                config.launch_daemons_directory
+            ),
+            update_binding=config.forge_update_binding,
+            lifecycle_executable=config.forge_lifecycle_executable,
+            uninstall_binding=config.forge_uninstall_binding,
+        )
+        return ResolvedManagedProductRoute(
+            config.target.instance_id, None, {component: adapter}, None
+        )
+    assert isinstance(config.target, EPSystemInstanceTarget)
+    assert config.engineering_platform_product_root is not None
+    adapter = EngineeringPlatformSystemProvisionerAdapter(
+        provisioner_executable=config.executable,
+        product_root=config.engineering_platform_product_root,
+        target=config.target,
+        staged_artifacts=config.staged_artifacts,
+    )
+    return ResolvedManagedProductRoute(
+        None, config.target.instance_id, {component: adapter}, None
+    )
 
 
 def _require_local_ep_endpoint(endpoint: str, bind_port: int) -> None:
