@@ -15,6 +15,11 @@ struct ManagedInstallerForgeUpdateControllerResourceResolver: Sendable {
     static let digestKey = "ForgePlatformForgeUpdateControllerSHA256"
     static let sourceRevision = "bf7ae99c67e32fd2047965f19ece30a35071e868"
     static let digest = "sha256:9c43e1c3dcb411fb5f81a6a70d99b0c28b6bb2c79117f70703a50037e2e78183"
+    static let releaseReceiptName = "forge-release-complete-2.7.38.json"
+    static let releaseSourceKey = "ForgePlatformForgeReleaseSourceRevision"
+    static let releaseDigestKey = "ForgePlatformForgeReleaseCompleteSHA256"
+    static let releaseSourceRevision = "0a3d6e35b01da93bb5a674ae7795558655c16c7d"
+    static let releaseDigest = "sha256:7f8f4646a369ea565e52f8420df665acb64d032e5004e1b45ef7dc8427548c49"
 
     private let locator: any ManagedInstallerHelperSignedParentBundleLocating
 
@@ -38,10 +43,46 @@ struct ManagedInstallerForgeUpdateControllerResourceResolver: Sendable {
         )
     }
 
+    func resolveReleaseReceipt() async -> Result<URL, ManagedInstallerForgeUpdateControllerResourceFailure> {
+        guard case .success(let parent) = await locator.locate() else {
+            return .failure(.unavailable)
+        }
+        return Self.verifyReleaseReceipt(
+            in: parent.bundleURL, sourceRevision: Self.releaseSourceRevision,
+            digest: Self.releaseDigest
+        )
+    }
+
+    static func verifyReleaseReceipt(
+        in bundleURL: URL, sourceRevision: String, digest: String,
+        controllerSourceRevision: String = ManagedInstallerForgeUpdateControllerResourceResolver.sourceRevision,
+        controllerDigest: String = ManagedInstallerForgeUpdateControllerResourceResolver.digest
+    ) -> Result<URL, ManagedInstallerForgeUpdateControllerResourceFailure> {
+        guard case .success = verifyResource(
+            in: bundleURL, sourceRevision: controllerSourceRevision, digest: controllerDigest
+        ) else { return .failure(.unavailable) }
+        return verifySealedResource(
+            in: bundleURL, name: releaseReceiptName, sourceKey: releaseSourceKey,
+            digestKey: releaseDigestKey, sourceRevision: sourceRevision,
+            digest: digest, maximum: 64 * 1_024
+        )
+    }
+
     /// A narrow fixture seam for testing the byte reader. Production resolve
     /// always supplies the compiled protected source and digest above.
     static func verifyResource(
         in bundleURL: URL, sourceRevision: String, digest: String
+    ) -> Result<URL, ManagedInstallerForgeUpdateControllerResourceFailure> {
+        verifySealedResource(
+            in: bundleURL, name: resourceName, sourceKey: sourceKey,
+            digestKey: digestKey, sourceRevision: sourceRevision,
+            digest: digest, maximum: 512 * 1_024
+        )
+    }
+
+    private static func verifySealedResource(
+        in bundleURL: URL, name: String, sourceKey: String, digestKey: String,
+        sourceRevision: String, digest: String, maximum: Int
     ) -> Result<URL, ManagedInstallerForgeUpdateControllerResourceFailure> {
         let contents = bundleURL.appendingPathComponent("Contents", isDirectory: true)
         let infoURL = contents.appendingPathComponent("Info.plist")
@@ -49,14 +90,14 @@ struct ManagedInstallerForgeUpdateControllerResourceResolver: Sendable {
               let info = try? PropertyListSerialization.propertyList(
                 from: infoBytes, options: [], format: nil
               ) as? [String: Any],
-              info[Self.sourceKey] as? String == sourceRevision,
-              info[Self.digestKey] as? String == digest else {
+              info[sourceKey] as? String == sourceRevision,
+              info[digestKey] as? String == digest else {
             return .failure(.unavailable)
         }
         let controller = contents.appendingPathComponent(
-            "Resources/" + Self.resourceName, isDirectory: false
+            "Resources/" + name, isDirectory: false
         )
-        guard let bytes = Self.readStableRegularFile(controller, maximum: 512 * 1_024),
+        guard let bytes = Self.readStableRegularFile(controller, maximum: maximum),
               "sha256:" + SHA256.hash(data: bytes).map({ String(format: "%02x", $0) })
                 .joined() == digest else {
             return .failure(.unavailable)
