@@ -12,6 +12,44 @@ public struct ManagedInstallerHelperReviewedPlanAdmission: Sendable {
     public init() {}
 
     public func prepare(
+        selection: ManagedInstallerReviewedSelection,
+        helperSnapshot: ManagedInstallerReleasedRouteSnapshot,
+        helperCurrentRelease: VerifiedInstallerRelease
+    ) throws -> ManagedInstallerStablePlan {
+        guard selection.routeRequest.matches(helperSnapshot),
+              Set(helperSnapshot.session.providerRequirements.map(\.id)).count
+                == helperSnapshot.session.providerRequirements.count else {
+            throw ManagedInstallerHelperReviewedPlanAdmissionFailure.staleReview
+        }
+        let requirements = Dictionary(uniqueKeysWithValues:
+            helperSnapshot.session.providerRequirements.map { ($0.id, $0) }
+        )
+        let providers = try selection.enabledProviderTargetIDs.map { id -> ProviderRequirement in
+            guard let requirement = requirements[id] else {
+                throw ManagedInstallerHelperReviewedPlanAdmissionFailure.staleReview
+            }
+            return requirement
+        }
+        let candidate = ReviewedManagedDeploymentOperation(
+            sessionID: helperSnapshot.session.sessionID,
+            compositionIdentity: helperSnapshot.session.compositionIdentity,
+            manifestSHA256: helperSnapshot.session.manifestSHA256,
+            deploymentID: helperSnapshot.deployment.id,
+            deploymentExists: helperSnapshot.deployment.exists,
+            inventoryEvidenceReference: helperSnapshot.inventory.evidenceReference,
+            currentInstallerRelease: helperCurrentRelease,
+            enabledProviderRequirements: providers,
+            components: helperSnapshot.review.components
+        )
+        return try prepare(
+            intent: selection.intent,
+            candidate: candidate,
+            helperSnapshot: helperSnapshot,
+            helperCurrentRelease: helperCurrentRelease
+        )
+    }
+
+    public func prepare(
         intent: ManagedInstallerReviewedExecutionIntent,
         candidate: ReviewedManagedDeploymentOperation,
         helperSnapshot: ManagedInstallerReleasedRouteSnapshot,
