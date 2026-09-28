@@ -948,8 +948,11 @@ cleanup-enforcing provider preparation transaction are implemented. The
 canonical stable-plan fanout and its complete plan-bound receipt are also
 implemented. Exact parent-journal seeding is ordered before provider and
 managed-Python preparation by a source-level stable-plan admission coordinator.
-Provider archive extraction, target-bound runtime slot publication, exact
-staged-archive-to-slot binding and cached tree readback are source-qualified.
+Provider archive extraction, deployment-and-target-bound runtime slot
+publication, exact staged-archive-to-slot binding and cached tree readback are
+source-qualified. The stable-plan deployment ID now survives per-target
+preparation, mutation request/receipt and slot readback; a foreign deployment
+receipt or slot root fails closed.
 Credential-home provisioning, the complete provider mutation adapter and
 service-account secure-store integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,
