@@ -2,7 +2,12 @@
 
 **Assignment:** `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923`  
 **Owning repository:** `autonomous-engineering-system/forge-platform`
-**Producer baselines for first functional release:** Forge 2.7.35 and Engineering Platform 2.3.102
+**Producer baselines for first functional release:** Forge 2.7.36
+(`ed1e623ef3cedd8c4f720510e0052409b2d5ab1f`) and Engineering Platform
+2.3.103 (`9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2`). Both producer
+releases and their additive preserved-instance lifecycle contracts are
+`QUALIFIED`; Forge Platform consumption is `DESIGNED`/`PLANNED`, not released
+or live-qualified.
 **Status:** source implementation under protected qualification; no live installation claim.
 
 ## Purpose
@@ -41,6 +46,13 @@ Desired-state component actions are:
 `ADD_COMPONENT`, `UPDATE`, `NO_CHANGE`, `REPAIR`, and
 `REMOVE_COMPONENT`; complete deployment removal is a separate
 `REMOVE_DEPLOYMENT` operation.
+
+Lifecycle disposition is separate from topology. Removing selected software
+must review one explicit product-owned operation: `PRESERVE`, `PURGE`, or
+`RESTORE`. `PRESERVE` is the safe remove-software default; `PURGE` is never an
+implicit fallback. A preserved component remains bound to its managed
+deployment and exact product instance even though its service is absent or
+inactive.
 
 A desired action does not itself authorize dispatch. If the owning product has
 not published the required lifecycle boundary, the action remains blocked.
@@ -106,8 +118,9 @@ runtime paths.
 
 ## Engineering Platform adapter
 
-The EP adapter consumes the frozen 2.3.102
-`engineering-platform.system-provisioner/v1` command boundary.
+The EP adapter consumes the frozen 2.3.103
+`engineering-platform.system-provisioner/v1` command boundary and its additive
+`engineering-platform.system-instance-lifecycle/v1` extension.
 
 It delegates exact-target:
 
@@ -118,6 +131,7 @@ It delegates exact-target:
 - update execute/resume;
 - repair;
 - remove;
+- preserve, purge, restore and lifecycle status;
 - provider registration.
 
 EP continues to derive its service label, service account topology, CENTRAL/data
@@ -125,9 +139,20 @@ root, runtime slot, migration, backup, activation, verification, cleanup and
 recovery. Forge Platform cannot inject those internals through a generic
 component request.
 
+For `PRESERVE`, EP owns LaunchDaemon quiescence/removal and retains the exact
+instance root, identity, CENTRAL/data, configuration, recovery material and
+provider contexts. For `RESTORE`, EP validates the exact preserve operation and
+release, recreates an allowed immutable runtime slot when needed, and registers
+the same service inactive. Forge Platform must not start that service until EP's
+normal provider registration/repair route has independently re-established
+current provider evidence. `PURGE` delegates EP's existing destructive remove
+and is terminal only with the product-owned purge tombstone.
+
 ## Forge adapter
 
-Forge 2.7.35 has a deliberately different frozen boundary from EP.
+Forge 2.7.36 has a deliberately different frozen boundary from EP. It retains
+the existing `forge-server-runtime-lifecycle/v1` update/uninstall boundary and
+adds `forge-server-instance-lifecycle/v1` for preserved instances.
 
 Forge itself owns:
 
@@ -139,14 +164,16 @@ Forge itself owns:
 - the read-only, exact-instance/candidate `server update-assess` decision;
 - the durable exact-instance `server uninstall` and `server uninstall-status`
   dispatcher.
+- exact-instance `server preserve`, `server purge`, `server restore`, and
+  `server lifecycle-status` decisions.
 
 Forge Platform owns the macOS system LaunchDaemon and installed filesystem
 layout assigned to it by the Forge deployment contract. The LaunchDaemon uses
 an exact absolute Forge executable, exact data root, non-root service account,
 loopback endpoint and private bearer-file reference.
 
-The installer consumes the 2.7.35 assessment only from an explicitly bound
-2.7.35 lifecycle executable, exact installed artifact, qualified staged wheel
+The installer consumes the 2.7.36 assessment only from an explicitly bound
+2.7.36 lifecycle executable, exact installed artifact, qualified staged wheel
 and exact product instance/installation IDs. Missing or contradictory evidence
 remains `UNKNOWN` or fails closed. A positive assessment alone does not
 complete the reviewed-update, updater-resume, readiness or registry gates.
@@ -167,6 +194,67 @@ deployment-owned service definition. A same-operation replay is idempotent;
 Forge alone removes verified mutable instance data. The higher-level managed
 deployment remove route and GUI/CLI confirmation remain blocked until their
 reviewed target, pairing and registry-commit gates are integrated and qualified.
+
+For `PRESERVE`, Forge first proves exact identity, integrity and quiescence and
+returns product-owned `UNINSTALLED_DATA_PRESERVED` evidence without deleting the
+data root. Forge Platform then removes only the deployment-owned LaunchDaemon.
+For `RESTORE`, Forge validates the exact prior preserve operation, complete tree
+digest and same runtime/installation/instance identities, then returns
+`RESTORE_VALIDATED`; Forge Platform recreates its service definition only after
+that admission. For `PURGE`, Forge delegates its existing destructive uninstall
+and persists the product-owned tombstone. A legacy uninstall receipt is never
+reinterpreted as preserve evidence.
+
+## Preserved-instance lifecycle state machine
+
+Forge Platform consumes owning product receipts and lifecycle status; it never
+infers lifecycle from a directory, service label, database, process or endpoint.
+The managed inventory distinguishes at least:
+
+```text
+INSTALLED
+UNINSTALLED_DATA_PRESERVED
+PURGED_OR_ABSENT
+```
+
+`UNINSTALLED_DATA_PRESERVED` remains inventory-visible with the same opaque
+deployment, component, instance, runtime and installation identities plus the
+exact preserve-operation reference. It cannot enter ordinary create or be
+claimed by another deployment. `PURGED_OR_ABSENT` never carries restore
+authority; a later installation is a clean/new product instance state.
+
+The reviewed lifecycle transitions are:
+
+```text
+INSTALLED --PRESERVE--> UNINSTALLED_DATA_PRESERVED
+UNINSTALLED_DATA_PRESERVED --RESTORE--> INSTALLED
+INSTALLED or UNINSTALLED_DATA_PRESERVED --PURGE--> PURGED_OR_ABSENT
+```
+
+Every transition binds the selected deployment revision, exact product instance,
+producer version/source/artifact, operation ID, request digest, prior lifecycle
+receipt and intended registry commit. Same-operation replay is idempotent;
+changed request bytes, a stale deployment revision, concurrent lifecycle/update,
+wrong/foreign instance evidence, tampering, symlinks or a purge tombstone fail
+closed. The installer journal retains recovery references but never copies
+product data or manufactures replacement lifecycle evidence. After interruption,
+it reloads product status and resumes the same product operation before any
+service or registry continuation.
+
+Preserved configuration and provider bytes remain product-owned, but preserved
+authentication is never `VERIFIED`. Restore must run fresh provider readback and,
+when required, an explicit authentication/repair ceremony for each exact target.
+For a restored Forge+EP deployment, historical pairing material is only a
+candidate: Forge and EP must independently prove their exact identities and the
+pairing must be revalidated or re-established through the existing product-owned
+pairing route before either cross-component readiness or final registry commit.
+
+GUI and CLI consume the same inventory record, reviewed lifecycle plan, helper
+request and terminal receipt. The safe action is **Remove software / keep data**
+(`PRESERVE`). **Remove software and all instance data** (`PURGE`) is a separate
+destructive action naming the exact deployment/component/instance and requires
+fresh explicit confirmation immediately before dispatch. Cancel, timeout or
+lost response does not change disposition and never converts preserve to purge.
 
 ## Durable execution
 
@@ -439,12 +527,18 @@ Source qualification must include Python, Swift and hosted macOS validation for:
 - v2 manifest/session projection;
 - exact credential-free managed-Python asset transport, private staging,
   no-follow readback and digest rejection;
-- EP 2.3.102 provisioner command correlation;
+- EP 2.3.103 provisioner and instance-lifecycle command correlation;
 - Forge product-init identity binding;
 - Forge system-service target isolation;
-- Forge 2.7.35 product-owned read-only update assessment, exact-target update
-  execution/resume and durable uninstall dispatch, including stale, ambiguous,
-  wrong-instance and missing-terminal-evidence failures;
+- Forge 2.7.36 product-owned read-only update assessment, exact-target update
+  execution/resume, durable legacy uninstall and preserve/purge/restore dispatch,
+  including stale, ambiguous, tampered, purged, wrong-instance and
+  missing-terminal-evidence failures;
+- preserved inventory retention and no create-over-preserved-state;
+- same-identity restore with provider and pairing revalidation;
+- separate destructive confirmation with no preserve-to-purge fallback;
+- same-operation interruption/restart/replay and cross-deployment isolation;
+- byte-equivalent GUI/CLI/helper lifecycle plans and receipts.
 
 A source/PR PASS is not a signed installer release and is not a live Mac
 installation claim.
@@ -462,6 +556,15 @@ FORGE_SERVER_READY=PASS
 EP_SERVER_READY=PASS
 FORGE_EP_PAIRING=PASS
 MULTI_INSTANCE_ISOLATION=PASS
+FORGE_PRESERVE_RESTORE=PASS
+EP_PRESERVE_RESTORE=PASS
+SAME_INSTANCE_ID_AFTER_RESTORE=PASS
+DATA_CONFIGURATION_PRESERVED=PASS
+PROVIDER_AUTH_REVERIFIED=PASS
+FORGE_EP_PAIRING_REVALIDATED=PASS
+PURGE_THEN_RESTORE_REJECTED=PASS
+PURGE_THEN_REINSTALL_IS_CLEAN=PASS
+LIFECYCLE_CRASH_RESTART_IDEMPOTENCE=PASS
 ```
 
 Provider interactive authentication, Developer ID signing/notarization and a

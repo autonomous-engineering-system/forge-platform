@@ -1,6 +1,7 @@
 # Installer UX and release qualification V1
 
-**Owner:** Forge Platform. **Status:** PLANNED backlog/acceptance refinement.
+**Owner:** Forge Platform. **Status:** lifecycle contract `DESIGNED`; consumer
+implementation, release and live acceptance `PLANNED`.
 **Recorded:** 13 September 2026. **Version effect:** NO_BUMP documentation only.
 [Documentary DAG](installer-ux-release-v1.json).
 
@@ -12,11 +13,22 @@ This refinement consumes the [Universal Installer contract](../architecture/UNIV
 and [ownership matrix](../architecture/OWNERSHIP_MATRIX.md); it does not create a
 second provisioning engine or generic workflow-policy authority.
 
-Source observations: Platform `cb6a10a4ffca90e2b689af62349da2075fe47a77`,
-EP `395e61781965fa8e232d1db6bed8f82af7d00509`,
-Forge `1cea418a5fa8f59d303f2a0d6ff27573c4a11752`,
+Current lifecycle observations: Platform `e92f4e4151080f7c2a9d4fdeba1541b1407d7907`,
+EP `9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2`,
+Forge `ed1e623ef3cedd8c4f720510e0052409b2d5ab1f`,
 Workspace `36d294836cb653361fda3972de38acce3d2970f8`.
 These pins are observations, not enduring peer status or installed evidence.
+
+| Producer | Released baseline | Lifecycle contract | Roadmap status |
+| --- | --- | --- | --- |
+| Forge | 2.7.36 / `forge-v2.7.36` / source `ed1e623…` | `forge-server-instance-lifecycle/v1` | `QUALIFIED` producer evidence; consumer binding not yet qualified |
+| Engineering Platform | 2.3.103 / `engineering-platform-v2.3.103` / source `9b1b9d4…` | `engineering-platform.system-instance-lifecycle/v1` | `QUALIFIED` producer evidence; consumer binding not yet qualified |
+
+`QUALIFIED` above applies only to the owning product releases. It does not
+promote any Forge Platform adapter, composition, installer release or live Mac
+scenario. `DESIGNED` below means the consumer semantics are frozen in these
+canonical documents without source/release evidence; `PLANNED` means no such
+consumer implementation claim is made.
 
 | Request | Existing owner/lane | Disposition |
 | --- | --- | --- |
@@ -148,6 +160,66 @@ receipts. CLI and GUI may differ in presentation but not in mutation semantics.
 This section refines the broader Universal Installer target only. The parked
 EP-only clean-install v1 remains a narrower qualification slice and does not
 establish singleton cardinality or provider scope.
+
+## IUR-LIFECYCLE: preserve, purge and restore
+
+The first production installer treats software removal and instance-data
+deletion as different operations. Its minimum product-owned state projection is:
+
+```text
+INSTALLED
+UNINSTALLED_DATA_PRESERVED
+PURGED_OR_ABSENT
+```
+
+The safe GUI/CLI action **Remove software / keep data** dispatches `PRESERVE`.
+It removes or deactivates only the selected instance's software/service according
+to the owning product contract while retaining data, configuration and the same
+opaque instance identity. A preserved instance remains in deployment inventory,
+cannot be claimed by another deployment, and is offered as **Restore existing
+installation**, never as an ordinary fresh install.
+
+**Remove software and all instance data** dispatches `PURGE`. It is a separate
+destructive route requiring fresh confirmation that names the exact deployment,
+component and instance and explains that restore will be impossible. There is no
+default or failure fallback from preserve to purge. A later install after terminal
+purge is a clean/new product instance state; it does not reuse preservation
+evidence merely because a caller proposes the same display label or identifier.
+
+`RESTORE` names one exact product-owned preserve operation. Admission requires
+the same instance identity, compatible exact version/source/artifact, unchanged
+preserved data evidence, supported schema/integrity, no foreign deployment claim,
+no purge tombstone and no unsafe link/tamper/drift. Forge Platform stores only
+receipt references and journal state; it does not inspect or rewrite product
+data, CENTRAL, provider homes, service definitions owned by EP, or lifecycle
+control roots.
+
+Resource ownership remains asymmetric and explicit:
+
+| Resource/action | Forge owner | EP owner | Forge Platform responsibility |
+| --- | --- | --- | --- |
+| Mutable data/config and lifecycle evidence | Forge | EP | retain exact receipt references only |
+| Service definition | Forge Platform | EP | remove/recreate Forge LaunchDaemon only after owning admission; never synthesize EP service state |
+| Immutable runtime slots | Forge contract | EP contract | select only exact qualified composition artifacts |
+| Provider context/auth bytes | Forge | EP | orchestrate fresh verification; never read/store credentials |
+| Forge↔EP pairing | each product verifies its side | each product verifies its side | orchestrate product-owned revalidation and bind non-secret evidence |
+| EP Project Agents | not applicable | user-owned outside Server instance | never preserve, purge or rewrite as part of Server lifecycle |
+
+Preserved provider/auth state is `PRESERVED_REQUIRES_REVERIFICATION`, never
+`VERIFIED`. Restore runs fresh per-instance provider readback and an explicit
+authentication/repair route when needed. For Forge+EP, historical pairing is a
+candidate only; both exact restored identities and the product-owned pairing
+must pass again before readiness or registry commit.
+
+One durable lifecycle plan binds the deployment revision, exact instance and
+artifact identities, operation/request digests, intended disposition and prior
+receipt. GUI, CLI, privileged helper and product adapters use that same plan and
+terminal receipt grammar. Same-operation restart/relaunch/reboot resumes without
+double mutation. Stale revision, changed request, concurrent update/lifecycle,
+wrong instance, tamper, symlink, foreign root, purge-after-preserve race, lost
+response or conflicting terminal evidence fails closed and remains recoverable.
+The installer commits lifecycle state to its CAS registry only after owning
+terminal receipt and required service/provider/pairing/readiness continuation.
 
 ## IUR-WIZARD: OS appearance, language, clarity and gates
 
@@ -300,16 +372,56 @@ because the Server does. Broader profile qualification consumes each selected
 product's artifact/provisioner/health evidence; it does not wait for unrelated
 components, and EP-only success is not all-profile success.
 
+### First-release lifecycle acceptance matrix
+
+These scenarios run only against an explicitly authorized fresh Mac/test
+deployment after a protected signed/notarized installer release exists. Fixtures,
+source tests and producer qualification do not satisfy them.
+
+| Scenario | Required evidence before `LIVE_QUALIFIED` |
+| --- | --- |
+| Forge preserve → relaunch/reboot → restore | same Forge instance/runtime/installation IDs; data/config unchanged; service/readiness restored |
+| EP preserve → relaunch/reboot → restore | same EP instance ID and CENTRAL/data/config; provider state demoted then freshly verified; inactive restore before repair/start |
+| Paired Forge+EP preserve/restore | each exact identity retained; provider contexts independently reverified; pairing revalidated/re-established; both readiness PASS |
+| Purge installed or preserved instance | exact selected root removed by owning product; tombstone/readback terminal; restore rejected |
+| Install after purge | clean/new product instance state; no old data/config/provider/pairing resurrection |
+| Crash/lost response at every lifecycle phase | same operation resumes; no duplicate service/data mutation; terminal replay byte-equivalent |
+| Negative identity/evidence matrix | stale review, wrong deployment/instance, tamper, link, foreign root, artifact/source/schema drift and changed request all rejected |
+| Concurrency/isolation | update/preserve/purge/restore conflicts rejected; sibling instances and unrelated deployments byte/state unchanged |
+| GUI/CLI parity | same reviewed target/disposition/helper request and terminal receipt; purge confirmation cannot be bypassed |
+| Recovery and failure | partial service/provider/pairing failure remains recoverable and never commits installed/ready state prematurely |
+
 ## Documentary DAG joins
 
-IUR-CONTRACT -> IUR-WIZARD + IUR-READONLY; both -> IUR-UX-Q.
-IUR-READONLY -> IUR-COVERAGE. IUR-RUNNER is independently plannable.
-IUR-UX-Q + IUR-COVERAGE + IUR-RUNNER -> IUR-RELEASE -> IUR-INSTALL-Q.
+The exact machine-readable joins are canonical in
+[`installer-ux-release-v1.json`](installer-ux-release-v1.json). In summary:
+
+```text
+qualified Forge/EP lifecycle releases
+  -> producer rebaseline
+  -> preserved inventory
+  -> restore + purge planning
+  -> helper/product adapters
+  -> provider/pairing revalidation
+  -> GUI/CLI parity
+  -> production composition
+  -> signed installer release
+  -> fresh-Mac preserve/restore/purge acceptance
+  -> terminal handoff
+```
+
+The existing joins remain: IUR-CONTRACT -> IUR-WIZARD + IUR-READONLY; both ->
+IUR-UX-Q. IUR-READONLY -> IUR-COVERAGE. IUR-RUNNER is independently plannable.
+UX, coverage, runner and lifecycle production composition join at the signed
+release; release precedes both general install qualification and lifecycle live
+acceptance.
 
 These refine existing FP-EP-CI-6/7/Q for its selected scope and MVP-INST-001 for
 the broader horizon; they are not reverse dependencies on completed umbrella
 programmes. Keep existing product, clock/trust, signing and clean-host authority
 gates where applicable. External producer evidence is conditional on selected
-roles, not a dependency on every product being finished. All nodes remain
-PLANNED with no qualification receipts. No runner, signer, workflow, product
-version, installation, release, active Mission or executable DAG changes here.
+roles, not a dependency on every product being finished. Only the four owning
+Forge/EP producer contract/release nodes are `QUALIFIED`; consumer nodes are
+`DESIGNED` or `PLANNED` with no consumer qualification receipts. No runner,
+signer, workflow, product installation, installer release, active Mission or
+executable DAG changes here.
