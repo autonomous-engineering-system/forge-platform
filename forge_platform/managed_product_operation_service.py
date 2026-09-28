@@ -36,6 +36,11 @@ from .managed_product_removal_proposal import (
     prepare_native_product_removal_review,
 )
 from .managed_product_removal_dispatch import ManagedProductRemovalDispatcher
+from .managed_preserved_lifecycle_proposal import (
+    NativePreservedLifecycleReviewIntent,
+    decode_native_preserved_lifecycle_review_intent,
+    prepare_native_preserved_lifecycle_review,
+)
 from .managed_installer import ManagedDeploymentExecutionRecord
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
 from .released_product_routes import (
@@ -206,6 +211,26 @@ class PinnedManagedProductOperationAuthorityResolver:
             )
         return installed
 
+    def resolve_installed_lifecycle_review(
+        self, intent: NativePreservedLifecycleReviewIntent,
+    ) -> CompositionManifest:
+        """Select only helper-pinned installed composition for lifecycle review."""
+        if not isinstance(intent, NativePreservedLifecycleReviewIntent):
+            raise TypeError("decoded lifecycle review intent is required")
+        if intent.installer_release != self.current_installer_release:
+            raise ManagedProductOperationServiceError(
+                "installer release authority changed for lifecycle review"
+            )
+        installed = self._installed_manifests.get((
+            intent.installed_composition_identity,
+            intent.installed_manifest_sha256,
+        ))
+        if installed is None:
+            raise ManagedProductOperationServiceError(
+                "installed lifecycle composition authority is unavailable"
+            )
+        return installed
+
 
 class ReleasedManagedProductOperationAuthorityLoader:
     """Load one helper snapshot only from verified released selections.
@@ -339,6 +364,25 @@ class ManagedProductOperationHelperService:
         except Exception as error:
             raise ManagedProductOperationServiceError(
                 "native product operation was rejected"
+            ) from error
+
+    def prepare_preserved_lifecycle_review(self, canonical_intent: bytes) -> bytes:
+        """Read one exact product lifecycle proposal from helper-owned state."""
+        try:
+            if not isinstance(
+                self.authority_resolver, PinnedManagedProductOperationAuthorityResolver
+            ):
+                raise TypeError("released lifecycle review authority is unavailable")
+            intent = decode_native_preserved_lifecycle_review_intent(canonical_intent)
+            manifest = self.authority_resolver.resolve_installed_lifecycle_review(intent)
+            return prepare_native_preserved_lifecycle_review(
+                canonical_intent, installed_manifest=manifest,
+                registry=self.dispatcher.coordinator.registry,
+                current_installer_release=self.authority_resolver.current_installer_release,
+            )
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "native preserved lifecycle review was rejected"
             ) from error
 
     def execute_removal(self, canonical_request: bytes) -> bytes:

@@ -21,6 +21,11 @@ from .managed_product_removal_proposal import (
     decode_native_product_removal_review_intent,
     decode_native_product_removal_review_proposal,
 )
+from .managed_preserved_lifecycle_proposal import (
+    NATIVE_PRESERVED_LIFECYCLE_REVIEW_INTENT_SCHEMA,
+    decode_native_preserved_lifecycle_review_intent,
+    decode_native_preserved_lifecycle_review_proposal,
+)
 from .managed_product_operation_service import (
     MAXIMUM_NATIVE_PRODUCT_OPERATION_RECEIPT_BYTES,
     MAXIMUM_NATIVE_PRODUCT_REMOVAL_RECEIPT_BYTES,
@@ -213,6 +218,26 @@ def execute_removal_review_intent(
     return response
 
 
+def execute_preserved_lifecycle_review_intent(
+    canonical_intent: bytes,
+    *,
+    service_loader: ServiceLoader = load_released_product_service,
+) -> bytes:
+    """Emit only a correlated read-only proposal from released worker state."""
+    intent = decode_native_preserved_lifecycle_review_intent(canonical_intent)
+    service = service_loader()
+    if not isinstance(service, ManagedProductOperationHelperService):
+        raise InstallerProductWorkerUnavailable("lifecycle review service is unavailable")
+    response = service.prepare_preserved_lifecycle_review(canonical_intent)
+    try:
+        decode_native_preserved_lifecycle_review_proposal(response, intent=intent)
+    except Exception as error:
+        raise InstallerProductWorkerUnavailable(
+            "product lifecycle review proposal was rejected"
+        ) from error
+    return response
+
+
 def run(
     input_stream: BinaryIO,
     output_stream: BinaryIO,
@@ -227,6 +252,10 @@ def run(
             envelope = None
         if isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REVIEW_INTENT_SCHEMA:
             response = execute_removal_review_intent(request, service_loader=service_loader)
+        elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVED_LIFECYCLE_REVIEW_INTENT_SCHEMA:
+            response = execute_preserved_lifecycle_review_intent(
+                request, service_loader=service_loader,
+            )
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REQUEST_SCHEMA:
             response = execute_removal_request(request, service_loader=service_loader)
         else:
