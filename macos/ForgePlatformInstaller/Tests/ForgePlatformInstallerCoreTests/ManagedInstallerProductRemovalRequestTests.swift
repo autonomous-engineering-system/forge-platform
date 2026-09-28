@@ -40,11 +40,17 @@ final class ManagedInstallerProductRemovalRequestTests: XCTestCase {
 
     func testRejectsChangedIdentityFingerprint() throws {
         let request = try makeRequest()
-        let bytes = request.canonicalJSONData()
-        let text = try XCTUnwrap(String(data: bytes, encoding: .utf8))
-        XCTAssertThrowsError(try ManagedInstallerProductRemovalRequest.decodeJSON(
-            Data(text.replacingOccurrences(of: "forge-one", with: "forge-two").utf8)
-        ))
+        var bytes = request.canonicalJSONData()
+        let range = try XCTUnwrap(bytes.range(of: Data("forge-one".utf8)))
+        bytes.replaceSubrange(range, with: Data("forge-two".utf8))
+        fputs("product removal fingerprint negative: decode start\n", stderr)
+        do {
+            _ = try ManagedInstallerProductRemovalRequest.decodeJSON(bytes)
+            XCTFail("A changed Forge instance must invalidate the request fingerprint")
+        } catch let failure as ManagedInstallerProductOperationBridgeFailure {
+            XCTAssertEqual(failure, .invalidRequest)
+        }
+        fputs("product removal fingerprint negative: decode end\n", stderr)
     }
 
     func testRejectsLeadingWhitespaceJSON() throws {
