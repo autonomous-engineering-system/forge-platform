@@ -252,6 +252,8 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
         server_identity = _string(descriptor.get("service_label"), "EP service identity")
         state_value = status.get("state")
         ready = status.get("ready") is True and state_value == "READY"
+        if ready:
+            self._verify_provider_status(status.get("providers"))
         state = "ACTIVE" if ready else "UNHEALTHY"
         health = "HEALTHY" if ready else "UNHEALTHY"
         status_ref = "ep-status:" + _canonical_digest(status)
@@ -270,6 +272,56 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
             inventory_ref,
             status_ref,
         )
+
+    def _verify_provider_status(self, value: object) -> None:
+        if not isinstance(value, Mapping) or set(value) != {"codex", "github"}:
+            raise EngineeringPlatformAdapterError("EP ready status lacks both provider contexts")
+        homes: set[str] = set()
+        for provider in ("codex", "github"):
+            context = value[provider]
+            if not isinstance(context, Mapping):
+                raise EngineeringPlatformAdapterError("EP provider context is unavailable")
+            authentication = context.get("authentication")
+            executable = context.get("executable")
+            home = context.get("home")
+            if (
+                set(context) != {
+                    "provider", "instance_id", "state", "executable",
+                    "executable_sha256", "version", "home", "credential_scope",
+                    "authentication", "cold_boot_ready",
+                }
+                or context.get("provider") != provider
+                or context.get("instance_id") != self.target.instance_id
+                or context.get("state") != "READY"
+                or context.get("credential_scope") != "COMPONENT_INSTANCE"
+                or context.get("cold_boot_ready") is not True
+                or not isinstance(context.get("executable_sha256"), str)
+                or re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", context["executable_sha256"]
+                ) is None
+                or not isinstance(context.get("version"), str)
+                or not context["version"]
+                or not isinstance(authentication, Mapping)
+                or set(authentication) != {"state", "reference"}
+                or authentication.get("state") != "READY"
+                or not isinstance(authentication.get("reference"), str)
+                or re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._:-]{7,255}",
+                    authentication["reference"],
+                ) is None
+                or any(
+                    not isinstance(path, str)
+                    or not Path(path).is_absolute()
+                    or ".." in Path(path).parts
+                    for path in (executable, home)
+                )
+            ):
+                raise EngineeringPlatformAdapterError(
+                    "EP ready provider context does not match the exact instance"
+                )
+            homes.add(home)
+        if len(homes) != 2:
+            raise EngineeringPlatformAdapterError("EP ready provider homes overlap")
 
     def assess_update(self, request: ComponentOperationRequest) -> ProductUpdateAssessment:
         self._validate_request(request)

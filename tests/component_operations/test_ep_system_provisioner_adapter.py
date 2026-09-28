@@ -35,6 +35,23 @@ class Runner:
         self.inventory_instances: list[dict[str, object]] = []
         self.ready = True
         self.operation_result = "COMPLETE"
+        self.providers = {
+            provider: {
+                "provider": provider,
+                "instance_id": "ep-prod",
+                "state": "READY",
+                "executable": "/Library/EP/instances/ep-prod/providers/" + provider + "/runtime/bin/" + (
+                    "codex" if provider == "codex" else "gh"
+                ),
+                "executable_sha256": "sha256:" + ("d" if provider == "codex" else "e") * 64,
+                "version": "0.146.0" if provider == "codex" else "2.68.0",
+                "home": "/Library/EP/instances/ep-prod/providers/" + provider + "/home",
+                "credential_scope": "COMPONENT_INSTANCE",
+                "authentication": {"state": "READY", "reference": provider + "-provider-owned-reference"},
+                "cold_boot_ready": True,
+            }
+            for provider in ("codex", "github")
+        }
 
     def run(self, argv):
         args = tuple(argv)
@@ -58,7 +75,7 @@ class Runner:
                         "interpreter": "/Library/EP/runtime/bin/python",
                     },
                 },
-                "providers": {},
+                "providers": self.providers,
                 "health": {"result": "PASS" if self.ready else "FAIL"},
             }
         elif command == "update-assess":
@@ -185,6 +202,31 @@ class EPSystemAdapterTests(unittest.TestCase):
         self.assertEqual(observed.state, "ACTIVE")
         self.assertEqual(observed.artifact, ARTIFACT.correlation)
         self.assertEqual(observed.selected_instance_identity, "ep-prod")
+
+    def test_ready_status_requires_two_exact_independently_verified_provider_contexts(self) -> None:
+        self.runner.inventory_instances = [{
+            "instance_id": "ep-prod",
+            "service_label": "com.engineeringplatform.server.instance-deadbeef",
+            "selected_runtime": {
+                "version": "2.3.102",
+                "artifact_digest": ARTIFACT.digest,
+                "source_revision": ARTIFACT.source_revision,
+                "interpreter": "/Library/EP/runtime/bin/python",
+            },
+        }]
+        self.assertEqual(self.adapter.readback(request("repair")).state, "ACTIVE")
+        for mutation in (
+            lambda providers: providers.pop("github"),
+            lambda providers: providers["github"].update(instance_id="ep-other"),
+            lambda providers: providers["github"].update(home=providers["codex"]["home"]),
+            lambda providers: providers["codex"]["authentication"].update(state="MISSING"),
+        ):
+            with self.subTest(mutation=mutation):
+                import copy
+                self.runner.providers = copy.deepcopy(Runner().providers)
+                mutation(self.runner.providers)
+                with self.assertRaises(EngineeringPlatformAdapterError):
+                    self.adapter.readback(request("repair"))
 
     def test_update_assessment_and_execute_keep_exact_target(self) -> None:
         assessment = self.adapter.assess_update(request("update"))
