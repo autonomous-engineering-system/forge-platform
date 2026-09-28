@@ -28,6 +28,7 @@ from forge_platform.forge_server_adapter import (
     ForgeUpdateBinding,
     MacOSForgeLaunchDaemonSupervisor,
     SubprocessForgeCommandRunner,
+    _verified_forge_238_controller,
 )
 from forge_platform.forge_update_intent import ForgeUpdateIntent, ForgeUpdateIntentStore
 
@@ -106,6 +107,188 @@ class Probe:
 
 
 class ForgeServerAdapterTests(unittest.TestCase):
+    def test_exact_238_external_assessment_and_mutation_digest_binding(self) -> None:
+        root = Path(self.temp.name).resolve()
+        old = QualifiedArtifact(
+            "2.7.37", "a78523603d6ea081d07875ea6b557e73b5d4fe63",
+            ARTIFACT.source,
+            "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
+            ARTIFACT.qualification,
+        )
+        target = QualifiedArtifact(
+            "2.7.38", "0a3d6e35b01da93bb5a674ae7795558655c16c7d",
+            ARTIFACT.source,
+            "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8",
+            ARTIFACT.qualification,
+        )
+        controller = root / "exact-controller.py"
+        controller.write_bytes(b"not the protected controller")
+        controller.chmod(0o600)
+        intent_root = root / "update-intents-238"
+        intent_root.mkdir(mode=0o700)
+        binding = ForgeUpdateBinding(
+            controller, root / "release-complete.json",
+            "sha256:7f8f4646a369ea565e52f8420df665acb64d032e5004e1b45ef7dc8427548c49",
+            "bf7ae99c67e32fd2047965f19ece30a35071e868",
+            "sha256:9c43e1c3dcb411fb5f81a6a70d99b0c28b6bb2c79117f70703a50037e2e78183",
+            root / "resolver", "sha256:" + "a" * 64,
+            root / "runtimes", self.target.instance_id, "installation-1",
+            "sha256:" + "b" * 64, root / "old-python", old.version,
+            Path("/usr/bin/python3"), intent_root,
+        )
+        self.assertFalse(_verified_forge_238_controller(binding))
+        self.assertFalse(_verified_forge_238_controller(replace(
+            binding, controller_source="0" * 40,
+        )))
+        wheel = root / "forge-2.7.38.whl"
+        request = ComponentOperationRequest(
+            "forge-238-operation", "forge-runtime", "update", target,
+            self.target.instance_id, "server", {},
+        )
+
+        class ControllerRunner(Runner):
+            state = "UPDATE_AVAILABLE"
+            changed = False
+            wrong_receipt = False
+            mutated = False
+
+            def run(self, argv):
+                args = tuple(argv)
+                if args[-2:] == ("server", "status"):
+                    self.calls.append(args)
+                    return ForgeCommandResult(0, json.dumps({
+                        "product_version": target.version if self.mutated else old.version,
+                        "initialized": True, "runtime_status": "active",
+                        "instance_id": self_outer.target.instance_id,
+                        "storage_schema": "39",
+                    }), "")
+                if "--assess-only" not in args and "--assessment-digest" not in args:
+                    return super().run(args)
+                self.calls.append(args)
+                self_outer.assertEqual(args[:3], ("/usr/bin/python3", "-I", str(controller)))
+                selected, _ = adapter._external_238_request(
+                    request, binding, wheel, assess_only="--assess-only" in args,
+                )
+                if "--assess-only" in args:
+                    assessment = {
+                        "contract": "forge-installed-update-assessment/v1",
+                        "operation": "UPDATE_ASSESSMENT",
+                        "operation_id": request.operation_id,
+                        "request_digest": product_digest({
+                            key: value for key, value in selected.items()
+                            if key != "assessment_digest"
+                        }),
+                        "state": self.state,
+                        "mutating": False,
+                        "selected_installation": {
+                            "runtime_id": binding.runtime_id,
+                            "installation_id": binding.installation_id,
+                            "version": old.version,
+                            "source_revision": old.source_revision,
+                            "artifact_digest": old.digest,
+                        },
+                        "candidate": {
+                            "version": target.version,
+                            "source_revision": target.source_revision,
+                            "artifact_digest": target.digest,
+                        },
+                        "controller": {
+                            "source_revision": binding.controller_source,
+                            "artifact_digest": binding.controller_sha256,
+                        },
+                        "evidence": {}, "reason_codes": ["EXACT_SUPPORTED_TRANSITION"],
+                    }
+                    if self.changed:
+                        assessment["selected_installation"]["runtime_id"] = "other"
+                    assessment["assessment_digest"] = product_digest(assessment)
+                    return ForgeCommandResult(0, json.dumps(assessment), "")
+                self_outer.assertEqual(args[args.index("--installed-source") + 1], old.source_revision)
+                self_outer.assertEqual(args[args.index("--installed-artifact-digest") + 1], old.digest)
+                selected["assessment_digest"] = args[args.index("--assessment-digest") + 1]
+                receipt = {
+                    "contract_version": "forge-installed-update/v1",
+                    "operation_id": request.operation_id,
+                    "request_digest": product_digest(selected),
+                    "state": "COMPLETE", "product": "forge",
+                    "version": target.version, "product_source": target.source_revision,
+                    "wheel_sha256": target.digest,
+                    "controller_source": binding.controller_source,
+                    "controller_sha256": binding.controller_sha256,
+                    "runtime_id": binding.runtime_id,
+                    "installation_id": binding.installation_id,
+                    "data_root": str(self_outer.target.data_root),
+                    "credential_disposition": "PRESERVED_UNCHANGED",
+                    "service_disposition": "NOT_STARTED",
+                    "mission_disposition": "NOT_STARTED_OR_RESUMED",
+                    "reset_disposition": "NOT_EXECUTED",
+                    "migration_qualification": {"status": "PASS"},
+                    "live_migration": {"status": "PASS"},
+                    "installed_readback": {"preservation": {"status": "PASS"}},
+                    "backup": {},
+                }
+                if self.wrong_receipt:
+                    receipt["request_digest"] = "sha256:" + "0" * 64
+                else:
+                    self.mutated = True
+                return ForgeCommandResult(0, json.dumps(receipt), "")
+
+        def product_digest(value):
+            return "sha256:" + hashlib.sha256((json.dumps(
+                value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            ) + "\n").encode()).hexdigest()
+
+        self_outer = self
+        runner = ControllerRunner()
+        adapter = ForgeServerProductAdapter(
+            forge_executable=Path("/opt/forge/current/bin/forge"),
+            target=self.target, installed_artifact=old,
+            staged_artifacts={target.digest: wheel}, supervisor=self.supervisor,
+            runner=runner, readiness_probe=Probe(), update_binding=binding,
+        )
+        self.assertEqual(adapter.assess_update(request).state, "UNKNOWN")
+        with patch("forge_platform.forge_server_adapter._verified_forge_238_controller", return_value=True):
+            assessment = adapter.assess_update(request)
+            self.assertEqual(assessment.state, "UPDATE_AVAILABLE")
+            self.assertTrue(assessment.evidence_reference.startswith("forge-update-assess:sha256:"))
+            self.assertTrue(adapter._run_update(request, assessment.evidence_reference).startswith("forge-update:sha256:"))
+            runner.wrong_receipt = True
+            with self.assertRaisesRegex(ForgeServerAdapterError, "terminal product receipt"):
+                adapter._run_update(request, assessment.evidence_reference)
+            runner.wrong_receipt = False
+            runner.changed = True
+            with self.assertRaisesRegex(ForgeServerAdapterError, "exact product evidence"):
+                adapter.assess_update(request)
+            runner.changed = False
+            runner.state = "INCOMPATIBLE"
+            self.assertEqual(adapter.assess_update(request).state, "INCOMPATIBLE")
+            runner.state = "UNKNOWN"
+            self.assertEqual(adapter.assess_update(request).state, "UNKNOWN")
+            runner.state = "UP_TO_DATE"
+            with self.assertRaisesRegex(ForgeServerAdapterError, "current artifact changed"):
+                adapter.assess_update(request)
+            runner.state = "INCOMPATIBLE"
+            runner.mutated = False
+            self.supervisor.running = True
+            reviewed_request = replace(request, product_request={
+                "reviewed_update_assessment_reference": assessment.evidence_reference,
+            })
+            with self.assertRaisesRegex(ForgeServerAdapterError, "fresh update"):
+                adapter.execute(reviewed_request)
+            self.assertNotIn("stop", self.supervisor.calls)
+            runner.state = "UPDATE_AVAILABLE"
+            runner.changed = True
+            with self.assertRaisesRegex(ForgeServerAdapterError, "exact product evidence"):
+                adapter.execute(reviewed_request)
+            self.assertNotIn("stop", self.supervisor.calls)
+            runner.changed = False
+            runner.mutated = False
+            completed = adapter.execute(reviewed_request)
+            self.assertEqual(completed.state, "COMPLETED")
+            self.assertEqual(adapter.installed_artifact, target)
+            self.assertEqual(adapter.resume(reviewed_request, completed), completed)
+            self.assertEqual(self.supervisor.calls.count("stop"), 1)
+        self.assertNotIn("update-assess", [item for call in runner.calls for item in call])
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name).resolve()

@@ -182,10 +182,16 @@ qualified lifecycle executable or external controller, exact installed artifact,
 and exact product instance/installation IDs. Missing or contradictory evidence
 remains `UNKNOWN` or fails closed. A positive assessment alone does not
 complete the reviewed-update, updater-resume, readiness or registry gates.
-The current adapter still invokes the older lifecycle executable for assessment.
-The separately protected 2.7.38 external controller and its byte-for-byte
-read-only assessment remain a consumer-wiring gate; the 2.7.38 release pin and
-lifecycle admission in this increment do not claim update execution.
+For an exact public-wheel 2.7.35, 2.7.36 or 2.7.37 instance targeting the
+exact 2.7.38 release, the adapter invokes the separately protected external
+controller with base Python `-I` and `--assess-only`. It verifies the exact
+controller source and bytes, release-complete receipt digest, selected
+instance/artifact, candidate, request digest and canonical assessment digest.
+Immediately before mutation it repeats the product assessment and requires the
+reviewed digest to match; the same digest is passed into the owning controller's
+durable update request. Other candidate releases retain their existing
+lifecycle-executable assessment route. These source gates do not establish
+real released-helper execution or live update success.
 The adapter accepts a completed external update only with Forge's exact
 `forge-installed-update/v1` operation/request digest, selected artifact and
 instance, migration evidence and installed preservation readback. A successful
