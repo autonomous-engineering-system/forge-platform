@@ -1052,6 +1052,23 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(invocation.expectedInterpreterOwner, geteuid())
         XCTAssertEqual(invocation.trustedStateRootURL, root)
 
+        XCTAssertNoThrow(try FileManagedInstallerProductWorkerInvocationResolver(
+            stateRoot: root,
+            runtimeSlotsRoot: slots,
+            workerURL: worker,
+            workerSHA256: "sha256:" + String(repeating: "b", count: 64),
+            authorityReader: FixedProductWorkerAuthorityReader(
+                result: .success("sha256:" + String(repeating: "c", count: 64))
+            )
+        ).resolveProductWorkerInvocation().get())
+        XCTAssertEqual(FileManagedInstallerProductWorkerInvocationResolver(
+            stateRoot: root,
+            runtimeSlotsRoot: slots,
+            workerURL: worker,
+            workerSHA256: "sha256:" + String(repeating: "b", count: 64),
+            authorityReader: FixedProductWorkerAuthorityReader(result: .failure(.unavailable))
+        ).resolveProductWorkerInvocation().workerFailure, .unavailable)
+
         XCTAssertEqual(
             FileManagedInstallerProductWorkerInvocationResolver(
                 stateRoot: root,
@@ -2126,4 +2143,13 @@ private extension Result where Failure == ManagedInstallerProductWorkerFailure {
         guard case .failure(let failure) = self else { return nil }
         return failure
     }
+}
+
+private struct FixedProductWorkerAuthorityReader:
+    ManagedInstallerProductWorkerAuthorityReading {
+    let result: Result<String, ManagedInstallerProductWorkerAuthorityReadFailure>
+
+    func readAuthorityDigest() -> Result<
+        String, ManagedInstallerProductWorkerAuthorityReadFailure
+    > { result }
 }

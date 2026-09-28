@@ -63,6 +63,7 @@ struct FileManagedInstallerProductWorkerInvocationResolver:
     private let runtimeSlotsRoot: URL
     private let workerURL: URL?
     private let workerSHA256: String?
+    private let authorityReader: (any ManagedInstallerProductWorkerAuthorityReading)?
     private let expectedInterpreterOwner: uid_t
     private let timeoutNanoseconds: UInt64
 
@@ -76,6 +77,7 @@ struct FileManagedInstallerProductWorkerInvocationResolver:
         workerSHA256: String? = Bundle.main.object(
             forInfoDictionaryKey: Self.workerDigestInfoKey
         ) as? String,
+        authorityReader: (any ManagedInstallerProductWorkerAuthorityReading)? = nil,
         expectedInterpreterOwner: uid_t = 0,
         timeoutNanoseconds: UInt64 = 120_000_000_000
     ) {
@@ -89,6 +91,7 @@ struct FileManagedInstallerProductWorkerInvocationResolver:
         )
         self.workerURL = workerURL
         self.workerSHA256 = workerSHA256
+        self.authorityReader = authorityReader
         self.expectedInterpreterOwner = expectedInterpreterOwner
         self.timeoutNanoseconds = timeoutNanoseconds
     }
@@ -105,6 +108,12 @@ struct FileManagedInstallerProductWorkerInvocationResolver:
               let identity = hostState.activeRuntimeIdentitySHA256,
               let slot = hostState.activeRuntimeSlotIdentity else {
             return .failure(.unavailable)
+        }
+        if let authorityReader {
+            guard case .success(let digest) = authorityReader.readAuthorityDigest(),
+                  CompositionCatalogValidation.isTaggedSHA256(digest) else {
+                return .failure(.unavailable)
+            }
         }
         let expectedPrefix = "sha256-"
         guard slot == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
@@ -527,7 +536,9 @@ public actor ManagedInstallerPythonProductOperationExecutor:
     private var inFlight = false
 
     public init() {
-        resolver = FileManagedInstallerProductWorkerInvocationResolver()
+        resolver = FileManagedInstallerProductWorkerInvocationResolver(
+            authorityReader: FileManagedInstallerProductWorkerAuthorityReader()
+        )
         runner = MacOSManagedInstallerProductWorkerRunner()
     }
 
