@@ -19,6 +19,7 @@ python3 tests/component_operations/test_ep_system_provisioner_adapter.py
 python3 tests/component_operations/test_forge_server_adapter.py
 python3 tests/installer/test_universal_installer.py
 python3 tests/installer/test_managed_deployments.py
+python3 tests/installer/test_managed_preserved_lifecycle_plan.py
 python3 tests/installer/test_managed_installer.py
 python3 tests/installer/test_managed_install_flow.py
 python3 tests/installer/test_managed_pairing.py
