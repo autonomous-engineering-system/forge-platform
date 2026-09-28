@@ -37,7 +37,7 @@ struct ManagedInstallerProductWorkerInvocation: Equatable, Sendable {
 }
 
 protocol ManagedInstallerProductWorkerInvocationResolving: Sendable {
-    func resolveProductWorkerInvocation()
+    func resolveProductWorkerInvocation() async
         -> Result<ManagedInstallerProductWorkerInvocation, ManagedInstallerProductWorkerFailure>
 }
 
@@ -536,9 +536,7 @@ public actor ManagedInstallerPythonProductOperationExecutor:
     private var inFlight = false
 
     public init() {
-        resolver = FileManagedInstallerProductWorkerInvocationResolver(
-            authorityReader: FileManagedInstallerProductWorkerAuthorityReader()
-        )
+        resolver = ManagedInstallerHelperSignedWorkerInvocationResolver()
         runner = MacOSManagedInstallerProductWorkerRunner()
     }
 
@@ -560,7 +558,7 @@ public actor ManagedInstallerPythonProductOperationExecutor:
         inFlight = true
         defer { inFlight = false }
         let invocation: ManagedInstallerProductWorkerInvocation
-        switch resolver.resolveProductWorkerInvocation() {
+        switch await resolver.resolveProductWorkerInvocation() {
         case .success(let resolved): invocation = resolved
         case .failure(.unavailable): return .failure(.unavailable)
         case .failure(.rejected): return .failure(.rejected)
@@ -595,7 +593,7 @@ public actor ManagedInstallerPythonProductOperationExecutor:
         inFlight = true
         defer { inFlight = false }
         let invocation: ManagedInstallerProductWorkerInvocation
-        switch resolver.resolveProductWorkerInvocation() {
+        switch await resolver.resolveProductWorkerInvocation() {
         case .success(let resolved): invocation = resolved
         case .failure(.unavailable): return .failure(.unavailable)
         case .failure(.rejected): return .failure(.rejected)
@@ -628,7 +626,7 @@ public actor ManagedInstallerPythonProductOperationExecutor:
         inFlight = true
         defer { inFlight = false }
         let invocation: ManagedInstallerProductWorkerInvocation
-        switch resolver.resolveProductWorkerInvocation() {
+        switch await resolver.resolveProductWorkerInvocation() {
         case .success(let resolved): invocation = resolved
         case .failure(.unavailable): return .failure(.unavailable)
         case .failure(.rejected): return .failure(.rejected)
