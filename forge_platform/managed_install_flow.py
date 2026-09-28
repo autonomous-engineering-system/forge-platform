@@ -604,3 +604,172 @@ class ManagedForgeEPInstallationCoordinator:
             current.by_component[component].receipt_reference
             for component in (FORGE_COMPONENT, EP_COMPONENT)
         )  # type: ignore[return-value]
+
+
+@dataclass(frozen=True)
+class ManagedSingleProductInstallationResult:
+    operation_id: str
+    deployment_id: str
+    state: str
+    registry_revision: int | None
+    product_receipt_references: tuple[str, ...]
+    pairing_receipt_reference: None
+    readiness_receipt_references: tuple[str, ...]
+    currency_receipt_references: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.state not in {"RECOVERY_PENDING", "FAILED", "READINESS_FAILED", "COMPLETE"}:
+            raise ValueError("single-product result state is unsupported")
+        for reference in (
+            *self.product_receipt_references,
+            *self.readiness_receipt_references,
+            *self.currency_receipt_references,
+        ):
+            _evidence_reference(reference)
+        if self.state == "COMPLETE" and (
+            self.registry_revision is None or self.registry_revision <= 0
+            or len(self.product_receipt_references) != 1
+            or len(self.readiness_receipt_references) != 1
+        ):
+            raise ValueError("single-product completion lacks exact terminal evidence")
+
+
+class ManagedSingleProductInstallationCoordinator:
+    """Use the existing durable product saga for one exact unpaired component."""
+
+    def __init__(
+        self, *, operations_root: Path, component_operations_root: Path,
+        registry: ManagedDeploymentRegistry,
+        currency_guard: InstallerMutationCurrencyGuard,
+    ) -> None:
+        if not operations_root.is_absolute() or not component_operations_root.is_absolute():
+            raise ValueError("single-product operation roots must be absolute")
+        self.operations_root = operations_root.resolve(strict=False)
+        self.component_operations_root = component_operations_root.resolve(strict=False)
+        self.registry = registry
+        self.currency_guard = currency_guard
+
+    def execute(
+        self,
+        operation_id: str,
+        plan: ManagedDeploymentPlan,
+        *,
+        mutation_requests: Mapping[str, ComponentOperationRequest],
+        readback_requests: Mapping[str, ComponentOperationRequest],
+        adapters: Mapping[str, ProductOperationAdapter],
+        composition_id: str,
+        composition_manifest_digest: str,
+    ) -> ManagedSingleProductInstallationResult:
+        desired = plan.desired
+        if (
+            plan.deployment_action != "CREATE_OR_UPDATE" or desired is None
+            or len(desired.by_component) != 1 or desired.peer_binding is not None
+        ):
+            raise ManagedForgeEPInstallationError("single-product route requires one unpaired reviewed target")
+        component, binding = next(iter(desired.by_component.items()))
+        mutating = {
+            diff.component for diff in plan.component_diffs
+            if diff.action in _MUTATING_ACTIONS
+        }
+        if (
+            component not in _REQUIRED_COMPONENTS
+            or set(readback_requests) != {component}
+            or set(adapters) != {component}
+            or set(mutation_requests) != mutating
+            or not mutating <= {component}
+            or readback_requests[component].component != component
+            or readback_requests[component].installation_identity != binding.instance_id
+            or any(
+                mutation_requests[key].artifact != readback_requests[key].artifact
+                or mutation_requests[key].installation_identity != binding.instance_id
+                for key in mutating
+            )
+        ):
+            raise ManagedForgeEPInstallationError("single-product route changed reviewed target authority")
+        ManagedCompositionBinding(
+            composition_id, composition_manifest_digest,
+            "receipt:composition-validation",
+        )
+        currency = _CurrencyEvidence(self.currency_guard)
+        guarded_registry = _CurrencyGuardedRegistry(self.registry, currency, operation_id)
+        guarded_adapters = {
+            key: _CurrencyGuardedAdapter(value, currency, plan.deployment_id)
+            for key, value in adapters.items()
+        }
+        deployment_result = ManagedDeploymentOperationCoordinator(
+            operations_root=self.operations_root / "deployment-saga",
+            component_operations_root=self.component_operations_root,
+            registry=guarded_registry,
+        ).execute(
+            operation_id, plan,
+            requests={key: mutation_requests[key] for key in mutating},
+            adapters={key: guarded_adapters[key] for key in mutating},
+        )
+        if deployment_result.state != "COMPLETE":
+            return ManagedSingleProductInstallationResult(
+                operation_id, plan.deployment_id,
+                "RECOVERY_PENDING" if deployment_result.state == "RECOVERY_PENDING" else "FAILED",
+                deployment_result.registry_revision, (), None, (),
+                tuple(currency.references),
+            )
+        current = self.registry.load(plan.deployment_id)
+        if (
+            current is None or set(current.by_component) != {component}
+            or current.by_component[component].instance_id != binding.instance_id
+            or current.peer_binding is not None
+        ):
+            raise ManagedForgeEPInstallationError("single-product registry target changed after product completion")
+        observation = adapters[component].readback(readback_requests[component])
+        if not isinstance(observation, ProductInstallationReadback):
+            raise ManagedForgeEPInstallationError("single-product readiness is not typed product evidence")
+        if (
+            observation.component != component
+            or observation.installation_identity != binding.instance_id
+            or observation.selected_instance_identity != binding.instance_id
+            or observation.artifact != readback_requests[component].artifact.correlation
+            or not observation.single_operational_installation_verified
+            or observation.health_evidence_reference is None
+        ):
+            return ManagedSingleProductInstallationResult(
+                operation_id, plan.deployment_id, "READINESS_FAILED",
+                current.revision, (current.by_component[component].receipt_reference,),
+                None, (), tuple(currency.references),
+            )
+        readiness = _evidence_reference(observation.health_evidence_reference)
+        existing = current.composition_binding
+        if existing is None or (
+            existing.composition_id != composition_id
+            or existing.manifest_digest != composition_manifest_digest
+        ):
+            if existing != desired.composition_binding:
+                raise ManagedForgeEPInstallationError(
+                    "single-product composition provenance changed after review"
+                )
+            material = json.dumps({
+                "operation_id": operation_id,
+                "deployment_id": current.deployment_id,
+                "component": component,
+                "instance_id": binding.instance_id,
+                "composition_id": composition_id,
+                "manifest_digest": composition_manifest_digest,
+                "product_receipt_reference": current.by_component[component].receipt_reference,
+                "readiness_receipt_reference": readiness,
+            }, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            receipt = "receipt:composition-" + sha256(material).hexdigest()
+            new_binding = ManagedCompositionBinding(
+                composition_id, composition_manifest_digest, receipt
+            )
+            currency.require(
+                deployment_id=plan.deployment_id, mutation="composition-commit",
+                component=None, instance_id=None, operation_id=operation_id,
+            )
+            current = self.registry.replace(ManagedDeployment(
+                current.deployment_id, current.revision + 1, current.label,
+                current.components, None, MANAGED_DEPLOYMENT_SCHEMA_V2,
+                new_binding,
+            ), expected_revision=current.revision)
+        return ManagedSingleProductInstallationResult(
+            operation_id, plan.deployment_id, "COMPLETE", current.revision,
+            (current.by_component[component].receipt_reference,), None,
+            (readiness,), tuple(currency.references),
+        )

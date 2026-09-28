@@ -28,6 +28,7 @@ from .managed_install_flow import (
     FORGE_COMPONENT,
     ForgeEPPairingExecutor,
     ManagedForgeEPInstallationCoordinator,
+    ManagedSingleProductInstallationCoordinator,
 )
 from .managed_product_operation_admission import (
     AdmittedNativeProductOperation,
@@ -191,8 +192,9 @@ class NativeProductOperationDispatchReceipt:
     stable_plan_fingerprint: str
     operation_id: str
     product_receipt_references: tuple[str, ...]
-    pairing_receipt_reference: str
+    pairing_receipt_reference: str | None
     readiness_receipt_references: tuple[str, ...]
+    completed_components: tuple[str, ...] = _COMPONENTS
 
     def canonical_json_bytes(self) -> bytes:
         completions = [
@@ -202,7 +204,7 @@ class NativeProductOperationDispatchReceipt:
                 "dashboard_url": None,
                 "service_scope": None,
             }
-            for component in _COMPONENTS
+            for component in self.completed_components
         ]
         return json.dumps(
             {
@@ -236,6 +238,12 @@ class ManagedProductOperationDispatcher:
         if not callable(getattr(resolver, "resolve", None)):
             raise TypeError("helper-owned product route resolver is required")
         self.coordinator = coordinator
+        self.single_coordinator = ManagedSingleProductInstallationCoordinator(
+            operations_root=coordinator.operations_root,
+            component_operations_root=coordinator.component_operations_root,
+            registry=coordinator.registry,
+            currency_guard=coordinator.currency_guard,
+        )
         self.resolver = resolver
 
     def dispatch(
@@ -246,10 +254,6 @@ class ManagedProductOperationDispatcher:
         route = self.resolver.resolve(admitted)
         if not isinstance(route, ResolvedManagedProductRoute):
             raise ManagedProductOperationDispatchError("product resolver returned an invalid route")
-        if set(route.adapters) != set(_COMPONENTS) or route.pairing_executor is None:
-            raise ManagedProductOperationDispatchError(
-                "single-component durable product execution is not yet available"
-            )
         request = admitted.request
         current = admitted.current_deployment
         observed = self.coordinator.registry.load(request.deployment_id)
@@ -267,6 +271,7 @@ class ManagedProductOperationDispatcher:
             )
 
         operations = {component.identity: component for component in request.components}
+        components = tuple(sorted(route.adapters))
         manifest_components = {
             component.identity: component for component in admitted.manifest.components
         }
@@ -274,16 +279,12 @@ class ManagedProductOperationDispatcher:
             request.deployment_id,
             1 if current is None else current.revision,
             None if current is None else current.label,
-            (
-                ManagedComponentBinding(
-                    FORGE_COMPONENT, route.forge_instance_id, "receipt:planned-forge"
-                ),
-                ManagedComponentBinding(
-                    EP_COMPONENT,
-                    route.engineering_platform_instance_id,
-                    "receipt:planned-ep",
-                ),
-            ),
+            tuple(ManagedComponentBinding(
+                component,
+                route.forge_instance_id if component == FORGE_COMPONENT
+                    else route.engineering_platform_instance_id,
+                f"receipt:planned-{component}",
+            ) for component in components),
             None if current is None else current.peer_binding,
             schema=current.schema if current is not None else MANAGED_DEPLOYMENT_SCHEMA_V1,
             composition_binding=(
@@ -295,7 +296,7 @@ class ManagedProductOperationDispatcher:
             desired,
             product_actions={
                 component: _PRODUCT_ACTIONS[operations[component].change]
-                for component in _COMPONENTS
+                for component in components
             },
         )
         readbacks = {
@@ -307,7 +308,7 @@ class ManagedProductOperationDispatcher:
                 route,
                 readback=True,
             )
-            for component in _COMPONENTS
+            for component in components
         }
         mutations = {
             component: _component_request(
@@ -318,27 +319,33 @@ class ManagedProductOperationDispatcher:
                 route,
                 readback=False,
             )
-            for component in _COMPONENTS
+            for component in components
             if operations[component].change != "retain"
         }
-        result = self.coordinator.execute(
-            request.operation_id,
-            plan,
-            mutation_requests=mutations,
-            readback_requests=readbacks,
-            adapters=route.adapters,
-            pairing_executor=route.pairing_executor,
-            composition_id=admitted.manifest.composition_id,
-            composition_manifest_digest=admitted.manifest.manifest_digest,
-        )
+        if len(components) == 2:
+            result = self.coordinator.execute(
+                request.operation_id, plan,
+                mutation_requests=mutations, readback_requests=readbacks,
+                adapters=route.adapters, pairing_executor=route.pairing_executor,
+                composition_id=admitted.manifest.composition_id,
+                composition_manifest_digest=admitted.manifest.manifest_digest,
+            )
+        else:
+            result = self.single_coordinator.execute(
+                request.operation_id, plan,
+                mutation_requests=mutations, readback_requests=readbacks,
+                adapters=route.adapters,
+                composition_id=admitted.manifest.composition_id,
+                composition_manifest_digest=admitted.manifest.manifest_digest,
+            )
         if result.state != "COMPLETE":
             raise ManagedProductOperationDispatchError(
                 f"product saga did not complete: {result.state}"
             )
         if (
-            len(result.product_receipt_references) != 2
-            or result.pairing_receipt_reference is None
-            or len(result.readiness_receipt_references) != 2
+            len(result.product_receipt_references) != len(components)
+            or len(result.readiness_receipt_references) != len(components)
+            or (result.pairing_receipt_reference is None) != (len(components) == 1)
         ):
             raise ManagedProductOperationDispatchError(
                 "terminal product saga evidence is incomplete"
@@ -350,6 +357,7 @@ class ManagedProductOperationDispatcher:
             tuple(sorted(result.product_receipt_references)),
             result.pairing_receipt_reference,
             tuple(sorted(result.readiness_receipt_references)),
+            components,
         )
 
 

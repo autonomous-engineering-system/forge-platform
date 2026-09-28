@@ -24,6 +24,7 @@ from forge_platform.managed_deployments import (
 from forge_platform.managed_install_flow import (
     ManagedForgeEPInstallationCoordinator,
     ManagedForgeEPInstallationError,
+    ManagedSingleProductInstallationCoordinator,
 )
 from forge_platform.managed_pairing import ManagedPairingEvidence
 
@@ -437,6 +438,105 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                     composition_id="forge-ep-qualified-v3",
                     composition_manifest_digest="sha256:" + "c" * 64,
                 )
+
+
+class ManagedSingleProductInstallFlowTests(unittest.TestCase):
+    def _fixture(self, directory, *, pending=False, adapter=None):
+        root = Path(directory).resolve()
+        registry = ManagedDeploymentRegistry(root / "registry")
+        guard = Guard()
+        coordinator = ManagedSingleProductInstallationCoordinator(
+            operations_root=root / "flow",
+            component_operations_root=root / "components",
+            registry=registry,
+            currency_guard=guard,
+        )
+        product = adapter or Adapter("forge-runtime", "forge-prod", pending_once=pending)
+        desired = ManagedDeployment(
+            "production", 1, None, (binding("forge-runtime", "forge-prod"),)
+        )
+        plan = ManagedDeploymentPlanner.plan(None, desired)
+        mutation = request("forge-runtime", "forge-prod", "mutate-forge")
+        readback = request("forge-runtime", "forge-prod", "read-forge")
+        return coordinator, registry, guard, product, plan, mutation, readback
+
+    @staticmethod
+    def _execute(coordinator, plan, mutation, readback, product):
+        return coordinator.execute(
+            "single-install", plan,
+            mutation_requests={"forge-runtime": mutation},
+            readback_requests={"forge-runtime": readback},
+            adapters={"forge-runtime": product},
+            composition_id="forge-only-qualified",
+            composition_manifest_digest="sha256:" + "c" * 64,
+        )
+
+    def test_exact_single_product_commit_and_duplicate_do_not_touch_other_deployment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            coordinator, registry, guard, product, plan, mutation, readback = self._fixture(directory)
+            unrelated = ManagedDeployment(
+                "other", 1, None,
+                (binding("engineering-platform-server", "ep-other"),),
+            )
+            registry.create(unrelated)
+            first = self._execute(coordinator, plan, mutation, readback, product)
+            self.assertEqual(first.state, "COMPLETE")
+            self.assertEqual(len(first.product_receipt_references), 1)
+            self.assertEqual(len(first.readiness_receipt_references), 1)
+            self.assertIsNone(first.pairing_receipt_reference)
+            self.assertEqual(product.execute_calls, 1)
+            self.assertEqual(registry.load("other"), unrelated)
+            self.assertEqual(
+                registry.load("production").composition_binding.composition_id,
+                "forge-only-qualified",
+            )
+            second = self._execute(coordinator, plan, mutation, readback, product)
+            self.assertEqual(second.state, "COMPLETE")
+            self.assertEqual(product.execute_calls, 1)
+            self.assertEqual(registry.load("other"), unrelated)
+
+    def test_interrupted_single_product_resumes_same_operation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            coordinator, registry, guard, product, plan, mutation, readback = self._fixture(
+                directory, pending=True
+            )
+            first = self._execute(coordinator, plan, mutation, readback, product)
+            self.assertEqual(first.state, "RECOVERY_PENDING")
+            self.assertIsNone(registry.load("production"))
+            second = self._execute(coordinator, plan, mutation, readback, product)
+            self.assertEqual(second.state, "COMPLETE")
+            self.assertEqual(product.execute_calls, 1)
+            self.assertEqual(product.resume_calls, 1)
+            self.assertEqual(
+                registry.load("production").composition_binding.composition_id,
+                "forge-only-qualified",
+            )
+
+    def test_readiness_failure_keeps_composition_uncommitted(self):
+        class DegradesAfterProduct(Adapter):
+            def readback(self, req):
+                if self.readback_calls >= 2:
+                    self.ready = False
+                return super().readback(req)
+
+        with tempfile.TemporaryDirectory() as directory:
+            product = DegradesAfterProduct("forge-runtime", "forge-prod")
+            coordinator, registry, guard, product, plan, mutation, readback = self._fixture(
+                directory, adapter=product
+            )
+            result = self._execute(coordinator, plan, mutation, readback, product)
+            self.assertEqual(result.state, "READINESS_FAILED")
+            self.assertIsNone(registry.load("production").composition_binding)
+            self.assertEqual(product.execute_calls, 1)
+
+    def test_single_product_rejects_foreign_readback_before_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            coordinator, registry, guard, product, plan, mutation, readback = self._fixture(directory)
+            foreign = request("forge-runtime", "forge-other", "read-other")
+            with self.assertRaisesRegex(ManagedForgeEPInstallationError, "reviewed target"):
+                self._execute(coordinator, plan, mutation, foreign, product)
+            self.assertEqual(product.execute_calls, 0)
+            self.assertIsNone(registry.load("production"))
 
 
 if __name__ == "__main__":
