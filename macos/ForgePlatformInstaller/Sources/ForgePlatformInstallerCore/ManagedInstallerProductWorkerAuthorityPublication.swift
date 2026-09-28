@@ -316,6 +316,10 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
     let routes: [ManagedInstallerProductWorkerRouteAuthority]
     let singleRoutes: [ManagedInstallerProductWorkerSingleRouteAuthority]
 
+    var usesVenvSlots: Bool {
+        routes.first?.forgeVenvSlotName != nil || singleRoutes.first?.venvSlotName != nil
+    }
+
     init(
         installerRelease: VerifiedInstallerRelease,
         candidateManifests: [ManagedInstallerProductWorkerManifestAuthority],
@@ -383,8 +387,7 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
     func canonicalJSONData() -> Data {
         var fields: [String: StrictJSONResourceValue] = [
             "schema": .string(
-                (routes.first?.forgeVenvSlotName != nil
-                    || singleRoutes.first?.venvSlotName != nil)
+                usesVenvSlots
                     ? Self.slotSchema
                     : (singleRoutes.isEmpty ? Self.schema : Self.singleSchema)
             ),
@@ -399,7 +402,7 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
             "installed_manifests": .array(installedManifests.map(Self.manifestValue)),
             "routes": .array(routes.map(Self.routeValue)),
         ]
-        if !singleRoutes.isEmpty || routes.first?.forgeVenvSlotName != nil {
+        if !singleRoutes.isEmpty || usesVenvSlots {
             fields["single_routes"] = .array(singleRoutes.map(Self.singleRouteValue))
         }
         return StrictSignedJSON.canonicalPayload(from: .object(fields))
@@ -552,6 +555,32 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
     func publishProductWorkerAuthority(
         _ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
         expectedExistingSHA256: String? = nil
+    ) -> Result<
+        ManagedInstallerProductWorkerAuthorityPublicationReceipt,
+        ManagedInstallerProductWorkerAuthorityPublicationFailure
+    > {
+        guard !snapshot.usesVenvSlots else { return .failure(.invalidAuthority) }
+        return publish(snapshot, expectedExistingSHA256: expectedExistingSHA256)
+    }
+
+    func publishVerifiedProductWorkerAuthority(
+        _ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
+        evidence: [ManagedInstallerProductWorkerVenvPublicationEvidence],
+        reader: any ManagedInstallerProductWorkerVenvReading,
+        expectedExistingSHA256: String? = nil
+    ) -> Result<
+        ManagedInstallerProductWorkerAuthorityPublicationReceipt,
+        ManagedInstallerProductWorkerAuthorityPublicationFailure
+    > {
+        guard ManagedInstallerProductWorkerVenvPublicationAdmission.accepts(
+            snapshot, evidence: evidence, reader: reader
+        ) else { return .failure(.invalidAuthority) }
+        return publish(snapshot, expectedExistingSHA256: expectedExistingSHA256)
+    }
+
+    private func publish(
+        _ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
+        expectedExistingSHA256: String?
     ) -> Result<
         ManagedInstallerProductWorkerAuthorityPublicationReceipt,
         ManagedInstallerProductWorkerAuthorityPublicationFailure
