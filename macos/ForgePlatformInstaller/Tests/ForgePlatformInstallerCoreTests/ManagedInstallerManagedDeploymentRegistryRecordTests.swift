@@ -212,6 +212,33 @@ final class ManagedInstallerManagedDeploymentRegistryRecordTests: XCTestCase {
 
         wrong = baseline
         preserved = preservedForge()
+        preserved["version"] = .string("2.7.36")
+        preserved["source_revision"] = .string(
+            "ed1e623ef3cedd8c4f720510e0052409b2d5ab1f"
+        )
+        preserved["artifact_digest"] = .string(
+            "sha256:c10e9584649538f2f1547bb09fd3982cc3495dcf34ef807d66463661fdd5cd68"
+        )
+        wrong["preserved_components"] = .array([.object(preserved)])
+        reject(wrong)
+
+        wrong = baseline
+        var oldEP = preservedEP()
+        oldEP["version"] = .string("2.3.103")
+        oldEP["source_revision"] = .string(
+            "9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2"
+        )
+        oldEP["artifact_digest"] = .string(
+            "sha256:0199a7aab3b25260b6cd4ad53f0aecc7e59c9403ef9a3bd4639993ab9e56910c"
+        )
+        wrong["components"] = .array([])
+        wrong["preserved_components"] = .array([
+            .object(preservedForge()), .object(oldEP),
+        ])
+        reject(wrong)
+
+        wrong = baseline
+        preserved = preservedForge()
         preserved["instance_id"] = .string("ep-one")
         preserved["forge_runtime_id"] = .string("ep-one")
         wrong["preserved_components"] = .array([.object(preserved)])
@@ -258,9 +285,9 @@ final class ManagedInstallerManagedDeploymentRegistryRecordTests: XCTestCase {
             "previous_receipt_reference": .string("receipt:forge-one"),
             "preserve_operation_id": .string("preserve-forge"),
             "preserve_receipt_digest": .string("sha256:" + String(repeating: "f", count: 64)),
-            "version": .string("2.7.36"),
-            "source_revision": .string("ed1e623ef3cedd8c4f720510e0052409b2d5ab1f"),
-            "artifact_digest": .string("sha256:c10e9584649538f2f1547bb09fd3982cc3495dcf34ef807d66463661fdd5cd68"),
+            "version": .string("2.7.37"),
+            "source_revision": .string("a78523603d6ea081d07875ea6b557e73b5d4fe63"),
+            "artifact_digest": .string("sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938"),
             "forge_runtime_id": .string("forge-one"),
             "forge_installation_id": .string("Install-A"),
         ]
@@ -273,9 +300,9 @@ final class ManagedInstallerManagedDeploymentRegistryRecordTests: XCTestCase {
             "previous_receipt_reference": .string("receipt:ep-one"),
             "preserve_operation_id": .string("preserve-ep"),
             "preserve_receipt_digest": .string("sha256:" + String(repeating: "e", count: 64)),
-            "version": .string("2.3.103"),
-            "source_revision": .string("9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2"),
-            "artifact_digest": .string("sha256:0199a7aab3b25260b6cd4ad53f0aecc7e59c9403ef9a3bd4639993ab9e56910c"),
+            "version": .string("2.3.104"),
+            "source_revision": .string("cfce69892278ee2b6c14412c171f5f33596acb0e"),
+            "artifact_digest": .string("sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb"),
             "forge_runtime_id": .null,
             "forge_installation_id": .null,
         ]

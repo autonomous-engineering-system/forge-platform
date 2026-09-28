@@ -2,18 +2,14 @@
 
 **Assignment:** `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923`  
 **Owning repository:** `autonomous-engineering-system/forge-platform`
-**Producer qualification hold (2026-09-28):** Forge 2.7.36
-(`ed1e623ef3cedd8c4f720510e0052409b2d5ab1f`) and Engineering Platform
-2.3.103 (`9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2`) are the currently
-modelled source contracts, not approved first-release production pins. The
-released Forge 2.7.36 wheel has a proven unsafe PRESERVE ownership admission;
-the Forge 2.7.37 security change is merged but has no public release or
-published-wheel conformance yet. EP 2.3.103 has a separate lifecycle ownership
-gap under protected remediation. The exact producer disposition is owned by
-[forge#142](https://github.com/pcvantol/forge/issues/142). Forge Platform must
-keep production composition and live lifecycle qualification on hold until
-immutable corrected producer evidence is delivered and accepted in
-[forge#141](https://github.com/pcvantol/forge/issues/141).
+**Producer qualification (2026-09-28):** Forge 2.7.37
+(`a78523603d6ea081d07875ea6b557e73b5d4fe63`) and Engineering Platform
+2.3.104 (`cfce69892278ee2b6c14412c171f5f33596acb0e`) have exact
+`RELEASE_COMPLETE` receipts and released-wheel lifecycle conformance in
+[forge#142 revision 24](https://github.com/pcvantol/forge/issues/142#issuecomment-5873771111).
+Forge 2.7.36 and EP 2.3.103 remain historical `GAP_PROVEN` artifacts. Producer
+qualification alone does not approve a production composition or live installer
+claim; those remain held under [forge#141](https://github.com/pcvantol/forge/issues/141).
 **Status:** source implementation under protected qualification; public
 installer 0.2.4 is an earlier qualification release, not the first functional
 installer. No live Forge/EP lifecycle PASS is claimed.
@@ -126,7 +122,7 @@ runtime paths.
 
 ## Engineering Platform adapter
 
-The EP adapter consumes the frozen 2.3.103
+The EP adapter consumes the frozen 2.3.104
 `engineering-platform.system-provisioner/v1` command boundary and its additive
 `engineering-platform.system-instance-lifecycle/v1` extension.
 
@@ -158,7 +154,7 @@ and is terminal only with the product-owned purge tombstone.
 
 ## Forge adapter
 
-Forge 2.7.36 has a deliberately different frozen boundary from EP. It retains
+Forge 2.7.37 has a deliberately different frozen boundary from EP. It retains
 the existing `forge-server-runtime-lifecycle/v1` update/uninstall boundary and
 adds `forge-server-instance-lifecycle/v1` for preserved instances.
 
@@ -180,8 +176,8 @@ layout assigned to it by the Forge deployment contract. The LaunchDaemon uses
 an exact absolute Forge executable, exact data root, non-root service account,
 loopback endpoint and private bearer-file reference.
 
-The installer consumes the 2.7.36 assessment only from an explicitly bound
-2.7.36 lifecycle executable, exact installed artifact, qualified staged wheel
+The installer consumes the 2.7.37 assessment only from an explicitly bound
+2.7.37 lifecycle executable, exact installed artifact, qualified staged wheel
 and exact product instance/installation IDs. Missing or contradictory evidence
 remains `UNKNOWN` or fails closed. A positive assessment alone does not
 complete the reviewed-update, updater-resume, readiness or registry gates.
@@ -540,10 +536,10 @@ Source qualification must include Python, Swift and hosted macOS validation for:
 - v2 manifest/session projection;
 - exact credential-free managed-Python asset transport, private staging,
   no-follow readback and digest rejection;
-- EP 2.3.103 provisioner and instance-lifecycle command correlation;
+- EP 2.3.104 provisioner and instance-lifecycle command correlation;
 - Forge product-init identity binding;
 - Forge system-service target isolation;
-- Forge 2.7.36 product-owned read-only update assessment, exact-target update
+- Forge 2.7.37 product-owned read-only update assessment, exact-target update
   execution/resume, durable legacy uninstall and preserve/purge/restore dispatch,
   including stale, ambiguous, tampered, purged, wrong-instance and
   missing-terminal-evidence failures;

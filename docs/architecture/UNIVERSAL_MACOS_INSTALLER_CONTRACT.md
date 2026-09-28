@@ -1,12 +1,12 @@
 # Universal macOS Installer contract
 
 **Current qualification hold (2026-09-28):** The historical implementation
-snapshot below is not production admission. Forge 2.7.36 has a proven released
-PRESERVE ownership gap, Forge 2.7.37 is not yet publicly released and
-published-wheel-qualified, and EP 2.3.103 lifecycle ownership remediation is
-under protected review in [forge#142](https://github.com/pcvantol/forge/issues/142).
-Production composition and live Forge/EP lifecycle qualification remain blocked
-until exact immutable producer evidence is accepted in
+snapshot below is not production admission. Forge 2.7.36 and EP 2.3.103 have
+proven lifecycle ownership gaps. Their remediated Forge 2.7.37 and EP 2.3.104
+releases are published and released-wheel-qualified in
+[forge#142 revision 24](https://github.com/pcvantol/forge/issues/142#issuecomment-5873771111).
+Production composition and live Forge/EP lifecycle qualification remain held
+until Forge Platform consumes the exact producer evidence in
 [forge#141](https://github.com/pcvantol/forge/issues/141). The installer 0.2.4
 qualification helper is registered on one Mac, but that observation does not
 prove the first functional release or cold reboot before interactive login.
@@ -745,8 +745,8 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 
 The active `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923` source slice
 implements the ADR-0007 management model. Its source contracts currently model
-Forge 2.7.36 at `ed1e623ef3cedd8c4f720510e0052409b2d5ab1f` and Engineering
-Platform 2.3.103 at `9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2`.
+Forge 2.7.37 at `a78523603d6ea081d07875ea6b557e73b5d4fe63` and Engineering
+Platform 2.3.104 at `cfce69892278ee2b6c14412c171f5f33596acb0e`.
 The lifecycle producer hold above supersedes any earlier qualification claim
 for those exact artifacts. Binding corrected qualified producers into the
 production composition and released installer remains consumer work. The exact implementation/limitations
@@ -759,8 +759,8 @@ provider fan-out coordination, the EP system-provisioner adapter, and the Forge
 Server deployment/service adapter.
 
 These source surfaces do not by themselves claim installer publication or live
-Mac success. Forge 2.7.36 supplies product-owned update assessment, legacy
-uninstall and preserve/purge/restore boundaries; EP 2.3.103 supplies the matching
+Mac success. Forge 2.7.37 supplies product-owned update assessment, legacy
+uninstall and preserve/purge/restore boundaries; EP 2.3.104 supplies the matching
 system-instance lifecycle. Forge Platform must still bind the exact producer
 executables and artifacts and complete reviewed lifecycle execution before those
 operations can be released. Signing/notarization, provider-supported real authentication,

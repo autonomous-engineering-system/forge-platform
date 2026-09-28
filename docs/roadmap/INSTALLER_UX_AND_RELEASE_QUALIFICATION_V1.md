@@ -14,21 +14,23 @@ and [ownership matrix](../architecture/OWNERSHIP_MATRIX.md); it does not create 
 second provisioning engine or generic workflow-policy authority.
 
 Current lifecycle observations: Platform `e92f4e4151080f7c2a9d4fdeba1541b1407d7907`,
-EP `9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2`,
-Forge `ed1e623ef3cedd8c4f720510e0052409b2d5ab1f`,
+EP `cfce69892278ee2b6c14412c171f5f33596acb0e`,
+Forge `a78523603d6ea081d07875ea6b557e73b5d4fe63`,
 Workspace `36d294836cb653361fda3972de38acce3d2970f8`.
 These pins are observations, not enduring peer status or installed evidence.
 
 | Producer | Released baseline | Lifecycle contract | Roadmap status |
 | --- | --- | --- | --- |
-| Forge | 2.7.36 / `forge-v2.7.36` / source `ed1e623…` | `forge-server-instance-lifecycle/v1` | `QUALIFIED` producer evidence; consumer binding not yet qualified |
-| Engineering Platform | 2.3.103 / `engineering-platform-v2.3.103` / source `9b1b9d4…` | `engineering-platform.system-instance-lifecycle/v1` | `QUALIFIED` producer evidence; consumer binding not yet qualified |
+| Forge | 2.7.37 / `forge-v2.7.37` / source `a785236…` | `forge-server-instance-lifecycle/v1` | `QUALIFIED` released-wheel evidence; consumer binding not yet qualified |
+| Engineering Platform | 2.3.104 / `engineering-platform-v2.3.104` / source `cfce698…` | `engineering-platform.system-instance-lifecycle/v1` | `QUALIFIED` released-wheel evidence; consumer binding not yet qualified |
 
 `QUALIFIED` above applies only to the owning product releases. It does not
 promote any Forge Platform adapter, composition, installer release or live Mac
 scenario. `DESIGNED` below means the consumer semantics are frozen in these
 canonical documents without source/release evidence; `PLANNED` means no such
 consumer implementation claim is made.
+Forge 2.7.36 and EP 2.3.103 remain historical `GAP_PROVEN` producer artifacts;
+the exact remediated-wheel handoff is [forge#142 revision 24](https://github.com/pcvantol/forge/issues/142#issuecomment-5873771111).
 
 | Request | Existing owner/lane | Disposition |
 | --- | --- | --- |

@@ -35,10 +35,14 @@ class InstallerUXReleaseRoadmapTests(unittest.TestCase):
 
     def test_lifecycle_producer_evidence_and_consumer_status_are_separate(self):
         baselines = self.graph["lifecycle_producer_baselines"]
-        self.assertEqual(baselines["forge"]["version"], "2.7.36")
+        self.assertEqual(baselines["forge"]["version"], "2.7.37")
+        self.assertEqual(baselines["forge"]["wheel_sha256"],
+                         "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938")
         self.assertEqual(baselines["forge"]["contract"],
                          "forge-server-instance-lifecycle/v1")
-        self.assertEqual(baselines["engineering-platform"]["version"], "2.3.103")
+        self.assertEqual(baselines["engineering-platform"]["version"], "2.3.104")
+        self.assertEqual(baselines["engineering-platform"]["wheel_sha256"],
+                         "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb")
         self.assertEqual(baselines["engineering-platform"]["contract"],
                          "engineering-platform.system-instance-lifecycle/v1")
         self.assertTrue(all(item["status"] == "QUALIFIED" for item in baselines.values()))
