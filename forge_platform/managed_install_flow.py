@@ -396,6 +396,7 @@ class ManagedForgeEPInstallationCoordinator:
         current = self._commit_composition_provenance(
             operation_id,
             current=current,
+            reviewed_previous_binding=desired.composition_binding,
             composition_id=composition_id,
             composition_manifest_digest=composition_manifest_digest,
             pairing_reference=pairing_reference,
@@ -419,6 +420,7 @@ class ManagedForgeEPInstallationCoordinator:
         operation_id: str,
         *,
         current: ManagedDeployment,
+        reviewed_previous_binding: ManagedCompositionBinding | None,
         composition_id: str,
         composition_manifest_digest: str,
         pairing_reference: str,
@@ -426,15 +428,15 @@ class ManagedForgeEPInstallationCoordinator:
         currency: _CurrencyEvidence,
     ) -> ManagedDeployment:
         existing = current.composition_binding
-        if existing is not None:
-            if (
-                current.schema == MANAGED_DEPLOYMENT_SCHEMA_V2
-                and existing.composition_id == composition_id
-                and existing.manifest_digest == composition_manifest_digest
-            ):
-                return current
+        if existing is not None and (
+            current.schema == MANAGED_DEPLOYMENT_SCHEMA_V2
+            and existing.composition_id == composition_id
+            and existing.manifest_digest == composition_manifest_digest
+        ):
+            return current
+        if existing != reviewed_previous_binding:
             raise ManagedForgeEPInstallationError(
-                "managed deployment already carries different composition provenance"
+                "managed deployment composition provenance changed after review"
             )
         if current.peer_binding is None or current.peer_binding.receipt_reference != pairing_reference:
             raise ManagedForgeEPInstallationError(

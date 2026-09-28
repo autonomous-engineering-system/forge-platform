@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from forge_platform.component_operations import ProductUpdateAssessment
 from forge_platform.managed_deployments import ManagedDeploymentRegistry
 from forge_platform.managed_install_flow import ManagedForgeEPInstallationCoordinator
 from forge_platform.managed_product_operation_admission import (
@@ -29,6 +30,7 @@ from tests.installer.test_managed_product_operation_admission import (
     installer_release,
     request_payload,
     stored_deployment,
+    _refingerprint,
 )
 
 
@@ -235,6 +237,118 @@ class ManagedProductOperationDispatchTests(unittest.TestCase):
             self.assertEqual(
                 stored.by_component["engineering-platform-server"].instance_id,
                 "ep-new",
+            )
+
+    def test_existing_forge_update_commits_reviewed_new_composition_after_readiness(self) -> None:
+        class AvailableForgeAdapter(Adapter):
+            def assess_update(self, request):
+                return ProductUpdateAssessment(
+                    request.component, request.installation_identity,
+                    request.artifact.correlation, "UPDATE_AVAILABLE",
+                    "evidence:forge-update-available",
+                )
+
+        installed = composition_manifest(
+            composition_id="forge-ep-old", forge_version="1.0.0",
+            forge_digest=OLD_FORGE_DIGEST, ep_version="2.0.0",
+            ep_digest=OLD_EP_DIGEST,
+        )
+        candidate = composition_manifest(
+            composition_id="forge-ep-current", forge_version="1.1.0",
+            forge_digest=FORGE_DIGEST, ep_version="2.0.0",
+            ep_digest=OLD_EP_DIGEST, upgrade_from=("forge-ep-old",),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            registry = ManagedDeploymentRegistry(root / "registry")
+            registry.create(stored_deployment(installed))
+            payload = request_payload(candidate, installed=installed)
+            payload["components"][0]["change"] = "retain"
+            payload["components"][0]["update_assessment_reference"] = None
+            request = decoded(_refingerprint(payload))
+            admitted = admit_native_product_operation(
+                request, manifest=candidate, installed_manifest=installed,
+                registry=registry, current_installer_release=installer_release(),
+            )
+            forge = AvailableForgeAdapter("forge-runtime", "forge-prod")
+            ep = Adapter("engineering-platform-server", "ep-prod")
+            forge.active = True
+            ep.active = True
+            selected = ResolvedManagedProductRoute(
+                "forge-prod", "ep-prod",
+                {"forge-runtime": forge, "engineering-platform-server": ep},
+                Pairer(),
+            )
+            receipt = ManagedProductOperationDispatcher(
+                coordinator=coordinator(root, registry),
+                resolver=Resolver(selected),
+            ).dispatch(admitted)
+            stored = registry.load("production")
+            self.assertEqual(stored.composition_binding.composition_id, candidate.composition_id)
+            self.assertEqual(stored.composition_binding.manifest_digest, candidate.manifest_digest)
+            self.assertEqual(forge.execute_calls, 1)
+            self.assertEqual(ep.execute_calls, 0)
+            self.assertEqual(len(receipt.readiness_receipt_references), 2)
+
+    def test_interrupted_existing_forge_update_resumes_without_losing_provenance(self) -> None:
+        class PendingAvailableForgeAdapter(Adapter):
+            def assess_update(self, request):
+                return ProductUpdateAssessment(
+                    request.component, request.installation_identity,
+                    request.artifact.correlation, "UPDATE_AVAILABLE",
+                    "evidence:forge-update-available",
+                )
+
+        installed = composition_manifest(
+            composition_id="forge-ep-old", forge_version="1.0.0",
+            forge_digest=OLD_FORGE_DIGEST, ep_version="2.0.0",
+            ep_digest=OLD_EP_DIGEST,
+        )
+        candidate = composition_manifest(
+            composition_id="forge-ep-current", forge_version="1.1.0",
+            forge_digest=FORGE_DIGEST, ep_version="2.0.0",
+            ep_digest=OLD_EP_DIGEST, upgrade_from=("forge-ep-old",),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            registry = ManagedDeploymentRegistry(root / "registry")
+            registry.create(stored_deployment(installed))
+            payload = request_payload(candidate, installed=installed)
+            payload["components"][0]["change"] = "retain"
+            payload["components"][0]["update_assessment_reference"] = None
+            admitted = admit_native_product_operation(
+                decoded(_refingerprint(payload)), manifest=candidate,
+                installed_manifest=installed, registry=registry,
+                current_installer_release=installer_release(),
+            )
+            forge = PendingAvailableForgeAdapter(
+                "forge-runtime", "forge-prod", pending_once=True
+            )
+            ep = Adapter("engineering-platform-server", "ep-prod")
+            forge.active = ep.active = True
+            selected = ResolvedManagedProductRoute(
+                "forge-prod", "ep-prod",
+                {"forge-runtime": forge, "engineering-platform-server": ep},
+                Pairer(),
+            )
+            dispatcher = ManagedProductOperationDispatcher(
+                coordinator=coordinator(root, registry),
+                resolver=Resolver(selected),
+            )
+            with self.assertRaisesRegex(ManagedProductOperationDispatchError, "RECOVERY_PENDING"):
+                dispatcher.dispatch(admitted)
+            self.assertEqual(
+                registry.load("production").composition_binding.composition_id,
+                installed.composition_id,
+            )
+            receipt = dispatcher.dispatch(admitted)
+            self.assertEqual(len(receipt.readiness_receipt_references), 2)
+            self.assertEqual(forge.execute_calls, 1)
+            self.assertEqual(forge.resume_calls, 1)
+            self.assertEqual(ep.execute_calls, 0)
+            self.assertEqual(
+                registry.load("production").composition_binding.composition_id,
+                candidate.composition_id,
             )
 
     def test_existing_route_cannot_change_admitted_product_targets(self) -> None:

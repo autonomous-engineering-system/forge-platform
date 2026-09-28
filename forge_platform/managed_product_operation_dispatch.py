@@ -18,6 +18,7 @@ from typing import Mapping, Protocol
 from .component_operations import ComponentOperationRequest, ProductOperationAdapter
 from .ep_consumer_revocation import EPConsumerRevocationAdapter
 from .managed_deployments import (
+    MANAGED_DEPLOYMENT_SCHEMA_V1,
     ManagedComponentBinding,
     ManagedDeployment,
     ManagedDeploymentPlanner,
@@ -284,6 +285,10 @@ class ManagedProductOperationDispatcher:
                 ),
             ),
             None if current is None else current.peer_binding,
+            schema=current.schema if current is not None else MANAGED_DEPLOYMENT_SCHEMA_V1,
+            composition_binding=(
+                None if current is None else current.composition_binding
+            ),
         )
         plan = ManagedDeploymentPlanner.plan(
             current,
