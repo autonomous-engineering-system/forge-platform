@@ -716,22 +716,29 @@ and operational lock; Forge Platform must not add a second EP provisioner.
 | healthy exact artifact | retain/no change |
 | healthy different artifact with `UPDATE_AVAILABLE` | product-owned update |
 | exact artifact unhealthy | product-owned repair |
-| unselected installation with a published product-uninstall dispatcher | product-owned remove |
+| installed component selected for safe software removal | product-owned `PRESERVE`; retain exact identity/data and mark preserved inventory |
+| product-owned `UNINSTALLED_DATA_PRESERVED` with exact owning evidence | product-owned `RESTORE` of the same identity |
+| installed or preserved component selected for explicit permanent deletion | product-owned `PURGE` after destructive confirmation |
+| unselected legacy installation with only the published destructive product-uninstall dispatcher | product-owned legacy remove; never project it as preserve |
 | unknown/conflicting inventory, incompatible update, absent or not-yet-dispatchable removal contract, or identity mismatch | blocked |
 
 No product mutation is dispatched until self-update, installer capability, preflight, managed-Git, exact managed-Python, provider, manifest, and component-diff gates pass. A managed Git or Python install/upgrade forces a completed managed-tool receipt and fresh post-tool plan fingerprint before the journal can enter product operations. The installer keeps an operation-specific non-secret journal outside product CENTRAL/data stores. It serializes one non-terminal host operation, records operation ID, installer/composition/artifact/Python/venv identities, state transitions, typed receipt references, and cleanup/recovery state; it never records tokens, credentials, raw provider output, or arbitrary paths.
 
 The composition-level saga is `composition lock → exact artifact staging → product readback/compatibility → product-owned quiesce/backup/migrate/activate/verify/cleanup → authenticated discovery/pairing → cross-component readiness → receipt`.
 
-Products own installation locks, backup, database migration, activation, service registration, health-content validation, rollback, cleanup, and crash/reboot resume. Forge Platform does not write product data or implement a second migration/rollback engine. Automatic rollback is offered only when affected products supply compatible rollback/restore receipts. An irreversible migration failure remains `RECOVERY_PENDING`, with necessary product recovery artifacts retained. Installer cleanup covers only its own staging/download/cache material; product backup retention is owned by the product contract.
+Products own installation locks, backup, database migration, activation, service registration, health-content validation, rollback, lifecycle evidence, data preservation/deletion, cleanup, and crash/reboot resume. Forge Platform does not write product data or implement a second migration/rollback/lifecycle engine. Automatic rollback is offered only when affected products supply compatible rollback/restore receipts. Product-owned preserved-instance restore is a separate reviewed lifecycle operation, not migration rollback. An irreversible migration failure remains `RECOVERY_PENDING`, with necessary product recovery artifacts retained. Installer cleanup covers only its own staging/download/cache material; product backup and preserved-data retention are owned by the product contract.
 
 Discovery produces a candidate only. Product APIs verify product, instance, fingerprint, and capability and execute authenticated pairing. A changed endpoint, instance, or fingerprint never silently replaces a pinned binding, including for co-located components.
 
 ## Managed Installer V1 implementation — 2026-09-23
 
 The active `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923` source slice
-implements the ADR-0007 management model against the frozen Forge 2.7.35 and
-Engineering Platform 2.3.102 contracts. The exact implementation/limitations
+implements the ADR-0007 management model. Its accepted producer baseline is now
+Forge 2.7.36 at `ed1e623ef3cedd8c4f720510e0052409b2d5ab1f` and Engineering
+Platform 2.3.103 at `9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2`.
+Both protected releases and their additive lifecycle contracts are `QUALIFIED`;
+binding those versions into the production composition and released installer
+remains consumer work. The exact implementation/limitations
 are documented in [Managed Installer V1](MANAGED_INSTALLER_V1.md).
 
 This source now contains a durable managed-deployment registry and execution
@@ -741,12 +748,58 @@ provider fan-out coordination, the EP system-provisioner adapter, and the Forge
 Server deployment/service adapter.
 
 These source surfaces do not by themselves claim installer publication or live
-Mac success. Forge 2.7.35 supplies product-owned update assessment and
-uninstall boundaries. Forge Platform must still bind the exact producer
-executable and artifacts and complete reviewed update/remove execution before
-those operations can be released. Signing/notarization, provider-supported real authentication,
+Mac success. Forge 2.7.36 supplies product-owned update assessment, legacy
+uninstall and preserve/purge/restore boundaries; EP 2.3.103 supplies the matching
+system-instance lifecycle. Forge Platform must still bind the exact producer
+executables and artifacts and complete reviewed lifecycle execution before those
+operations can be released. Signing/notarization, provider-supported real authentication,
 fresh-Mac installation, cold reboot and no-user-login readiness require their
 own later exact evidence.
+
+### Preserve / purge / restore consumer contract
+
+The product-owned lifecycle states are:
+
+```text
+INSTALLED
+UNINSTALLED_DATA_PRESERVED
+PURGED_OR_ABSENT
+```
+
+The installer persists only exact receipt references and its own durable
+operation/recovery state. A preserved instance remains visible and bound to the
+same deployment and opaque product identity; directory or service absence is not
+`ABSENT`. Restore is admitted only by the named owning preserve operation and
+same version/source/artifact/data evidence. Forge Platform never creates a new
+identity over preserved data, edits CENTRAL/config/provider state, or treats a
+legacy destructive receipt as preservation evidence.
+
+`PRESERVE` is the default remove-software disposition. `PURGE` is a separate
+destructive operation with fresh exact-target confirmation and no automatic
+fallback from preserve. A product-owned purge tombstone permanently invalidates
+older preserve evidence; later ordinary install produces clean/new instance
+state. Forge keeps LaunchDaemon choreography deployment-owned around its product
+admission, while EP owns its LaunchDaemon lifecycle and restores it inactive.
+Both products retain shared immutable runtime slots only according to their own
+contracts.
+
+Preserved provider/auth material is never current verification. Restore must
+complete fresh product-owned provider readback/repair and may require a new human
+authentication ceremony. Historical Forge↔EP pairing is revalidated or
+re-established against both exact restored instances before readiness. User-owned
+EP Project Agents, shared provider accounts and unrelated deployments remain
+outside purge scope.
+
+The GUI, CLI and privileged helper consume one canonical reviewed lifecycle plan
+and receipt grammar. Durable operation IDs and request digests survive crash,
+relaunch and reboot; retry resumes the same operation. Changed target/revision,
+concurrent update or lifecycle work, tamper, link, foreign root, stale plan,
+wrong instance or replay with different bytes fails closed. Product terminal
+receipt precedes service continuation and the CAS registry commit, so partial
+failure stays recoverable without inventing completion.
+
+This contract is `DESIGNED`. No current public installer release or source-only
+fixture proves the consumer adapter, production composition or live lifecycle.
 
 ## Current source and remaining work
 
