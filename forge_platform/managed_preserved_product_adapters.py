@@ -7,6 +7,7 @@ Service, provider, pairing and registry continuation remain separate gates.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -49,6 +50,15 @@ _MAX_PRODUCT_JSON_BYTES = 128 * 1024
 
 class ManagedPreservedProductAdapterError(RuntimeError):
     """An exact product lifecycle invocation lacks owning terminal evidence."""
+
+
+@dataclass(frozen=True)
+class ProductPreservedLifecycleInvocation:
+    """Ephemeral owning evidence for guarded service and registry continuation."""
+
+    terminal: ProductPreservedLifecycleTerminal
+    receipt: Mapping[str, object]
+    status: Mapping[str, object]
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -133,7 +143,7 @@ class ForgePreservedProductAdapter:
     def invoke(
         self, review: ManagedPreservedLifecycleReview, *,
         registry: ManagedDeploymentRegistry, installed_manifest: CompositionManifest,
-    ) -> ProductPreservedLifecycleTerminal:
+    ) -> ProductPreservedLifecycleInvocation:
         _fresh_review(
             review, component=FORGE_COMPONENT, instance_id=self.target.instance_id,
             artifact=self.artifact, registry=registry,
@@ -178,13 +188,14 @@ class ForgePreservedProductAdapter:
         ))
         status = _product_json(status_result.returncode, status_result.stdout)
         try:
-            return validate_terminal_preserved_lifecycle(
+            terminal = validate_terminal_preserved_lifecycle(
                 component=FORGE_COMPONENT, operation=review.operation,
                 operation_id=review.operation_id, instance_id=self.target.instance_id,
                 artifact=self.artifact, request_digest=_forge_product_digest(request),
                 receipt=receipt, status=status,
                 preserve_operation_id=review.preserve_operation_id,
             )
+            return ProductPreservedLifecycleInvocation(terminal, receipt, status)
         except ProductPreservedLifecycleError as error:
             raise ManagedPreservedProductAdapterError(
                 "Forge product lifecycle terminal evidence is invalid"
@@ -220,7 +231,7 @@ class EPPreservedProductAdapter:
     def invoke(
         self, review: ManagedPreservedLifecycleReview, *,
         registry: ManagedDeploymentRegistry, installed_manifest: CompositionManifest,
-    ) -> ProductPreservedLifecycleTerminal:
+    ) -> ProductPreservedLifecycleInvocation:
         _fresh_review(
             review, component=EP_COMPONENT, instance_id=self.target.instance_id,
             artifact=self.artifact, registry=registry,
@@ -272,13 +283,14 @@ class EPPreservedProductAdapter:
         if not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None:
             raise ManagedPreservedProductAdapterError("EP owning request digest is unavailable")
         try:
-            return validate_terminal_preserved_lifecycle(
+            terminal = validate_terminal_preserved_lifecycle(
                 component=EP_COMPONENT, operation=review.operation,
                 operation_id=review.operation_id, instance_id=self.target.instance_id,
                 artifact=self.artifact, request_digest=digest,
                 receipt=receipt, status=status,
                 preserve_operation_id=review.preserve_operation_id,
             )
+            return ProductPreservedLifecycleInvocation(terminal, receipt, status)
         except ProductPreservedLifecycleError as error:
             raise ManagedPreservedProductAdapterError(
                 "EP product lifecycle terminal evidence is invalid"
