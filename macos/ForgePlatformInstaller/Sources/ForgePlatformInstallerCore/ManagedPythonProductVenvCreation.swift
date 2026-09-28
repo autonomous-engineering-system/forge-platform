@@ -16,12 +16,12 @@ protocol ManagedPythonProductVenvCreating: Sendable {
 
 struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, Sendable {
     private let layout: MacOSManagedPythonProductVenvSlotLayout
-    private let runtimeVerifier: MacOSManagedPythonProductVenvRuntimeVerifier
+    private let runtimeVerifier: any ManagedPythonProductVenvRuntimeVerifying
     private let readback: MacOSManagedPythonProductVenvReadback
 
     init(
         layout: MacOSManagedPythonProductVenvSlotLayout,
-        runtimeVerifier: MacOSManagedPythonProductVenvRuntimeVerifier,
+        runtimeVerifier: any ManagedPythonProductVenvRuntimeVerifying,
         readback: MacOSManagedPythonProductVenvReadback
     ) {
         self.layout = layout
