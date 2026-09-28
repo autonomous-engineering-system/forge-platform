@@ -281,7 +281,8 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 managedDeploymentRouteCoordinator: routeCoordinator,
                 removalReviewTransport: productTransport,
                 removalTransport: productTransport,
-                preservedLifecycleReviewTransport: productTransport
+                preservedLifecycleReviewTransport: productTransport,
+                preservedLifecycleTransport: productTransport
             ))
         } catch {
             // Do not leak a filesystem location, architecture detail, network

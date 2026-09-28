@@ -1,7 +1,208 @@
+import CryptoKit
 import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class SelfUpdateCoordinatorTests: XCTestCase {
+
+    func testReleasedRuntimeExecutesOnlyFreshReviewedPreserveWithV3Readback() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try lifecycleIntent(release: record.release)
+        let proposal = try lifecycleProposal(intent)
+        let inventory = try lifecycleInventory(preserved: false)
+        let session = ManagedInstallerPreservedLifecycleReviewSession(
+            inventory: inventory, target: inventory.existing[0],
+            inventoryEvidenceReference: inventory.evidenceReference,
+            intent: intent, proposal: proposal
+        )
+        let request = try ManagedInstallerPreservedLifecycleRequest(
+            intent: intent, proposal: proposal
+        )
+        let receipt = try ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+            lifecycleReceipt(request), request: request
+        )
+        let route = LifecycleInventoryRouteSpy(inventories: [
+            inventory, inventory, try lifecycleInventory(preserved: true),
+        ])
+        let review = LifecycleReviewTransportSpy(reply: proposal.canonicalJSONData())
+        let execution = LifecycleExecutionTransportSpy(reply: receipt.canonicalJSONData())
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(record)),
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            managedDeploymentRouteCoordinator: route,
+            preservedLifecycleReviewTransport: review,
+            preservedLifecycleTransport: execution
+        )
+        let currency = await coordinator.recheckInstallerBeforeMutation(
+            currentVersion: identity.version
+        )
+        XCTAssertEqual(currency, .current(record.release))
+        let result = await coordinator.executeReviewedPreservedLifecycle(session)
+        XCTAssertEqual(result, .success(receipt))
+        let reviewCalls = await review.calls()
+        XCTAssertEqual(reviewCalls, [intent.canonicalJSONData()])
+        let executionCalls = await execution.calls()
+        XCTAssertEqual(executionCalls, [request.canonicalJSONData()])
+        let inventoryReads = await route.readCount()
+        XCTAssertEqual(inventoryReads, 3)
+    }
+
+    func testReleasedRuntimeRejectsPreserveReviewDriftBeforeMutation() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try lifecycleIntent(release: record.release)
+        let proposal = try lifecycleProposal(intent)
+        let inventory = try lifecycleInventory(preserved: false)
+        let session = ManagedInstallerPreservedLifecycleReviewSession(
+            inventory: inventory, target: inventory.existing[0],
+            inventoryEvidenceReference: inventory.evidenceReference,
+            intent: intent, proposal: proposal
+        )
+        let route = LifecycleInventoryRouteSpy(inventories: [inventory, inventory])
+        let review = LifecycleReviewTransportSpy(reply: Data("{}".utf8))
+        let execution = LifecycleExecutionTransportSpy(reply: Data("{}".utf8))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(record)),
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            managedDeploymentRouteCoordinator: route,
+            preservedLifecycleReviewTransport: review,
+            preservedLifecycleTransport: execution
+        )
+        _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+        let result = await coordinator.executeReviewedPreservedLifecycle(session)
+        XCTAssertEqual(result, .failure(.rejected))
+        let executionCalls = await execution.calls()
+        XCTAssertTrue(executionCalls.isEmpty)
+    }
+
+    func testReleasedRuntimeRejectsStaleInventoryAndMissingTerminalV3() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try lifecycleIntent(release: record.release)
+        let proposal = try lifecycleProposal(intent)
+        let inventory = try lifecycleInventory(preserved: false)
+        let post = try lifecycleInventory(preserved: true)
+        let session = ManagedInstallerPreservedLifecycleReviewSession(
+            inventory: inventory, target: inventory.existing[0],
+            inventoryEvidenceReference: inventory.evidenceReference,
+            intent: intent, proposal: proposal
+        )
+        let request = try ManagedInstallerPreservedLifecycleRequest(
+            intent: intent, proposal: proposal
+        )
+        for inventories in [[post], [inventory, inventory, inventory]] {
+            let route = LifecycleInventoryRouteSpy(inventories: inventories)
+            let review = LifecycleReviewTransportSpy(reply: proposal.canonicalJSONData())
+            let execution = LifecycleExecutionTransportSpy(reply: lifecycleReceipt(request))
+            let coordinator = makeCoordinator(
+                feed: FeedSpy(result: .success(record)),
+                inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+                staging: StagingSpy(result: .success(try makeStagedAsset())),
+                managedDeploymentRouteCoordinator: route,
+                preservedLifecycleReviewTransport: review,
+                preservedLifecycleTransport: execution
+            )
+            _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+            let result = await coordinator.executeReviewedPreservedLifecycle(session)
+            XCTAssertEqual(result, .failure(.rejected))
+            let calls = await execution.calls()
+            XCTAssertEqual(calls.count, inventories.count == 1 ? 0 : 1)
+        }
+
+        let route = LifecycleInventoryRouteSpy(inventories: [inventory, inventory])
+        let review = LifecycleReviewTransportSpy(reply: proposal.canonicalJSONData())
+        let execution = LifecycleExecutionTransportSpy(reply: Data("{}".utf8))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(record)),
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            managedDeploymentRouteCoordinator: route,
+            preservedLifecycleReviewTransport: review,
+            preservedLifecycleTransport: execution
+        )
+        _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+        let invalidReceipt = await coordinator.executeReviewedPreservedLifecycle(session)
+        XCTAssertEqual(invalidReceipt, .failure(.rejected))
+    }
+
+    private func lifecycleIntent(
+        release: VerifiedInstallerRelease
+    ) throws -> ManagedInstallerPreservedLifecycleReviewIntent {
+        try ManagedInstallerPreservedLifecycleReviewIntent(
+            operationID: "preserve-one", deploymentID: "deployment-one",
+            operation: "PRESERVE", component: "forge-runtime", instanceID: "forge-one",
+            installedCompositionIdentity: "forge-qualified",
+            installedManifestSHA256: "sha256:" + String(repeating: "a", count: 64),
+            installerRelease: release
+        )
+    }
+
+    private func lifecycleInventory(preserved: Bool) throws -> ManagedDeploymentInventory {
+        try ManagedDeploymentInventory(
+            existing: [ManagedDeploymentTarget(
+                id: "deployment-one", exists: true,
+                forgeInstanceID: preserved ? nil : "forge-one",
+                preservedForgeInstanceID: preserved ? "forge-one" : nil,
+                installedCompositionID: "forge-qualified",
+                installedCompositionManifestSHA256:
+                    "sha256:" + String(repeating: "a", count: 64)
+            )],
+            createCandidate: ManagedDeploymentTarget(id: "new", exists: false),
+            evidenceReference: preserved ? "registry:post" : "registry:pre"
+        )
+    }
+
+    private func lifecycleProposal(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) throws -> ManagedInstallerPreservedLifecycleReviewProposal {
+        var review: [String: StrictJSONResourceValue] = [
+            "deployment_id": .string(intent.deploymentID),
+            "registry_revision": .integer("1"),
+            "registry_fingerprint": .string("sha256:" + String(repeating: "b", count: 64)),
+            "composition_id": .string(intent.installedCompositionIdentity),
+            "composition_digest": .string(intent.installedManifestSHA256),
+            "operation": .string(intent.operation), "operation_id": .string(intent.operationID),
+            "component": .string(intent.component), "instance_id": .string(intent.instanceID),
+            "artifact": .object([
+                "version": .string("2.7.36"),
+                "source_revision": .string(String(repeating: "e", count: 40)),
+                "source": .string("https://example.invalid/forge.whl"),
+                "digest": .string("sha256:" + String(repeating: "c", count: 64)),
+                "qualification": .string("https://example.invalid/receipt"),
+            ]),
+            "previous_receipt_reference": .string("receipt:forge-one"),
+            "preserve_operation_id": .null, "preserve_receipt_digest": .null,
+            "historical_peer_reference": .null,
+            "destructive_confirmation_required": .boolean(false),
+        ]
+        let digest = SHA256.hash(data: StrictSignedJSON.canonicalPayload(from: .object(review)))
+            .map { String(format: "%02x", $0) }.joined()
+        review["review_fingerprint"] = .string("sha256:" + digest)
+        let bytes = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPreservedLifecycleReviewProposal.schema),
+            "intent_fingerprint": .string(intent.intentFingerprint),
+            "review": .object(review),
+        ]))
+        return try ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+            bytes, intent: intent
+        )
+    }
+
+    private func lifecycleReceipt(_ request: ManagedInstallerPreservedLifecycleRequest) -> Data {
+        StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPreservedLifecycleReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "operation_id": .string(request.intent.operationID),
+            "deployment_id": .string(request.intent.deploymentID),
+            "component": .string(request.intent.component),
+            "instance_id": .string(request.intent.instanceID),
+            "state": .string("COMPLETE"),
+            "receipt_digest": .string("sha256:" + String(repeating: "d", count: 64)),
+            "registry_revision": .integer("2"),
+        ]))
+    }
 
     func testReleasedRuntimeExecutesOnlyFreshlyReviewedExactRemoval() async throws {
         let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
@@ -1285,7 +1486,11 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator(),
         managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator(),
         removalReviewTransport: (any ManagedInstallerProductRemovalReviewTransporting)? = nil,
-        removalTransport: (any ManagedInstallerProductRemovalTransporting)? = nil
+        removalTransport: (any ManagedInstallerProductRemovalTransporting)? = nil,
+        preservedLifecycleReviewTransport:
+            (any ManagedInstallerPreservedLifecycleReviewTransporting)? = nil,
+        preservedLifecycleTransport:
+            (any ManagedInstallerPreservedLifecycleTransporting)? = nil
     ) -> VerifiedInstallerSelfUpdateCoordinator {
         VerifiedInstallerSelfUpdateCoordinator(
             releaseFeed: feed,
@@ -1299,7 +1504,9 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             providerCoordinator: providerCoordinator,
             managedDeploymentRouteCoordinator: managedDeploymentRouteCoordinator,
             removalReviewTransport: removalReviewTransport,
-            removalTransport: removalTransport
+            removalTransport: removalTransport,
+            preservedLifecycleReviewTransport: preservedLifecycleReviewTransport,
+            preservedLifecycleTransport: preservedLifecycleTransport
         )
     }
 
@@ -1517,6 +1724,72 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
     }
 }
 
+
+private actor LifecycleInventoryRouteSpy: ManagedDeploymentRouteCoordinating {
+    private var inventories: [ManagedDeploymentInventory]
+    private var reads = 0
+
+    init(inventories: [ManagedDeploymentInventory]) { self.inventories = inventories }
+
+    func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
+        reads += 1
+        guard !inventories.isEmpty else { return .unavailable(.inventoryUnavailable) }
+        return .available(inventories.removeFirst())
+    }
+
+    func readCount() -> Int { reads }
+
+    func prepareHostPreflight(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> HostPreflightPreparationResult {
+        _ = session
+        _ = deployment
+        return .unavailable(.preflightUnavailable)
+    }
+
+    func prepareCompositionReview(
+        session: VerifiedCompositionSessionPlan,
+        deployment: ManagedDeploymentTarget
+    ) async -> CompositionReviewPreparationResult {
+        _ = session
+        _ = deployment
+        return .unavailable(.reviewUnavailable)
+    }
+
+    func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult {
+        _ = operation
+        return .failed(.executionFailed, stages: [])
+    }
+}
+
+private actor LifecycleReviewTransportSpy: ManagedInstallerPreservedLifecycleReviewTransporting {
+    let reply: Data
+    private var requests: [Data] = []
+    init(reply: Data) { self.reply = reply }
+    func preparePreservedLifecycleReview(
+        _ canonicalIntent: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        requests.append(canonicalIntent)
+        return .success(reply)
+    }
+    func calls() -> [Data] { requests }
+}
+
+private actor LifecycleExecutionTransportSpy: ManagedInstallerPreservedLifecycleTransporting {
+    let reply: Data
+    private var requests: [Data] = []
+    init(reply: Data) { self.reply = reply }
+    func executePreservedLifecycle(
+        _ canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        requests.append(canonicalRequest)
+        return .success(reply)
+    }
+    func calls() -> [Data] { requests }
+}
 
 private actor ManagedRouteCoordinatorSpy: ManagedDeploymentRouteCoordinating {
     private var recordedCalls = 0
