@@ -60,10 +60,11 @@ asset digests, registry readback and exact PyPI wheel/sdist identities. It does
 not create a branch, PR, manifest, signing authorization or release.
 
 `composition-producer-sources.json` is the reviewed binding from product roles
-to their public producer repositories and release contracts. Forge 2.7.35 and
-Engineering Platform 2.3.102 are the required producer baselines for the
-first functional installer release; a past 2.7.34 observation is historical
-evidence only. Workspace is an optional observation: it has no public
+to their public producer repositories and release contracts. Forge 2.7.37 and
+Engineering Platform 2.3.104 are the required qualified producer baselines for
+the first functional installer release. Forge 2.7.36 and Engineering Platform
+2.3.103 remain historical ownership-gap artifacts; earlier releases are
+historical evidence only. Workspace is an optional observation: it has no public
 production release and its current release contract would publish only a source
 bundle, so its absence or `OBSERVED_NOT_INSTALLABLE` status does not block a
 Forge plus Engineering Platform composition. Managed Git and managed Python
