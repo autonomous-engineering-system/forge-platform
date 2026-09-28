@@ -183,10 +183,7 @@ struct MacOSManagedInstallerProductWorkerRunner:
 
         do {
             try process.run()
-            try standardInput.fileHandleForWriting.write(contentsOf: canonicalRequest)
-            try standardInput.fileHandleForWriting.close()
         } catch {
-            process.terminate()
             return .failure(.unavailable)
         }
 
@@ -203,10 +200,16 @@ struct MacOSManagedInstallerProductWorkerRunner:
             maximumBytes: Self.maximumErrorBytes,
             timeoutNanoseconds: invocation.timeoutNanoseconds
         )
+        let written = await Self.writeBounded(
+            canonicalRequest,
+            to: standardInput.fileHandleForWriting,
+            timeoutNanoseconds: invocation.timeoutNanoseconds
+        )
+        if !written && process.isRunning { process.terminate() }
         let completed = await holder.wait(timeoutNanoseconds: invocation.timeoutNanoseconds)
         let capturedOutput = await output
         let capturedError = await error
-        guard completed,
+        guard written, completed,
               process.terminationReason == .exit,
               process.terminationStatus == 0,
               capturedError != nil,
@@ -214,6 +217,54 @@ struct MacOSManagedInstallerProductWorkerRunner:
             return .failure(.unavailable)
         }
         return .success(capturedOutput)
+    }
+
+    static func writeBounded(
+        _ data: Data,
+        to handle: FileHandle,
+        timeoutNanoseconds: UInt64
+    ) async -> Bool {
+        await Task.detached {
+            let descriptor = handle.fileDescriptor
+            defer { try? handle.close() }
+            guard !data.isEmpty, timeoutNanoseconds > 0 else { return false }
+            let started = DispatchTime.now().uptimeNanoseconds
+            let (sum, overflow) = started.addingReportingOverflow(timeoutNanoseconds)
+            let deadline = overflow ? UInt64.max : sum
+            let previousFlags = Darwin.fcntl(descriptor, F_GETFL)
+            guard previousFlags >= 0,
+                  Darwin.fcntl(descriptor, F_SETNOSIGPIPE, 1) == 0,
+                  Darwin.fcntl(descriptor, F_SETFL, previousFlags | O_NONBLOCK) == 0 else {
+                return false
+            }
+            var offset = 0
+            while offset < data.count {
+                let count = data.withUnsafeBytes { bytes in
+                    Darwin.write(
+                        descriptor,
+                        bytes.baseAddress!.advanced(by: offset),
+                        bytes.count - offset
+                    )
+                }
+                if count > 0 {
+                    offset += count
+                    continue
+                }
+                if count == 0 { return false }
+                if errno == EINTR { continue }
+                guard errno == EAGAIN || errno == EWOULDBLOCK else { return false }
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < deadline else { return false }
+                let milliseconds = max(1, min(50, (deadline - now) / 1_000_000))
+                var descriptorToPoll = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+                let ready = Darwin.poll(&descriptorToPoll, 1, Int32(milliseconds))
+                if ready < 0 && errno != EINTR { return false }
+                if ready > 0 && descriptorToPoll.revents & Int16(POLLERR | POLLHUP | POLLNVAL) != 0 {
+                    return false
+                }
+            }
+            return true
+        }.value
     }
 
     func secureInterpreter(

@@ -1267,6 +1267,39 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertNil(rejected)
     }
 
+    func testProductWorkerPipeWriteHasIndependentDeadlineWhenReaderStalls() async throws {
+        let stalled = Pipe()
+        let started = DispatchTime.now().uptimeNanoseconds
+        let timedOut = await MacOSManagedInstallerProductWorkerRunner.writeBounded(
+            Data(repeating: 0x61, count: 1_000_000),
+            to: stalled.fileHandleForWriting,
+            timeoutNanoseconds: 50_000_000
+        )
+        let elapsed = DispatchTime.now().uptimeNanoseconds - started
+        XCTAssertFalse(timedOut)
+        XCTAssertLessThan(elapsed, 2_000_000_000)
+        try stalled.fileHandleForReading.close()
+
+        let complete = Pipe()
+        let written = await MacOSManagedInstallerProductWorkerRunner.writeBounded(
+            Data("request".utf8),
+            to: complete.fileHandleForWriting,
+            timeoutNanoseconds: 1_000_000_000
+        )
+        XCTAssertTrue(written)
+        XCTAssertEqual(try complete.fileHandleForReading.readToEnd(), Data("request".utf8))
+        try complete.fileHandleForReading.close()
+
+        let abandoned = Pipe()
+        try abandoned.fileHandleForReading.close()
+        let rejected = await MacOSManagedInstallerProductWorkerRunner.writeBounded(
+            Data("request".utf8),
+            to: abandoned.fileHandleForWriting,
+            timeoutNanoseconds: 1_000_000_000
+        )
+        XCTAssertFalse(rejected)
+    }
+
     func testProductWorkerRunnerRejectsTimeoutAndUnboundedOutput() async throws {
         let (request, _) = try productOperationXPCFixture()
         let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
