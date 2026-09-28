@@ -396,6 +396,24 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
+    func testLifecycleRecoveryCommandFailsClosedWithoutHelperTerminalProof() async throws {
+        let startup = CLIStartupSpy(outcome: .ready(
+            currentRelease: try release("1.2.3"),
+            coordinator: CLIReadyCoordinator()
+        ))
+        let result = await run(
+            [
+                "deployment", "lifecycle", "recover",
+                "--deployment", "production", "--component", "forge-runtime",
+                "--non-interactive", "--json",
+            ],
+            startup: startup, version: "1.2.3"
+        )
+        XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(result.stdout.joined().contains("lifecycle-recovery-blocked"))
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
     func testReadySelfUpdateApplyIsNoOpCurrentAndRemoveRequiresExactOperation() async throws {
         let coordinator = CLIReadyCoordinator()
         let current = try release("1.2.3")

@@ -105,3 +105,18 @@ public struct ManagedInstallerPreserveRecoveryReceipt: Equatable, Sendable {
         )
     }
 }
+
+/// Public, read-only result from exact journal/registry recovery. The operation
+/// identity is sourced from the helper-owned registry, never guessed by UI/CLI.
+public struct ManagedInstallerPreserveRecoveryCompletion: Equatable, Sendable {
+    public let intent: ManagedInstallerPreservedLifecycleReviewIntent
+    public let receipt: ManagedInstallerPreserveRecoveryReceipt
+
+    public init(
+        intent: ManagedInstallerPreservedLifecycleReviewIntent,
+        receipt: ManagedInstallerPreserveRecoveryReceipt
+    ) {
+        self.intent = intent
+        self.receipt = receipt
+    }
+}

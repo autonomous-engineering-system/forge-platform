@@ -4,6 +4,92 @@ import XCTest
 
 final class SelfUpdateCoordinatorTests: XCTestCase {
 
+    func testReleasedRuntimeReadsOnlyExactTerminalPreserveRecovery() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try lifecycleIntent(release: record.release)
+        let request = try ManagedInstallerPreserveRecoveryRequest(intent: intent)
+        let terminal = try ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+            lifecycleRecoveryReceipt(request), request: request
+        )
+        let preserved = try lifecycleInventory(preserved: true)
+        let route = LifecycleInventoryRouteSpy(inventories: [
+            preserved, preserved, preserved, preserved,
+        ])
+        let registry = LifecycleRegistryReadSpy(record: try lifecycleRegistryRecord())
+        let recovery = LifecycleRecoveryTransportSpy(reply: terminal.canonicalJSONData())
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(record)),
+            inspector: InspectorSpy(responses: [
+                .success(identity), .success(identity), .success(identity),
+            ]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            managedDeploymentRouteCoordinator: route,
+            preserveRecoveryTransport: recovery,
+            preservedRegistryReadTransport: registry
+        )
+        let currency = await coordinator.recheckInstallerBeforeMutation(
+            currentVersion: identity.version
+        )
+        XCTAssertEqual(currency, .current(record.release))
+        let result = await coordinator.readTerminalPreserveRecovery(
+            deploymentID: intent.deploymentID, component: intent.component,
+            installerRelease: record.release
+        )
+        XCTAssertEqual(result, .success(ManagedInstallerPreserveRecoveryCompletion(
+            intent: intent, receipt: terminal
+        )))
+        let repeated = await coordinator.readTerminalPreserveRecovery(
+            deploymentID: intent.deploymentID, component: intent.component,
+            installerRelease: record.release
+        )
+        XCTAssertEqual(repeated, result)
+        let calls = await recovery.calls()
+        XCTAssertEqual(calls, [request.canonicalJSONData(), request.canonicalJSONData()])
+        let registryReads = await registry.calls()
+        XCTAssertEqual(registryReads, [
+            "deployment-one", "deployment-one", "deployment-one", "deployment-one",
+        ])
+        let inventoryReads = await route.readCount()
+        XCTAssertEqual(inventoryReads, 4)
+    }
+
+    func testReleasedRuntimeRecoveryRejectsStaleTargetAndForeignJournalEvidence() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try lifecycleIntent(release: record.release)
+        let request = try ManagedInstallerPreserveRecoveryRequest(intent: intent)
+        let preserved = try lifecycleInventory(preserved: true)
+        for (inventories, registryRecord, response, expectedCalls) in [
+            ([try lifecycleInventory(preserved: false)],
+             try lifecycleRegistryRecord(), lifecycleRecoveryReceipt(request), 0),
+            ([preserved], try lifecycleRegistryRecord(operationID: "preserve-other"),
+             lifecycleRecoveryReceipt(request), 1),
+            ([preserved, preserved], try lifecycleRegistryRecord(), Data("{}".utf8), 1),
+            ([preserved, try lifecycleInventory(preserved: false)],
+             try lifecycleRegistryRecord(), lifecycleRecoveryReceipt(request), 1),
+        ] {
+            let route = LifecycleInventoryRouteSpy(inventories: inventories)
+            let recovery = LifecycleRecoveryTransportSpy(reply: response)
+            let coordinator = makeCoordinator(
+                feed: FeedSpy(result: .success(record)),
+                inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+                staging: StagingSpy(result: .success(try makeStagedAsset())),
+                managedDeploymentRouteCoordinator: route,
+                preserveRecoveryTransport: recovery,
+                preservedRegistryReadTransport: LifecycleRegistryReadSpy(record: registryRecord)
+            )
+            _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+            let result = await coordinator.readTerminalPreserveRecovery(
+                deploymentID: intent.deploymentID, component: intent.component,
+                installerRelease: record.release
+            )
+            XCTAssertEqual(result, .failure(.rejected))
+            let calls = await recovery.calls()
+            XCTAssertEqual(calls.count, expectedCalls)
+        }
+    }
+
     func testReleasedRuntimeExecutesOnlyFreshReviewedPreserveWithV3Readback() async throws {
         let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
         let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
@@ -256,6 +342,26 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             "state": .string("COMPLETE"),
             "receipt_digest": .string("sha256:" + String(repeating: "d", count: 64)),
             "registry_revision": .integer("2"),
+        ]))
+    }
+
+    private func lifecycleRecoveryReceipt(
+        _ request: ManagedInstallerPreserveRecoveryRequest
+    ) -> Data {
+        StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPreserveRecoveryReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "intent_fingerprint": .string(request.intent.intentFingerprint),
+            "record": .object([
+                "operation_id": .string(request.intent.operationID),
+                "deployment_id": .string(request.intent.deploymentID),
+                "review_fingerprint": .string("sha256:" + String(repeating: "b", count: 64)),
+                "component": .string(request.intent.component),
+                "instance_id": .string(request.intent.instanceID),
+                "state": .string("COMPLETE"),
+                "receipt_digest": .string("sha256:" + String(repeating: "d", count: 64)),
+                "registry_revision": .integer("2"),
+            ]),
         ]))
     }
 
@@ -1560,6 +1666,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             (any ManagedInstallerPreservedLifecycleReviewTransporting)? = nil,
         preservedLifecycleTransport:
             (any ManagedInstallerPreservedLifecycleTransporting)? = nil,
+        preserveRecoveryTransport:
+            (any ManagedInstallerPreserveRecoveryTransporting)? = nil,
         preservedRegistryReadTransport:
             (any ManagedInstallerPreservedRegistryReading)? = nil
     ) -> VerifiedInstallerSelfUpdateCoordinator {
@@ -1578,6 +1686,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             removalTransport: removalTransport,
             preservedLifecycleReviewTransport: preservedLifecycleReviewTransport,
             preservedLifecycleTransport: preservedLifecycleTransport,
+            preserveRecoveryTransport: preserveRecoveryTransport,
             preservedRegistryReadTransport: preservedRegistryReadTransport
         )
     }
@@ -1868,6 +1977,19 @@ private actor LifecycleExecutionTransportSpy: ManagedInstallerPreservedLifecycle
     private var requests: [Data] = []
     init(reply: Data) { self.reply = reply }
     func executePreservedLifecycle(
+        _ canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        requests.append(canonicalRequest)
+        return .success(reply)
+    }
+    func calls() -> [Data] { requests }
+}
+
+private actor LifecycleRecoveryTransportSpy: ManagedInstallerPreserveRecoveryTransporting {
+    let reply: Data
+    private var requests: [Data] = []
+    init(reply: Data) { self.reply = reply }
+    func readTerminalPreserveRecovery(
         _ canonicalRequest: Data
     ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
         requests.append(canonicalRequest)
