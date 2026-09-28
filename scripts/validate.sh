@@ -29,6 +29,7 @@ python3 tests/installer/test_managed_installer.py
 python3 tests/installer/test_managed_install_flow.py
 python3 tests/installer/test_managed_pairing.py
 python3 -m unittest tests.installer.test_product_preserved_lifecycle
+python3 -m unittest tests.installer.test_qualified_forge_lifecycle
 python3 tests/test_installer_ux_release_roadmap.py
 python3 tests/installer/test_provider_targets.py
 python3 tests/installer/test_provider_fanout.py

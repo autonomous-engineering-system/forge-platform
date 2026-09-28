@@ -15,13 +15,13 @@ second provisioning engine or generic workflow-policy authority.
 
 Current lifecycle observations: Platform `e92f4e4151080f7c2a9d4fdeba1541b1407d7907`,
 EP `cfce69892278ee2b6c14412c171f5f33596acb0e`,
-Forge `a78523603d6ea081d07875ea6b557e73b5d4fe63`,
+Forge `0a3d6e35b01da93bb5a674ae7795558655c16c7d`,
 Workspace `36d294836cb653361fda3972de38acce3d2970f8`.
 These pins are observations, not enduring peer status or installed evidence.
 
 | Producer | Released baseline | Lifecycle contract | Roadmap status |
 | --- | --- | --- | --- |
-| Forge | 2.7.37 / `forge-v2.7.37` / source `a785236…` | `forge-server-instance-lifecycle/v1` | `QUALIFIED` released-wheel evidence; consumer binding not yet qualified |
+| Forge | 2.7.38 / `forge-v2.7.38` / source `0a3d6e…` | `forge-server-instance-lifecycle/v1` plus separately bound external updater controller | `QUALIFIED` released-wheel evidence; 2.7.38 controller consumer wiring not yet qualified |
 | Engineering Platform | 2.3.104 / `engineering-platform-v2.3.104` / source `cfce698…` | `engineering-platform.system-instance-lifecycle/v1` | `QUALIFIED` released-wheel evidence; consumer binding not yet qualified |
 
 `QUALIFIED` above applies only to the owning product releases. It does not

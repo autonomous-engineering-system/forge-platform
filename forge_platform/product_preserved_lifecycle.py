@@ -14,6 +14,7 @@ import re
 from typing import Mapping
 
 from .component_operations import QualifiedArtifact
+from .qualified_forge_lifecycle import qualified_forge_lifecycle_artifact
 
 
 FORGE_COMPONENT = "forge-runtime"
@@ -23,11 +24,6 @@ EP_CONTRACT = "engineering-platform.system-instance-lifecycle/v1"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _FROZEN_RELEASES = {
-    FORGE_COMPONENT: (
-        "2.7.37",
-        "a78523603d6ea081d07875ea6b557e73b5d4fe63",
-        "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
-    ),
     EP_COMPONENT: (
         "2.3.104",
         "cfce69892278ee2b6c14412c171f5f33596acb0e",
@@ -56,6 +52,8 @@ def frozen_preserved_release(component: str, artifact: QualifiedArtifact) -> boo
     """Require exact released wheel bytes as well as version and source."""
     if not isinstance(artifact, QualifiedArtifact):
         return False
+    if component == FORGE_COMPONENT:
+        return qualified_forge_lifecycle_artifact(artifact)
     identity = _FROZEN_RELEASES.get(component)
     return identity is not None and (
         artifact.version, artifact.source_revision, artifact.digest

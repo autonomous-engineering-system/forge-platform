@@ -27,6 +27,7 @@ from .managed_product_removal_admission import (
     NativeProductRemovalRequest, admit_native_product_removal,
 )
 from .managed_product_removal_review import ManagedProductRemovalReviewJournal
+from .qualified_forge_lifecycle import qualified_forge_lifecycle_artifact
 from .universal_installer import CompositionManifest
 
 
@@ -123,9 +124,7 @@ class ManagedProductRemovalDispatcher:
             or by_component[FORGE_COMPONENT].instance_id != request.forge_instance_id
             or (by_component.get(EP_COMPONENT).instance_id if EP_COMPONENT in by_component else None)
             != request.engineering_platform_instance_id
-            or forge is None or forge.version != "2.7.37"
-            or forge.source_revision != "a78523603d6ea081d07875ea6b557e73b5d4fe63"
-            or forge.digest != "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938"
+            or not qualified_forge_lifecycle_artifact(forge)
             or EP_COMPONENT in by_component and (
                 ep is None or ep.version != "2.3.104"
                 or ep.source_revision != "cfce69892278ee2b6c14412c171f5f33596acb0e"

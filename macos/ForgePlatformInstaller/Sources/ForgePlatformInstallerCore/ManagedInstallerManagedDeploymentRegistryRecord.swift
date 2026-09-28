@@ -277,9 +277,12 @@ public struct ManagedInstallerManagedDeploymentRegistryRecord:
     ) -> Bool {
         switch component {
         case "forge-runtime":
-            return version == "2.7.37"
+            return (version == "2.7.37"
                 && source == "a78523603d6ea081d07875ea6b557e73b5d4fe63"
-                && digest == "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938"
+                && digest == "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938")
+                || (version == "2.7.38"
+                && source == "0a3d6e35b01da93bb5a674ae7795558655c16c7d"
+                && digest == "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8")
         case "engineering-platform-server":
             return version == "2.3.104"
                 && source == "cfce69892278ee2b6c14412c171f5f33596acb0e"

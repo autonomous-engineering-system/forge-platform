@@ -34,6 +34,7 @@ from .managed_pairing_revocation import (
     EPConsumerRevoker, ManagedPairingRevocationCoordinator,
     _digest as paired_digest, _read as read_pairing_revocation,
 )
+from .qualified_forge_lifecycle import qualified_forge_lifecycle_artifact
 
 
 _OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -197,11 +198,7 @@ class ManagedPairedDeploymentRemovalCoordinator:
             or forge_request.kind != "remove"
             or forge_request.installation_identity != reviewed_current.peer_binding.forge_instance_id
             or forge_request.product_request
-            or forge_request.artifact.version != "2.7.37"
-            or forge_request.artifact.source_revision
-            != "a78523603d6ea081d07875ea6b557e73b5d4fe63"
-            or forge_request.artifact.digest
-            != "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938"
+            or not qualified_forge_lifecycle_artifact(forge_request.artifact)
             or ep_request.component != EP_COMPONENT
             or ep_request.kind != "remove"
             or ep_request.installation_identity != reviewed_current.peer_binding.ep_instance_id

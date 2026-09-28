@@ -55,11 +55,12 @@ The active Managed Installer V1 implementation adds
 a durable multi-instance deployment registry/saga, target-aware provider
 requirements and fan-out coordination, a native deployment-selection gate,
 target-aware manifest/session projection, an EP 2.3.104 system-provisioner
-adapter and the Forge 2.7.37 Server deployment adapter. See
+adapter and the Forge Server deployment adapter, with exact 2.7.37 and 2.7.38
+lifecycle artifact admission. See
 [Managed Installer V1](MANAGED_INSTALLER_V1.md).
 
 The first functional installer publication and authorized fresh-Mac
-qualification remain separate evidence boundaries. Forge 2.7.37 supplies
+qualification remain separate evidence boundaries. Forge 2.7.38 supplies
 product-owned uninstall, preserve/restore/purge, and read-only update assessment.
 Installer execution
 remains fail-closed until those exact routes are fully integrated. The executor's immutable slot, isolated-venv, interruption-resume
