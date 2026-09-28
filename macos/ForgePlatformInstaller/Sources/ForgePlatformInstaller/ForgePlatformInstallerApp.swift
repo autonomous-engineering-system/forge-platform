@@ -34,6 +34,12 @@ final class InstallerWizardViewModel: ObservableObject {
         case idle
         case loading
         case prepared(ManagedInstallerPreservedLifecycleReviewSession)
+        case executing(ManagedInstallerPreservedLifecycleReviewSession)
+        case recoveryPending(ManagedInstallerPreservedLifecycleReviewSession)
+        case completed(
+            ManagedInstallerPreservedLifecycleReviewSession,
+            ManagedInstallerPreservedLifecycleReceipt
+        )
         case recovered(ManagedInstallerPreserveRecoveryCompletion)
         case blocked(String)
     }
@@ -49,6 +55,7 @@ final class InstallerWizardViewModel: ObservableObject {
     @Published private(set) var isRemovalReviewRequestInFlight = false
     @Published private(set) var isRemovalExecutionInFlight = false
     @Published private(set) var isLifecycleReviewRequestInFlight = false
+    @Published private(set) var isLifecycleExecutionInFlight = false
     private var removalOperationKey: String?
     private var removalOperationID: String?
 
@@ -317,6 +324,56 @@ final class InstallerWizardViewModel: ObservableObject {
                 self.lifecycleReview = .blocked(
                     "Exact terminal PRESERVE-bewijs is niet beschikbaar."
                 )
+            }
+        }
+    }
+
+    func executeReviewedPreserve(operationID: String, reviewFingerprint: String) {
+        guard case .prepared(let session) = lifecycleReview,
+              session.intent.operation == "PRESERVE",
+              !isLifecycleReviewRequestInFlight,
+              !isLifecycleExecutionInFlight,
+              !isRemovalExecutionInFlight,
+              state.step == .deployment,
+              case .selected(let target, _) = state.deploymentSelection,
+              target == session.target,
+              case .current(let release) = state.selfUpdate,
+              release == session.intent.installerRelease,
+              operationID == session.operationID,
+              reviewFingerprint == session.reviewFingerprint else { return }
+        isLifecycleExecutionInFlight = true
+        lifecycleReview = .executing(session)
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.executeReviewedPreservedLifecycle(session)
+            guard let self else { return }
+            self.isLifecycleExecutionInFlight = false
+            guard self.state.step == .deployment,
+                  case .selected(let current, _) = self.state.deploymentSelection,
+                  current == session.target,
+                  case .current(let currentRelease) = self.state.selfUpdate,
+                  currentRelease == session.intent.installerRelease else {
+                self.lifecycleReview = .blocked(
+                    "De selectie of installer-release is gewijzigd. Lees de inventaris opnieuw."
+                )
+                return
+            }
+            switch result {
+            case .failure:
+                self.lifecycleReview = .recoveryPending(session)
+            case .success(let receipt):
+                guard let request = try? ManagedInstallerPreservedLifecycleRequest(
+                    intent: session.intent, proposal: session.proposal
+                ),
+                      (try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+                        receipt.canonicalJSONData(), request: request
+                      )) == receipt else {
+                    self.lifecycleReview = .blocked(
+                        "Het productreceipt past niet bij het beoordeelde doel."
+                    )
+                    return
+                }
+                self.lifecycleReview = .completed(session, receipt)
             }
         }
     }
@@ -658,6 +715,10 @@ private struct ManagedDeploymentSelectionScreen: View {
     @State private var confirmationOperationID = ""
     @State private var confirmationFingerprint = ""
     @State private var confirmationSummary = ""
+    @State private var confirmingPreserve = false
+    @State private var preserveOperationID = ""
+    @State private var preserveReviewFingerprint = ""
+    @State private var preserveSummary = ""
 
     var body: some View {
         ScreenHeader(
@@ -872,6 +933,19 @@ private struct ManagedDeploymentSelectionScreen: View {
                         .foregroundStyle(.secondary)
                 case .loading:
                     ProgressView("Exacte lifecycle-review wordt gelezen…")
+                case .executing:
+                    ProgressView("Product-eigen PRESERVE en registry-readback worden uitgevoerd…")
+                case .recoveryPending(let session):
+                    Text("Terminal bewijs ontbreekt voor operation \(session.operationID). Inventariseer opnieuw en verifieer het bewaarbewijs.")
+                        .font(.caption.monospaced())
+                case .completed(let session, let receipt):
+                    Label("PRESERVE en exact registry-readback zijn terminaal bevestigd.",
+                          systemImage: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                    Text("Operation ID: \(session.operationID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Registerrevisie: \(receipt.registryRevision)")
+                        .font(.caption.monospaced())
                 case .blocked(let reason):
                     FailureCallout(reason: reason)
                 case .prepared(let session):
@@ -888,6 +962,16 @@ private struct ManagedDeploymentSelectionScreen: View {
                         .font(.caption.monospaced()).textSelection(.enabled)
                     Text("Dit voorstel voert geen productmutatie uit.")
                         .foregroundStyle(.secondary)
+                    if session.intent.operation == "PRESERVE" {
+                        Button("Bevestig bewaren") {
+                            preserveOperationID = session.operationID
+                            preserveReviewFingerprint = session.reviewFingerprint
+                            preserveSummary = "Deployment \(session.intent.deploymentID), component \(session.intent.component), instance \(session.intent.instanceID), registerrevisie \(session.proposal.registryRevision), operation \(session.operationID), review-fingerprint \(session.reviewFingerprint)."
+                            confirmingPreserve = true
+                        }
+                        .disabled(viewModel.isLifecycleExecutionInFlight
+                            || viewModel.isRemovalExecutionInFlight)
+                    }
                 case .recovered(let completion):
                     Text("PRESERVE terminaal bevestigd voor \(completion.intent.component)")
                     Text("Instance: \(completion.intent.instanceID)")
@@ -901,6 +985,17 @@ private struct ManagedDeploymentSelectionScreen: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .alert("Bevestig productgegevens bewaren", isPresented: $confirmingPreserve) {
+            Button("Bewaar") {
+                viewModel.executeReviewedPreserve(
+                    operationID: preserveOperationID,
+                    reviewFingerprint: preserveReviewFingerprint
+                )
+            }
+            Button("Annuleer", role: .cancel) {}
+        } message: {
+            Text(preserveSummary)
         }
     }
 
@@ -932,6 +1027,7 @@ private struct ManagedDeploymentSelectionScreen: View {
                 }
             }
             .disabled(viewModel.isLifecycleReviewRequestInFlight
+                || viewModel.isLifecycleExecutionInFlight
                 || viewModel.isRemovalExecutionInFlight)
         }
     }
