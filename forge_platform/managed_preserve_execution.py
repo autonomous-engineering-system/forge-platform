@@ -18,7 +18,9 @@ import tempfile
 from typing import Protocol
 
 from .forge_server_adapter import ForgeServiceSupervisor, ForgeServerTarget
-from .managed_deployments import ManagedDeployment, ManagedDeploymentRegistry
+from .managed_deployments import (
+    MANAGED_DEPLOYMENT_SCHEMA_V3, ManagedDeployment, ManagedDeploymentRegistry,
+)
 from .managed_install_flow import InstallerMutationCurrencyGuard
 from .managed_preserved_lifecycle_plan import (
     ManagedPreservedLifecycleReview, require_current_preserved_lifecycle_review,
@@ -137,6 +139,85 @@ def _write(path: Path, record: ManagedPreserveExecutionRecord) -> None:
             os.close(directory)
     finally:
         Path(name).unlink(missing_ok=True)
+
+
+def read_terminal_preserve_evidence(
+    *, operations_root: Path, registry: ManagedDeploymentRegistry,
+    deployment_id: str, operation_id: str, component: str, instance_id: str,
+    review_fingerprint: str, composition_id: str, manifest_digest: str,
+    expected_owner_uid: int = 0,
+) -> ManagedPreserveExecutionRecord:
+    """Read a committed exact PRESERVE from helper-owned journal and V3 registry.
+
+    This is a recovery observation, never authority to perform a new product
+    mutation. A missing, in-flight, stale or ambiguous record fails closed.
+    """
+    if (
+        not isinstance(operations_root, Path) or not operations_root.is_absolute()
+        or not isinstance(registry, ManagedDeploymentRegistry)
+        or any(not isinstance(value, str) or _ID.fullmatch(value) is None for value in (
+            deployment_id, operation_id, instance_id, composition_id,
+        ))
+        or component not in {FORGE_COMPONENT, EP_COMPONENT}
+        or not isinstance(review_fingerprint, str)
+        or _DIGEST.fullmatch(review_fingerprint) is None
+        or not isinstance(manifest_digest, str)
+        or _DIGEST.fullmatch(manifest_digest) is None
+        or isinstance(expected_owner_uid, bool)
+        or not isinstance(expected_owner_uid, int) or expected_owner_uid < 0
+    ):
+        raise ManagedPreserveExecutionError("terminal preserve selector is invalid")
+    try:
+        root_info = os.lstat(operations_root)
+        if (
+            not stat.S_ISDIR(root_info.st_mode)
+            or root_info.st_uid != expected_owner_uid
+            or stat.S_IMODE(root_info.st_mode) != 0o700
+        ):
+            raise ManagedPreserveExecutionError("preserve journal root is unsafe")
+        lock_path = operations_root / f".{deployment_id}.lock"
+        lock = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
+    except (FileNotFoundError, OSError) as error:
+        raise ManagedPreserveExecutionError("terminal preserve evidence is unavailable") from error
+    try:
+        lock_info = os.fstat(lock)
+        if (
+            not stat.S_ISREG(lock_info.st_mode)
+            or lock_info.st_uid != expected_owner_uid
+            or lock_info.st_nlink != 1
+            or stat.S_IMODE(lock_info.st_mode) != 0o600
+        ):
+            raise ManagedPreserveExecutionError("preserve lock is unsafe")
+        fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        record = _read(operations_root / f"{operation_id}.json", expected_owner_uid)
+        current = registry.load(deployment_id)
+        if (
+            record is None or record.state != "COMPLETE"
+            or record.operation_id != operation_id
+            or record.deployment_id != deployment_id
+            or record.component != component
+            or record.instance_id != instance_id
+            or record.review_fingerprint != review_fingerprint
+            or record.receipt_digest is None
+            or record.registry_revision is None
+            or current is None or current.schema != MANAGED_DEPLOYMENT_SCHEMA_V3
+            or current.revision != record.registry_revision
+            or current.active_by_component.get(component) is not None
+            or current.composition_binding is None
+            or current.composition_binding.composition_id != composition_id
+            or current.composition_binding.manifest_digest != manifest_digest
+        ):
+            raise ManagedPreserveExecutionError("terminal preserve evidence is stale")
+        preserved = current.preserved_by_component.get(component)
+        if (
+            preserved is None or preserved.instance_id != instance_id
+            or preserved.preserve_operation_id != operation_id
+            or preserved.preserve_receipt_digest != record.receipt_digest
+        ):
+            raise ManagedPreserveExecutionError("terminal preserve registry receipt changed")
+        return record
+    finally:
+        os.close(lock)
 
 
 class ManagedPreserveExecutionCoordinator:
