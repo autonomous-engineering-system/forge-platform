@@ -78,6 +78,61 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         ]))
     }
 
+    private func recoveryReceipt(_ request: ManagedInstallerPreserveRecoveryRequest) -> Data {
+        StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPreserveRecoveryReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "intent_fingerprint": .string(request.intent.intentFingerprint),
+            "record": .object([
+                "operation_id": .string(request.intent.operationID),
+                "deployment_id": .string(request.intent.deploymentID),
+                "review_fingerprint": .string("sha256:" + String(repeating: "a", count: 64)),
+                "component": .string(request.intent.component),
+                "instance_id": .string(request.intent.instanceID),
+                "state": .string("COMPLETE"),
+                "receipt_digest": .string("sha256:" + String(repeating: "b", count: 64)),
+                "registry_revision": .integer("2"),
+            ]),
+        ]))
+    }
+
+    func testNativePreserveRecoveryCodecBindsExactPublicTargetAndTerminalRecord() throws {
+        let request = try ManagedInstallerPreserveRecoveryRequest(intent: intent())
+        XCTAssertEqual(try ManagedInstallerPreserveRecoveryRequest.decodeJSON(
+            request.canonicalJSONData()
+        ), request)
+        let terminal = try ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+            recoveryReceipt(request), request: request
+        )
+        XCTAssertEqual(terminal.reviewFingerprint,
+                       "sha256:" + String(repeating: "a", count: 64))
+        XCTAssertEqual(terminal.receiptDigest,
+                       "sha256:" + String(repeating: "b", count: 64))
+        XCTAssertEqual(terminal.registryRevision, 2)
+        XCTAssertEqual(terminal.canonicalJSONData(), recoveryReceipt(request))
+        XCTAssertThrowsError(try ManagedInstallerPreserveRecoveryRequest.decodeJSON(
+            request.canonicalJSONData() + Data(" ".utf8)
+        ))
+        XCTAssertThrowsError(try ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+            recoveryReceipt(request) + Data(" ".utf8), request: request
+        ))
+        let foreign = try ManagedInstallerPreserveRecoveryRequest(intent:
+            ManagedInstallerPreservedLifecycleReviewIntent(
+                operationID: "preserve-b", deploymentID: "reviewed-pair",
+                operation: "PRESERVE", component: "forge-runtime", instanceID: "forge-b",
+                installedCompositionIdentity: "composition-a",
+                installedManifestSHA256: "sha256:" + String(repeating: "d", count: 64),
+                installerRelease: release()
+            )
+        )
+        XCTAssertThrowsError(try ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+            recoveryReceipt(request), request: foreign
+        ))
+        XCTAssertThrowsError(try ManagedInstallerPreserveRecoveryRequest(
+            intent: intent("RESTORE")
+        ))
+    }
+
     func testExactIntentProposalRequestAndReceiptRoundTrip() throws {
         let selected = try intent()
         XCTAssertEqual(
@@ -498,6 +553,11 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
             invocation, canonicalRequest: request.canonicalJSONData()
         ).get()
         XCTAssertEqual(mutationOutput, request.canonicalJSONData())
+        let recovery = try ManagedInstallerPreserveRecoveryRequest(intent: selected)
+        let recoveryOutput = try await runner.runProductWorker(
+            invocation, canonicalRequest: recovery.canonicalJSONData()
+        ).get()
+        XCTAssertEqual(recoveryOutput, recovery.canonicalJSONData())
         let invalid = await runner.runProductWorker(
             invocation, canonicalRequest: request.canonicalJSONData() + Data(" ".utf8)
         )
