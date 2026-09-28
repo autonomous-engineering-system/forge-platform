@@ -285,6 +285,11 @@ class ManagedPreserveExecutionCoordinator:
             or review.component == EP_COMPONENT and not isinstance(adapter, EPPreservedProductAdapter)
         ):
             raise ManagedPreserveExecutionError("preserve product target is not sealed")
+        current = self.registry.load(review.deployment_id)
+        if current is None:
+            raise ManagedPreserveExecutionError("reviewed preserve deployment is unavailable")
+        if current.peer_binding is not None or getattr(current, "historical_peer_binding", None) is not None:
+            raise ManagedPreserveExecutionError("paired preserve requires product-owned consumer revocation")
         root = self.operations_root
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         info = os.lstat(root)
@@ -324,6 +329,8 @@ class ManagedPreserveExecutionCoordinator:
         current = self.registry.load(review.deployment_id)
         if current is None:
             raise ManagedPreserveExecutionError("reviewed preserve deployment is unavailable")
+        if current.peer_binding is not None or getattr(current, "historical_peer_binding", None) is not None:
+            raise ManagedPreserveExecutionError("paired preserve requires product-owned consumer revocation")
         preserved = current.preserved_by_component.get(review.component)
         if preserved is not None:
             if (
