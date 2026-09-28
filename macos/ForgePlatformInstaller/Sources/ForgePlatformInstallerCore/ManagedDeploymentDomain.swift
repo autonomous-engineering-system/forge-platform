@@ -29,7 +29,7 @@ public struct ManagedDeploymentTarget: Equatable, Hashable, Sendable, Identifiab
         }
         if let label {
             guard !label.isEmpty,
-                  label.utf8.count <= 128,
+                  label.unicodeScalars.count <= 128,
                   label.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value != 127 }) else {
                 throw ManagedDeploymentTargetError.invalidLabel
             }
