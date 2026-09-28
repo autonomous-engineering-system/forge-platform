@@ -45,8 +45,8 @@ ARTIFACT = QualifiedArtifact(
 
 class ForgeProductPeerStatusReadbackTests(unittest.TestCase):
     def test_exact_release_receipt_rechecks_bytes_and_rejects_unsafe_files(self) -> None:
-        with tempfile.TemporaryDirectory(dir='/private/tmp') as temporary:
-            root = Path(temporary)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
             receipt = root / 'release.json'
             contents = b'{"state":"RELEASE_COMPLETE"}\n'
             receipt.write_bytes(contents)
