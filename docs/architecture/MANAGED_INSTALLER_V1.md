@@ -368,6 +368,11 @@ stable-plan fingerprint and operation ID, include product, pairing and both
 readiness receipts, and report the expected terminal state for both exact
 components. Substituted, partial, malformed or noncanonical responses fail
 closed before the GUI or CLI can show completion.
+The shared completion projection shows a Forge↔EP relation stage only when
+the canonical receipt contains the required product-owned relation evidence.
+For a single-component route, no pairing success is displayed. For a paired
+removal, the relation stage describes the received product evidence without
+asserting that the removed instances remain linked.
 
 This is source-level composition only. The released runtime still needs the
 snapshot producer, concrete host and managed-tool adapters, reviewed execution

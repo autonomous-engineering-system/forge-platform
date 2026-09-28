@@ -818,12 +818,14 @@ public struct ManagedInstallerCanonicalProductOperationsExecutor:
                 state: .passed
             ),
         ]
-        stages.append(ExecutionStage(
-            id: "pairing",
-            title: "Forge↔EP-pairing",
-            detail: "Exacte productinstanties gekoppeld",
-            state: .passed
-        ))
+        if receipt.pairingReceiptReference != nil {
+            stages.append(ExecutionStage(
+                id: "pairing",
+                title: "Forge↔EP-relatie",
+                detail: "Producteigen relatiebewijs voor de geselecteerde operatie",
+                state: .passed
+            ))
+        }
         stages.append(ExecutionStage(
             id: "readiness",
             title: "Readiness",
