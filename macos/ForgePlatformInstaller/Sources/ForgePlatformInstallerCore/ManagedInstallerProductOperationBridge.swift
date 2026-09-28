@@ -77,7 +77,7 @@ public struct ManagedInstallerProductComponentOperation: Equatable, Sendable {
     }
 }
 
-/// Canonical, non-secret bridge request for the product-owned Forge+EP saga.
+/// Canonical, non-secret bridge request for the reviewed product saga.
 /// The helper resolves every path, executable and command from its own sealed
 /// configuration and durable journal. The caller can supply only identities,
 /// reviewed actions and evidence references already bound by one reconstructed
@@ -184,10 +184,16 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         let orderedComponents = components.sorted { $0.componentID < $1.componentID }
         let orderedProviders = providerTargetIDs.sorted()
         let orderedEvidence = runtimeEvidenceReferences.sorted()
-        let requiredComponents = [
+        let supportedComponents = Set([
             ProviderOwnerComponent.engineeringPlatformServer.rawValue,
             ProviderOwnerComponent.forgeRuntime.rawValue,
-        ].sorted()
+        ])
+        let claimedComponents = Set([
+            forgeInstanceID == nil ? nil : ProviderOwnerComponent.forgeRuntime.rawValue,
+            engineeringPlatformInstanceID == nil
+                ? nil : ProviderOwnerComponent.engineeringPlatformServer.rawValue,
+        ].compactMap { $0 })
+        let requestedComponents = Set(orderedComponents.map(\.componentID))
         guard ManagedPythonRuntimePostToolQualification.isFingerprint(
                   stablePlanFingerprint
               ),
@@ -226,8 +232,10 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
               GitHubInstallerReleaseDescriptorValidation.isKeyID(
                   installerRelease.signingKeyID
               ),
-              orderedComponents.map(\.componentID) == requiredComponents,
+              !orderedComponents.isEmpty,
+              requestedComponents.isSubset(of: supportedComponents),
               Set(orderedComponents.map(\.componentID)).count == orderedComponents.count,
+              !deploymentExists || claimedComponents == requestedComponents,
               Set(orderedProviders).count == orderedProviders.count,
               orderedProviders.allSatisfy({ ProviderTargetID(rawValue: $0) != nil }),
               !orderedEvidence.isEmpty,
@@ -612,14 +620,17 @@ public struct ManagedInstallerProductOperationReceipt: Equatable, Sendable {
         let orderedCompletions = completions.sorted { $0.componentID < $1.componentID }
         let expected = request.components.sorted { $0.componentID < $1.componentID }
         guard !products.isEmpty,
+              products.count <= expected.count,
               Set(products).count == products.count,
               products.allSatisfy(ManagedPythonRuntimeInstalledReadback.isEvidenceReference),
-              readiness.count == 2,
+              readiness.count == expected.count,
               Set(readiness).count == readiness.count,
               readiness.allSatisfy(ManagedPythonRuntimeInstalledReadback.isEvidenceReference),
-              pairingReceiptReference.map(
-                  ManagedPythonRuntimeInstalledReadback.isEvidenceReference
-              ) == true,
+              (expected.count == 2
+                ? pairingReceiptReference.map(
+                    ManagedPythonRuntimeInstalledReadback.isEvidenceReference
+                  ) == true
+                : pairingReceiptReference == nil),
               expected.map(\.componentID) == orderedCompletions.map(\.componentID),
               zip(expected, orderedCompletions).allSatisfy({ operation, completion in
                   operation.change == .remove

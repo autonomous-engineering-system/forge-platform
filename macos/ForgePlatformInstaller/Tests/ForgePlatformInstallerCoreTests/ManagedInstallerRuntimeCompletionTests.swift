@@ -630,6 +630,73 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         ))
     }
 
+    func testProductBridgeAcceptsExactSingleComponentRequestAndReceipt() throws {
+        for identity in ["forge-runtime", "engineering-platform-server"] {
+            let fixture = try RuntimeCompletionFixture(singleComponent: identity)
+            let request = try ManagedInstallerProductOperationRequest(
+                stablePlan: fixture.stablePlan,
+                runtimeTransactionReceipt: fixture.transactionReceipt()
+            )
+            XCTAssertEqual(request.components.map(\.componentID), [identity])
+            XCTAssertEqual(request.forgeInstanceID != nil, identity == "forge-runtime")
+            XCTAssertEqual(
+                request.engineeringPlatformInstanceID != nil,
+                identity == "engineering-platform-server"
+            )
+            XCTAssertEqual(
+                try ManagedInstallerProductOperationRequest.decodeJSON(
+                    request.canonicalJSONData()
+                ), request
+            )
+            let completion = try ManagedInstallerProductCompletion(
+                componentID: identity, state: .ready
+            )
+            let receipt = try ManagedInstallerProductOperationReceipt(
+                request: request,
+                productReceiptReferences: ["receipt:product"],
+                pairingReceiptReference: nil,
+                readinessReceiptReferences: ["receipt:readiness"],
+                completions: [completion]
+            )
+            XCTAssertEqual(
+                try ManagedInstallerProductOperationReceipt.decodeJSON(
+                    receipt.canonicalJSONData(), request: request
+                ), receipt
+            )
+            XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+                request: request,
+                productReceiptReferences: ["receipt:product"],
+                pairingReceiptReference: "receipt:unreviewed-pairing",
+                readinessReceiptReferences: ["receipt:readiness"],
+                completions: [completion]
+            ))
+            XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+                request: request,
+                productReceiptReferences: ["receipt:product"],
+                pairingReceiptReference: nil,
+                readinessReceiptReferences: ["receipt:readiness", "receipt:extra"],
+                completions: [completion]
+            ))
+            XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt(
+                request: request,
+                productReceiptReferences: ["receipt:product", "receipt:other-product"],
+                pairingReceiptReference: nil,
+                readinessReceiptReferences: ["receipt:readiness"],
+                completions: [completion]
+            ))
+        }
+    }
+
+    func testProductBridgeRejectsSingleComponentWithExtraInstanceAuthority() throws {
+        let fixture = try RuntimeCompletionFixture(
+            singleComponent: "forge-runtime", includeUnreviewedInstance: true
+        )
+        XCTAssertThrowsError(try ManagedInstallerProductOperationRequest(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: fixture.transactionReceipt()
+        ))
+    }
+
     func testProductBridgeReceiptRoundTripsExactCompletion() throws {
         let fixture = try RuntimeCompletionFixture()
         let request = try ManagedInstallerProductOperationRequest(
@@ -1479,7 +1546,9 @@ private struct RuntimeCompletionFixture {
         deploymentID: String = "activation-deployment",
         managedGitAction: ManagedToolOriginalPlanAction.Action? = nil,
         installedCompositionID: String? = nil,
-        installedCompositionManifestSHA256: String? = nil
+        installedCompositionManifestSHA256: String? = nil,
+        singleComponent: String? = nil,
+        includeUnreviewedInstance: Bool = false
     ) throws {
         let git = try ManagedToolRequirement(
             identity: .git,
@@ -1495,8 +1564,11 @@ private struct RuntimeCompletionFixture {
         let deployment = try ManagedDeploymentTarget(
             id: deploymentID,
             exists: true,
-            forgeInstanceID: "forge-one",
-            engineeringPlatformInstanceID: "ep-one",
+            forgeInstanceID: singleComponent == "engineering-platform-server"
+                ? nil : "forge-one",
+            engineeringPlatformInstanceID: singleComponent == "forge-runtime"
+                && !includeUnreviewedInstance
+                ? nil : "ep-one",
             installedCompositionID: installedCompositionID,
             installedCompositionManifestSHA256: installedCompositionManifestSHA256
         )
@@ -1505,13 +1577,31 @@ private struct RuntimeCompletionFixture {
             deployment: deployment,
             initialReadback: activationFixture.missingReadback()
         )
+        let singleComponents: [ComponentDiff]? = switch singleComponent {
+        case "forge-runtime": [ComponentDiff(
+            componentID: "forge-runtime", title: "Forge", change: .update,
+            installedVersion: "1.0.0", candidateVersion: "1.1.0",
+            artifactDigest: "sha256:" + String(repeating: "8", count: 64),
+            updateAssessmentReference: "forge-update-assess:sha256:"
+                + String(repeating: "a", count: 64),
+            detail: "Exact reviewed Forge update"
+        )]
+        case "engineering-platform-server": [ComponentDiff(
+            componentID: "engineering-platform-server", title: "Engineering Platform",
+            change: .retain, installedVersion: "2.0.0", candidateVersion: "2.0.0",
+            artifactDigest: "sha256:" + String(repeating: "7", count: 64),
+            detail: "Exact reviewed EP retention"
+        )]
+        default: nil
+        }
         stablePlan = try managedInstallerTestStablePlan(
             session: activationFixture.session,
             deployment: deployment,
             activationPlan: plan,
             actions: managedGitAction.map {
                 [ManagedToolOriginalPlanAction(requirement: git, action: $0)]
-            } ?? []
+            } ?? [],
+            components: singleComponents
         )
         let journal = try ManagedPythonRuntimeParentJournalRecord(
             plan: plan,
