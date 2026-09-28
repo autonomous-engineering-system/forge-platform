@@ -509,3 +509,12 @@ other four live gate observers are absent. A concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
 installation can be claimed.
+
+The helper-owned managed-Python preparation assembly now composes the fixed
+credential-free HTTPS transport, private staging and recovery store, archive
+inspector, host-wide operation lock, exact slot adapter and cached archive
+publisher under the helper's private state and runtime-slot roots. Restart
+recovery uses the same staging root and lease; an insecure state root is
+rejected before any fetch. This composition is source-qualified but is not yet
+called by the released reviewed-execution XPC route. It supplies no independent
+claim of live managed-Python installation or runtime readiness.
