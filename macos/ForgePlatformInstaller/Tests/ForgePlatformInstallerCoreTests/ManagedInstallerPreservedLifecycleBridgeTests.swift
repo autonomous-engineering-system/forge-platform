@@ -267,6 +267,62 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         ) else { return XCTFail("Noncanonical request must fail closed") }
     }
 
+    func testTerminalPreserveRecoveryUsesExactReadOnlyWorkerAndXPCRoute() async throws {
+        let request = try ManagedInstallerPreserveRecoveryRequest(intent: intent())
+        let terminal = recoveryReceipt(request)
+        let runner = LifecycleFixtureRunner(responses: [terminal])
+        let executor = ManagedInstallerPythonProductOperationExecutor(
+            resolver: LifecycleFixtureResolver(), runner: runner
+        )
+        let observed = try await executor.readTerminalPreserveRecovery(request).get()
+        XCTAssertEqual(observed.canonicalJSONData(), terminal)
+        let workerCalls = await runner.calls()
+        XCTAssertEqual(workerCalls, [request.canonicalJSONData()])
+
+        let remote = RawProductOperationXPCService(responses: [terminal])
+        let transport = MacOSManagedInstallerProductOperationXPCTransport(
+            endpoint: remote.endpoint
+        )
+        defer { Task { await transport.invalidate() } }
+        let returned = try await transport.readTerminalPreserveRecovery(
+            request.canonicalJSONData()
+        ).get()
+        XCTAssertEqual(returned, terminal)
+        XCTAssertEqual(remote.capturedRequests(), [request.canonicalJSONData()])
+    }
+
+    func testTerminalPreserveRecoveryRejectsSubstitutionAndNoncanonicalRequest() async throws {
+        let request = try ManagedInstallerPreserveRecoveryRequest(intent: intent())
+        let foreign = try ManagedInstallerPreserveRecoveryRequest(intent:
+            ManagedInstallerPreservedLifecycleReviewIntent(
+                operationID: "preserve-b", deploymentID: "reviewed-pair",
+                operation: "PRESERVE", component: "forge-runtime", instanceID: "forge-b",
+                installedCompositionIdentity: "composition-a",
+                installedManifestSHA256: "sha256:" + String(repeating: "d", count: 64),
+                installerRelease: release()
+            )
+        )
+        let runner = LifecycleFixtureRunner(responses: [recoveryReceipt(foreign)])
+        let executor = ManagedInstallerPythonProductOperationExecutor(
+            resolver: LifecycleFixtureResolver(), runner: runner
+        )
+        guard case .failure(.rejected) = await executor.readTerminalPreserveRecovery(request)
+        else { return XCTFail("Foreign worker recovery receipt must fail closed") }
+
+        let remote = RawProductOperationXPCService(responses: [recoveryReceipt(foreign)])
+        let transport = MacOSManagedInstallerProductOperationXPCTransport(
+            endpoint: remote.endpoint
+        )
+        defer { Task { await transport.invalidate() } }
+        guard case .failure(.invalidRequest) = await transport.readTerminalPreserveRecovery(
+            request.canonicalJSONData() + Data(" ".utf8)
+        ) else { return XCTFail("Noncanonical recovery request must fail closed") }
+        XCTAssertEqual(remote.capturedRequests(), [])
+        guard case .failure(.rejected) = await transport.readTerminalPreserveRecovery(
+            request.canonicalJSONData()
+        ) else { return XCTFail("Foreign XPC recovery receipt must fail closed") }
+    }
+
     func testSharedLifecycleReviewBindsExactActiveAndPreservedTargets() async throws {
         for operation in ["PRESERVE", "RESTORE", "PURGE"] {
             let selected = try intent(operation)
@@ -523,6 +579,39 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         XCTAssertNil(rejected)
     }
 
+    func testHelperHandlerReturnsOnlyCorrelatedTerminalPreserveRecovery() async throws {
+        let selected = try intent()
+        let request = try ManagedInstallerPreserveRecoveryRequest(intent: selected)
+        let terminal = try ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+            recoveryReceipt(request), request: request
+        )
+        let proposal = try fixture(selected)
+        let execution = try ManagedInstallerPreservedLifecycleRequest(
+            intent: selected, proposal: proposal
+        )
+        let handler = ManagedInstallerProductOperationXPCServiceHandler(
+            executor: LifecycleFixtureExecutor(
+                proposal: proposal,
+                receipt: try ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+                    receipt(execution), request: execution
+                ),
+                recoveryReceipt: terminal
+            )
+        )
+        let returned: Data? = await withCheckedContinuation { continuation in
+            handler.readTerminalPreserveRecovery(request.canonicalJSONData()) {
+                continuation.resume(returning: $0)
+            }
+        }
+        XCTAssertEqual(returned, recoveryReceipt(request))
+        let malformed: Data? = await withCheckedContinuation { continuation in
+            handler.readTerminalPreserveRecovery(
+                request.canonicalJSONData() + Data(" ".utf8)
+            ) { continuation.resume(returning: $0) }
+        }
+        XCTAssertNil(malformed)
+    }
+
     func testIsolatedWorkerRunnerAdmitsCanonicalLifecycleSchemas() async throws {
         let selected = try intent()
         let proposal = try fixture(selected)
@@ -640,13 +729,16 @@ private actor LifecycleReviewCoordinator: InstallerWizardCoordinator {
 private actor LifecycleFixtureExecutor: ManagedInstallerProductOperationHelperExecuting {
     let proposal: ManagedInstallerPreservedLifecycleReviewProposal
     let receipt: ManagedInstallerPreservedLifecycleReceipt
+    let recoveryReceipt: ManagedInstallerPreserveRecoveryReceipt?
 
     init(
         proposal: ManagedInstallerPreservedLifecycleReviewProposal,
-        receipt: ManagedInstallerPreservedLifecycleReceipt
+        receipt: ManagedInstallerPreservedLifecycleReceipt,
+        recoveryReceipt: ManagedInstallerPreserveRecoveryReceipt? = nil
     ) {
         self.proposal = proposal
         self.receipt = receipt
+        self.recoveryReceipt = recoveryReceipt
     }
 
     func executeProductOperation(
@@ -675,6 +767,19 @@ private actor LifecycleFixtureExecutor: ManagedInstallerProductOperationHelperEx
         (try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
             receipt.canonicalJSONData(), request: request
         )) == receipt ? .success(receipt) : .failure(.rejected)
+    }
+
+    func readTerminalPreserveRecovery(
+        _ request: ManagedInstallerPreserveRecoveryRequest
+    ) async -> Result<
+        ManagedInstallerPreserveRecoveryReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard let recoveryReceipt,
+              (try? ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+                recoveryReceipt.canonicalJSONData(), request: request
+              )) == recoveryReceipt else { return .failure(.rejected) }
+        return .success(recoveryReceipt)
     }
 }
 
