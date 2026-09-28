@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from dataclasses import replace
+import json
 from pathlib import Path
 import tempfile
 import sys
@@ -11,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from forge_platform.managed_deployments import (
     MANAGED_DEPLOYMENT_SCHEMA_V2,
+    MANAGED_DEPLOYMENT_SCHEMA_V3,
     ManagedComponentBinding,
     ManagedCompositionBinding,
     ManagedDeployment,
@@ -19,6 +22,12 @@ from forge_platform.managed_deployments import (
     ManagedDeploymentRegistry,
     ManagedPeerBinding,
 )
+from forge_platform.product_preserved_lifecycle import FORGE_COMPONENT, EP_COMPONENT
+from tests.installer.test_product_preserved_lifecycle import (
+    _REQUEST, _artifact, _receipt_digest, _terminal,
+)
+from tests.installer.test_released_product_routes import verified_forge_ep_selection
+from tests.installer.test_universal_installer import current_context
 
 
 def binding(component: str, instance: str) -> ManagedComponentBinding:
@@ -46,6 +55,158 @@ def deployment(
 
 
 class ManagedDeploymentTests(unittest.TestCase):
+    def test_preserve_commit_keeps_exact_instance_claim_and_historical_pairing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ManagedDeploymentRegistry(Path(directory).resolve())
+            base = verified_forge_ep_selection(current_context()).manifest
+            artifacts = {component: _artifact(component) for component in (FORGE_COMPONENT, EP_COMPONENT)}
+            manifest = replace(
+                base,
+                manifest_digest="sha256:" + "d" * 64,
+                components=tuple(
+                    replace(item, artifact=artifacts[item.identity])
+                    for item in base.components
+                ),
+            )
+            binding = ManagedCompositionBinding(
+                manifest.composition_id, manifest.manifest_digest,
+                "receipt:installed-preserved-composition",
+            )
+            pair = ManagedDeployment(
+                "preserved-pair", 1, "Preserved pair", (
+                    ManagedComponentBinding(FORGE_COMPONENT, "forge-a", "receipt:forge-a"),
+                    ManagedComponentBinding(EP_COMPONENT, "ep-a", "receipt:ep-a"),
+                ),
+                ManagedPeerBinding("forge-a", "ep-a", "receipt:paired-a"),
+                MANAGED_DEPLOYMENT_SCHEMA_V2, binding,
+            )
+            sibling = ManagedDeployment(
+                "sibling", 1, "Sibling", (
+                    ManagedComponentBinding(FORGE_COMPONENT, "forge-b", "receipt:forge-b"),
+                ),
+                schema=MANAGED_DEPLOYMENT_SCHEMA_V2, composition_binding=binding,
+            )
+            registry.create(pair)
+            registry.create(sibling)
+
+            receipt, status = self._preserve_evidence(FORGE_COMPONENT, "forge-a", "preserve-a")
+            preserved = registry.commit_preserved(
+                deployment_id=pair.deployment_id, expected_revision=1,
+                component=FORGE_COMPONENT, instance_id="forge-a",
+                operation_id="preserve-a", artifact=artifacts[FORGE_COMPONENT],
+                installed_manifest=manifest, request_digest=_REQUEST,
+                receipt=receipt, status=status,
+            )
+            self.assertEqual(preserved.schema, MANAGED_DEPLOYMENT_SCHEMA_V3)
+            self.assertEqual(preserved.revision, 2)
+            self.assertEqual(preserved.active_by_component[EP_COMPONENT].instance_id, "ep-a")
+            self.assertEqual(preserved.preserved_by_component[FORGE_COMPONENT].instance_id, "forge-a")
+            self.assertIsNone(preserved.peer_binding)
+            self.assertEqual(preserved.historical_peer_binding, pair.peer_binding)
+            self.assertEqual(registry.load(pair.deployment_id), preserved)
+            self.assertEqual(registry.load(sibling.deployment_id), sibling)
+            self.assertEqual(registry.commit_preserved(
+                deployment_id=pair.deployment_id, expected_revision=1,
+                component=FORGE_COMPONENT, instance_id="forge-a",
+                operation_id="preserve-a", artifact=artifacts[FORGE_COMPONENT],
+                installed_manifest=manifest, request_digest=_REQUEST,
+                receipt=receipt, status=status,
+            ), preserved)
+
+            with self.assertRaisesRegex(ManagedDeploymentError, "already belongs"):
+                registry.create(ManagedDeployment(
+                    "foreign", 1, None,
+                    (ManagedComponentBinding(FORGE_COMPONENT, "forge-a", "receipt:foreign"),),
+                ))
+            with self.assertRaisesRegex(ManagedDeploymentError, "lifecycle-aware"):
+                _ = preserved.by_component
+            with self.assertRaisesRegex(ManagedDeploymentError, "lifecycle plan"):
+                ManagedDeploymentPlanner.plan(preserved, None)
+            with self.assertRaisesRegex(ManagedDeploymentError, "without purge"):
+                registry.remove(pair.deployment_id, expected_revision=2)
+            with self.assertRaisesRegex(ManagedDeploymentError, "lifecycle commit"):
+                registry.replace(replace(preserved, revision=3), expected_revision=2)
+
+            ep_receipt, ep_status = self._preserve_evidence(EP_COMPONENT, "ep-a", "preserve-ep")
+            both_preserved = registry.commit_preserved(
+                deployment_id=pair.deployment_id, expected_revision=2,
+                component=EP_COMPONENT, instance_id="ep-a",
+                operation_id="preserve-ep", artifact=artifacts[EP_COMPONENT],
+                installed_manifest=manifest, request_digest=_REQUEST,
+                receipt=ep_receipt, status=ep_status,
+            )
+            self.assertEqual(both_preserved.components, ())
+            self.assertEqual(set(both_preserved.preserved_by_component), {FORGE_COMPONENT, EP_COMPONENT})
+            self.assertEqual(registry.inventory(), (both_preserved, sibling))
+
+    def test_preserve_commit_rejects_stale_foreign_and_tampered_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ManagedDeploymentRegistry(Path(directory).resolve())
+            manifest = verified_forge_ep_selection(current_context()).manifest
+            artifact = _artifact(FORGE_COMPONENT)
+            manifest = replace(
+                manifest, manifest_digest="sha256:" + "d" * 64,
+                components=tuple(
+                    replace(item, artifact=artifact) if item.identity == FORGE_COMPONENT else item
+                    for item in manifest.components
+                ),
+            )
+            current = ManagedDeployment(
+                "forge-only", 1, None,
+                (ManagedComponentBinding(FORGE_COMPONENT, "forge-a", "receipt:forge-a"),),
+                schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
+                composition_binding=ManagedCompositionBinding(
+                    manifest.composition_id, manifest.manifest_digest, "receipt:composition-a"
+                ),
+            )
+            registry.create(current)
+            receipt, status = self._preserve_evidence(FORGE_COMPONENT, "forge-a", "preserve-a")
+            common = dict(
+                deployment_id=current.deployment_id, expected_revision=1,
+                component=FORGE_COMPONENT, instance_id="forge-a",
+                operation_id="preserve-a", artifact=artifact,
+                installed_manifest=manifest, request_digest=_REQUEST,
+                receipt=receipt, status=status,
+            )
+            with self.assertRaisesRegex(ManagedDeploymentError, "revision changed"):
+                registry.commit_preserved(**(common | {"expected_revision": 2}))
+            with self.assertRaisesRegex(ManagedDeploymentError, "invalid"):
+                registry.commit_preserved(**(common | {"instance_id": "forge-b"}))
+            with self.assertRaisesRegex(ManagedDeploymentError, "outside installed composition"):
+                registry.commit_preserved(**(common | {
+                    "installed_manifest": replace(
+                        manifest,
+                        components=tuple(
+                            item for item in manifest.components if item.identity != FORGE_COMPONENT
+                        ),
+                        product_venvs=tuple(
+                            item for item in manifest.product_venvs
+                            if item.component_identity != FORGE_COMPONENT
+                        ),
+                    ),
+                }))
+            changed = receipt | {"provider_auth_state": "READY"}
+            with self.assertRaisesRegex(ManagedDeploymentError, "invalid"):
+                registry.commit_preserved(**(common | {"receipt": changed}))
+            self.assertEqual(registry.load(current.deployment_id), current)
+
+    @staticmethod
+    def _preserve_evidence(component: str, instance_id: str, operation_id: str):
+        receipt, status = _terminal(component, "PRESERVE")
+        receipt["instance_id"] = instance_id
+        receipt["operation_id"] = operation_id
+        key = "receipt_digest" if component == FORGE_COMPONENT else "receipt_sha256"
+        receipt[key] = _receipt_digest(component, {k: v for k, v in receipt.items() if k != key})
+        status.update({
+            "instance_id": instance_id, "operation_id": operation_id,
+            key: receipt[key],
+        })
+        if component == FORGE_COMPONENT:
+            receipt["runtime_id"] = instance_id
+            receipt[key] = _receipt_digest(component, {k: v for k, v in receipt.items() if k != key})
+            status[key] = receipt[key]
+        return receipt, status
+
     def test_registry_persists_multiple_deployments_and_never_conflates_instances(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             registry = ManagedDeploymentRegistry(Path(directory).resolve())
@@ -133,6 +294,9 @@ class ManagedDeploymentTests(unittest.TestCase):
             legacy = registry.create(deployment())
             raw = (root / "production.json").read_text(encoding="utf-8")
             self.assertNotIn("composition_binding", raw)
+            self.assertEqual(set(json.loads(raw)), {
+                "schema", "deployment_id", "revision", "label", "components", "peer_binding",
+            })
             self.assertEqual(registry.load("production"), legacy)
 
             composition = ManagedCompositionBinding(
@@ -153,7 +317,12 @@ class ManagedDeploymentTests(unittest.TestCase):
             stored = registry.load("production")
             self.assertEqual(stored, qualified)
             self.assertEqual(stored.composition_binding.composition_id, "forge-ep-qualified-v3")
-            self.assertIn('"schema":"forge-platform.managed-deployment/v2"', (root / "production.json").read_text())
+            v2_raw = (root / "production.json").read_text()
+            self.assertIn('"schema":"forge-platform.managed-deployment/v2"', v2_raw)
+            self.assertEqual(set(json.loads(v2_raw)), {
+                "schema", "deployment_id", "revision", "label", "components",
+                "peer_binding", "composition_binding",
+            })
 
             with self.assertRaisesRegex(ValueError, "requires terminal composition"):
                 ManagedDeployment(
