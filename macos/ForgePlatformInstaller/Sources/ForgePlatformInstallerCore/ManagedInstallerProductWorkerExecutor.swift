@@ -195,11 +195,13 @@ struct MacOSManagedInstallerProductWorkerRunner:
             maximumBytes: max(
                 ManagedInstallerProductOperationReceipt.maximumBytes,
                 ManagedInstallerProductRemovalReceipt.maximumBytes
-            )
+            ),
+            timeoutNanoseconds: invocation.timeoutNanoseconds
         )
         async let error = Self.readBounded(
             standardError.fileHandleForReading,
-            maximumBytes: Self.maximumErrorBytes
+            maximumBytes: Self.maximumErrorBytes,
+            timeoutNanoseconds: invocation.timeoutNanoseconds
         )
         let completed = await holder.wait(timeoutNanoseconds: invocation.timeoutNanoseconds)
         let capturedOutput = await output
@@ -358,21 +360,48 @@ struct MacOSManagedInstallerProductWorkerRunner:
         return data
     }
 
-    private static func readBounded(_ handle: FileHandle, maximumBytes: Int) async -> Data? {
+    static func readBounded(
+        _ handle: FileHandle,
+        maximumBytes: Int,
+        timeoutNanoseconds: UInt64
+    ) async -> Data? {
         await Task.detached {
+            let descriptor = handle.fileDescriptor
+            defer { try? handle.close() }
+            guard maximumBytes > 0, maximumBytes < Int.max,
+                  timeoutNanoseconds > 0 else { return nil }
+            let started = DispatchTime.now().uptimeNanoseconds
+            let (sum, overflow) = started.addingReportingOverflow(timeoutNanoseconds)
+            let deadline = overflow ? UInt64.max : sum
+            let previousFlags = Darwin.fcntl(descriptor, F_GETFL)
+            guard previousFlags >= 0,
+                  Darwin.fcntl(descriptor, F_SETFL, previousFlags | O_NONBLOCK) == 0 else {
+                return nil
+            }
             var result = Data()
-            do {
-                while result.count <= maximumBytes {
-                    guard let chunk = try handle.read(upToCount: maximumBytes + 1 - result.count),
-                          !chunk.isEmpty else {
-                        try? handle.close()
-                        return result
-                    }
-                    result.append(chunk)
+            var buffer = [UInt8](repeating: 0, count: 8_192)
+            while true {
+                let count = buffer.withUnsafeMutableBytes {
+                    Darwin.read(descriptor, $0.baseAddress, min($0.count, maximumBytes + 1 - result.count))
                 }
-            } catch {}
-            try? handle.close()
-            return nil
+                if count > 0 {
+                    result.append(contentsOf: buffer.prefix(Int(count)))
+                    if result.count > maximumBytes { return nil }
+                    continue
+                }
+                if count == 0 { return result }
+                if errno == EINTR { continue }
+                guard errno == EAGAIN || errno == EWOULDBLOCK else { return nil }
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < deadline else { return nil }
+                let milliseconds = max(1, min(50, (deadline - now) / 1_000_000))
+                var descriptorToPoll = pollfd(fd: descriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+                let ready = Darwin.poll(&descriptorToPoll, 1, Int32(milliseconds))
+                if ready < 0 && errno != EINTR { return nil }
+                if ready > 0 && descriptorToPoll.revents & Int16(POLLERR | POLLNVAL) != 0 {
+                    return nil
+                }
+            }
         }.value
     }
 }
