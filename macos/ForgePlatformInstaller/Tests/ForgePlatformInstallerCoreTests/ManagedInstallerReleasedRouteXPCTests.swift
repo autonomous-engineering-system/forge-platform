@@ -2,6 +2,40 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
+    func testSingleComponentRouteCodecAndStoredEvidenceRemainExact() throws {
+        let pair = try ReleasedRouteFixture()
+        var pairReader = try StrictJSONResourceReader(
+            data: ManagedInstallerReleasedRouteXPCCodec.encodeSnapshot(pair.snapshot)
+        )
+        let pairFields = try XCTUnwrap(pairReader.parseDocument().objectValue)
+        let pairComponents = try XCTUnwrap(pairFields["components"]?.arrayValue)
+        for identity in ["forge-runtime", "engineering-platform-server"] {
+            let single = try ReleasedRouteFixture(componentIdentity: identity)
+            let request = try ManagedInstallerReleasedRouteRequest(
+                session: single.session,
+                deployment: single.deployment,
+                inventoryEvidenceReference: single.inventory.evidenceReference
+            )
+            let encoded = ManagedInstallerReleasedRouteXPCCodec.encodeSnapshot(single.snapshot)
+            try ManagedInstallerReleasedRouteXPCCodec.validateStoredSnapshot(
+                encoded, request: request, inventory: single.inventory
+            )
+            XCTAssertEqual(try ManagedInstallerReleasedRouteXPCCodec.decodeSnapshot(
+                encoded, request: request, session: single.session,
+                deployment: single.deployment
+            ), single.snapshot)
+
+            var reader = try StrictJSONResourceReader(data: encoded)
+            var fields = try XCTUnwrap(reader.parseDocument().objectValue)
+            fields["components"] = .array(pairComponents)
+            let crossed = StrictSignedJSON.canonicalPayload(from: .object(fields))
+            XCTAssertThrowsError(try ManagedInstallerReleasedRouteXPCCodec.decodeSnapshot(
+                crossed, request: request, session: single.session,
+                deployment: single.deployment
+            ))
+        }
+    }
+
     func testReviewedIntentXPCUsesHelperAdmissionAndRejectsMalformedInput() async throws {
         let fixture = try ReleasedRouteFixture()
         let activation = try ManagedPythonRuntimeActivationPlan(
