@@ -41,6 +41,11 @@ from .managed_preserved_lifecycle_proposal import (
     decode_native_preserved_lifecycle_review_intent,
     prepare_native_preserved_lifecycle_review,
 )
+from .managed_preserved_lifecycle_dispatch import ManagedPreservedLifecycleDispatcher
+from .managed_preserved_lifecycle_request import (
+    decode_native_preserved_lifecycle_request,
+    encode_native_preserved_lifecycle_receipt,
+)
 from .managed_installer import ManagedDeploymentExecutionRecord
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
 from .released_product_routes import (
@@ -330,6 +335,7 @@ class ManagedProductOperationHelperService:
         authority_resolver: ManagedProductOperationAuthorityResolving,
         dispatcher: ManagedProductOperationDispatcher,
         removal_dispatcher: ManagedProductRemovalDispatcher | None = None,
+        preserved_dispatcher: ManagedPreservedLifecycleDispatcher | None = None,
     ) -> None:
         if not callable(getattr(authority_resolver, "resolve", None)):
             raise TypeError("helper-owned authority resolver is required")
@@ -338,6 +344,7 @@ class ManagedProductOperationHelperService:
         self.authority_resolver = authority_resolver
         self.dispatcher = dispatcher
         self.removal_dispatcher = removal_dispatcher
+        self.preserved_dispatcher = preserved_dispatcher
 
     def execute(self, canonical_request: bytes) -> bytes:
         """Return one bounded canonical receipt or raise a generic failure."""
@@ -383,6 +390,41 @@ class ManagedProductOperationHelperService:
         except Exception as error:
             raise ManagedProductOperationServiceError(
                 "native preserved lifecycle review was rejected"
+            ) from error
+
+    def execute_preserved_lifecycle(self, canonical_request: bytes) -> bytes:
+        """Execute only a reviewed PRESERVE against helper-pinned product routes."""
+        try:
+            if (
+                not isinstance(self.authority_resolver, PinnedManagedProductOperationAuthorityResolver)
+                or not isinstance(self.preserved_dispatcher, ManagedPreservedLifecycleDispatcher)
+            ):
+                raise TypeError("released lifecycle execution authority is unavailable")
+            request = decode_native_preserved_lifecycle_request(canonical_request)
+            if request.intent.installer_release != self.authority_resolver.current_installer_release:
+                raise ValueError("installer release changed after lifecycle review")
+            manifest = self.authority_resolver.resolve_installed_lifecycle_review(request.intent)
+            record = self.preserved_dispatcher.dispatch(
+                request, installed_manifest=manifest,
+            )
+            if (
+                record.operation_id != request.review.operation_id
+                or record.deployment_id != request.review.deployment_id
+                or record.component != request.review.component
+                or record.instance_id != request.review.instance_id
+                or record.review_fingerprint != request.review.review_fingerprint
+                or record.state != "COMPLETE"
+                or record.receipt_digest is None
+                or record.registry_revision is None
+            ):
+                raise ValueError("preserve execution record changed")
+            return encode_native_preserved_lifecycle_receipt(
+                request, receipt_digest=record.receipt_digest,
+                registry_revision=record.registry_revision,
+            )
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "native preserved lifecycle execution was rejected"
             ) from error
 
     def execute_removal(self, canonical_request: bytes) -> bytes:
@@ -559,8 +601,9 @@ class ManagedProductOperationHelperBuilder:
 
         candidates = tuple(candidate_manifests)
         installed = tuple(installed_manifests)
+        configurations = tuple(route_configurations)
         routes = ReleasedManagedProductRouteBuilder.build_from_manifests(
-            configurations=route_configurations,
+            configurations=configurations,
             candidate_manifests=candidates,
             installed_manifests=installed,
         )
@@ -573,6 +616,7 @@ class ManagedProductOperationHelperBuilder:
             authority_resolver=authority_resolver,
             coordinator=coordinator,
             routes=routes,
+            route_configurations=configurations,
         )
 
     @staticmethod
@@ -601,6 +645,10 @@ class ManagedProductOperationHelperBuilder:
         authority_resolver: PinnedManagedProductOperationAuthorityResolver,
         coordinator: ManagedForgeEPInstallationCoordinator,
         routes: Mapping[str, ResolvedManagedProductRoute],
+        route_configurations: tuple[
+            ReleasedManagedProductRouteConfiguration
+            | ReleasedManagedSingleProductRouteConfiguration, ...
+        ] = (),
     ) -> ManagedProductOperationHelperService:
         if not isinstance(coordinator, ManagedForgeEPInstallationCoordinator):
             raise TypeError("managed Forge+EP coordinator is required")
@@ -618,8 +666,12 @@ class ManagedProductOperationHelperBuilder:
             routes=routes,
             current_installer_release=authority_resolver.current_installer_release,
         )
+        preserved_dispatcher = ManagedPreservedLifecycleDispatcher(
+            coordinator=coordinator, configurations=route_configurations,
+        ) if route_configurations else None
         return ManagedProductOperationHelperService(
             authority_resolver=authority_resolver,
             dispatcher=dispatcher,
             removal_dispatcher=removal_dispatcher,
+            preserved_dispatcher=preserved_dispatcher,
         )

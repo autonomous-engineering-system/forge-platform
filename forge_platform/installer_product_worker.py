@@ -26,6 +26,12 @@ from .managed_preserved_lifecycle_proposal import (
     decode_native_preserved_lifecycle_review_intent,
     decode_native_preserved_lifecycle_review_proposal,
 )
+from .managed_preserved_lifecycle_request import (
+    MAXIMUM_NATIVE_PRESERVED_LIFECYCLE_RECEIPT_BYTES,
+    NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
+    decode_native_preserved_lifecycle_receipt,
+    decode_native_preserved_lifecycle_request,
+)
 from .managed_product_operation_service import (
     MAXIMUM_NATIVE_PRODUCT_OPERATION_RECEIPT_BYTES,
     MAXIMUM_NATIVE_PRODUCT_REMOVAL_RECEIPT_BYTES,
@@ -238,6 +244,30 @@ def execute_preserved_lifecycle_review_intent(
     return response
 
 
+def execute_preserved_lifecycle_request(
+    canonical_request: bytes, *,
+    service_loader: ServiceLoader = load_released_product_service,
+) -> bytes:
+    """Bind an executed PRESERVE receipt to the exact reviewed native request."""
+    request = decode_native_preserved_lifecycle_request(canonical_request)
+    service = service_loader()
+    if not isinstance(service, ManagedProductOperationHelperService):
+        raise InstallerProductWorkerUnavailable("lifecycle execution service is unavailable")
+    response = service.execute_preserved_lifecycle(canonical_request)
+    if (
+        not isinstance(response, bytes) or not response
+        or len(response) > MAXIMUM_NATIVE_PRESERVED_LIFECYCLE_RECEIPT_BYTES
+    ):
+        raise InstallerProductWorkerUnavailable("lifecycle execution receipt is unavailable")
+    try:
+        decode_native_preserved_lifecycle_receipt(response, request=request)
+    except Exception as error:
+        raise InstallerProductWorkerUnavailable(
+            "lifecycle execution receipt was rejected"
+        ) from error
+    return response
+
+
 def run(
     input_stream: BinaryIO,
     output_stream: BinaryIO,
@@ -254,6 +284,10 @@ def run(
             response = execute_removal_review_intent(request, service_loader=service_loader)
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVED_LIFECYCLE_REVIEW_INTENT_SCHEMA:
             response = execute_preserved_lifecycle_review_intent(
+                request, service_loader=service_loader,
+            )
+        elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA:
+            response = execute_preserved_lifecycle_request(
                 request, service_loader=service_loader,
             )
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REQUEST_SCHEMA:
