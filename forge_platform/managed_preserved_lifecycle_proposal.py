@@ -249,11 +249,14 @@ def decode_native_preserved_lifecycle_review_proposal(
         supplied = unsigned.pop("review_fingerprint")
         if "sha256:" + _fingerprint(unsigned) != supplied:
             raise ValueError("preserved lifecycle review fingerprint changed")
-        if intent.operation == "RESTORE" and (
-            not isinstance(review["preserve_operation_id"], str)
-            or not isinstance(review["preserve_receipt_digest"], str)
+        has_preserve_operation = isinstance(review["preserve_operation_id"], str)
+        has_preserve_receipt = isinstance(review["preserve_receipt_digest"], str)
+        if (
+            has_preserve_operation != has_preserve_receipt
+            or (intent.operation == "PRESERVE" and has_preserve_operation)
+            or (intent.operation == "RESTORE" and not has_preserve_operation)
         ):
-            raise ValueError("restore has no exact preserve evidence")
+            raise ValueError("lifecycle preserve evidence contradicts reviewed state")
         return proposal
     except (UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
         raise ManagedPreservedLifecycleProposalError(

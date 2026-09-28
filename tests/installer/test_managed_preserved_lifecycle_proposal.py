@@ -67,11 +67,11 @@ class ManagedPreservedLifecycleProposalTests(unittest.TestCase):
             registry = ManagedDeploymentRegistry(Path(directory).resolve())
             registry.create(active)
             for operation, record in (
-                ("PRESERVE", active), ("RESTORE", preserved), ("PURGE", preserved),
+                ("PRESERVE", active), ("PURGE", active),
+                ("RESTORE", preserved), ("PURGE", preserved),
             ):
                 with self.subTest(operation=operation):
-                    if operation != "PRESERVE":
-                        registry._write(preserved)
+                    registry._write(record)
                     payload = _intent(manifest, operation, operation.lower() + "-a")
                     intent = decode_native_preserved_lifecycle_review_intent(_wire(payload))
                     proposal_bytes = prepare_native_preserved_lifecycle_review(
@@ -147,6 +147,37 @@ class ManagedPreservedLifecycleProposalTests(unittest.TestCase):
                 decode_native_preserved_lifecycle_review_proposal(
                     _wire(changed), intent=intent,
                 )
+
+    def test_recomputed_review_fingerprint_cannot_change_preserve_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, active, preserved = _fixture()
+            registry = ManagedDeploymentRegistry(Path(directory).resolve())
+            registry.create(active)
+            cases = (
+                ("PRESERVE", active, "preserve_operation_id", "preserve-old"),
+                ("RESTORE", preserved, "preserve_receipt_digest", None),
+                ("PURGE", preserved, "preserve_operation_id", None),
+                ("PURGE", active, "preserve_receipt_digest", "sha256:" + "f" * 64),
+            )
+            for operation, record, field, value in cases:
+                with self.subTest(operation=operation, field=field, value=value):
+                    registry._write(record)
+                    payload = _intent(manifest, operation, operation.lower() + "-state")
+                    intent = decode_native_preserved_lifecycle_review_intent(_wire(payload))
+                    proposal = json.loads(prepare_native_preserved_lifecycle_review(
+                        _wire(payload), installed_manifest=manifest, registry=registry,
+                        current_installer_release=installer_release(),
+                    ))
+                    proposal["review"][field] = value
+                    unsigned = dict(proposal["review"])
+                    unsigned.pop("review_fingerprint")
+                    proposal["review"]["review_fingerprint"] = "sha256:" + sha256(
+                        _wire(unsigned),
+                    ).hexdigest()
+                    with self.assertRaises(ManagedPreservedLifecycleProposalError):
+                        decode_native_preserved_lifecycle_review_proposal(
+                            _wire(proposal), intent=intent,
+                        )
 
     def test_released_service_and_worker_emit_only_valid_correlated_review(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -90,6 +90,7 @@ public struct ManagedInstallerPreservedLifecycleReviewWorkflow: Sendable {
               proposal.operation == operation,
               proposal.component == component,
               proposal.instanceID == instance,
+              proposal.hasPreserveEvidence == (preserved == instance),
               (try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
                   proposal.canonicalJSONData(), intent: intent
               )) == proposal,
