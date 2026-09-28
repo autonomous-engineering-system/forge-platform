@@ -154,6 +154,132 @@ final class ManagedInstallerManagedDeploymentRegistryRecordTests: XCTestCase {
         ))
     }
 
+    func testV3PreservedForgeAndEPRemainExactInventoryClaims() throws {
+        let codec = ManagedInstallerManagedDeploymentRegistryRecord.self
+        let partly = v3Record()
+        let decoded = try codec.decode(wire(partly), expectedDeploymentID: "deployment-one")
+        XCTAssertNil(decoded.target.forgeInstanceID)
+        XCTAssertEqual(decoded.target.preservedForgeInstanceID, "forge-one")
+        XCTAssertEqual(decoded.target.engineeringPlatformInstanceID, "ep-one")
+        XCTAssertEqual(decoded.preservedComponents["forge-runtime"]?.forgeInstallationID, "Install-A")
+        XCTAssertEqual(decoded.preservedComponents["forge-runtime"]?.preserveOperationID, "preserve-forge")
+        XCTAssertNil(decoded.peerReceiptReference)
+        XCTAssertEqual(decoded.historicalPeerReceiptReference, "receipt:pair-one")
+        XCTAssertEqual(decoded.target.installedCompositionID, "forge-ep-qualified")
+
+        var both = partly
+        both["components"] = .array([])
+        both["preserved_components"] = .array([
+            .object(preservedForge()), .object(preservedEP()),
+        ])
+        let fullyPreserved = try codec.decode(wire(both), expectedDeploymentID: "deployment-one")
+        XCTAssertNil(fullyPreserved.target.engineeringPlatformInstanceID)
+        XCTAssertEqual(fullyPreserved.target.preservedEngineeringPlatformInstanceID, "ep-one")
+        XCTAssertEqual(fullyPreserved.preservedComponents.count, 2)
+        XCTAssertNotEqual(fullyPreserved.recordSHA256, decoded.recordSHA256)
+
+        var single = partly
+        single["components"] = .array([])
+        single["historical_peer_binding"] = .null
+        let isolated = try codec.decode(wire(single), expectedDeploymentID: "deployment-one")
+        XCTAssertEqual(isolated.target.preservedForgeInstanceID, "forge-one")
+    }
+
+    func testV3RejectsForeignIdentityReleasePeerAndLegacyShortcuts() throws {
+        let codec = ManagedInstallerManagedDeploymentRegistryRecord.self
+        let baseline = v3Record()
+        func reject(_ fields: [String: StrictJSONResourceValue]) {
+            XCTAssertThrowsError(try codec.decode(
+                wire(fields), expectedDeploymentID: "deployment-one"
+            ))
+        }
+        var wrong = baseline
+        wrong["peer_binding"] = record(schema: "forge-platform.managed-deployment/v1")["peer_binding"]
+        reject(wrong)
+
+        wrong = baseline
+        var preserved = preservedForge()
+        preserved["forge_installation_id"] = .string("../foreign")
+        wrong["preserved_components"] = .array([.object(preserved)])
+        reject(wrong)
+
+        wrong = baseline
+        preserved = preservedForge()
+        preserved["version"] = .string("2.7.35")
+        wrong["preserved_components"] = .array([.object(preserved)])
+        reject(wrong)
+
+        wrong = baseline
+        preserved = preservedForge()
+        preserved["instance_id"] = .string("ep-one")
+        preserved["forge_runtime_id"] = .string("ep-one")
+        wrong["preserved_components"] = .array([.object(preserved)])
+        reject(wrong)
+
+        wrong = baseline
+        wrong["historical_peer_binding"] = .object([
+            "forge_instance_id": .string("forge-other"),
+            "ep_instance_id": .string("ep-one"),
+            "receipt_reference": .string("receipt:pair-one"),
+        ])
+        reject(wrong)
+
+        wrong = baseline
+        wrong["preserved_components"] = .array([])
+        reject(wrong)
+
+        wrong = baseline
+        wrong["schema"] = .string("forge-platform.managed-deployment/v2")
+        reject(wrong)
+    }
+
+    private func v3Record() -> [String: StrictJSONResourceValue] {
+        var fields = record(schema: "forge-platform.managed-deployment/v1")
+        let active = fields["components"]!.arrayValue!
+        fields["schema"] = .string("forge-platform.managed-deployment/v3")
+        fields["revision"] = .integer("3")
+        fields["components"] = .array([active[1]])
+        fields["historical_peer_binding"] = fields["peer_binding"]
+        fields["peer_binding"] = .null
+        fields["composition_binding"] = .object([
+            "composition_id": .string("forge-ep-qualified"),
+            "manifest_digest": .string("sha256:" + String(repeating: "a", count: 64)),
+            "receipt_reference": .string("receipt:composition-one"),
+        ])
+        fields["preserved_components"] = .array([.object(preservedForge())])
+        return fields
+    }
+
+    private func preservedForge() -> [String: StrictJSONResourceValue] {
+        [
+            "component": .string("forge-runtime"),
+            "instance_id": .string("forge-one"),
+            "previous_receipt_reference": .string("receipt:forge-one"),
+            "preserve_operation_id": .string("preserve-forge"),
+            "preserve_receipt_digest": .string("sha256:" + String(repeating: "f", count: 64)),
+            "version": .string("2.7.36"),
+            "source_revision": .string("ed1e623ef3cedd8c4f720510e0052409b2d5ab1f"),
+            "artifact_digest": .string("sha256:c10e9584649538f2f1547bb09fd3982cc3495dcf34ef807d66463661fdd5cd68"),
+            "forge_runtime_id": .string("forge-one"),
+            "forge_installation_id": .string("Install-A"),
+        ]
+    }
+
+    private func preservedEP() -> [String: StrictJSONResourceValue] {
+        [
+            "component": .string("engineering-platform-server"),
+            "instance_id": .string("ep-one"),
+            "previous_receipt_reference": .string("receipt:ep-one"),
+            "preserve_operation_id": .string("preserve-ep"),
+            "preserve_receipt_digest": .string("sha256:" + String(repeating: "e", count: 64)),
+            "version": .string("2.3.103"),
+            "source_revision": .string("9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2"),
+            "artifact_digest": .string("sha256:0199a7aab3b25260b6cd4ad53f0aecc7e59c9403ef9a3bd4639993ab9e56910c"),
+            "forge_runtime_id": .null,
+            "forge_installation_id": .null,
+        ]
+    }
+
     private func record(schema: String) -> [String: StrictJSONResourceValue] {
         [
             "schema": .string(schema),

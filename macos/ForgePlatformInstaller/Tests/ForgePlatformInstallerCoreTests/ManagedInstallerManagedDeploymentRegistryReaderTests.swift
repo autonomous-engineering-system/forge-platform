@@ -42,6 +42,23 @@ final class ManagedInstallerManagedDeploymentRegistryReaderTests: XCTestCase {
         XCTAssertEqual(testReader(root).read().failure, .invalidState)
     }
 
+    func testPreservedV3ClaimCannotBeReusedByAnotherDeployment() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try write(preservedRecord(id: "one", forge: "forge-one"),
+                  named: "one.json", in: root)
+        let snapshot = try testReader(root).read().get()
+        XCTAssertEqual(snapshot.records[0].target.preservedForgeInstanceID, "forge-one")
+        XCTAssertNil(snapshot.records[0].target.forgeInstanceID)
+
+        try write(record(id: "two", forge: "forge-one"), named: "two.json", in: root)
+        XCTAssertEqual(testReader(root).read().failure, .invalidState)
+
+        try FileManager.default.removeItem(at: root.appendingPathComponent("two.json"))
+        try write(record(id: "two", forge: "forge-two"), named: "two.json", in: root)
+        XCTAssertEqual(try testReader(root).read().get().records.count, 2)
+    }
+
     func testRejectsUnsafeRootAndRecordWithoutFollowingSymlinks() throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
@@ -132,6 +149,30 @@ final class ManagedInstallerManagedDeploymentRegistryReaderTests: XCTestCase {
                 "forge_instance_id": .string(forge), "ep_instance_id": .string($0),
                 "receipt_reference": .string("receipt:pair-" + id),
             ]) } ?? .null,
+        ])) + Data([0x0A])
+    }
+
+    private func preservedRecord(id: String, forge: String) -> Data {
+        StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string("forge-platform.managed-deployment/v3"),
+            "deployment_id": .string(id), "revision": .integer("2"),
+            "label": .null, "components": .array([]), "peer_binding": .null,
+            "historical_peer_binding": .null,
+            "composition_binding": .object([
+                "composition_id": .string("forge-qualified"),
+                "manifest_digest": .string("sha256:" + String(repeating: "a", count: 64)),
+                "receipt_reference": .string("receipt:composition-" + id),
+            ]),
+            "preserved_components": .array([.object([
+                "component": .string("forge-runtime"), "instance_id": .string(forge),
+                "previous_receipt_reference": .string("receipt:forge-" + id),
+                "preserve_operation_id": .string("preserve-" + id),
+                "preserve_receipt_digest": .string("sha256:" + String(repeating: "b", count: 64)),
+                "version": .string("2.7.36"),
+                "source_revision": .string("ed1e623ef3cedd8c4f720510e0052409b2d5ab1f"),
+                "artifact_digest": .string("sha256:c10e9584649538f2f1547bb09fd3982cc3495dcf34ef807d66463661fdd5cd68"),
+                "forge_runtime_id": .string(forge), "forge_installation_id": .string("Install-A"),
+            ])]),
         ])) + Data([0x0A])
     }
 }
