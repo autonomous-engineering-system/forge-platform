@@ -29,9 +29,12 @@ durable parent-`PLANNED` readback before provider or managed-Python preparation,
 revalidates each result before advancing and returns one stable-plan-bound
 `RUNTIMES_READY` receipt. It is not released-route wiring. The helper-side
 provider archive extractor now re-inspects exact `tar.gz`/ZIP bytes before
-mutation, extracts into an empty private destination and independently verifies
-every resulting path, mode and file digest. Runtime slot publication,
-credential-home provisioning and released wiring remain unimplemented; this
+mutation, extracts into an empty private destination, normalizes only the
+provider executable to root-owned `0500`, and independently verifies every
+resulting path, mode and file digest. Target-bound versioned runtime slots now
+retain the digest-pinned archive for exact reboot readback and refuse corrupt
+or crossed target state. Component-owned credential-home provisioning,
+the provider mutation adapter and released wiring remain unimplemented; this
 source-level seam is not live provider-readiness evidence.
 
 The fixed NSXPC client authenticates the exact helper signing identifier and
@@ -860,7 +863,7 @@ discard under the same lease, with cleanup and release failure precedence. The
 exact stable-plan provider fanout is also implemented as a fail-fast,
 source-level coordinator with deterministic per-target operations and a
 complete plan-bound receipt. A separate admission coordinator enforces durable
-`PLANNED` seeding before provider and managed-Python runtime preparation. Provider archive extraction and exact tree readback are source-qualified; runtime slot publication and credential-home provisioning,
+`PLANNED` seeding before provider and managed-Python runtime preparation. Provider archive extraction, target-bound runtime slot publication and exact cached tree readback are source-qualified; credential-home provisioning and the provider mutation adapter,
 service-account secure-store integration, the other four live gate observers,
 signed helper registration and released journal-seeding integration remain
 unimplemented.
@@ -945,8 +948,10 @@ cleanup-enforcing provider preparation transaction are implemented. The
 canonical stable-plan fanout and its complete plan-bound receipt are also
 implemented. Exact parent-journal seeding is ordered before provider and
 managed-Python preparation by a source-level stable-plan admission coordinator.
-Provider archive extraction and exact tree readback are source-qualified. Runtime slot publication and credential-home provisioning, service-account secure-store
-integration, other four live gate observers, signed service registration and
+Provider archive extraction, target-bound runtime slot publication, exact
+staged-archive-to-slot binding and cached tree readback are source-qualified.
+Credential-home provisioning, the complete provider mutation adapter and
+service-account secure-store integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,
 separate gate router and fixed-layout macOS component-provider inspector are
 implemented. A descriptor-safe reader, atomic publisher and complete-set exact

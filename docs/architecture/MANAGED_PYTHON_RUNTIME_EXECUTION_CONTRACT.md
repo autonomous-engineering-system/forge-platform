@@ -364,8 +364,9 @@ The canonical stable-plan fanout and its complete plan-bound receipt are also
 implemented at source level. Durable `PLANNED` seeding, provider fanout and
 managed-Python preparation are ordered by a separate source-level admission
 coordinator that revalidates every result against the same stable plan. The
-provider `tar.gz`/ZIP extractor and exact per-file tree readback are now
-source-qualified. Runtime slot publication and credential-home provisioning,
+provider `tar.gz`/ZIP extractor, target-bound slot publication and exact cached
+per-file tree readback are now source-qualified. Credential-home provisioning
+and the provider mutation adapter,
 service-account secure-store integration, the other four live gate observers,
 signed service registration and released route wiring are not yet implemented.
 
