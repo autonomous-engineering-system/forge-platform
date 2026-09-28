@@ -18,6 +18,7 @@ from forge_platform.managed_deployments import (
 )
 from forge_platform.managed_preserve_execution import (
     ManagedPreserveExecutionCoordinator, ManagedPreserveExecutionError,
+    _write, read_terminal_preserve_evidence,
 )
 from forge_platform.managed_preserved_lifecycle_plan import prepare_preserved_lifecycle_review
 from forge_platform.managed_preserved_product_adapters import (
@@ -66,6 +67,18 @@ class Supervisor:
 
 
 class ManagedPreserveExecutionTests(unittest.TestCase):
+    @staticmethod
+    def _read_terminal(root, registry, review, manifest):
+        return read_terminal_preserve_evidence(
+            operations_root=root / "operations", registry=registry,
+            deployment_id=review.deployment_id, operation_id=review.operation_id,
+            component=review.component, instance_id=review.instance_id,
+            review_fingerprint=review.review_fingerprint,
+            composition_id=manifest.composition_id,
+            manifest_digest=manifest.manifest_digest,
+            expected_owner_uid=os.getuid(),
+        )
+
     def _state(self, root, component=FORGE_COMPONENT):
         manifest, active, _ = _fixture()
         registry = ManagedDeploymentRegistry(root / "registry")
@@ -156,6 +169,76 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
             self.assertNotIn("Install-A", (root / "operations" / "preserve-a.json").read_text())
             self.assertNotIn("data_root", (root / "operations" / "preserve-a.json").read_text())
             self.assertEqual(receipt["receipt_digest"], result.receipt_digest)
+            self.assertEqual(self._read_terminal(root, registry, review, manifest), result)
+
+    def test_terminal_recovery_readback_rejects_foreign_stale_and_unsafe_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, _, coordinator = self._state(root)
+            adapter, _, _ = self._forge_adapter(root)
+            result = coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(self._read_terminal(root, registry, review, manifest), result)
+            self.assertEqual(registry.load(active.deployment_id).revision, result.registry_revision)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                read_terminal_preserve_evidence(
+                    operations_root=root / "operations", registry=registry,
+                    deployment_id=review.deployment_id, operation_id=review.operation_id,
+                    component=review.component, instance_id="forge-b",
+                    review_fingerprint=review.review_fingerprint,
+                    composition_id=manifest.composition_id,
+                    manifest_digest=manifest.manifest_digest,
+                    expected_owner_uid=os.getuid(),
+                )
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                read_terminal_preserve_evidence(
+                    operations_root=root / "operations", registry=registry,
+                    deployment_id=review.deployment_id, operation_id=review.operation_id,
+                    component=review.component, instance_id=review.instance_id,
+                    review_fingerprint="sha256:" + "a" * 64,
+                    composition_id=manifest.composition_id,
+                    manifest_digest=manifest.manifest_digest,
+                    expected_owner_uid=os.getuid(),
+                )
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                read_terminal_preserve_evidence(
+                    operations_root=root / "operations", registry=registry,
+                    deployment_id=review.deployment_id, operation_id=review.operation_id,
+                    component=review.component, instance_id=review.instance_id,
+                    review_fingerprint=review.review_fingerprint,
+                    composition_id="another-composition",
+                    manifest_digest=manifest.manifest_digest,
+                    expected_owner_uid=os.getuid(),
+                )
+            journal = root / "operations" / "preserve-a.json"
+            shadow = root / "operations" / "shadow.json"
+            os.link(journal, shadow)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "unsafe"):
+                self._read_terminal(root, registry, review, manifest)
+            shadow.unlink()
+            journal.rename(shadow)
+            journal.symlink_to(shadow)
+            with self.assertRaises(OSError):
+                self._read_terminal(root, registry, review, manifest)
+
+    def test_terminal_recovery_readback_rejects_inflight_and_registry_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, supervisor, coordinator = self._state(root)
+            adapter, _, _ = self._forge_adapter(root)
+            supervisor.fail_remove = True
+            with self.assertRaisesRegex(RuntimeError, "remove failed"):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                self._read_terminal(root, registry, review, manifest)
+            supervisor.fail_remove = False
+            resumed, _, _ = self._forge_adapter(root)
+            result = coordinator.preserve(review, installed_manifest=manifest, adapter=resumed)
+            self.assertEqual(self._read_terminal(root, registry, review, manifest), result)
+            _write(root / "operations" / "preserve-a.json", replace(
+                result, registry_revision=result.registry_revision + 1,
+            ))
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                self._read_terminal(root, registry, review, manifest)
 
     def test_interrupted_service_removal_resumes_same_product_operation(self):
         with tempfile.TemporaryDirectory() as directory:
