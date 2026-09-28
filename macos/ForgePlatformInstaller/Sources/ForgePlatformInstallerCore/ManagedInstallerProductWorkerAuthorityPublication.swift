@@ -550,6 +550,11 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
     }
 
     private static func validateExisting(_ data: Data) throws {
+        _ = try decodeCanonicalAuthority(data)
+    }
+
+    static func decodeCanonicalAuthority(_ data: Data) throws
+        -> ManagedInstallerProductWorkerAuthoritySnapshot {
         do {
             var reader = try StrictJSONResourceReader(data: data)
             let value = try reader.parseDocument()
@@ -590,6 +595,7 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
             guard snapshot.canonicalJSONData() == data else {
                 throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
             }
+            return snapshot
         } catch {
             throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
         }
