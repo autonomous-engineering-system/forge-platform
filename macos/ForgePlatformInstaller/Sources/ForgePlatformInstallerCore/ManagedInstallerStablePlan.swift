@@ -83,7 +83,7 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
         actions: [ManagedToolOriginalPlanAction]
     ) -> String {
         let material: StrictJSONResourceValue = .object([
-            "schema": .string("forge-platform.native-stable-plan/v1"),
+            "schema": .string("forge-platform.native-stable-plan/v2"),
             "session": sessionValue(session),
             "deployment": deploymentValue(
                 deployment,
@@ -158,6 +158,13 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
             "engineering_platform_instance_id": deployment.engineeringPlatformInstanceID.map {
                 .string($0)
             } ?? .null,
+            "preserved_forge_instance_id": deployment.preservedForgeInstanceID.map {
+                .string($0)
+            } ?? .null,
+            "preserved_engineering_platform_instance_id":
+                deployment.preservedEngineeringPlatformInstanceID.map {
+                    .string($0)
+                } ?? .null,
             "installed_composition_id": deployment.installedCompositionID.map {
                 .string($0)
             } ?? .null,
