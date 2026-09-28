@@ -540,6 +540,13 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         provider_config_home: Path,
         expected_digest: str | None = None,
     ) -> Mapping[str, object]:
+        for path in (codex_executable, provider_home, provider_config_home):
+            if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
+                raise ForgeServerAdapterError("Forge provider context path is not exact")
+        if expected_digest is not None and re.fullmatch(
+            r"sha256:[0-9a-f]{64}", expected_digest
+        ) is None:
+            raise ForgeServerAdapterError("Forge provider context expected digest is invalid")
         args = [
             "server", "provider-context", "configure",
             "--provider-id", FORGE_PROVIDER_ID,
@@ -550,7 +557,44 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         ]
         if expected_digest is not None:
             args += ["--expected-digest", expected_digest]
-        return self._run(*args)
+        configured = self._run(*args)
+        observed = self._run(
+            "server", "provider-context", "show", "--provider-id", FORGE_PROVIDER_ID
+        )
+        expected = {
+            "schema_version": "1.0",
+            "instance_id": self.target.instance_id,
+            "provider_id": FORGE_PROVIDER_ID,
+            "provider_type": "CODEX_CLI_CHATGPT_SESSION",
+            "executable_path": str(codex_executable),
+            "provider_home": str(provider_home),
+            "provider_config_home": str(provider_config_home),
+            "profile": None,
+        }
+        exact_fields = set(expected) | {
+            "configuration_revision", "created_at", "updated_at",
+            "configuration_digest",
+        }
+        if (
+            set(configured) != exact_fields
+            or configured != observed
+            or any(configured.get(key) != value for key, value in expected.items())
+            or isinstance(configured.get("configuration_revision"), bool)
+            or not isinstance(configured.get("configuration_revision"), int)
+            or configured["configuration_revision"] < 1
+            or any(
+                not isinstance(configured.get(key), str) or not configured[key]
+                for key in ("created_at", "updated_at")
+            )
+            or not isinstance(configured.get("configuration_digest"), str)
+            or re.fullmatch(
+                r"sha256:[0-9a-f]{64}", configured["configuration_digest"]
+            ) is None
+        ):
+            raise ForgeServerAdapterError(
+                "Forge provider context does not independently match the selected instance"
+            )
+        return observed
 
     def configure_ep_peer(
         self,

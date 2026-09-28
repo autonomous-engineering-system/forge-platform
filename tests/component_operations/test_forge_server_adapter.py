@@ -160,6 +160,7 @@ class Runner:
     def __init__(self) -> None:
         self.initialized = False
         self.calls: list[tuple[str, ...]] = []
+        self.provider_context: dict[str, object] | None = None
 
     def run(self, argv):
         import json
@@ -179,7 +180,22 @@ class Runner:
         elif "health" in args:
             payload = {"outcome": "HEALTHY"}
         elif "provider-context" in args:
-            payload = {"provider_id": "codex-chatgpt-session", "configuration_digest": "sha256:" + "b" * 64}
+            if "configure" in args:
+                self.provider_context = {
+                    "schema_version": "1.0",
+                    "instance_id": "forge-instance-1",
+                    "provider_id": "codex-chatgpt-session",
+                    "provider_type": args[args.index("--provider-type") + 1],
+                    "executable_path": args[args.index("--executable-path") + 1],
+                    "provider_home": args[args.index("--provider-home") + 1],
+                    "provider_config_home": args[args.index("--provider-config-home") + 1],
+                    "profile": None,
+                    "configuration_revision": 1,
+                    "created_at": "2026-09-28T00:00:00Z",
+                    "updated_at": "2026-09-28T00:00:00Z",
+                    "configuration_digest": "sha256:" + "b" * 64,
+                }
+            payload = self.provider_context
         elif "execution-host" in args:
             payload = {"status": "CONFIGURED"}
         else:
@@ -459,11 +475,12 @@ class ForgeServerAdapterTests(unittest.TestCase):
         self.assertEqual(self.supervisor.calls, ["register", "start"])
 
     def test_provider_context_and_peer_configuration_use_product_cli(self) -> None:
-        self.adapter.configure_provider_context(
+        context = self.adapter.configure_provider_context(
             codex_executable=Path("/opt/forge/providers/codex/bin/codex"),
             provider_home=Path("/var/lib/forge/provider-home"),
             provider_config_home=Path("/var/lib/forge/codex-home"),
         )
+        self.assertEqual(context["instance_id"], "forge-instance-1")
         self.adapter.configure_ep_peer(
             binding_id="binding-1",
             endpoint="http://127.0.0.1:8876",
@@ -478,7 +495,42 @@ class ForgeServerAdapterTests(unittest.TestCase):
         )
         flattened = [" ".join(call) for call in self.runner.calls]
         self.assertTrue(any("provider-context configure" in call for call in flattened))
+        self.assertTrue(any("provider-context show" in call for call in flattened))
         self.assertTrue(any("execution-host configure" in call for call in flattened))
+
+    def test_provider_context_wrong_instance_or_path_fails_after_product_readback(self) -> None:
+        class DriftRunner(Runner):
+            def run(self, argv):
+                result = super().run(argv)
+                if "provider-context" in argv and "show" in argv:
+                    payload = json.loads(result.stdout)
+                    payload["instance_id"] = "other-instance"
+                    return ForgeCommandResult(0, json.dumps(payload), "")
+                return result
+
+        adapter = ForgeServerProductAdapter(
+            forge_executable=self.adapter.forge_executable,
+            target=self.adapter.target,
+            installed_artifact=self.adapter.installed_artifact,
+            staged_artifacts={},
+            runner=DriftRunner(),
+            supervisor=self.supervisor,
+            readiness_probe=self.adapter.readiness_probe,
+        )
+        with self.assertRaisesRegex(ForgeServerAdapterError, "independently match"):
+            adapter.configure_provider_context(
+                codex_executable=Path("/opt/forge/providers/codex/bin/codex"),
+                provider_home=Path("/var/lib/forge/provider-home"),
+                provider_config_home=Path("/var/lib/forge/codex-home"),
+            )
+        before = len(self.runner.calls)
+        with self.assertRaisesRegex(ForgeServerAdapterError, "path is not exact"):
+            self.adapter.configure_provider_context(
+                codex_executable=Path("../codex"),
+                provider_home=Path("/var/lib/forge/provider-home"),
+                provider_config_home=Path("/var/lib/forge/codex-home"),
+            )
+        self.assertEqual(len(self.runner.calls), before)
 
     def test_remove_remains_blocked_without_helper_owned_uninstall_binding(self) -> None:
         self.assertEqual(self.adapter.removal_support(), "UNSUPPORTED")
@@ -1069,7 +1121,7 @@ class ForgeServerAdapterTests(unittest.TestCase):
             provider_config_home=Path("/var/lib/forge/codex-home"),
             expected_digest="sha256:" + "d" * 64,
         )
-        self.assertIn("--expected-digest", self.runner.calls[-1])
+        self.assertIn("--expected-digest", self.runner.calls[-2])
         self.adapter.configure_ep_peer(
             binding_id="binding-2",
             endpoint="https://ep.example.test",
