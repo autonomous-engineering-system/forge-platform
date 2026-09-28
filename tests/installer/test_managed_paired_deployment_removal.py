@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -221,6 +222,25 @@ class ManagedPairedDeploymentRemovalTests(unittest.TestCase):
         )
         with self.assertRaises(ManagedPairedDeploymentRemovalError):
             self.remove()
+        self.assertEqual(self.ep.mutations, 0)
+        self.assertEqual(self.forge.calls, 0)
+        self.assertEqual(self.revoker.mutations, 0)
+
+    def test_unqualified_release_or_artifact_digest_blocks_both_removals(self):
+        for component, original, old_version in (
+            ("forge", self.forge_request, "2.7.36"),
+            ("ep", self.ep_request, "2.3.103"),
+        ):
+            for artifact in (
+                replace(original.artifact, version=old_version),
+                replace(original.artifact, digest="sha256:" + "0" * 64),
+            ):
+                setattr(self, f"{component}_request", replace(original, artifact=artifact))
+                with self.subTest(component=component, artifact=artifact), self.assertRaises(
+                    ManagedPairedDeploymentRemovalError
+                ):
+                    self.remove()
+            setattr(self, f"{component}_request", original)
         self.assertEqual(self.ep.mutations, 0)
         self.assertEqual(self.forge.calls, 0)
         self.assertEqual(self.revoker.mutations, 0)

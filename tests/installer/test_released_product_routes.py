@@ -44,7 +44,8 @@ from tests.installer.test_universal_installer import (
 )
 
 
-FORGE_DIGEST = "sha256:" + "4" * 64
+FORGE_DIGEST = "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938"
+EP_DIGEST = "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb"
 
 
 def verified_forge_ep_selection(
@@ -53,13 +54,14 @@ def verified_forge_ep_selection(
 ):
     payload = manifest_payload(composition_id=composition_id)
     ep = payload["components"][0]
-    ep["artifact"]["version"] = "2.3.102"
-    ep["artifact"]["source_revision"] = "cab85a84a6a8b5b574c796713e4363781fc05519"
+    ep["artifact"]["version"] = "2.3.104"
+    ep["artifact"]["source_revision"] = "cfce69892278ee2b6c14412c171f5f33596acb0e"
+    ep["artifact"]["digest"] = EP_DIGEST
     forge = json.loads(json.dumps(ep))
     forge["identity"] = "forge-runtime"
     forge["artifact"] = {
-        "version": "2.7.35",
-        "source_revision": "ff4c0d45f51161376104250cd6efcfb6f045b8ac",
+        "version": "2.7.37",
+        "source_revision": "a78523603d6ea081d07875ea6b557e73b5d4fe63",
         "source": "https://registry.example.invalid/forge-runtime.whl",
         "digest": FORGE_DIGEST,
         "qualification": "https://evidence.example.invalid/forge-runtime",
@@ -204,7 +206,7 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
             routes["other"] = route
 
     def test_lifecycle_executable_is_fixed_by_helper_route(self):
-        lifecycle = self.root / "lifecycle/forge-2.7.35/bin/forge"
+        lifecycle = self.root / "lifecycle/forge-2.7.37/bin/forge"
         uninstall = ForgeUninstallBinding("forge-prod", "installation-1")
         config = self.configuration(
             forge_lifecycle_executable=lifecycle, forge_uninstall_binding=uninstall,
