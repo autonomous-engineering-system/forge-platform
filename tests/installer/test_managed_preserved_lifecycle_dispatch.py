@@ -18,8 +18,16 @@ from forge_platform.engineering_platform_system_adapter import ProductCommandRes
 from forge_platform.forge_ep_pairing_executor import ForgeEPProductPairingBinding
 from forge_platform.forge_server_adapter import ForgeServerTarget, ForgeUninstallBinding
 from forge_platform.installer_product_worker import (
-    InstallerProductWorkerUnavailable, execute_preserved_lifecycle_request, run,
+    InstallerProductWorkerUnavailable, execute_preserved_lifecycle_request,
+    read_terminal_preserve_recovery_request, run,
 )
+from forge_platform.managed_preserve_recovery import (
+    ManagedPreserveRecoveryError, NATIVE_PRESERVE_RECOVERY_REQUEST_SCHEMA,
+    decode_native_preserve_recovery_request,
+    decode_native_preserve_recovery_receipt,
+    encode_native_preserve_recovery_receipt,
+)
+from forge_platform.managed_preserve_execution import ManagedPreserveExecutionRecord
 from forge_platform.managed_deployments import ManagedDeploymentRegistry
 from forge_platform.managed_install_flow import ManagedForgeEPInstallationCoordinator
 from forge_platform.managed_preserved_lifecycle_dispatch import (
@@ -55,6 +63,15 @@ class Resolver:
 
 
 class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
+    @staticmethod
+    def _recovery_request(manifest):
+        payload = {
+            "schema": NATIVE_PRESERVE_RECOVERY_REQUEST_SCHEMA,
+            "intent": _intent(manifest),
+        }
+        payload["request_fingerprint"] = sha256(_wire(payload)).hexdigest()
+        return _wire(payload)
+
     @staticmethod
     def _config(root, manifest):
         artifacts = {item.identity: item.artifact for item in manifest.components}
@@ -136,6 +153,90 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
             self.assertEqual(len(runner.calls), 2)
             self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
             self.assertEqual(len(currency.calls), 4)
+
+    def test_worker_reads_exact_terminal_recovery_without_repeating_product_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, _, service = self._service(root)
+            mutation = _wire(_request(manifest, registry))
+            recovery = self._recovery_request(manifest)
+            decoded = decode_native_preserve_recovery_request(recovery)
+            with self.assertRaises(ManagedProductOperationServiceError):
+                service.read_terminal_preserve_recovery(recovery)
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_adapter(root)[1]
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=preserve_helpers.Supervisor()),
+            ):
+                service.execute_preserved_lifecycle(mutation)
+            current = registry.load("reviewed-pair")
+            output = io.BytesIO()
+            self.assertEqual(run(
+                io.BytesIO(recovery), output, service_loader=lambda: service,
+            ), 0)
+            terminal = decode_native_preserve_recovery_receipt(
+                output.getvalue(), request=decoded,
+            )
+            self.assertEqual(terminal.state, "COMPLETE")
+            self.assertEqual(terminal.registry_revision, current.revision)
+            self.assertEqual(terminal.receipt_digest,
+                             current.preserved_by_component["forge-runtime"].preserve_receipt_digest)
+            self.assertEqual(read_terminal_preserve_recovery_request(
+                recovery, service_loader=lambda: service,
+            ), output.getvalue())
+            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(registry.load("reviewed-pair"), current)
+            with patch.object(service, "read_terminal_preserve_recovery", return_value=b"{}"):
+                with self.assertRaises(InstallerProductWorkerUnavailable):
+                    read_terminal_preserve_recovery_request(
+                        recovery, service_loader=lambda: service,
+                    )
+
+    def test_recovery_codec_rejects_substitution_noncanonical_and_nonterminal(self):
+        manifest, _, _ = _fixture()
+        request_bytes = self._recovery_request(manifest)
+        request = decode_native_preserve_recovery_request(request_bytes)
+        record = ManagedPreserveExecutionRecord(
+            request.intent.operation_id, request.intent.deployment_id,
+            "sha256:" + "a" * 64, request.intent.component,
+            request.intent.instance_id, "COMPLETE",
+            "sha256:" + "b" * 64, 2,
+        )
+        receipt = encode_native_preserve_recovery_receipt(request, record)
+        self.assertEqual(decode_native_preserve_recovery_receipt(
+            receipt, request=request,
+        ), record)
+        with self.assertRaises(ManagedPreserveRecoveryError):
+            decode_native_preserve_recovery_request(request_bytes + b" ")
+        with self.assertRaises(ManagedPreserveRecoveryError):
+            decode_native_preserve_recovery_request(request_bytes.replace(
+                b'"request_fingerprint":', b'"request_fingerprint":"bad","request_fingerprint":', 1,
+            ))
+        with self.assertRaises(ManagedPreserveRecoveryError):
+            decode_native_preserve_recovery_receipt(receipt + b" ", request=request)
+        with self.assertRaises(ManagedPreserveRecoveryError):
+            decode_native_preserve_recovery_receipt(receipt, request=object())
+        with self.assertRaises(ManagedPreserveRecoveryError):
+            encode_native_preserve_recovery_receipt(
+                request, replace(record, state="PREPARED"),
+            )
+        with self.assertRaises(ManagedPreserveRecoveryError):
+            decode_native_preserve_recovery_receipt(_wire({
+                **json.loads(receipt), "record": {
+                    **json.loads(receipt)["record"], "receipt_digest": "sha256:BAD",
+                },
+            }), request=request)
+        altered_intent = _intent(manifest)
+        altered_intent["operation"] = "RESTORE"
+        altered_intent["intent_fingerprint"] = sha256(_wire({
+            key: value for key, value in altered_intent.items()
+            if key != "intent_fingerprint"
+        })).hexdigest()
+        altered = {"schema": NATIVE_PRESERVE_RECOVERY_REQUEST_SCHEMA,
+                   "intent": altered_intent}
+        altered["request_fingerprint"] = sha256(_wire(altered)).hexdigest()
+        with self.assertRaises(ManagedPreserveRecoveryError):
+            decode_native_preserve_recovery_request(_wire(altered))
 
     def test_worker_routes_schema_and_rejects_forged_receipt(self):
         with tempfile.TemporaryDirectory() as directory:

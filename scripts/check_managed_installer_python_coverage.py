@@ -30,6 +30,7 @@ TARGETS = (
     "forge_platform/managed_preserved_lifecycle_plan.py",
     "forge_platform/managed_preserved_product_adapters.py",
     "forge_platform/managed_preserve_execution.py",
+    "forge_platform/managed_preserve_recovery.py",
     "forge_platform/managed_preserved_lifecycle_request.py",
     "forge_platform/managed_preserved_lifecycle_dispatch.py",
     "forge_platform/managed_preserved_lifecycle_proposal.py",

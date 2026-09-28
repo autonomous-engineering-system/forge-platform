@@ -42,6 +42,12 @@ from .managed_preserved_lifecycle_proposal import (
     prepare_native_preserved_lifecycle_review,
 )
 from .managed_preserved_lifecycle_dispatch import ManagedPreservedLifecycleDispatcher
+from .managed_preserve_execution import read_terminal_preserve_evidence
+from .managed_preserve_recovery import (
+    decode_native_preserve_recovery_request,
+    decode_native_preserve_recovery_receipt,
+    encode_native_preserve_recovery_receipt,
+)
 from .managed_preserved_lifecycle_request import (
     decode_native_preserved_lifecycle_request,
     encode_native_preserved_lifecycle_receipt,
@@ -425,6 +431,39 @@ class ManagedProductOperationHelperService:
         except Exception as error:
             raise ManagedProductOperationServiceError(
                 "native preserved lifecycle execution was rejected"
+            ) from error
+
+    def read_terminal_preserve_recovery(self, canonical_request: bytes) -> bytes:
+        """Return only exact terminal journal and V3 registry evidence."""
+        try:
+            if (
+                not isinstance(self.authority_resolver, PinnedManagedProductOperationAuthorityResolver)
+                or not isinstance(self.preserved_dispatcher, ManagedPreservedLifecycleDispatcher)
+            ):
+                raise TypeError("released preserve recovery authority is unavailable")
+            request = decode_native_preserve_recovery_request(canonical_request)
+            manifest = self.authority_resolver.resolve_installed_lifecycle_review(
+                request.intent
+            )
+            record = read_terminal_preserve_evidence(
+                operations_root=self.preserved_dispatcher.operations_root,
+                registry=self.preserved_dispatcher.registry,
+                deployment_id=request.intent.deployment_id,
+                operation_id=request.intent.operation_id,
+                component=request.intent.component,
+                instance_id=request.intent.instance_id,
+                review_fingerprint=None,
+                composition_id=manifest.composition_id,
+                manifest_digest=manifest.manifest_digest,
+                expected_owner_uid=self.preserved_dispatcher.expected_owner_uid,
+            )
+            response = encode_native_preserve_recovery_receipt(request, record)
+            if decode_native_preserve_recovery_receipt(response, request=request) != record:
+                raise ValueError("terminal preserve recovery response changed")
+            return response
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "native preserve recovery evidence was rejected"
             ) from error
 
     def execute_removal(self, canonical_request: bytes) -> bytes:

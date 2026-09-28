@@ -144,7 +144,7 @@ def _write(path: Path, record: ManagedPreserveExecutionRecord) -> None:
 def read_terminal_preserve_evidence(
     *, operations_root: Path, registry: ManagedDeploymentRegistry,
     deployment_id: str, operation_id: str, component: str, instance_id: str,
-    review_fingerprint: str, composition_id: str, manifest_digest: str,
+    review_fingerprint: str | None, composition_id: str, manifest_digest: str,
     expected_owner_uid: int = 0,
 ) -> ManagedPreserveExecutionRecord:
     """Read a committed exact PRESERVE from helper-owned journal and V3 registry.
@@ -159,8 +159,10 @@ def read_terminal_preserve_evidence(
             deployment_id, operation_id, instance_id, composition_id,
         ))
         or component not in {FORGE_COMPONENT, EP_COMPONENT}
-        or not isinstance(review_fingerprint, str)
-        or _DIGEST.fullmatch(review_fingerprint) is None
+        or review_fingerprint is not None and (
+            not isinstance(review_fingerprint, str)
+            or _DIGEST.fullmatch(review_fingerprint) is None
+        )
         or not isinstance(manifest_digest, str)
         or _DIGEST.fullmatch(manifest_digest) is None
         or isinstance(expected_owner_uid, bool)
@@ -197,7 +199,8 @@ def read_terminal_preserve_evidence(
             or record.deployment_id != deployment_id
             or record.component != component
             or record.instance_id != instance_id
-            or record.review_fingerprint != review_fingerprint
+            or review_fingerprint is not None
+                and record.review_fingerprint != review_fingerprint
             or record.receipt_digest is None
             or record.registry_revision is None
             or current is None or current.schema != MANAGED_DEPLOYMENT_SCHEMA_V3
