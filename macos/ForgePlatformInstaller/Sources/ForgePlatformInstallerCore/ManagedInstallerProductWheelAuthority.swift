@@ -1,12 +1,12 @@
 import CryptoKit
 import Foundation
 
-enum ManagedInstallerProductWheelAuthorityFailure: Error, Equatable {
+enum ManagedInstallerProductWheelAuthorityFailure: Error, Equatable, Sendable {
     case unavailable
     case rejected
 }
 
-struct ManagedInstallerProductWheelBinding: Equatable {
+struct ManagedInstallerProductWheelBinding: Equatable, Sendable {
     let deploymentID: String
     let componentIdentity: String
     let instanceID: String
@@ -20,10 +20,19 @@ struct ManagedInstallerProductWheelBinding: Equatable {
     let authoritySHA256: String
 }
 
+protocol ManagedInstallerProductWheelAuthorityResolving {
+    func resolve(
+        expectedInstallerRelease: VerifiedInstallerRelease,
+        deploymentID: String, componentIdentity: String, instanceID: String
+    ) -> Result<ManagedInstallerProductWheelBinding,
+                ManagedInstallerProductWheelAuthorityFailure>
+}
+
 /// Resolves an exact wheel only from the canonical helper-owned product-worker
 /// authority and its digest-bound immutable composition manifests. The native
 /// installer never selects a wheel from a version string or a release feed.
-struct ManagedInstallerProductWheelAuthorityResolver {
+struct ManagedInstallerProductWheelAuthorityResolver:
+    ManagedInstallerProductWheelAuthorityResolving {
     private let reader: any ManagedInstallerProductWorkerCanonicalAuthorityReading
     private let accounts: ManagedInstallerProductServiceAccountSetResolver
 
