@@ -29,6 +29,9 @@ KIND_PATHS = {
     "build-provenance": re.compile(
         r"python-[0-9]+\.[0-9]+\.[0-9]+-arm64/build-provenance\.json"
     ),
+    "git-corresponding-source": re.compile(
+        r"git-[0-9]+\.[0-9]+\.[0-9]+-arm64/git-corresponding-source\.tar\.gz"
+    ),
 }
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 TAG = re.compile(r"forge-platform-managed-tools-v[1-9][0-9]*")
@@ -79,7 +82,7 @@ def load_config(path: Path) -> dict[str, object]:
         raise PublicationError("handoff inventory digest is invalid")
     assets = value["assets"]
     if not isinstance(assets, list) or len(assets) != len(KIND_PATHS):
-        raise PublicationError("the five consumer assets are required")
+        raise PublicationError("the five consumer assets and Git source asset are required")
     kinds: set[str] = set()
     paths: set[str] = set()
     names: set[str] = set()
@@ -114,6 +117,18 @@ def load_config(path: Path) -> dict[str, object]:
         names.add(name)
     if kinds != KIND_PATHS.keys() or total > MAXIMUM_SITE_BYTES:
         raise PublicationError("consumer asset set exceeds the Pages boundary")
+    by_kind = {asset["kind"]: asset for asset in assets}
+    git_root = str(by_kind["managed-git-runtime"]["relative_path"]).split("/")[0]
+    source_root = str(by_kind["git-corresponding-source"]["relative_path"]).split("/")[0]
+    python_root = str(by_kind["managed-python-runtime"]["relative_path"]).split("/")[0]
+    if git_root != source_root or any(
+        str(by_kind[kind]["relative_path"]).split("/")[0] != python_root
+        for kind in ("cpython-source", "source-provenance", "build-provenance")
+    ):
+        raise PublicationError("source and runtime versions differ")
+    python_version = python_root[len("python-"):-len("-arm64")]
+    if str(by_kind["cpython-source"]["asset_name"]) != f"cpython-{python_version}-source.tar.gz":
+        raise PublicationError("CPython source version differs from runtime")
     return value
 
 
@@ -158,6 +173,24 @@ def stage(config: dict[str, object], assets_root: Path, output: Path) -> None:
             raise PublicationError("staged Pages bytes differ from reviewed input")
         if _digest(assets_root / str(asset["asset_name"]), int(asset["size"])) != asset["sha256"]:
             raise PublicationError("release asset changed during staging")
+    git = next(asset for asset in assets if asset["kind"] == "managed-git-runtime")
+    source = next(asset for asset in assets if asset["kind"] == "git-corresponding-source")
+    git_directory = str(git["relative_path"]).split("/")[0]
+    version = git_directory[len("git-"):-len("-arm64")]
+    index = output / "managed-tools" / "v1" / git_directory / "index.html"
+    index.write_text(
+        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">"
+        f"<title>Forge Platform managed Git {version}</title>"
+        f"<h1>Forge Platform managed Git {version}</h1>"
+        f"<p><a href=\"{git['asset_name']}\">Managed Git binary archive</a> "
+        f"{git['sha256']}</p>"
+        f"<p><a href=\"{source['asset_name']}\">Complete corresponding source, "
+        f"dispatcher and build recipes</a> {source['sha256']}</p>"
+        "<p>The source archive includes the Git GPL-2.0 license and the exact "
+        "custom dispatcher source. Both files are available here without credentials.</p>"
+        "</html>\n",
+        encoding="utf-8",
+    )
 
 
 def main() -> int:
@@ -171,7 +204,7 @@ def main() -> int:
         stage(config, args.assets_root, args.output)
     except (PublicationError, OSError) as error:
         parser.exit(1, f"MANAGED_TOOL_PAGES=BLOCKED reason={error}\n")
-    print("MANAGED_TOOL_PAGES=STAGED assets=5")
+    print(f"MANAGED_TOOL_PAGES=STAGED assets={len(config['assets'])}")
     return 0
 
 

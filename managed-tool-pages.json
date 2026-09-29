@@ -43,6 +43,14 @@
       "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/python-3.14.7-arm64/build-provenance.json",
       "sha256": "sha256:84245721dc4989a595074eb6202d4d2b30d414921ced48908d3ec926389515fa",
       "size": 2295
+    },
+    {
+      "kind": "git-corresponding-source",
+      "asset_name": "git-corresponding-source.tar.gz",
+      "relative_path": "git-2.56.0-arm64/git-corresponding-source.tar.gz",
+      "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/git-2.56.0-arm64/git-corresponding-source.tar.gz",
+      "sha256": "sha256:6397b470678f589c248c4275be91f47c74d476171a7e6ae451eb93bc47a84355",
+      "size": 8538783
     }
   ]
 }

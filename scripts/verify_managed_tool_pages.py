@@ -16,7 +16,21 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise PublicationError("public asset redirected")
 
 
-def verify(config: dict[str, object], marker: Path | None = None) -> None:
+def _verify_page(opener, path: Path, url: str, label: str) -> None:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 4096:
+        raise PublicationError(f"local {label} is invalid")
+    expected = path.read_bytes()
+    try:
+        with opener.open(urllib.request.Request(url), timeout=30) as response:
+            if (response.status != 200 or response.geturl() != url
+                or response.read(4097) != expected):
+                raise PublicationError(f"public {label} differs")
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise PublicationError(f"public {label} unavailable") from error
+
+
+def verify(config: dict[str, object], marker: Path | None = None,
+           index: Path | None = None) -> None:
     opener = urllib.request.build_opener(NoRedirect())
     for asset in config["assets"]:
         assert isinstance(asset, dict)
@@ -42,29 +56,24 @@ def verify(config: dict[str, object], marker: Path | None = None) -> None:
         except (urllib.error.URLError, TimeoutError) as error:
             raise PublicationError("public asset unavailable") from error
     if marker is not None:
-        if marker.is_symlink() or not marker.is_file() or marker.stat().st_size > 4096:
-            raise PublicationError("local publication marker is invalid")
-        expected = marker.read_bytes()
-        url = SITE_PREFIX + "publication.json"
-        try:
-            with opener.open(urllib.request.Request(url), timeout=30) as response:
-                if (response.status != 200 or response.geturl() != url
-                    or response.read(4097) != expected):
-                    raise PublicationError("public publication marker differs")
-        except (urllib.error.URLError, TimeoutError) as error:
-            raise PublicationError("public publication marker unavailable") from error
+        _verify_page(opener, marker, SITE_PREFIX + "publication.json", "publication marker")
+    if index is not None:
+        git = next(asset for asset in config["assets"] if asset["kind"] == "managed-git-runtime")
+        directory = str(git["relative_path"]).split("/")[0]
+        _verify_page(opener, index, SITE_PREFIX + directory + "/index.html", "Git source index")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--marker", type=Path)
+    parser.add_argument("--index", type=Path)
     args = parser.parse_args()
     try:
-        verify(load_config(args.config), args.marker)
+        verify(load_config(args.config), args.marker, args.index)
     except (PublicationError, OSError) as error:
         parser.exit(1, f"MANAGED_TOOL_PAGES_READBACK=BLOCKED reason={error}\n")
-    print("MANAGED_TOOL_PAGES_READBACK=PASS assets=5 direct_get=true")
+    print(f"MANAGED_TOOL_PAGES_READBACK=PASS assets={len(load_config(args.config)['assets'])} direct_get=true")
     return 0
 
 

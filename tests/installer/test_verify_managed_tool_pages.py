@@ -81,7 +81,7 @@ class PublicReadbackTests(unittest.TestCase):
              patch.object(verifier, "load_config", return_value=self.config), \
              patch.object(verifier, "verify") as verify:
             self.assertEqual(verifier.main(), 0)
-            verify.assert_called_once_with(self.config, None)
+            verify.assert_called_once_with(self.config, None, None)
         with patch.object(sys, "argv", args), \
              patch.object(verifier, "load_config", side_effect=PublicationError("blocked")):
             with self.assertRaises(SystemExit) as outcome:
@@ -106,6 +106,23 @@ class PublicReadbackTests(unittest.TestCase):
                 Response(b"abc", self.asset["url"])])):
                 with self.assertRaisesRegex(PublicationError, "marker is invalid"):
                     verifier.verify(self.config, marker)
+
+    def test_source_index_must_match_exact_public_bytes(self) -> None:
+        self.asset["kind"] = "managed-git-runtime"
+        self.asset["relative_path"] = "git-2.56.0-arm64/forge-platform-managed-git.tar.gz"
+        with tempfile.TemporaryDirectory() as directory:
+            index = Path(directory) / "index.html"
+            index.write_bytes(b"<html>exact source link</html>")
+            index_url = verifier.SITE_PREFIX + "git-2.56.0-arm64/index.html"
+            responses = [Response(b"abc", self.asset["url"]),
+                         Response(index.read_bytes(), index_url)]
+            with patch.object(verifier.urllib.request, "build_opener", return_value=Opener(responses)):
+                verifier.verify(self.config, index=index)
+            responses = [Response(b"abc", self.asset["url"]),
+                         Response(b"wrong", index_url)]
+            with patch.object(verifier.urllib.request, "build_opener", return_value=Opener(responses)):
+                with self.assertRaisesRegex(PublicationError, "Git source index differs"):
+                    verifier.verify(self.config, index=index)
 
 
 if __name__ == "__main__":

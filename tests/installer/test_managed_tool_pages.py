@@ -29,6 +29,7 @@ class ManagedToolPagesTests(unittest.TestCase):
             "cpython-source": "python-3.14.7-arm64/cpython-3.14.7-source.tar.gz",
             "source-provenance": "python-3.14.7-arm64/source-provenance.json",
             "build-provenance": "python-3.14.7-arm64/build-provenance.json",
+            "git-corresponding-source": "git-2.56.0-arm64/git-corresponding-source.tar.gz",
         }
         self.config = {
             "schema": pages.SCHEMA,
@@ -59,7 +60,7 @@ class ManagedToolPagesTests(unittest.TestCase):
         config = pages.load_config(ROOT / "managed-tool-pages.json")
         self.assertEqual(config["handoff_manifest_sha256"],
                          "sha256:f1a343c531812af6560b773800998394958a70a97796d3bdd768a32000f02f79")
-        self.assertEqual(len(config["assets"]), 5)
+        self.assertEqual(len(config["assets"]), 6)
 
     def test_stages_exact_tree_and_rechecks_bytes(self) -> None:
         pages.stage(pages.load_config(self.write_config()), self.assets, self.output)
@@ -67,6 +68,9 @@ class ManagedToolPagesTests(unittest.TestCase):
         for asset in self.config["assets"]:
             staged = self.output / "managed-tools" / "v1" / asset["relative_path"]
             self.assertEqual(staged.read_bytes(), (self.assets / asset["asset_name"]).read_bytes())
+        index = (self.output / "managed-tools" / "v1" / "git-2.56.0-arm64" / "index.html").read_text()
+        self.assertIn("git-corresponding-source.tar.gz", index)
+        self.assertIn("GPL-2.0", index)
         with self.assertRaises(pages.PublicationError):
             pages.stage(self.config, self.assets, self.output)
 
@@ -101,6 +105,9 @@ class ManagedToolPagesTests(unittest.TestCase):
             (lambda c: c["assets"][0].update(sha256="sha256:0"), "digest"),
             (lambda c: c["assets"][0].update(size=True), "size"),
             (lambda c: c["assets"][0].update(extra="x"), "fields"),
+            (lambda c: c["assets"][-1].update(
+                relative_path="git-2.55.0-arm64/git-corresponding-source.tar.gz",
+                url=pages.SITE_PREFIX + "git-2.55.0-arm64/git-corresponding-source.tar.gz"), "versions"),
         ]
         for mutate, reason in cases:
             with self.subTest(reason=reason):

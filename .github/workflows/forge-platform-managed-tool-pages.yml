@@ -90,7 +90,11 @@ jobs:
 
           opener = urllib.request.build_opener(NoRedirect())
           config = load_config(Path("managed-tool-pages.json"))
-          for url in [SITE_PREFIX + "publication.json", *(a["url"] for a in config["assets"])]:
+          git = next(a for a in config["assets"] if a["kind"] == "managed-git-runtime")
+          git_directory = git["relative_path"].split("/")[0]
+          for url in [SITE_PREFIX + "publication.json",
+                      SITE_PREFIX + git_directory + "/index.html",
+                      *(a["url"] for a in config["assets"])]:
               try:
                   opener.open(urllib.request.Request(url, method="HEAD"), timeout=30)
               except urllib.error.HTTPError as error:
@@ -158,6 +162,8 @@ jobs:
               "source_sha": os.environ["SOURCE_SHA"],
               "release_tag": os.environ["RELEASE_TAG"],
               "handoff_manifest_sha256": config["handoff_manifest_sha256"],
+              "git_corresponding_source_url": next(a["url"] for a in config["assets"] if a["kind"] == "git-corresponding-source"),
+              "git_corresponding_source_sha256": next(a["sha256"] for a in config["assets"] if a["kind"] == "git-corresponding-source"),
               "config_sha256": "sha256:" + hashlib.sha256(config_bytes).hexdigest(),
               "github_run_id": int(os.environ["GITHUB_RUN_ID"]),
               "github_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
@@ -184,7 +190,8 @@ jobs:
           set -euo pipefail
           for attempt in $(seq 1 24); do
             if python3 scripts/verify_managed_tool_pages.py --config managed-tool-pages.json \
-              --marker "$RUNNER_TEMP/managed-tool-site/managed-tools/v1/publication.json"; then
+              --marker "$RUNNER_TEMP/managed-tool-site/managed-tools/v1/publication.json" \
+              --index "$RUNNER_TEMP/managed-tool-site/managed-tools/v1/git-2.56.0-arm64/index.html"; then
               exit 0
             fi
             sleep 10
