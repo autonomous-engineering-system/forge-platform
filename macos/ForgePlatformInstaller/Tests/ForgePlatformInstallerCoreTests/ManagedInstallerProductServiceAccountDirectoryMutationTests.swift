@@ -115,7 +115,7 @@ final class ManagedInstallerProductServiceAccountDirectoryMutationTests: XCTestC
     }
 }
 
-private final class DirectoryFixture:
+final class DirectoryFixture:
     ManagedInstallerLocalDirectoryOperating, @unchecked Sendable {
     var users: [String: ManagedInstallerLocalDirectoryUser] = [:]
     var groups: [String: ManagedInstallerLocalDirectoryGroup] = [:]
