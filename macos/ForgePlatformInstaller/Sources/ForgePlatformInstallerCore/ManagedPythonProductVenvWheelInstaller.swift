@@ -2,19 +2,79 @@ import CryptoKit
 import Darwin
 import Foundation
 
+/// Separate authority shapes for a published product instance and a new
+/// deployment that does not yet have any product-owned instance identity.
+private enum ManagedPythonProductVenvStagedWheel: Sendable {
+    case published(
+        ManagedInstallerProductWheelStagingReceipt,
+        @Sendable () async -> ManagedInstallerProductWheelBinding?
+    )
+    case prepublication(
+        ManagedInstallerPrepublicationProductWheelStagingReceipt,
+        @Sendable () async -> ManagedInstallerPrepublicationProductWheelBinding?
+    )
+
+    var artifactSHA256: String {
+        switch self {
+        case .published(let receipt, _): receipt.binding.artifactSHA256
+        case .prepublication(let receipt, _): receipt.binding.artifactSHA256
+        }
+    }
+
+    var version: String {
+        switch self {
+        case .published(let receipt, _): receipt.binding.version
+        case .prepublication(let receipt, _): receipt.binding.version
+        }
+    }
+
+    var fileName: String {
+        switch self {
+        case .published(let receipt, _): receipt.fileName
+        case .prepublication(let receipt, _): receipt.fileName
+        }
+    }
+
+    var byteCount: Int {
+        switch self {
+        case .published(let receipt, _): receipt.byteCount
+        case .prepublication(let receipt, _): receipt.byteCount
+        }
+    }
+
+    func admits(
+        _ request: ManagedPythonProductVenvMutationRequest,
+        slotName: String
+    ) async -> Bool {
+        switch self {
+        case .published(let receipt, let check):
+            guard receipt.binding.deploymentID == request.deploymentID,
+                  receipt.binding.componentIdentity == request.componentIdentity,
+                  receipt.binding.venvSlotName == slotName else { return false }
+            return await check() == receipt.binding
+        case .prepublication(let receipt, let check):
+            guard receipt.binding.deploymentID == request.deploymentID,
+                  receipt.binding.componentIdentity == request.componentIdentity,
+                  receipt.binding.venvIdentity == request.venvIdentity else { return false }
+            return await check() == receipt.binding
+        }
+    }
+}
+
 /// Concrete helper-owned bridge from a freshly admitted exact staged wheel to
 /// the signed worker. A reviewed-operation assembly supplies the authority
 /// recheck, never an XPC path or a CLI-selected artifact.
 struct MacOSManagedPythonProductVenvWheelInstaller:
     ManagedPythonProductVenvWheelInstalling, Sendable {
     typealias AuthorityCheck = @Sendable () async -> ManagedInstallerProductWheelBinding?
+    typealias PrepublicationAuthorityCheck =
+        @Sendable () async -> ManagedInstallerPrepublicationProductWheelBinding?
 
     private let helperRoot: URL
-    private let staged: ManagedInstallerProductWheelStagingReceipt
+    private let staged: ManagedPythonProductVenvStagedWheel
     private let runtime: any ManagedPythonProductVenvRuntimeVerifying
     private let resource: any ManagedInstallerHelperSignedWorkerResourceLocating
     private let runner: any ManagedInstallerProductWheelWorkerRunning
-    private let authorityCheck: AuthorityCheck
     private let expectedOwner: uid_t
 
     init(
@@ -27,12 +87,28 @@ struct MacOSManagedPythonProductVenvWheelInstaller:
         authorityCheck: @escaping AuthorityCheck
     ) {
         self.helperRoot = helperRoot
-        self.staged = staged
+        self.staged = .published(staged, authorityCheck)
         self.runtime = runtime
         self.resource = resource
         self.runner = runner
         self.expectedOwner = expectedOwner
-        self.authorityCheck = authorityCheck
+    }
+
+    init(
+        helperRoot: URL,
+        staged: ManagedInstallerPrepublicationProductWheelStagingReceipt,
+        runtime: any ManagedPythonProductVenvRuntimeVerifying,
+        resource: any ManagedInstallerHelperSignedWorkerResourceLocating,
+        runner: any ManagedInstallerProductWheelWorkerRunning,
+        expectedOwner: uid_t = 0,
+        authorityCheck: @escaping PrepublicationAuthorityCheck
+    ) {
+        self.helperRoot = helperRoot
+        self.staged = .prepublication(staged, authorityCheck)
+        self.runtime = runtime
+        self.resource = resource
+        self.runner = runner
+        self.expectedOwner = expectedOwner
     }
 
     func installIntoPending(
@@ -52,8 +128,8 @@ struct MacOSManagedPythonProductVenvWheelInstaller:
             workerRequest = try ManagedInstallerProductWheelWorkerRequest(
                 action: .installPending,
                 componentIdentity: request.componentIdentity,
-                version: staged.binding.version,
-                artifactSHA256: staged.binding.artifactSHA256,
+                version: staged.version,
+                artifactSHA256: staged.artifactSHA256,
                 pendingName: pending.lastPathComponent,
                 publishedSlotName: slot.name,
                 interpreterSHA256: interpreterSHA256
@@ -78,8 +154,8 @@ struct MacOSManagedPythonProductVenvWheelInstaller:
             workerRequest = try ManagedInstallerProductWheelWorkerRequest(
                 action: .readPublished,
                 componentIdentity: request.componentIdentity,
-                version: staged.binding.version,
-                artifactSHA256: staged.binding.artifactSHA256,
+                version: staged.version,
+                artifactSHA256: staged.artifactSHA256,
                 pendingName: nil,
                 publishedSlotName: slot.name,
                 interpreterSHA256: interpreterSHA256
@@ -95,7 +171,6 @@ struct MacOSManagedPythonProductVenvWheelInstaller:
         _ request: ManagedPythonProductVenvMutationRequest,
         published: URL
     ) async -> (root: URL, name: String)? {
-        let binding = staged.binding
         let slot = MacOSManagedPythonProductVenvSlotLayout.slotName(for: request)
         let root = helperRoot.appendingPathComponent(
             ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
@@ -105,16 +180,13 @@ struct MacOSManagedPythonProductVenvWheelInstaller:
               helperRoot.isFileURL, helperRoot.baseURL == nil,
               helperRoot.path.hasPrefix("/"), helperRoot.path != "/",
               pendingFileNameIsExact(), staged.byteCount > 0,
-              binding.deploymentID == request.deploymentID,
-              binding.componentIdentity == request.componentIdentity,
-              binding.venvSlotName == slot,
               published == root.appendingPathComponent(slot, isDirectory: true),
-              await authorityCheck() == binding else { return nil }
+              await staged.admits(request, slotName: slot) else { return nil }
         return (root, slot)
     }
 
     private func pendingFileNameIsExact() -> Bool {
-        let artifact = staged.binding.artifactSHA256
+        let artifact = staged.artifactSHA256
         return CompositionCatalogValidation.isTaggedSHA256(artifact)
             && staged.fileName == String(artifact.dropFirst("sha256:".count)) + ".artifact"
     }
@@ -142,7 +214,10 @@ struct MacOSManagedPythonProductVenvWheelInstaller:
     ) async -> Result<String, ManagedPythonRuntimeActivationFailure> {
         guard case .success(let interpreter) = runtime.verifiedInterpreter(for: request),
               case .success(let signedWorker) = await resource.locate(),
-              await authorityCheck() == staged.binding else {
+              await staged.admits(
+                request,
+                slotName: MacOSManagedPythonProductVenvSlotLayout.slotName(for: request)
+              ) else {
             return .failure(.rejected)
         }
         let invocation = ManagedInstallerProductWorkerInvocation(
@@ -163,11 +238,17 @@ struct MacOSManagedPythonProductVenvWheelInstaller:
               CompositionCatalogValidation.isTaggedSHA256(receipt.bindingEvidence),
               CompositionCatalogValidation.isTaggedSHA256(receipt.verificationEvidence),
               receipt.fileCount > 0,
-              await authorityCheck() == staged.binding,
+              await staged.admits(
+                request,
+                slotName: MacOSManagedPythonProductVenvSlotLayout.slotName(for: request)
+              ),
               published == helperRoot.appendingPathComponent(
                 ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
                 isDirectory: true
-              ).appendingPathComponent(staged.binding.venvSlotName, isDirectory: true),
+              ).appendingPathComponent(
+                MacOSManagedPythonProductVenvSlotLayout.slotName(for: request),
+                isDirectory: true
+              ),
               case .success(let fresh) = runtime.verifiedInterpreter(for: request),
               fresh == interpreter,
               Self.digest(targetVenv.appendingPathComponent("bin/python3"),
