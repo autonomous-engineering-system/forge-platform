@@ -30,6 +30,8 @@ jobs:
           github.ref == 'refs/heads/main' && github.ref_protected &&
           github.sha == inputs.source_sha && github.workflow_sha == inputs.source_sha }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write # GitHub private draft releases require a push-authorized token to read.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
