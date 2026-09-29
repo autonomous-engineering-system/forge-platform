@@ -24,6 +24,14 @@ protocol ManagedInstallerFreshSingleProductWorkerAuthorityPublishing: Sendable {
 extension FileManagedInstallerProductWorkerAuthorityPublisher:
     ManagedInstallerFreshSingleProductWorkerAuthorityPublishing {}
 
+protocol ManagedInstallerFreshProductRegistryReading: Sendable {
+    func read() -> Result<ManagedInstallerManagedDeploymentRegistrySnapshot,
+                          ManagedInstallerManagedDeploymentRegistryReadFailure>
+}
+
+extension FileManagedInstallerManagedDeploymentRegistryReader:
+    ManagedInstallerFreshProductRegistryReading {}
+
 /// Product dispatch receives an authority only after fresh signed material,
 /// the original preprovider account claim, the terminal runtime receipt and
 /// independently read-back venv/wheel agree. A second deployment remains
@@ -41,6 +49,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
     private let authority: any ManagedInstallerFreshSingleProductWorkerAuthorityPublishing
     private let authorityReadback: any ManagedInstallerProductWorkerAuthorityReading
     private let evidenceStore: any ManagedInstallerProductWorkerVenvEvidenceStoring
+    private let registry: any ManagedInstallerFreshProductRegistryReading
     private let ports: ManagedInstallerFreshProductWorkerPortAllocator
     private let wheelFactory: WheelFactory
     private let readerFactory: ReaderFactory
@@ -53,6 +62,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         authority: any ManagedInstallerFreshSingleProductWorkerAuthorityPublishing,
         authorityReadback: any ManagedInstallerProductWorkerAuthorityReading,
         evidenceStore: any ManagedInstallerProductWorkerVenvEvidenceStoring,
+        registry: any ManagedInstallerFreshProductRegistryReading,
         ports: ManagedInstallerFreshProductWorkerPortAllocator,
         wheelFactory: @escaping WheelFactory,
         readerFactory: @escaping ReaderFactory,
@@ -64,6 +74,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         self.authority = authority
         self.authorityReadback = authorityReadback
         self.evidenceStore = evidenceStore
+        self.registry = registry
         self.ports = ports
         self.wheelFactory = wheelFactory
         self.readerFactory = readerFactory
@@ -82,6 +93,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
             authority: FileManagedInstallerProductWorkerAuthorityPublisher(),
             authorityReadback: FileManagedInstallerProductWorkerAuthorityReader(),
             evidenceStore: FileManagedInstallerProductWorkerVenvEvidenceStore.production(),
+            registry: FileManagedInstallerManagedDeploymentRegistryReader(),
             ports: .init(probe: MacOSManagedInstallerProductWorkerPortProbe()),
             wheelFactory: { plan in
                 guard case .success(let wheel) = await
@@ -172,6 +184,11 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                   slot, request: request
               ), CompositionCatalogValidation.isTaggedSHA256(wheelBinding),
               case .success(let prior) = authority.readExistingAuthorityForFreshInstall(),
+              case .success(let priorRegistry) = registry.read(),
+              ManagedInstallerFreshPriorWorkerRegistryAdmission.accepts(
+                  prior: prior, registry: priorRegistry,
+                  adding: plan.deployment.id
+              ),
               prior?.routes.isEmpty != false,
               prior?.singleRoutes.filter({
                   $0.deploymentID != plan.deployment.id
@@ -208,7 +225,9 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
               publication.sha256 == "sha256:" + GitHubInstallerReleaseDescriptor
                 .sha256(of: snapshot.canonicalJSONData()),
               case .success(let freshDigest) = authorityReadback.readAuthorityDigest(),
-              freshDigest == publication.sha256 else {
+              freshDigest == publication.sha256,
+              case .success(let unchangedRegistry) = registry.read(),
+              unchangedRegistry == priorRegistry else {
             return .failed(.staleSession, stages: [])
         }
         switch await currency.recheckInstallerBeforeMutation(
