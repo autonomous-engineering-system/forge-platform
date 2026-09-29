@@ -22,6 +22,8 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
     private let expectedOwner: uid_t
     private let boundEPRequirement: ProviderRequirement?
     private let epProductRoot: URL?
+    private let boundForgeRequirement: ProviderRequirement?
+    private let forgeContextRoot: URL?
 
     init(slotsRoot: URL, expectedDeploymentID: String, expectedOwner: uid_t = 0) {
         self.slotsRoot = slotsRoot
@@ -29,6 +31,42 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         self.expectedOwner = expectedOwner
         boundEPRequirement = nil
         epProductRoot = nil
+        boundForgeRequirement = nil
+        forgeContextRoot = nil
+    }
+
+    /// Fixed installer-owned Forge provider context root. A reviewed target
+    /// supplies only its opaque deployment and instance identities.
+    init?(
+        forgeContextRoot: URL,
+        expectedDeploymentID: String,
+        requirement: ProviderRequirement,
+        expectedOwner: uid_t = 0
+    ) {
+        guard forgeContextRoot.isFileURL,
+              forgeContextRoot.baseURL == nil,
+              forgeContextRoot.path.hasPrefix("/"),
+              forgeContextRoot.path != "/",
+              (try? ManagedDeploymentTarget(id: expectedDeploymentID, exists: false)) != nil,
+              requirement.ownerComponent == .forgeRuntime,
+              requirement.credentialScope == .component,
+              let instanceID = requirement.targetIdentity,
+              requirement.runtime != nil else { return nil }
+        slotsRoot = forgeContextRoot
+            .appendingPathComponent("deployments", isDirectory: true)
+            .appendingPathComponent(expectedDeploymentID, isDirectory: true)
+            .appendingPathComponent("providers", isDirectory: true)
+            .appendingPathComponent(ProviderOwnerComponent.forgeRuntime.rawValue,
+                                    isDirectory: true)
+            .appendingPathComponent(instanceID, isDirectory: true)
+            .appendingPathComponent(requirement.provider.rawValue, isDirectory: true)
+            .appendingPathComponent("runtime", isDirectory: true)
+        self.expectedDeploymentID = expectedDeploymentID
+        self.expectedOwner = expectedOwner
+        boundEPRequirement = nil
+        epProductRoot = nil
+        boundForgeRequirement = requirement
+        self.forgeContextRoot = forgeContextRoot
     }
 
     /// The helper selects `epProductRoot`; no XPC request can supply it. The
@@ -62,6 +100,8 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         self.expectedOwner = expectedOwner
         boundEPRequirement = requirement
         self.epProductRoot = epProductRoot
+        boundForgeRequirement = nil
+        forgeContextRoot = nil
     }
 
     func readPublishedSlot(
@@ -72,6 +112,9 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         guard requestMatches(requirement: requirement, request: request) else {
             return .failure(.invalidRequest)
         }
+        do {
+            if try targetRootIsAbsent() { return .success(nil) }
+        } catch { return .failure(.rejected) }
         let archive: Data
         switch cache(for: requirement).read(archiveSHA256: request.runtime.artifactSHA256) {
         case .success(let bytes?): archive = bytes
@@ -106,7 +149,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         do { inventory = try self.inventory(archive, requirement: requirement,
                                             request: request) }
         catch { return .failure(.rejected) }
-        do { try prepareEPProviderRootIfNeeded() }
+        do { try prepareProviderRootIfNeeded() }
         catch { return .failure(.rejected) }
         switch cache(for: requirement).retain(
             archive, archiveSHA256: request.runtime.artifactSHA256
@@ -176,6 +219,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
     ) -> Bool {
         request.deploymentID == expectedDeploymentID
             && (boundEPRequirement == nil || requirement == boundEPRequirement)
+            && (boundForgeRequirement == nil || requirement == boundForgeRequirement)
             && requirement.id == request.providerTargetID
             && requirement.provider == request.provider
             && requirement.runtime == request.runtime
@@ -234,15 +278,16 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
     /// Seed only the exact helper-selected private product topology, never a
     /// caller-supplied parent or a symlink. Repeating after interruption is
     /// idempotent; an existing insecure directory always fails closed.
-    private func prepareEPProviderRootIfNeeded() throws {
-        guard let epProductRoot, let requirement = boundEPRequirement,
-              let instanceID = requirement.targetIdentity else { return }
+    private func prepareProviderRootIfNeeded() throws {
+        guard let rootURL = epProductRoot ?? forgeContextRoot,
+              let requirement = boundEPRequirement ?? boundForgeRequirement,
+              let segments = targetSegments(requirement) else { return }
         guard Darwin.geteuid() == expectedOwner,
-              epProductRoot.isFileURL, epProductRoot.baseURL == nil,
-              epProductRoot.path.hasPrefix("/"), epProductRoot.path != "/" else {
+              rootURL.isFileURL, rootURL.baseURL == nil,
+              rootURL.path.hasPrefix("/"), rootURL.path != "/" else {
             throw ManagedInstallerProviderRuntimeMutationFailure.rejected
         }
-        let root = epProductRoot.path.withCString {
+        let root = rootURL.path.withCString {
             Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
         }
         guard root >= 0 else {
@@ -253,10 +298,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         var parent = root
         var opened: [Int32] = []
         defer { opened.forEach { _ = Darwin.close($0) } }
-        for segment in [
-            "instances", instanceID, "providers",
-            requirement.provider == .codex ? "codex" : "github",
-        ] {
+        for segment in segments {
             let created = segment.withCString { Darwin.mkdirat(parent, $0, mode_t(0o700)) }
             guard created == 0 || errno == EEXIST else {
                 throw ManagedInstallerProviderRuntimeMutationFailure.rejected
@@ -275,6 +317,54 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
             }
             parent = child
         }
+    }
+
+    private func targetRootIsAbsent() throws -> Bool {
+        guard let rootURL = epProductRoot ?? forgeContextRoot,
+              let requirement = boundEPRequirement ?? boundForgeRequirement,
+              let segments = targetSegments(requirement) else { return false }
+        guard Darwin.geteuid() == expectedOwner else {
+            throw ManagedInstallerProviderRuntimeMutationFailure.rejected
+        }
+        let root = rootURL.path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard root >= 0 else {
+            throw ManagedInstallerProviderRuntimeMutationFailure.rejected
+        }
+        defer { _ = Darwin.close(root) }
+        try requirePrivateDirectory(root)
+        var parent = root
+        var opened: [Int32] = []
+        defer { opened.forEach { _ = Darwin.close($0) } }
+        for segment in segments {
+            let child = segment.withCString {
+                Darwin.openat(parent, $0,
+                              O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+            }
+            if child < 0 {
+                if errno == ENOENT { return true }
+                throw ManagedInstallerProviderRuntimeMutationFailure.rejected
+            }
+            opened.append(child)
+            try requirePrivateDirectory(child)
+            parent = child
+        }
+        return false
+    }
+
+    private func targetSegments(_ requirement: ProviderRequirement) -> [String]? {
+        guard let instanceID = requirement.targetIdentity else { return nil }
+        if boundEPRequirement != nil {
+            return ["instances", instanceID, "providers",
+                    requirement.provider == .codex ? "codex" : "github"]
+        }
+        if boundForgeRequirement != nil {
+            return ["deployments", expectedDeploymentID, "providers",
+                    ProviderOwnerComponent.forgeRuntime.rawValue, instanceID,
+                    requirement.provider.rawValue, "runtime"]
+        }
+        return nil
     }
 
     private func slotExists(

@@ -26,6 +26,10 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
                 isDirectory: true
             ),
             expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.providerContextsDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
                 ManagedInstallerHelperStateRootBootstrap.productsDirectoryName,
                 isDirectory: true
             ),
@@ -114,6 +118,27 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
             [.posixPermissions: 0o700], ofItemAtPath: outside.path
         )
         try FileManager.default.createSymbolicLink(at: venvs, withDestinationURL: outside)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    func testRejectsUnsafeProviderContextRoot() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let bootstrap = testBootstrap(parent)
+        let root = try bootstrap.prepare()
+        let contexts = root.appendingPathComponent(
+            ManagedInstallerHelperStateRootBootstrap.providerContextsDirectoryName,
+            isDirectory: true
+        )
+        XCTAssertEqual(chmod(contexts.path, 0o755), 0)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        try FileManager.default.removeItem(at: contexts)
+        let outside = parent.appendingPathComponent("outside-contexts", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside,
+                                                withIntermediateDirectories: false)
+        XCTAssertEqual(chmod(outside.path, 0o700), 0)
+        try FileManager.default.createSymbolicLink(at: contexts, withDestinationURL: outside)
         XCTAssertThrowsError(try bootstrap.prepare())
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }

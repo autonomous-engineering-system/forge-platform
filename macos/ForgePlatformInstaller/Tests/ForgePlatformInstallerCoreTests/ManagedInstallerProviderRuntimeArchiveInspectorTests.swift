@@ -4,6 +4,82 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
+    func testForgeContextPublishesOnlyExactDeploymentInstanceSlot() throws {
+        let fixture = try ProviderArchiveFixture()
+        let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
+        let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-a", stagedArchive: fixture.staged,
+            requirement: fixture.requirement, inspection: inspection
+        )
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("forge-provider-context-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        let publisher = try XCTUnwrap(MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            forgeContextRoot: root, expectedDeploymentID: "deployment-a",
+            requirement: fixture.requirement, expectedOwner: geteuid()
+        ))
+        XCTAssertNil(try providerSlotReadback(publisher.readPublishedSlot(
+            requirement: fixture.requirement, request: request
+        )))
+        let published = try providerSlotReadback(publisher.publish(
+            archive: fixture.archive, requirement: fixture.requirement, request: request
+        ))
+        XCTAssertEqual(try XCTUnwrap(providerSlotReadback(publisher.readPublishedSlot(
+            requirement: fixture.requirement, request: request
+        ))), published)
+        let target = root.appendingPathComponent(
+            "deployments/deployment-a/providers/forge-runtime/forge-primary/codex",
+            isDirectory: true
+        )
+        XCTAssertEqual(try Data(contentsOf: target
+            .appendingPathComponent("runtime/1.2.3/bin/codex")), fixture.executable)
+        XCTAssertNil(MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            forgeContextRoot: root, expectedDeploymentID: "deployment-a",
+            requirement: try ProviderArchiveFixture(provider: .githubCLI).requirement,
+            expectedOwner: geteuid()
+        ))
+        let foreign = try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-b", stagedArchive: fixture.staged,
+            requirement: fixture.requirement, inspection: inspection
+        )
+        XCTAssertEqual(publisher.readPublishedSlot(
+            requirement: fixture.requirement, request: foreign
+        ).failure, .invalidRequest)
+    }
+
+    func testForgeContextRejectsUnsafeAncestorBeforePublication() throws {
+        let fixture = try ProviderArchiveFixture()
+        let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
+        let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-a", stagedArchive: fixture.staged,
+            requirement: fixture.requirement, inspection: inspection
+        )
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("forge-provider-unsafe-\(UUID().uuidString)",
+                                    isDirectory: true)
+        let deployments = root.appendingPathComponent("deployments", isDirectory: true)
+        try FileManager.default.createDirectory(at: deployments,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        XCTAssertEqual(chmod(deployments.path, 0o755), 0)
+        let publisher = try XCTUnwrap(MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            forgeContextRoot: root, expectedDeploymentID: "deployment-a",
+            requirement: fixture.requirement, expectedOwner: geteuid()
+        ))
+        XCTAssertEqual(publisher.readPublishedSlot(
+            requirement: fixture.requirement, request: request
+        ).failure, .rejected)
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.archive, requirement: fixture.requirement,
+            request: request
+        ).failure, .rejected)
+    }
     func testEPProductRuntimePublishesToExactUnversionedInstancePath() throws {
         let fixture = try ProviderArchiveFixture(
             kind: .zip, provider: .githubCLI, target: "ep-primary",

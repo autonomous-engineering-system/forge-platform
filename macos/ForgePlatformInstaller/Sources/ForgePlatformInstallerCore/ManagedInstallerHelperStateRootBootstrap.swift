@@ -20,6 +20,7 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
     static let productOperationsDirectoryName = "product-operations"
     static let componentOperationsDirectoryName = "component-operations"
     static let deploymentSagaDirectoryName = "deployment-saga"
+    static let providerContextsDirectoryName = "provider-contexts"
 
     private let parentDirectory: URL
     private let expectedOwner: uid_t
@@ -79,6 +80,10 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
             Self.engineeringPlatformDirectoryName, in: products
         )
         defer { Darwin.close(engineeringPlatform) }
+        let providerContexts = try createPrivateChild(
+            Self.providerContextsDirectoryName, in: installer
+        )
+        defer { Darwin.close(providerContexts) }
         let staged = try createPrivateChild(Self.stagedDirectoryName, in: installer)
         defer { Darwin.close(staged) }
         let state = try createPrivateChild(Self.stateDirectoryName, in: installer)
@@ -105,6 +110,7 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
               Self.isPrivateDirectory(productVenvs, owner: expectedOwner),
               Self.isPrivateDirectory(products, owner: expectedOwner),
               Self.isPrivateDirectory(engineeringPlatform, owner: expectedOwner),
+              Self.isPrivateDirectory(providerContexts, owner: expectedOwner),
               Self.isPrivateDirectory(staged, owner: expectedOwner),
               Self.isPrivateDirectory(state, owner: expectedOwner),
               Self.isPrivateDirectory(deployments, owner: expectedOwner),
