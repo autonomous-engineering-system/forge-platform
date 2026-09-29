@@ -101,6 +101,7 @@ struct MacOSManagedRuntimeArchiveCache: Sendable {
         guard CompositionCatalogValidation.isTaggedSHA256(digest),
               fileExtension == "tar.gz" || fileExtension == "zip",
               pendingPrefix == ".managed-python-archive-pending-"
+                || pendingPrefix == ".managed-git-archive-pending-"
                 || pendingPrefix == ".provider-archive-pending-" else { return nil }
         return "archive-" + digest.dropFirst("sha256:".count) + "." + fileExtension
     }
