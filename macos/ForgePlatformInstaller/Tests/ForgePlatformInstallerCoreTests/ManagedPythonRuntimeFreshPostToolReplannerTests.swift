@@ -1434,6 +1434,67 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         ])
     }
 
+    func testDigestEpochBindsAllSourceValuesAndRequest() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+        let tools = HostToolSource(readback: expected.managedTools[0])
+        let python = HostPythonSource(readback: expected.pythonRuntime)
+        let gates = HostGateSource(readbacks: expected.gates)
+        let epoch = ManagedInstallerPostToolDigestHostEpochReader(
+            managedTools: tools, pythonRuntime: python, gates: gates
+        )
+        let first = try await epoch.readPostToolHostEpoch(for: request).get()
+        let second = try await epoch.readPostToolHostEpoch(for: request).get()
+        XCTAssertEqual(first, second)
+        XCTAssertTrue(ManagedPythonRuntimeInstalledReadback.isEvidenceReference(first))
+        let observed = try await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: tools, pythonRuntime: python, gates: gates, epoch: epoch
+        ).readAtomicPostToolHostState(for: request).get()
+        XCTAssertEqual(observed.evidenceReference, first)
+        XCTAssertEqual(observed.managedTools, expected.managedTools)
+    }
+
+    func testDigestEpochRejectsChangedSourceAndUnavailableSource() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+        let original = expected.managedTools[0]
+        let changed = try ManagedToolInstalledReadback(
+            identity: original.identity,
+            state: original.state,
+            version: original.version,
+            artifactSHA256: original.artifactSHA256,
+            managedRootIdentity: original.managedRootIdentity,
+            evidenceReference: "receipt:changed-git-source"
+        )
+        let changingTools = SequencedHostToolSource(
+            readbacks: [original, original, changed]
+        )
+        let python = HostPythonSource(readback: expected.pythonRuntime)
+        let gates = HostGateSource(readbacks: expected.gates)
+        let epoch = ManagedInstallerPostToolDigestHostEpochReader(
+            managedTools: changingTools, pythonRuntime: python, gates: gates
+        )
+        let drifted = await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: changingTools, pythonRuntime: python,
+            gates: gates, epoch: epoch
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(drifted.failure, .rejected)
+
+        let unavailable = await ManagedInstallerPostToolDigestHostEpochReader(
+            managedTools: HostToolSource(
+                readback: original, failure: .readbackFailed
+            ),
+            pythonRuntime: python, gates: gates
+        ).readPostToolHostEpoch(for: request)
+        XCTAssertEqual(unavailable.failure, .readbackFailed)
+    }
+
     func testAtomicHostSourceReaderStopsAtEveryFailedSourceBoundary() async throws {
         let fixture = try FreshReplannerFixture()
         let request = try ManagedInstallerPostToolHostObservationRequest(
@@ -3290,6 +3351,26 @@ private struct HostToolSource: ManagedToolPostMutationReading {
     ) async -> Result<ManagedToolInstalledReadback, ManagedPythonRuntimeTerminalReceiptFailure> {
         events?.record("tool:\(requirement.identity.rawValue)")
         if let failure { return .failure(failure) }
+        return .success(readback)
+    }
+}
+
+private actor SequencedHostToolSource: ManagedToolPostMutationReading {
+    private var readbacks: [ManagedToolInstalledReadback]
+
+    init(readbacks: [ManagedToolInstalledReadback]) {
+        self.readbacks = readbacks
+    }
+
+    func readManagedTool(
+        _ requirement: ManagedToolRequirement
+    ) async -> Result<ManagedToolInstalledReadback,
+                      ManagedPythonRuntimeTerminalReceiptFailure> {
+        guard !readbacks.isEmpty else { return .failure(.readbackFailed) }
+        let readback = readbacks.removeFirst()
+        guard readback.identity == requirement.identity else {
+            return .failure(.rejected)
+        }
         return .success(readback)
     }
 }
