@@ -7,7 +7,7 @@ enum ManagedInstallerProductWheelStagingFailure: Error, Equatable {
     case rejected
 }
 
-struct ManagedInstallerProductWheelStagingReceipt: Equatable {
+struct ManagedInstallerProductWheelStagingReceipt: Equatable, Sendable {
     let binding: ManagedInstallerProductWheelBinding
     let fileName: String
     let byteCount: Int
