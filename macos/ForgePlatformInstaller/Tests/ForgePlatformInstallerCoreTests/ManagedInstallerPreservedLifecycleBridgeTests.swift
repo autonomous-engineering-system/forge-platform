@@ -665,6 +665,58 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         XCTAssertNil(malformed)
     }
 
+    func testHelperLocalPreservedLifecycleReviewExecutionAndRecovery() async throws {
+        let selected = try intent()
+        let proposal = try fixture(selected)
+        let execution = try ManagedInstallerPreservedLifecycleRequest(
+            intent: selected, proposal: proposal
+        )
+        let recovery = try ManagedInstallerPreserveRecoveryRequest(intent: selected)
+        let transport = ManagedInstallerHelperLocalProductOperationTransport(
+            executor: LifecycleFixtureExecutor(
+                proposal: proposal,
+                receipt: try ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+                    receipt(execution), request: execution
+                ),
+                recoveryReceipt: try ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+                    recoveryReceipt(recovery), request: recovery
+                )
+            )
+        )
+
+        let reviewed = try await transport.preparePreservedLifecycleReview(
+            selected.canonicalJSONData()
+        ).get()
+        let completed = try await transport.executePreservedLifecycle(
+            execution.canonicalJSONData()
+        ).get()
+        let recovered = try await transport.readTerminalPreserveRecovery(
+            recovery.canonicalJSONData()
+        ).get()
+        let invalidReview = await transport.preparePreservedLifecycleReview(Data("{}".utf8))
+        let invalidExecution = await transport.executePreservedLifecycle(Data("{}".utf8))
+        let invalidRecovery = await transport.readTerminalPreserveRecovery(Data("{}".utf8))
+        let noncanonicalReview = await transport.preparePreservedLifecycleReview(
+            selected.canonicalJSONData() + Data(" ".utf8)
+        )
+        let noncanonicalExecution = await transport.executePreservedLifecycle(
+            execution.canonicalJSONData() + Data(" ".utf8)
+        )
+        let noncanonicalRecovery = await transport.readTerminalPreserveRecovery(
+            recovery.canonicalJSONData() + Data(" ".utf8)
+        )
+
+        XCTAssertEqual(reviewed, proposal.canonicalJSONData())
+        XCTAssertEqual(completed, receipt(execution))
+        XCTAssertEqual(recovered, recoveryReceipt(recovery))
+        for result in [invalidReview, invalidExecution, invalidRecovery,
+                       noncanonicalReview, noncanonicalExecution, noncanonicalRecovery] {
+            guard case .failure(.invalidRequest) = result else {
+                return XCTFail("Invalid helper-local request must fail before the worker")
+            }
+        }
+    }
+
     func testIsolatedWorkerRunnerAdmitsCanonicalLifecycleSchemas() async throws {
         let selected = try intent()
         let proposal = try fixture(selected)
