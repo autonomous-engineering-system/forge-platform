@@ -658,15 +658,17 @@ struct ActivationFixture {
 
     init(
         providerRequirements: [ProviderRequirement] = [],
-        managedTools: [ManagedToolRequirement] = []
+        managedTools: [ManagedToolRequirement] = [],
+        overrideSession: VerifiedCompositionSessionPlan? = nil,
+        overrideDeployment: ManagedDeploymentTarget? = nil
     ) throws {
-        deployment = try ManagedDeploymentTarget(
+        deployment = try overrideDeployment ?? ManagedDeploymentTarget(
             id: "activation-deployment",
             exists: true,
             forgeInstanceID: "forge-one",
             engineeringPlatformInstanceID: "ep-one"
         )
-        session = try VerifiedCompositionSessionPlan(
+        session = try overrideSession ?? VerifiedCompositionSessionPlan(
             sessionID: "activation-session",
             compositionIdentity: "forge-ep-managed-v3",
             manifestSHA256: taggedActivationDigest("a"),
