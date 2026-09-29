@@ -13,6 +13,7 @@ extension MacOSManagedPythonProductVenvReadback: ManagedInstallerProductWorkerVe
 struct ManagedInstallerProductWorkerVenvPublicationEvidence: Sendable {
     let request: ManagedPythonProductVenvMutationRequest
     let activationReceipt: ManagedPythonProductVenvReceipt
+    let wheelBindingEvidence: String
 }
 
 enum ManagedInstallerProductWorkerVenvPublicationAdmission {
@@ -24,8 +25,10 @@ enum ManagedInstallerProductWorkerVenvPublicationAdmission {
     static func accepts(
         _ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
         evidence: [ManagedInstallerProductWorkerVenvPublicationEvidence],
-        reader: any ManagedInstallerProductWorkerVenvReading
-    ) -> Bool {
+        reader: any ManagedInstallerProductWorkerVenvReading,
+        wheel: any ManagedPythonProductVenvWheelInstalling,
+        venvRoot: URL
+    ) async -> Bool {
         guard snapshot.usesVenvSlots else { return false }
         var expected: [String: ExpectedSlot] = [:]
         for route in snapshot.routes {
@@ -53,10 +56,19 @@ enum ManagedInstallerProductWorkerVenvPublicationAdmission {
                   binding.name == MacOSManagedPythonProductVenvSlotLayout.slotName(for: request),
                   matchesManifest(request, artifactSHA256: binding.artifactSHA256,
                                   in: snapshot),
+                  CompositionCatalogValidation.isTaggedSHA256(
+                    item.wheelBindingEvidence
+                  ),
                   item.activationReceipt.state == .ready,
                   item.activationReceipt.matches(request),
                   case .success(let fresh?) = reader.readPublished(request),
-                  fresh == item.activationReceipt else { return false }
+                  fresh == item.activationReceipt,
+                  case .success(let wheelEvidence) = await wheel.readPublished(
+                    venvRoot.appendingPathComponent(binding.name, isDirectory: true),
+                    request: request
+                  ), wheelEvidence == item.wheelBindingEvidence,
+                  case .success(let confirmed?) = reader.readPublished(request),
+                  confirmed == fresh else { return false }
         }
         return seen.count == expected.count
     }

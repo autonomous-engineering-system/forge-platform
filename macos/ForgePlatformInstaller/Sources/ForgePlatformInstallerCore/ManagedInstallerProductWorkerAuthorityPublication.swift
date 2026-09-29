@@ -567,13 +567,18 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
         _ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
         evidence: [ManagedInstallerProductWorkerVenvPublicationEvidence],
         reader: any ManagedInstallerProductWorkerVenvReading,
+        wheel: any ManagedPythonProductVenvWheelInstalling,
         expectedExistingSHA256: String? = nil
-    ) -> Result<
+    ) async -> Result<
         ManagedInstallerProductWorkerAuthorityPublicationReceipt,
         ManagedInstallerProductWorkerAuthorityPublicationFailure
     > {
-        guard ManagedInstallerProductWorkerVenvPublicationAdmission.accepts(
-            snapshot, evidence: evidence, reader: reader
+        guard await ManagedInstallerProductWorkerVenvPublicationAdmission.accepts(
+            snapshot, evidence: evidence, reader: reader, wheel: wheel,
+            venvRoot: rootDirectory.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
+                isDirectory: true
+            )
         ) else { return .failure(.invalidAuthority) }
         return publish(snapshot, expectedExistingSHA256: expectedExistingSHA256)
     }

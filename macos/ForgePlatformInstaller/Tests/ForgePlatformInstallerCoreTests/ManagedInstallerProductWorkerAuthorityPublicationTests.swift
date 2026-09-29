@@ -4,7 +4,7 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
-    func testV5BindsDistinctHelperOwnedProductVenvSlots() throws {
+    func testV5BindsDistinctHelperOwnedProductVenvSlots() async throws {
         let (legacy, _) = try fixture()
         let route = try XCTUnwrap(legacy.routes.first)
         let forgeEvidence = try venvEvidence(
@@ -50,30 +50,52 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: parent) }
         let evidence = [forgeEvidence, epEvidence]
         let reader = VenvReceiptReader(receipts: evidence.map(\.activationReceipt))
+        let wheel = ManagedPythonProductWheelTestDouble(
+            evidence: forgeEvidence.wheelBindingEvidence
+        )
         XCTAssertEqual(publisher.publishProductWorkerAuthority(snapshot),
                        .failure(.invalidAuthority))
-        let receipt = try publisher.publishVerifiedProductWorkerAuthority(
-            snapshot, evidence: evidence, reader: reader
+        let receipt = try await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: evidence, reader: reader, wheel: wheel
         ).get()
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(receipt.fileName)), bytes)
-        XCTAssertEqual(publisher.publishVerifiedProductWorkerAuthority(
-            snapshot, evidence: evidence, reader: reader
-        ), .success(receipt))
-        XCTAssertEqual(publisher.publishVerifiedProductWorkerAuthority(
-            snapshot, evidence: [forgeEvidence], reader: reader
-        ), .failure(.invalidAuthority))
-        XCTAssertEqual(publisher.publishVerifiedProductWorkerAuthority(
-            snapshot, evidence: evidence, reader: VenvReceiptReader(receipts: [])
-        ), .failure(.invalidAuthority))
+        let replay = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: evidence, reader: reader, wheel: wheel
+        )
+        XCTAssertEqual(replay, .success(receipt))
+        let missing = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: [forgeEvidence], reader: reader, wheel: wheel
+        )
+        XCTAssertEqual(missing, .failure(.invalidAuthority))
+        let noRuntimeReadback = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: evidence,
+            reader: VenvReceiptReader(receipts: []), wheel: wheel
+        )
+        XCTAssertEqual(noRuntimeReadback, .failure(.invalidAuthority))
+        let noWheel = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: evidence, reader: reader,
+            wheel: ManagedPythonProductWheelTestDouble(failReadback: true)
+        )
+        XCTAssertEqual(noWheel, .failure(.invalidAuthority))
+        let driftedWheel = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: evidence, reader: reader,
+            wheel: ManagedPythonProductWheelTestDouble(
+                evidence: forgeEvidence.wheelBindingEvidence,
+                readbackEvidence: "sha256:" + String(repeating: "f", count: 64)
+            )
+        )
+        XCTAssertEqual(driftedWheel, .failure(.invalidAuthority))
         let stale = try venvEvidence(
             deployment: route.deploymentID, component: "forge-runtime",
             operation: "different-venv-operation"
         )
-        XCTAssertEqual(publisher.publishVerifiedProductWorkerAuthority(
+        let staleResult = await publisher.publishVerifiedProductWorkerAuthority(
             snapshot, evidence: [stale, epEvidence],
             reader: VenvReceiptReader(receipts: [stale.activationReceipt,
-                                                 epEvidence.activationReceipt])
-        ), .failure(.invalidAuthority))
+                                                 epEvidence.activationReceipt]),
+            wheel: wheel
+        )
+        XCTAssertEqual(staleResult, .failure(.invalidAuthority))
         let wrongManifest = try venvEvidence(
             deployment: route.deploymentID, component: "forge-runtime",
             venvIdentity: "foreign-venv"
@@ -101,11 +123,13 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
             candidateManifests: legacy.candidateManifests,
             routes: [wrongRoute]
         )
-        XCTAssertEqual(publisher.publishVerifiedProductWorkerAuthority(
+        let wrongResult = await publisher.publishVerifiedProductWorkerAuthority(
             wrongSnapshot, evidence: [wrongManifest, epEvidence],
             reader: VenvReceiptReader(receipts: [wrongManifest.activationReceipt,
-                                                 epEvidence.activationReceipt])
-        ), .failure(.invalidAuthority))
+                                                 epEvidence.activationReceipt]),
+            wheel: wheel
+        )
+        XCTAssertEqual(wrongResult, .failure(.invalidAuthority))
         let changedReadback = try ManagedPythonProductVenvReceipt(
             operationID: forgeEvidence.request.operationID,
             deploymentID: forgeEvidence.request.deploymentID,
@@ -116,11 +140,13 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
             runtimeSlotEvidenceReference: forgeEvidence.request.runtimeSlotEvidenceReference,
             state: .ready, evidenceReference: "receipt:changed-venv-readback"
         )
-        XCTAssertEqual(publisher.publishVerifiedProductWorkerAuthority(
+        let changedResult = await publisher.publishVerifiedProductWorkerAuthority(
             snapshot, evidence: evidence,
             reader: VenvReceiptReader(receipts: [changedReadback,
-                                                 epEvidence.activationReceipt])
-        ), .failure(.invalidAuthority))
+                                                 epEvidence.activationReceipt]),
+            wheel: wheel
+        )
+        XCTAssertEqual(changedResult, .failure(.invalidAuthority))
         let (singleLegacy, _) = try singleFixture()
         let single = try XCTUnwrap(singleLegacy.singleRoutes.first)
         let singleEvidence = try venvEvidence(
@@ -153,10 +179,12 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
         XCTAssertEqual(singleRoutes[0]["venv_slot"] as? String, singleSlot)
         let (singleParent, _, singlePublisher) = try preparedPublisher()
         defer { try? FileManager.default.removeItem(at: singleParent) }
-        XCTAssertNoThrow(try singlePublisher.publishVerifiedProductWorkerAuthority(
+        let singleResult = await singlePublisher.publishVerifiedProductWorkerAuthority(
             singleSnapshot, evidence: [singleEvidence],
-            reader: VenvReceiptReader(receipts: [singleEvidence.activationReceipt])
-        ).get())
+            reader: VenvReceiptReader(receipts: [singleEvidence.activationReceipt]),
+            wheel: wheel
+        )
+        XCTAssertNoThrow(try singleResult.get())
         let duplicateSlot = try ManagedInstallerProductWorkerSingleRouteAuthority(
             deploymentID: "other-deployment", componentIdentity: single.componentIdentity,
             instanceID: "other-forge", serviceAccount: "_other_forge", bindPort: 9875,
@@ -613,7 +641,8 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
             evidenceReference: "receipt:venv-readback-test"
         )
         return ManagedInstallerProductWorkerVenvPublicationEvidence(
-            request: request, activationReceipt: receipt
+            request: request, activationReceipt: receipt,
+            wheelBindingEvidence: "sha256:" + String(repeating: "a", count: 64)
         )
     }
 
