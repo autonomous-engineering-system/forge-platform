@@ -6,6 +6,9 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
     func testExactJournalAccountsProvidersPythonOrderAndReceipt() async throws {
         let fixture = try FreshRuntimeFixture()
         let events = FreshRuntimeEvents()
+        let admission = FreshRuntimeMaterialAdmission(
+            result: .success(fixture.material), events: events
+        )
         let preprovider = FreshRuntimePreprovider(
             result: .success(fixture.preprovider), events: events
         )
@@ -19,13 +22,15 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             result: .success(fixture.python), events: events
         )
         let coordinator = ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
-            material: fixture.material, preprovider: preprovider,
+            material: fixture.material, materialAdmission: admission,
+            preprovider: preprovider,
             providers: builder, managedPython: python
         )
         let receipt = try await coordinator.prepareRuntimes(
             stablePlan: fixture.plan
         ).get()
-        XCTAssertEqual(events.values, ["preprovider", "provider-build", "provider", "python"])
+        XCTAssertEqual(events.values,
+                       ["material", "preprovider", "provider-build", "provider", "python"])
         XCTAssertEqual(receipt.parentJournalRecord,
                        fixture.preprovider.parentJournalRecord)
         XCTAssertEqual(receipt.providerRuntimeReceipt, try XCTUnwrap(fixture.provider))
@@ -41,6 +46,9 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
     func testFailedPreproviderOrProviderStopsNextBoundary() async throws {
         let fixture = try FreshRuntimeFixture()
         let events = FreshRuntimeEvents()
+        let admission = FreshRuntimeMaterialAdmission(
+            result: .success(fixture.material), events: events
+        )
         let preprovider = FreshRuntimePreprovider(result: .failure(.rejected),
                                                   events: events)
         let provider = FreshRuntimeProvider(result: .success(try XCTUnwrap(fixture.provider)),
@@ -49,12 +57,13 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         let python = FreshRuntimePython(result: .success(fixture.python),
                                         events: events)
         let coordinator = ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
-            material: fixture.material, preprovider: preprovider,
+            material: fixture.material, materialAdmission: admission,
+            preprovider: preprovider,
             providers: builder, managedPython: python
         )
         let failedPreprovider = await coordinator.prepareRuntimes(stablePlan: fixture.plan)
         XCTAssertEqual(failedPreprovider.failure, .rejected)
-        XCTAssertEqual(events.values, ["preprovider"])
+        XCTAssertEqual(events.values, ["material", "preprovider"])
         preprovider.result = .success(fixture.preprovider)
         builder.fail = true
         let failedBuild = await coordinator.prepareRuntimes(stablePlan: fixture.plan)
@@ -76,6 +85,9 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         let fixture = try FreshRuntimeFixture()
         let foreign = try FreshRuntimeFixture(wheelBytes: Data("foreign-wheel".utf8))
         let events = FreshRuntimeEvents()
+        let admission = FreshRuntimeMaterialAdmission(
+            result: .success(foreign.material), events: events
+        )
         let preprovider = FreshRuntimePreprovider(
             result: .success(fixture.preprovider), events: events
         )
@@ -84,7 +96,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                                            events: events), events: events
         )
         let coordinator = ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
-            material: foreign.material, preprovider: preprovider,
+            material: foreign.material, materialAdmission: admission,
+            preprovider: preprovider,
             providers: builder,
             managedPython: FreshRuntimePython(result: .success(fixture.python),
                                                events: events)
@@ -101,6 +114,36 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         let production = ManagedInstallerFreshInstallRuntimeAdmissionHelperAssembly
             .makeProduction(stablePlan: fixture.plan, material: fixture.material)
         _ = try production.get()
+    }
+
+    func testFreshMaterialDriftBlocksEveryMutationBoundary() async throws {
+        let fixture = try FreshRuntimeFixture()
+        let foreign = try FreshRuntimeFixture(wheelBytes: Data("changed-wheel".utf8))
+        let events = FreshRuntimeEvents()
+        let admission = FreshRuntimeMaterialAdmission(
+            result: .success(foreign.material), events: events
+        )
+        let coordinator = ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
+            material: fixture.material, materialAdmission: admission,
+            preprovider: FreshRuntimePreprovider(
+                result: .success(fixture.preprovider), events: events
+            ),
+            providers: FreshRuntimeProviderBuilder(
+                provider: FreshRuntimeProvider(
+                    result: .success(try XCTUnwrap(fixture.provider)), events: events
+                ), events: events
+            ),
+            managedPython: FreshRuntimePython(
+                result: .success(fixture.python), events: events
+            )
+        )
+        let drifted = await coordinator.prepareRuntimes(stablePlan: fixture.plan)
+        XCTAssertEqual(drifted.failure, .rejected)
+        XCTAssertEqual(events.values, ["material"])
+        admission.result = .failure(.unavailable)
+        let unavailable = await coordinator.prepareRuntimes(stablePlan: fixture.plan)
+        XCTAssertEqual(unavailable.failure, .rejected)
+        XCTAssertEqual(events.values, ["material", "material"])
     }
 
     func testProductionProviderBuilderConstructsOnlyExactFreshTarget() throws {
@@ -127,6 +170,49 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             stablePlan: noProvider.plan, material: noProvider.material,
             preprovider: noProvider.preprovider
         ).failure, .rejected)
+    }
+
+    func testHelperMaterialReadmissionBindsReleaseManifestAndWheel() async throws {
+        XCTAssertNotNil(ManagedInstallerProductionFreshInstallMaterialAdmission.production())
+        let fixture = try FreshRuntimeFixture()
+        let observed = FreshMaterialReadObservation()
+        let release = fixture.plan.reviewedOperation.currentInstallerRelease
+        let reader = ManagedInstallerProductionFreshInstallMaterialAdmission {
+            deployment, identities in
+            observed.targets.append(deployment.id)
+            observed.components.append(identities)
+            return .success(.init(material: fixture.material,
+                                  installerRelease: release))
+        }
+        let exact = try await reader.admit(stablePlan: fixture.plan).get()
+        XCTAssertEqual(exact, fixture.material)
+        XCTAssertEqual(observed.targets, [fixture.plan.deployment.id])
+        XCTAssertEqual(observed.components,
+                       [["engineering-platform-server", "forge-runtime"]])
+
+        let staleRelease = VerifiedInstallerRelease(
+            version: try InstallerVersion("9.9.9"),
+            releasePage: release.releasePage, assetName: release.assetName,
+            sha256: release.sha256, signingKeyID: release.signingKeyID
+        )
+        let wrongRelease = ManagedInstallerProductionFreshInstallMaterialAdmission {
+            _, _ in .success(.init(material: fixture.material,
+                                   installerRelease: staleRelease))
+        }
+        let releaseDrift = await wrongRelease.admit(stablePlan: fixture.plan)
+        XCTAssertEqual(releaseDrift.failure, .drifted)
+        let foreign = try FreshRuntimeFixture(wheelBytes: Data("foreign-readback".utf8))
+        let wrongManifest = ManagedInstallerProductionFreshInstallMaterialAdmission {
+            _, _ in .success(.init(material: foreign.material,
+                                   installerRelease: release))
+        }
+        let manifestDrift = await wrongManifest.admit(stablePlan: fixture.plan)
+        XCTAssertEqual(manifestDrift.failure, .drifted)
+        let unavailable = ManagedInstallerProductionFreshInstallMaterialAdmission {
+            _, _ in .failure(.unavailable)
+        }
+        let failedRead = await unavailable.admit(stablePlan: fixture.plan)
+        XCTAssertEqual(failedRead.failure, .unavailable)
     }
 }
 
@@ -201,6 +287,28 @@ private struct FreshRuntimeFixture {
 
 private final class FreshRuntimeEvents: @unchecked Sendable {
     var values: [String] = []
+}
+
+private final class FreshMaterialReadObservation: @unchecked Sendable {
+    var targets: [String] = []
+    var components: [[String]] = []
+}
+
+private final class FreshRuntimeMaterialAdmission:
+    ManagedInstallerFreshInstallMaterialAdmitting, @unchecked Sendable {
+    var result: Result<ManagedVerifiedCompositionMaterial,
+        ManagedInstallerFreshInstallMaterialFailure>
+    let events: FreshRuntimeEvents
+    init(result: Result<ManagedVerifiedCompositionMaterial,
+                 ManagedInstallerFreshInstallMaterialFailure>, events: FreshRuntimeEvents) {
+        self.result = result; self.events = events
+    }
+    func admit(stablePlan: ManagedInstallerStablePlan) async
+        -> Result<ManagedVerifiedCompositionMaterial,
+                  ManagedInstallerFreshInstallMaterialFailure> {
+        events.values.append("material")
+        return result
+    }
 }
 
 private final class FreshRuntimePreprovider:
