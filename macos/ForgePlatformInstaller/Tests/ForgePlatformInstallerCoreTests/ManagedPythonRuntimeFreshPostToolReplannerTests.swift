@@ -801,6 +801,111 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(calls, [required, optional, required, optional])
     }
 
+    func testComponentProviderInspectorRoutesOnlyExactOwnedContexts() async throws {
+        let target = "activation-deployment"
+        let forge = ProviderRequirement(
+            provider: .codex, isRequired: true,
+            credentialScope: .component,
+            ownerComponent: .forgeRuntime, targetIdentity: target,
+            runtime: try ProviderRuntimeRequirement(
+                version: InstallerVersion("1.0.0"), archiveKind: .zip,
+                artifactURL: "https://artifacts.example.test/codex.zip",
+                artifactSHA256: "sha256:" + String(repeating: "1", count: 64),
+                executableRelativePath: "bin/codex",
+                executableSHA256: "sha256:" + String(repeating: "2", count: 64)
+            )
+        )
+        let ep = ProviderRequirement(
+            provider: .githubCLI, isRequired: true,
+            credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer, targetIdentity: target,
+            runtime: try ProviderRuntimeRequirement(
+                version: InstallerVersion("2.70.0"), archiveKind: .zip,
+                artifactURL: "https://artifacts.example.test/gh.zip",
+                artifactSHA256: "sha256:" + String(repeating: "3", count: 64),
+                executableRelativePath: "bin/gh",
+                executableSHA256: "sha256:" + String(repeating: "4", count: 64)
+            )
+        )
+        let fixture = try FreshReplannerFixture(
+            providerRequirements: [forge, ep],
+            enabledProviderRequirements: [forge, ep]
+        )
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let forgeReader = ProviderInspectorSpy(results: [
+            forge.id: .success(try exactProviderReadback(forge)),
+        ])
+        let epReader = ProviderInspectorSpy(results: [
+            ep.id: .success(try exactProviderReadback(ep)),
+        ])
+        let inspector = try ManagedInstallerPostToolComponentProviderInspector(
+            stablePlan: fixture.stablePlan, activationRequest: fixture.request,
+            forge: forgeReader, engineeringPlatform: epReader
+        )
+        let forgeObserved = try await inspector.inspectProvider(forge, for: request).get()
+        let epObserved = try await inspector.inspectProvider(ep, for: request).get()
+        XCTAssertEqual(forgeObserved.providerTargetID, forge.id)
+        XCTAssertEqual(epObserved.providerTargetID, ep.id)
+        let forgeCalls = await forgeReader.calls()
+        let epCalls = await epReader.calls()
+        XCTAssertEqual(forgeCalls, [forge])
+        XCTAssertEqual(epCalls, [ep])
+        XCTAssertNotNil(ManagedInstallerPostToolComponentProviderInspector.production(
+            stablePlan: fixture.stablePlan, activationRequest: fixture.request
+        ))
+
+        let mismatchedReader = try ManagedInstallerPostToolComponentProviderInspector(
+            stablePlan: fixture.stablePlan, activationRequest: fixture.request,
+            forge: ProviderInspectorSpy(results: [
+                forge.id: .success(try exactProviderReadback(ep)),
+            ]),
+            engineeringPlatform: epReader
+        )
+        let mismatchedResult = await mismatchedReader.inspectProvider(forge, for: request)
+        XCTAssertEqual(mismatchedResult.failure, .rejected)
+        let unavailableReader = try ManagedInstallerPostToolComponentProviderInspector(
+            stablePlan: fixture.stablePlan, activationRequest: fixture.request,
+            forge: ProviderInspectorSpy(results: [
+                forge.id: .failure(.readbackFailed),
+            ]),
+            engineeringPlatform: epReader
+        )
+        let unavailableResult = await unavailableReader.inspectProvider(forge, for: request)
+        XCTAssertEqual(unavailableResult.failure, .readbackFailed)
+
+        let other = try FreshReplannerFixture(
+            deploymentID: "other-deployment",
+            providerRequirements: [forge, ep],
+            enabledProviderRequirements: [forge, ep]
+        )
+        let crossed = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: other.stablePlan, request: other.request
+        )
+        let crossedResult = await inspector.inspectProvider(forge, for: crossed)
+        XCTAssertEqual(crossedResult.failure, .rejected)
+        let altered = ProviderRequirement(
+            provider: forge.provider, isRequired: false,
+            credentialScope: .component, ownerComponent: .forgeRuntime,
+            targetIdentity: target, runtime: forge.runtime
+        )
+        let alteredResult = await inspector.inspectProvider(altered, for: request)
+        XCTAssertEqual(alteredResult.failure, .rejected)
+        let unchangedForgeCalls = await forgeReader.calls()
+        XCTAssertEqual(unchangedForgeCalls, [forge])
+
+        let wrongOwner = try providerRuntimeRequirement()
+        let invalid = try FreshReplannerFixture(
+            providerRequirements: [wrongOwner],
+            enabledProviderRequirements: [wrongOwner]
+        )
+        XCTAssertThrowsError(try ManagedInstallerPostToolComponentProviderInspector(
+            stablePlan: invalid.stablePlan, activationRequest: invalid.request,
+            forge: forgeReader, engineeringPlatform: epReader
+        ))
+    }
+
     func testProviderGateObserverReturnsBlockingGateForEveryProviderDrift() async throws {
         let requirement = try providerRuntimeRequirement(isRequired: true)
         let fixture = try FreshReplannerFixture(
