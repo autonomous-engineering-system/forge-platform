@@ -405,6 +405,67 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
         XCTAssertEqual(linked.journalFailure, .rejected)
     }
 
+    func testManagedGitHelperAssemblyBindsSignedPreviousRequirement() async throws {
+        let install = try ManagedToolReconciliationFixture(action: .install)
+        let upgrade = try ManagedToolReconciliationFixture(action: .upgrade)
+        let previous = ManagedToolRequirement(
+            identity: .git,
+            version: try InstallerVersion("2.44.0"),
+            artifact: try ManagedPythonDownloadIdentity(
+                url: "https://artifacts.example.test/previous-git.tar.gz",
+                sha256: "sha256:" + String(repeating: "8", count: 64)
+            )
+        )
+        let root = try temporaryManagedGitJournalRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let accepted = MacOSManagedInstallerManagedGitHelperAssembly(
+            prepareRoot: { root }, expectedOwner: Darwin.geteuid(),
+            previous: FixedPreviousGitRequirementLoader(requirement: previous)
+        )
+        XCTAssertNotNil(accepted.makeCoordinator(
+            stablePlan: install.stablePlan, previouslyInstalled: nil
+        ).journalValue)
+        XCTAssertEqual(accepted.makeCoordinator(
+            stablePlan: install.stablePlan, previouslyInstalled: previous
+        ).journalFailure, .rejected)
+        XCTAssertNotNil(accepted.makeCoordinator(
+            stablePlan: upgrade.stablePlan, previouslyInstalled: previous
+        ).journalValue)
+        XCTAssertEqual(accepted.makeCoordinator(
+            stablePlan: upgrade.stablePlan, previouslyInstalled: nil
+        ).journalFailure, .rejected)
+        XCTAssertEqual(accepted.makeCoordinator(
+            stablePlan: upgrade.stablePlan,
+            previouslyInstalled: install.requirement
+        ).journalFailure, .rejected)
+
+        let noChange = try ManagedToolReconciliationFixture(action: .noChange)
+        let unchanged = await accepted.reconcileManagedTools(
+            stablePlan: noChange.stablePlan
+        )
+        XCTAssertEqual(try unchanged.get().mutationReceipts, [])
+        XCTAssertEqual(accepted.makeCoordinator(
+            stablePlan: noChange.stablePlan, previouslyInstalled: nil
+        ).journalFailure, .invalidRequest)
+
+        let missingPrevious = MacOSManagedInstallerManagedGitHelperAssembly(
+            prepareRoot: { root }, expectedOwner: Darwin.geteuid(),
+            previous: FixedPreviousGitRequirementLoader(requirement: nil)
+        )
+        let blocked = await missingPrevious.reconcileManagedTools(
+            stablePlan: upgrade.stablePlan
+        )
+        XCTAssertEqual(blocked.journalFailure, .rejected)
+        let unavailableRoot = MacOSManagedInstallerManagedGitHelperAssembly(
+            prepareRoot: { throw ManagedInstallerManagedToolReconciliationFailure.unavailable },
+            expectedOwner: Darwin.geteuid(),
+            previous: FixedPreviousGitRequirementLoader(requirement: nil)
+        )
+        XCTAssertEqual(unavailableRoot.makeCoordinator(
+            stablePlan: install.stablePlan, previouslyInstalled: nil
+        ).journalFailure, .unavailable)
+    }
+
     private func managedGitTestSlot(
         fixture: ManagedToolReconciliationFixture
     ) -> ManagedInstallerManagedGitSlotReceipt {
@@ -923,6 +984,18 @@ private struct FixedManagedGitBinary: ManagedInstallerManagedGitBinaryVerifying 
         _ = requirement
         _ = slot
         return .success(evidence)
+    }
+}
+
+private struct FixedPreviousGitRequirementLoader:
+    ManagedInstallerSignedPreviousGitRequirementLoading {
+    let requirement: ManagedToolRequirement?
+
+    func loadPreviouslySignedGitRequirement(
+        for stablePlan: ManagedInstallerStablePlan
+    ) async -> ManagedToolRequirement? {
+        _ = stablePlan
+        return requirement
     }
 }
 
