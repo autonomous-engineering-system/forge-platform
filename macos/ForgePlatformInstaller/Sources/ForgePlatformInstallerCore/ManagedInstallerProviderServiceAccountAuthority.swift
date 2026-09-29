@@ -22,6 +22,16 @@ struct ManagedInstallerProviderLocalServiceAccount: Equatable, Sendable {
     let gid: gid_t
 }
 
+protocol ManagedInstallerProviderServiceAccountBinding: Sendable {
+    func resolve(
+        request: ManagedInstallerProviderRuntimeMutationRequest,
+        requirement: ProviderRequirement,
+        productArtifactSHA256: String,
+        expectedInstallerRelease: VerifiedInstallerRelease
+    ) -> Result<ManagedInstallerProviderLocalServiceAccount,
+                ManagedInstallerProviderServiceAccountAuthorityFailure>
+}
+
 struct ManagedInstallerProviderOSAccountReadback: Equatable, Sendable {
     let accountName: String
     let uid: uid_t
@@ -65,7 +75,8 @@ struct MacOSManagedInstallerProviderOSAccountLookup:
     }
 }
 
-struct ManagedInstallerProviderServiceAccountOSBinder: Sendable {
+struct ManagedInstallerProviderServiceAccountOSBinder:
+    ManagedInstallerProviderServiceAccountBinding, Sendable {
     private let authority: ManagedInstallerProviderServiceAccountAuthorityResolver
     private let lookup: any ManagedInstallerProviderOSAccountLookingUp
 

@@ -1,10 +1,22 @@
 import Foundation
 
+protocol ManagedInstallerProviderRuntimeSlotOperating: Sendable {
+    func readRuntimeSlot(
+        _ request: ManagedInstallerProviderRuntimeMutationRequest
+    ) -> Result<ManagedInstallerProviderRuntimeSlotReadback?,
+                ManagedInstallerProviderRuntimeMutationFailure>
+    func installRuntimeSlot(
+        _ request: ManagedInstallerProviderRuntimeMutationRequest
+    ) async -> Result<ManagedInstallerProviderRuntimeSlotReadback,
+                     ManagedInstallerProviderRuntimeMutationFailure>
+}
+
 /// Resolves an opaque staged provider archive inside the helper and feeds only
 /// exact, independently read bytes into target-bound slot publication. Reboot
 /// readback uses the private digest cache, so discarded staging never becomes
 /// a prerequisite for verifying an already published slot.
-struct MacOSManagedInstallerProviderRuntimeSlotAdapter: Sendable {
+struct MacOSManagedInstallerProviderRuntimeSlotAdapter:
+    ManagedInstallerProviderRuntimeSlotOperating, Sendable {
     private let requirement: ProviderRequirement
     private let staging: any ManagedInstallerProviderRuntimeArchiveStaging
     private let publisher: MacOSManagedInstallerProviderRuntimeSlotPublisher
