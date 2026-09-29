@@ -323,7 +323,8 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
             layout: layout, runtimeVerifier: verifier, expectedOwner: geteuid()
         )
         let creator = MacOSManagedPythonProductVenvCreator(
-            layout: layout, runtimeVerifier: verifier, readback: readback
+            layout: layout, runtimeVerifier: verifier, readback: readback,
+            wheel: ManagedPythonProductWheelTestDouble()
         )
         XCTAssertNil(try readback.readPublished(venvRequest).get())
         let initialVenv = await creator.readProductVenv(venvRequest)
