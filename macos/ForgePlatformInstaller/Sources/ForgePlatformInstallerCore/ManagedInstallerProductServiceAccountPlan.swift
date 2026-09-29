@@ -78,7 +78,7 @@ struct ManagedInstallerProductServiceAccountPlanner {
         return .success(claims)
     }
 
-    private static func name(
+    static func name(
         deploymentID: String, componentIdentity: String, instanceID: String
     ) -> String {
         let fields = ["forge-platform-service-account/v1", deploymentID,
