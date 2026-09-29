@@ -120,10 +120,8 @@ struct MacOSManagedInstallerManagedGitHelperAssembly:
               root.path.hasPrefix("/"), root.path != "/" else {
             return .failure(.unavailable)
         }
-        let stateRoot = root.appendingPathComponent(
-            ManagedInstallerHelperStateRootBootstrap.stateDirectoryName,
-            isDirectory: true
-        )
+        let stateRoot = ManagedInstallerHelperStateRootBootstrap
+            .operationStateRoot(for: root)
         let slotsRoot = root.appendingPathComponent(
             ManagedInstallerHelperStateRootBootstrap.managedGitSlotsDirectoryName,
             isDirectory: true

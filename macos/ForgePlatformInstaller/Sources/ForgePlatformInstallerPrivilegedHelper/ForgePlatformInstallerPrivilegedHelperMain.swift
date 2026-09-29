@@ -134,7 +134,8 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
         ManagedInstallerPostToolObservationXPCServiceHandler(
             snapshotCapturer: ManagedInstallerPostToolLockedHelperSnapshotCapturer(
                 operationLock: FileManagedPythonRuntimeOperationLock(
-                    rootDirectory: rootDirectory
+                    rootDirectory: ManagedInstallerHelperStateRootBootstrap
+                        .operationStateRoot(for: rootDirectory)
                 ),
                 hostReader: FileManagedInstallerPostToolAtomicHostReader(
                     rootDirectory: rootDirectory

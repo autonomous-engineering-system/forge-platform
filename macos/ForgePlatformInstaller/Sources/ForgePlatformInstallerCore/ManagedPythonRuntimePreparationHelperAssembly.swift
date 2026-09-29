@@ -22,10 +22,8 @@ public enum ManagedPythonRuntimePreparationHelperAssembly {
         fetcher: any ManagedPythonRuntimeAssetFetching,
         expectedOwner: uid_t
     ) -> ManagedPythonRuntimePreparationCoordinator {
-        let stateRoot = helperRoot.appendingPathComponent(
-            ManagedInstallerHelperStateRootBootstrap.stateDirectoryName,
-            isDirectory: true
-        )
+        let stateRoot = ManagedInstallerHelperStateRootBootstrap
+            .operationStateRoot(for: helperRoot)
         let slotsRoot = helperRoot.appendingPathComponent(
             FileManagedInstallerProductWorkerInvocationResolver.runtimeSlotsDirectoryName,
             isDirectory: true

@@ -128,10 +128,8 @@ enum ManagedInstallerFreshInstallRuntimeAdmissionHelperAssembly {
                     stablePlan: stablePlan, material: material
                 ) else { return .failure(.rejected) }
         let helperRoot = FileManagedInstallerReleasedRouteXPCService.productionRoot
-        let stateRoot = helperRoot.appendingPathComponent(
-            ManagedInstallerHelperStateRootBootstrap.stateDirectoryName,
-            isDirectory: true
-        )
+        let stateRoot = ManagedInstallerHelperStateRootBootstrap
+            .operationStateRoot(for: helperRoot)
         let journal = ManagedPythonRuntimeParentJournalSeeder(
             journal: FileManagedPythonRuntimeRecoveryStore(rootDirectory: stateRoot)
         )

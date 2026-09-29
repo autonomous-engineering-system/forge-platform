@@ -406,6 +406,7 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
     }
 
     func testManagedGitHelperAssemblyBindsSignedPreviousRequirement() async throws {
+        _ = MacOSManagedInstallerManagedGitHelperAssembly.production()
         let install = try ManagedToolReconciliationFixture(action: .install)
         let upgrade = try ManagedToolReconciliationFixture(action: .upgrade)
         let previous = ManagedToolRequirement(
