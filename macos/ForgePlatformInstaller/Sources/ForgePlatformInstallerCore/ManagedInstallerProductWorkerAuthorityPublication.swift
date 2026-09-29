@@ -10,6 +10,74 @@ enum ManagedInstallerProductWorkerAuthorityPublicationFailure:
     case staleAuthority
 }
 
+/// Publication rereads every previous route through the same signed worker
+/// and canonical authority used by already installed product instances.
+extension ManagedInstallerPrepublicationWheelHelperAssembly {
+    static func makePriorProduction(
+        stablePlan: ManagedInstallerStablePlan,
+        priorAuthoritySHA256: String,
+        route: ManagedInstallerProductWorkerSingleRouteAuthority,
+        evidence: ManagedInstallerProductWorkerVenvPublicationEvidence
+    ) async -> (any ManagedPythonProductVenvWheelInstalling)? {
+        guard let release = ManagedInstallerProductWorkerReleaseBinding.workerRelease(
+                  for: stablePlan.reviewedOperation.currentInstallerRelease
+              ),
+              let parent = ManagedInstallerHelperSignedParentBundleLocator
+                .forCurrentProcess() else { return nil }
+        let reader = FileManagedInstallerProductWorkerAuthorityReader()
+        let resolver = ManagedInstallerProductWheelAuthorityResolver(
+            reader: reader,
+            accounts: ManagedInstallerProductServiceAccountSetResolver(reader: reader)
+        )
+        let acquisition = ManagedInstallerProductWheelAcquisition(
+            authority: resolver,
+            transport: HTTPSManagedInstallerProductWheelTransport(),
+            staging: MacOSManagedInstallerProductWheelStager(
+                bootstrap: ManagedInstallerHelperStateRootBootstrap(),
+                authority: resolver
+            )
+        )
+        let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
+        let slots = root.appendingPathComponent(
+            FileManagedInstallerProductWorkerInvocationResolver
+                .runtimeSlotsDirectoryName, isDirectory: true
+        )
+        return await makePrior(
+            release: release, runtime: stablePlan.session.managedPythonRuntime,
+            priorAuthoritySHA256: priorAuthoritySHA256,
+            route: route, evidence: evidence, acquisition: acquisition,
+            helperRoot: root,
+            runtimeVerifier: MacOSManagedPythonCachedProductVenvRuntimeVerifier(
+                slotsRoot: slots,
+                runtime: stablePlan.session.managedPythonRuntime
+            ),
+            resource: ManagedInstallerHelperSignedWorkerResourceLocator(
+                parentLocator: parent
+            ),
+            runner: MacOSManagedInstallerProductWorkerRunner(),
+            expectedOwner: 0,
+            authorityCheck: {
+                let currentReader = FileManagedInstallerProductWorkerAuthorityReader()
+                let current = ManagedInstallerProductWheelAuthorityResolver(
+                    reader: currentReader,
+                    accounts: ManagedInstallerProductServiceAccountSetResolver(
+                        reader: currentReader
+                    )
+                )
+                guard case .success(let binding) = current.resolve(
+                    expectedInstallerRelease: release,
+                    deploymentID: route.deploymentID,
+                    componentIdentity: route.componentIdentity,
+                    instanceID: route.instanceID
+                ), binding.authoritySHA256 == priorAuthoritySHA256 else {
+                    return nil
+                }
+                return binding
+            }
+        )
+    }
+}
+
 struct ManagedInstallerProductWorkerManifestAuthority: Equatable, Sendable {
     let digest: String
     let canonicalPayload: Data

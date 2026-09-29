@@ -180,3 +180,70 @@ struct ManagedInstallerPrepublicationWheelHelperAssembly {
         return .success(router)
     }
 }
+
+protocol ManagedInstallerPriorProductWheelAcquiring {
+    func acquire(
+        expectedInstallerRelease: VerifiedInstallerRelease,
+        deploymentID: String, componentIdentity: String, instanceID: String
+    ) async -> Result<ManagedInstallerProductWheelStagingReceipt,
+                      ManagedInstallerProductWheelAcquisitionFailure>
+}
+
+extension ManagedInstallerProductWheelAcquisition:
+    ManagedInstallerPriorProductWheelAcquiring {}
+
+/// Previous routes use their already published canonical authority and OS
+/// account set. The pending fresh route still uses prepublication authority.
+extension ManagedInstallerPrepublicationWheelHelperAssembly {
+    static func makePrior(
+        release: VerifiedInstallerRelease,
+        runtime: ManagedPythonRuntimeIdentity,
+        priorAuthoritySHA256: String,
+        route: ManagedInstallerProductWorkerSingleRouteAuthority,
+        evidence: ManagedInstallerProductWorkerVenvPublicationEvidence,
+        acquisition: any ManagedInstallerPriorProductWheelAcquiring,
+        helperRoot: URL,
+        runtimeVerifier: any ManagedPythonProductVenvRuntimeVerifying,
+        resource: any ManagedInstallerHelperSignedWorkerResourceLocating,
+        runner: any ManagedInstallerProductWheelWorkerRunning,
+        expectedOwner: uid_t,
+        authorityCheck: @escaping MacOSManagedPythonProductVenvWheelInstaller.AuthorityCheck
+    ) async -> (any ManagedPythonProductVenvWheelInstalling)? {
+        let request = evidence.request
+        guard CompositionCatalogValidation.isTaggedSHA256(priorAuthoritySHA256),
+              request.deploymentID == route.deploymentID,
+              request.componentIdentity == route.componentIdentity,
+              request.runtimeIdentitySHA256 == runtime.identitySHA256,
+              request.runtimeSlotIdentity
+                == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+                    for: runtime.identitySHA256
+                ),
+              route.venvSlotName
+                == MacOSManagedPythonProductVenvSlotLayout.slotName(for: request),
+              evidence.activationReceipt.state == .ready,
+              evidence.activationReceipt.matches(request),
+              CompositionCatalogValidation.isTaggedSHA256(
+                evidence.wheelBindingEvidence
+              ) else { return nil }
+        guard case .success(let staged) = await acquisition.acquire(
+                  expectedInstallerRelease: release,
+                  deploymentID: route.deploymentID,
+                  componentIdentity: route.componentIdentity,
+                  instanceID: route.instanceID
+              ),
+              staged.byteCount > 0,
+              staged.binding.deploymentID == route.deploymentID,
+              staged.binding.componentIdentity == route.componentIdentity,
+              staged.binding.instanceID == route.instanceID,
+              staged.binding.serviceAccount == route.serviceAccount,
+              staged.binding.venvSlotName == route.venvSlotName,
+              staged.binding.artifactSHA256 == route.artifactSHA256,
+              staged.binding.authoritySHA256 == priorAuthoritySHA256
+        else { return nil }
+        return MacOSManagedPythonProductVenvWheelInstaller(
+            helperRoot: helperRoot, staged: staged,
+            runtime: runtimeVerifier, resource: resource, runner: runner,
+            expectedOwner: expectedOwner, authorityCheck: authorityCheck
+        )
+    }
+}

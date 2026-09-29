@@ -34,12 +34,17 @@ extension FileManagedInstallerManagedDeploymentRegistryReader:
 
 /// Product dispatch receives an authority only after fresh signed material,
 /// the original preprovider account claim, the terminal runtime receipt and
-/// independently read-back venv/wheel agree. A second deployment remains
-/// closed until prior product-venv evidence is durably available.
+/// independently read-back venv/wheel agree. Previous single-product routes
+/// are retained only after exact terminal registry and physical slot readback.
 struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
     ManagedInstallerProductOperationsExecuting, Sendable {
     typealias WheelFactory = @Sendable (ManagedInstallerStablePlan) async
         -> (any ManagedPythonProductVenvWheelInstalling)?
+    typealias PriorWheelFactory = @Sendable (
+        ManagedInstallerStablePlan, String,
+        ManagedInstallerProductWorkerSingleRouteAuthority,
+        ManagedInstallerProductWorkerVenvPublicationEvidence
+    ) async -> (any ManagedPythonProductVenvWheelInstalling)?
     typealias ReaderFactory = @Sendable (ManagedInstallerStablePlan)
         -> any ManagedInstallerProductWorkerVenvReading
 
@@ -52,6 +57,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
     private let registry: any ManagedInstallerFreshProductRegistryReading
     private let ports: ManagedInstallerFreshProductWorkerPortAllocator
     private let wheelFactory: WheelFactory
+    private let priorWheelFactory: PriorWheelFactory
     private let readerFactory: ReaderFactory
     private let downstream: any ManagedInstallerProductOperationsExecuting
 
@@ -65,6 +71,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         registry: any ManagedInstallerFreshProductRegistryReading,
         ports: ManagedInstallerFreshProductWorkerPortAllocator,
         wheelFactory: @escaping WheelFactory,
+        priorWheelFactory: @escaping PriorWheelFactory,
         readerFactory: @escaping ReaderFactory,
         downstream: any ManagedInstallerProductOperationsExecuting
     ) {
@@ -77,6 +84,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         self.registry = registry
         self.ports = ports
         self.wheelFactory = wheelFactory
+        self.priorWheelFactory = priorWheelFactory
         self.readerFactory = readerFactory
         self.downstream = downstream
     }
@@ -101,6 +109,8 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                     .makeProduction(stablePlan: plan) else { return nil }
                 return wheel
             },
+            priorWheelFactory: ManagedInstallerPrepublicationWheelHelperAssembly
+                .makePriorProduction,
             readerFactory: { plan in
                 let slots = root.appendingPathComponent(
                     FileManagedInstallerProductWorkerInvocationResolver
@@ -194,12 +204,35 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                     prior: prior, registry: priorRegistry,
                     excluding: plan.deployment.id, store: evidenceStore
                 ),
-              prior?.routes.isEmpty != false,
-              prior?.singleRoutes.filter({
-                  $0.deploymentID != plan.deployment.id
-              }).isEmpty != false else {
+              prior?.routes.isEmpty != false else {
             return .failed(.staleSession, stages: [])
         }
+        let priorDigest = prior.map {
+            "sha256:" + GitHubInstallerReleaseDescriptor.sha256(
+                of: $0.canonicalJSONData()
+            )
+        }
+        var priorWheels: [ManagedInstallerPriorProductWheelRouteKey:
+            any ManagedPythonProductVenvWheelInstalling] = [:]
+        for item in priorEvidence {
+            guard let route = prior?.singleRoutes.first(where: {
+                    $0.deploymentID == item.request.deploymentID
+                        && $0.componentIdentity == item.request.componentIdentity
+                  }), let priorDigest,
+                  let key = ManagedInstallerPriorProductWheelRouteKey(
+                    deploymentID: route.deploymentID,
+                    componentIdentity: route.componentIdentity
+                  ), priorWheels[key] == nil,
+                  let oldWheel = await priorWheelFactory(
+                    plan, priorDigest, route, item
+                  ) else { return .failed(.staleSession, stages: []) }
+            priorWheels[key] = oldWheel
+        }
+        guard let combinedWheel = ManagedInstallerFreshPriorProductWheelRouter(
+            freshDeploymentID: plan.deployment.id,
+            freshComponentIdentity: environment.componentIdentity,
+            fresh: wheel, priorEvidence: priorEvidence, prior: priorWheels
+        ) else { return .failed(.staleSession, stages: []) }
         let evidence = [ManagedInstallerProductWorkerVenvPublicationEvidence(
             request: request, activationReceipt: venvReceipt,
             wheelBindingEvidence: wheelBinding
@@ -220,13 +253,15 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                   deployment: plan.deployment,
                   componentIdentities: [environment.componentIdentity]
               ), refreshed == admitted,
+              case .success(let prePublishRegistry) = registry.read(),
+              prePublishRegistry == priorRegistry,
               case .success(let publication) = await authority
                 .publishVerifiedFreshInstallProductWorkerAuthority(
                     plan: plan, material: admitted.material, snapshot: snapshot,
                     accounts: preprovider.accounts, accountReader: accounts,
                     activation: activation, venvEvidence: evidence,
                     priorVenvEvidence: priorEvidence,
-                    reader: readerFactory(plan), wheel: wheel
+                    reader: readerFactory(plan), wheel: combinedWheel
                 ),
               publication.sha256 == "sha256:" + GitHubInstallerReleaseDescriptor
                 .sha256(of: snapshot.canonicalJSONData()),
