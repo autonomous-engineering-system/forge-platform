@@ -7,7 +7,8 @@ final class ManagedPythonRuntimePreparationHelperAssemblyTests: XCTestCase {
     func testProductionAssemblyIsConstructibleWithoutTouchingMachineState() throws {
         let fixture = try RuntimeTransportFixture()
         _ = ManagedPythonRuntimePreparationHelperAssembly.makeProduction(
-            runtime: fixture.runtime
+            runtime: fixture.runtime,
+            initialReadback: try absentReadback()
         )
     }
 
@@ -35,6 +36,7 @@ final class ManagedPythonRuntimePreparationHelperAssemblyTests: XCTestCase {
         let restarted = ManagedPythonRuntimePreparationHelperAssembly.make(
             helperRoot: root,
             runtime: fixture.runtime,
+            initialReadback: try absentReadback(),
             fetcher: fetcher,
             expectedOwner: Darwin.geteuid()
         )
@@ -62,6 +64,7 @@ final class ManagedPythonRuntimePreparationHelperAssemblyTests: XCTestCase {
         let assembly = ManagedPythonRuntimePreparationHelperAssembly.make(
             helperRoot: root,
             runtime: fixture.runtime,
+            initialReadback: try absentReadback(),
             fetcher: fetcher,
             expectedOwner: Darwin.geteuid()
         )
@@ -81,6 +84,7 @@ final class ManagedPythonRuntimePreparationHelperAssemblyTests: XCTestCase {
         for name in [
             ManagedInstallerHelperStateRootBootstrap.stateDirectoryName,
             FileManagedInstallerProductWorkerInvocationResolver.runtimeSlotsDirectoryName,
+            ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
         ] {
             let child = root.appendingPathComponent(name, isDirectory: true)
             try FileManager.default.createDirectory(
@@ -89,6 +93,15 @@ final class ManagedPythonRuntimePreparationHelperAssemblyTests: XCTestCase {
             XCTAssertEqual(chmod(child.path, mode_t(0o700)), 0)
         }
         return root
+    }
+
+    private func absentReadback() throws -> ManagedPythonRuntimeInstalledReadback {
+        try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: nil,
+            activeRuntimeSlotIdentity: nil,
+            retainedRuntimeIdentitySHA256s: [],
+            evidenceReference: "receipt:reviewed-absent-state"
+        )
     }
 }
 

@@ -3,6 +3,72 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedPythonRuntimePreparationTests: XCTestCase {
+    func testReviewedInitialStateBootstrapsUnderLeaseBeforeStaging() async throws {
+        let fixture = try PreparationFixture()
+        let events = PreparationEventLog()
+        let lock = PreparationOperationLock(events: events)
+        let initial = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: nil,
+            activeRuntimeSlotIdentity: nil,
+            retainedRuntimeIdentitySHA256s: [],
+            evidenceReference: "receipt:reviewed-python-absent"
+        )
+        let state = PreparationInitialHostState(readback: initial, lock: lock, events: events)
+        let staging = PreparationStaging(fixture: fixture, events: events)
+        let coordinator = ManagedPythonRuntimePreparationCoordinator(
+            staging: staging,
+            inspector: PreparationInspector(inspection: fixture.inspection, events: events),
+            slotCoordinator: PreparationSlotCoordinator(fixture: fixture, events: events),
+            recoveryStore: PreparationRecoveryStore(events: events),
+            operationLock: lock,
+            initialHostState: state,
+            reviewedInitialReadback: initial
+        )
+
+        _ = try success(await coordinator.prepareRuntime(
+            for: fixture.session, deployment: fixture.deployment
+        ))
+        XCTAssertEqual(state.bootstrapCalls, 1)
+        XCTAssertEqual(Array(events.values().prefix(5)), [
+            "lock.acquire", "recovery.load", "staging.reconcile",
+            "host.bootstrap", "staging.stage",
+        ])
+        XCTAssertEqual(lock.snapshot(), .init(acquires: 1, releases: 1, held: false))
+    }
+
+    func testChangedOrUnavailableInitialStateBlocksBeforeStaging() async throws {
+        let fixture = try PreparationFixture()
+        let initial = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: nil,
+            activeRuntimeSlotIdentity: nil,
+            retainedRuntimeIdentitySHA256s: [],
+            evidenceReference: "receipt:reviewed-python-absent"
+        )
+        let changed = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: nil,
+            activeRuntimeSlotIdentity: nil,
+            retainedRuntimeIdentitySHA256s: [],
+            evidenceReference: "receipt:changed-python-absent"
+        )
+        for state in [changed, nil] {
+            let staging = PreparationStaging(fixture: fixture)
+            let lock = PreparationOperationLock()
+            let result = await ManagedPythonRuntimePreparationCoordinator(
+                staging: staging,
+                inspector: PreparationInspector(inspection: fixture.inspection),
+                slotCoordinator: PreparationSlotCoordinator(fixture: fixture),
+                recoveryStore: PreparationRecoveryStore(),
+                operationLock: lock,
+                initialHostState: PreparationInitialHostState(readback: state, lock: lock),
+                reviewedInitialReadback: initial
+            ).prepareRuntime(for: fixture.session, deployment: fixture.deployment)
+            XCTAssertEqual(result.failure, .rejected)
+            let staged = await staging.snapshot()
+            XCTAssertEqual(staged.stages, 0)
+            XCTAssertEqual(lock.snapshot(), .init(acquires: 1, releases: 1, held: false))
+        }
+    }
+
     func testPreparesExactSessionRuntimeAndCleansStagingAfterFreshSlotReadback() async throws {
         let fixture = try PreparationFixture()
         let events = PreparationEventLog()
@@ -833,6 +899,46 @@ private final class PreparationEventLog: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return recorded
+    }
+}
+
+private final class PreparationInitialHostState:
+    ManagedPythonInitialHostStateReading, @unchecked Sendable {
+    private let readback: ManagedPythonRuntimeInstalledReadback?
+    private let operationLock: PreparationOperationLock
+    private let events: PreparationEventLog?
+    private let counterLock = NSLock()
+    private var count = 0
+
+    init(
+        readback: ManagedPythonRuntimeInstalledReadback?,
+        lock: PreparationOperationLock,
+        events: PreparationEventLog? = nil
+    ) {
+        self.readback = readback
+        self.operationLock = lock
+        self.events = events
+    }
+
+    var bootstrapCalls: Int {
+        counterLock.lock()
+        defer { counterLock.unlock() }
+        return count
+    }
+
+    func observe() -> Result<ManagedPythonRuntimeInstalledReadback,
+        ManagedPythonRuntimeActivationFailure> {
+        readback.map(Result.success) ?? .failure(.rejected)
+    }
+
+    func readOrBootstrap() -> Result<ManagedPythonRuntimeInstalledReadback,
+        ManagedPythonRuntimeActivationFailure> {
+        counterLock.lock()
+        count += 1
+        counterLock.unlock()
+        events?.append("host.bootstrap")
+        guard operationLock.snapshot().held else { return .failure(.rejected) }
+        return observe()
     }
 }
 
