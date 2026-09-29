@@ -72,7 +72,25 @@ struct ManagedInstallerHelperVerifiedMaterialAdmission: Sendable {
         for resources: ManagedInstallerHelperSealedResources
     ) -> ManagedVerifiedCompositionSessionPreparer {
         let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
-        let catalogAdmission = CompositionCatalogAdmissionCoordinator(
+        return ManagedVerifiedCompositionSessionPreparer(
+            catalogAdmission: productionCatalogAdmission(for: resources),
+            documentFetcher: HTTPSCompositionDocumentTransport(),
+            componentAcceptanceReader:
+                CompositionCatalogBackedComponentCombinationAcceptanceReader(
+                    reader: FileCompositionCatalogAcceptanceStore(
+                        rootDirectory: root.appendingPathComponent(
+                            "component-combination-catalog", isDirectory: true
+                        )
+                    )
+                )
+        )
+    }
+
+    static func productionCatalogAdmission(
+        for resources: ManagedInstallerHelperSealedResources
+    ) -> CompositionCatalogAdmissionCoordinator {
+        let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
+        return CompositionCatalogAdmissionCoordinator(
             trustLoader: HelperSealedCompositionTrustLoader(
                 trust: resources.compositionTrust
             ),
@@ -83,18 +101,6 @@ struct ManagedInstallerHelperVerifiedMaterialAdmission: Sendable {
                     "outer-composition-catalog", isDirectory: true
                 )
             )
-        )
-        return ManagedVerifiedCompositionSessionPreparer(
-            catalogAdmission: catalogAdmission,
-            documentFetcher: HTTPSCompositionDocumentTransport(),
-            componentAcceptanceReader:
-                CompositionCatalogBackedComponentCombinationAcceptanceReader(
-                    reader: FileCompositionCatalogAcceptanceStore(
-                        rootDirectory: root.appendingPathComponent(
-                            "component-combination-catalog", isDirectory: true
-                        )
-                    )
-                )
         )
     }
 

@@ -38,6 +38,12 @@ struct MacOSManagedInstallerManagedGitHelperAssembly:
         )
     }
 
+    static func production() -> Self? {
+        guard let previous = ManagedInstallerPreviouslySignedGitRequirementLoader
+            .production() else { return nil }
+        return Self(previous: previous)
+    }
+
     func reconcileManagedTools(
         stablePlan: ManagedInstallerStablePlan
     ) async -> Result<ManagedInstallerManagedToolReconciliationReceipt,

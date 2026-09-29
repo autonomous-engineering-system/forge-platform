@@ -656,6 +656,300 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
     }
 }
 
+extension ManagedInstallerHelperSealedTrustContextTests {
+    func testPreviousGitRequirementComesOnlyFromExactSignedCatalogManifest()
+        async throws {
+        let scenario = try makePreviousGitScenario()
+        let loader = previousGitLoader(
+            scenario: scenario,
+            catalogs: [.success(scenario.admission), .success(scenario.admission)],
+            bytes: scenario.manifest
+        )
+        let loaded = await loader.loadPreviouslySignedGitRequirement(
+            for: scenario.plan
+        )
+        XCTAssertEqual(loaded, scenario.previous)
+    }
+
+    func testPreviousGitRequirementRejectsMissingDriftAndTamperedBytes()
+        async throws {
+        let scenario = try makePreviousGitScenario()
+        let missing = try previousGitAdmission(
+            scenario: scenario,
+            entries: [scenario.admission.catalog.entries[0]]
+        )
+        let cases: [(
+            [Result<VerifiedCompositionCatalogAdmission,
+                CompositionCatalogAdmissionFailure>], Data
+        )] = [
+            ([.success(missing)], scenario.manifest),
+            ([.success(scenario.admission), .success(missing)], scenario.manifest),
+            ([.success(scenario.admission)], Data("{}".utf8)),
+            ([.failure(.unavailable)], scenario.manifest),
+        ]
+        for (catalogs, bytes) in cases {
+            let loader = previousGitLoader(
+                scenario: scenario, catalogs: catalogs, bytes: bytes
+            )
+            let loaded = await loader.loadPreviouslySignedGitRequirement(
+                for: scenario.plan
+            )
+            XCTAssertNil(loaded)
+        }
+        let unavailable = ManagedInstallerPreviouslySignedGitRequirementLoader(
+            currentRelease: SequenceCurrentRelease([.failure(.unavailable)]),
+            catalogFactory: { _ in FixedPreviousGitCatalog(
+                results: [.success(scenario.admission)]
+            ) },
+            documents: FixedPreviousGitDocument(bytes: scenario.manifest)
+        )
+        let unavailableResult = await unavailable
+            .loadPreviouslySignedGitRequirement(for: scenario.plan)
+        XCTAssertNil(unavailableResult)
+    }
+
+    func testPreviousGitManifestProjectionRejectsMalformedAndForeignTools()
+        throws {
+        let scenario = try makePreviousGitScenario()
+        let oldID = try XCTUnwrap(scenario.plan.deployment.installedCompositionID)
+        XCTAssertEqual(
+            ManagedCompositionSessionPlanBuilder.signedManagedTools(
+                in: scenario.manifest, compositionID: oldID, channel: .stable
+            ), [scenario.previous]
+        )
+        XCTAssertNil(ManagedCompositionSessionPlanBuilder.signedManagedTools(
+            in: Data("{}".utf8), compositionID: oldID, channel: .stable
+        ))
+        XCTAssertNil(ManagedCompositionSessionPlanBuilder.signedManagedTools(
+            in: scenario.manifest, compositionID: "foreign", channel: .stable
+        ))
+        XCTAssertNil(ManagedCompositionSessionPlanBuilder.signedManagedTools(
+            in: scenario.manifest + Data([0x20]),
+            compositionID: oldID, channel: .stable
+        ))
+    }
+
+    private struct PreviousGitScenario {
+        let current: ManagedInstallerHelperCurrentRelease
+        let plan: ManagedInstallerStablePlan
+        let previous: ManagedToolRequirement
+        let manifest: Data
+        let admission: VerifiedCompositionCatalogAdmission
+    }
+
+    private func makePreviousGitScenario() throws -> PreviousGitScenario {
+        let current = try makeCurrentRelease()
+        let context = current.compositionContext
+        let target = ManagedToolRequirement(
+            identity: .git,
+            version: try InstallerVersion("2.45.0"),
+            artifact: try ManagedPythonDownloadIdentity(
+                url: "https://artifacts.example.test/git-new.tar.gz",
+                sha256: "sha256:" + String(repeating: "9", count: 64)
+            )
+        )
+        let previous = ManagedToolRequirement(
+            identity: .git,
+            version: try InstallerVersion("2.44.0"),
+            artifact: try ManagedPythonDownloadIdentity(
+                url: "https://artifacts.example.test/git-old.tar.gz",
+                sha256: "sha256:" + String(repeating: "8", count: 64)
+            )
+        )
+        let oldID = "forge-ep-managed-old"
+        let manifest = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string("forge-platform.composition/v3"),
+            "composition_id": .string(oldID),
+            "channel": .string(context.installerChannel.rawValue),
+            "requires_installer": .null,
+            "host_requirements": .null,
+            "managed_tools": .array([.object([
+                "identity": .string("git"),
+                "version": .string("2.44.0"),
+                "url": .string(previous.artifact.url),
+                "digest": .string(previous.artifact.sha256),
+            ])]),
+            "python_runtime": .null,
+            "product_venvs": .null,
+            "providers": .null,
+            "components": .null,
+            "upgrade_from": .null,
+        ]))
+        let oldDigest = "sha256:" + GitHubInstallerReleaseDescriptor.sha256(
+            of: manifest
+        )
+        let base = try makeMaterial(for: current, manifest: Data("{}".utf8))
+            .session
+        let session = try VerifiedCompositionSessionPlan(
+            sessionID: base.sessionID,
+            compositionIdentity: base.compositionIdentity,
+            manifestSHA256: base.manifestSHA256,
+            installerReleaseSequence: base.installerReleaseSequence,
+            installerProvenanceSHA256: base.installerProvenanceSHA256,
+            installerReleaseTrustConfigurationSHA256:
+                base.installerReleaseTrustConfigurationSHA256,
+            compositionCatalogFeed: base.compositionCatalogFeed,
+            compositionCatalog: base.compositionCatalog,
+            componentCombinationCatalog: base.componentCombinationCatalog,
+            componentSelectionSequence: base.componentSelectionSequence,
+            managedPythonRuntime: base.managedPythonRuntime,
+            productVirtualEnvironments: base.productVirtualEnvironments,
+            providerRequirements: base.providerRequirements,
+            managedTools: [target]
+        )
+        let deployment = try ManagedDeploymentTarget(
+            id: "activation-deployment", exists: true,
+            forgeInstanceID: "forge-one",
+            engineeringPlatformInstanceID: "ep-one",
+            installedCompositionID: oldID,
+            installedCompositionManifestSHA256: oldDigest
+        )
+        let fixture = try ActivationFixture(
+            overrideSession: session, overrideDeployment: deployment
+        )
+        let activation = try ManagedPythonRuntimeActivationPlan(
+            session: session,
+            deployment: deployment,
+            initialReadback: fixture.missingReadback()
+        )
+        let initial = try ManagedToolInstalledReadback(
+            identity: .git, state: .active,
+            version: previous.version,
+            artifactSHA256: previous.artifact.sha256,
+            managedRootIdentity: ManagedToolRequirement.managedRootIdentity,
+            evidenceReference: "receipt:reviewed-old-git"
+        )
+        let plan = try managedInstallerTestStablePlan(
+            session: session,
+            deployment: deployment,
+            activationPlan: activation,
+            actions: [ManagedToolOriginalPlanAction(
+                requirement: target, action: .upgrade,
+                initialReadback: initial
+            )]
+        )
+        let requirement = VerifiedCompositionCatalogInstallerRequirement(
+            minimumVersion: context.installerVersion, capabilities: []
+        )
+        let entries = [
+            VerifiedCompositionCatalogEntry(
+                compositionID: session.compositionIdentity,
+                channel: context.installerChannel,
+                manifest: VerifiedCompositionCatalogDocumentLocator(
+                    url: "https://artifacts.example.test/new.json",
+                    sha256: session.manifestSHA256
+                ),
+                installerRequirement: requirement
+            ),
+            VerifiedCompositionCatalogEntry(
+                compositionID: oldID,
+                channel: context.installerChannel,
+                manifest: VerifiedCompositionCatalogDocumentLocator(
+                    url: "https://artifacts.example.test/old.json",
+                    sha256: oldDigest
+                ),
+                installerRequirement: requirement
+            ),
+        ]
+        let scope = try CompositionCatalogAcceptanceScope(
+            installerReleaseTrustConfigurationSHA256:
+                context.installerReleaseTrustConfigurationSHA256,
+            channel: context.installerChannel,
+            feed: context.compositionCatalogFeed
+        )
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let catalog = VerifiedCompositionCatalog(
+            identity: session.compositionCatalog,
+            channel: context.installerChannel,
+            publishedAt: now.addingTimeInterval(-10),
+            expiresAt: now.addingTimeInterval(600),
+            approvedPythonRuntimeIdentity:
+                session.managedPythonRuntime.identitySHA256,
+            entries: entries,
+            componentCombinationCatalog: nil,
+            candidateAcceptance: CompositionCatalogAcceptance(
+                scope: scope, identity: session.compositionCatalog
+            )
+        )
+        return PreviousGitScenario(
+            current: current,
+            plan: plan,
+            previous: previous,
+            manifest: manifest,
+            admission: try VerifiedCompositionCatalogAdmission(
+                catalog: catalog, verifiedAt: now
+            )
+        )
+    }
+
+    private func previousGitAdmission(
+        scenario: PreviousGitScenario,
+        entries: [VerifiedCompositionCatalogEntry]
+    ) throws -> VerifiedCompositionCatalogAdmission {
+        let original = scenario.admission
+        let changed = VerifiedCompositionCatalog(
+            identity: original.catalog.identity,
+            channel: original.catalog.channel,
+            publishedAt: original.catalog.publishedAt,
+            expiresAt: original.catalog.expiresAt,
+            approvedPythonRuntimeIdentity:
+                original.catalog.approvedPythonRuntimeIdentity,
+            entries: entries,
+            componentCombinationCatalog:
+                original.catalog.componentCombinationCatalog,
+            candidateAcceptance: original.catalog.candidateAcceptance
+        )
+        return try VerifiedCompositionCatalogAdmission(
+            catalog: changed, verifiedAt: original.verifiedAt
+        )
+    }
+
+    private func previousGitLoader(
+        scenario: PreviousGitScenario,
+        catalogs: [Result<VerifiedCompositionCatalogAdmission,
+            CompositionCatalogAdmissionFailure>],
+        bytes: Data
+    ) -> ManagedInstallerPreviouslySignedGitRequirementLoader {
+        ManagedInstallerPreviouslySignedGitRequirementLoader(
+            currentRelease: SequenceCurrentRelease([
+                .success(scenario.current), .success(scenario.current),
+            ]),
+            catalogFactory: { _ in FixedPreviousGitCatalog(results: catalogs) },
+            documents: FixedPreviousGitDocument(bytes: bytes)
+        )
+    }
+}
+
+private actor FixedPreviousGitCatalog: CompositionCatalogAdmitting {
+    private var results: [Result<VerifiedCompositionCatalogAdmission,
+        CompositionCatalogAdmissionFailure>]
+
+    init(results: [Result<VerifiedCompositionCatalogAdmission,
+         CompositionCatalogAdmissionFailure>]) {
+        self.results = results
+    }
+
+    func admitVerifiedCatalogWithEvidence(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext
+    ) async -> Result<VerifiedCompositionCatalogAdmission,
+                      CompositionCatalogAdmissionFailure> {
+        _ = currentInstaller
+        guard !results.isEmpty else { return .failure(.unavailable) }
+        return results.removeFirst()
+    }
+}
+
+private struct FixedPreviousGitDocument: CompositionDocumentFetching {
+    let bytes: Data
+
+    func fetchDocument(
+        at locator: VerifiedCompositionCatalogDocumentLocator
+    ) async -> Result<Data, CompositionDocumentTransportFailure> {
+        _ = locator
+        return .success(bytes)
+    }
+}
+
 private struct StaticValidator: SealedInstallerBundleValidating {
     let result: Result<Void, InstallerSelfUpdateFailure>
     init(_ result: Result<Void, InstallerSelfUpdateFailure>) { self.result = result }
