@@ -492,6 +492,23 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         XCTAssertEqual(rejected, .failure(.rejected))
     }
 
+    func testInitialRuntimeReadbackDoesNotBootstrapDuringReview() async throws {
+        let host = try InitialActivationHostFixture()
+        defer { host.cleanup() }
+        let initial = try host.bootstrap.observe().get()
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: initial)
+        let assembled = ManagedPythonInitialRuntimeHelperAssembly.make(
+            helperRoot: host.root, runtime: fixture.runtime,
+            expectedOwner: Darwin.geteuid(), wheel: ManagedPythonProductWheelTestDouble()
+        )
+        let observed = await assembled.readActiveRuntime(request)
+        XCTAssertEqual(observed, .success(initial))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: host.root.appendingPathComponent(
+            FileManagedInstallerManagedPythonHostReader.fileName
+        ).path))
+    }
+
     func testInitialRuntimeActivatorRejectsUnavailableSlotAndStaleInitialEvidence() async throws {
         let host = try InitialActivationHostFixture()
         defer { host.cleanup() }

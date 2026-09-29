@@ -141,7 +141,8 @@ enum ManagedInstallerFreshInstallRuntimeAdmissionHelperAssembly {
             ),
             providers: ManagedInstallerProductionFreshInstallProviderBuilder(),
             managedPython: ManagedPythonRuntimePreparationHelperAssembly.makeProduction(
-                runtime: stablePlan.session.managedPythonRuntime
+                runtime: stablePlan.session.managedPythonRuntime,
+                initialReadback: stablePlan.activationPlan.initialReadback
             )
         ))
     }

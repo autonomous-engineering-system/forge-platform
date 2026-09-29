@@ -6,11 +6,13 @@ import Foundation
 /// roots and HTTPS transport are fixed here, not supplied by an XPC caller.
 public enum ManagedPythonRuntimePreparationHelperAssembly {
     public static func makeProduction(
-        runtime: ManagedPythonRuntimeIdentity
+        runtime: ManagedPythonRuntimeIdentity,
+        initialReadback: ManagedPythonRuntimeInstalledReadback
     ) -> ManagedPythonRuntimePreparationCoordinator {
         make(
             helperRoot: FileManagedInstallerReleasedRouteXPCService.productionRoot,
             runtime: runtime,
+            initialReadback: initialReadback,
             fetcher: HTTPSManagedPythonRuntimeAssetTransport(),
             expectedOwner: 0
         )
@@ -19,6 +21,7 @@ public enum ManagedPythonRuntimePreparationHelperAssembly {
     static func make(
         helperRoot: URL,
         runtime: ManagedPythonRuntimeIdentity,
+        initialReadback: ManagedPythonRuntimeInstalledReadback,
         fetcher: any ManagedPythonRuntimeAssetFetching,
         expectedOwner: uid_t
     ) -> ManagedPythonRuntimePreparationCoordinator {
@@ -45,7 +48,11 @@ public enum ManagedPythonRuntimePreparationHelperAssembly {
                 )
             ),
             recoveryStore: FileManagedPythonRuntimeRecoveryStore(rootDirectory: stateRoot),
-            operationLock: FileManagedPythonRuntimeOperationLock(rootDirectory: stateRoot)
+            operationLock: FileManagedPythonRuntimeOperationLock(rootDirectory: stateRoot),
+            initialHostState: MacOSManagedPythonInitialHostState(
+                helperRoot: helperRoot, expectedOwner: expectedOwner
+            ),
+            reviewedInitialReadback: initialReadback
         )
     }
 }

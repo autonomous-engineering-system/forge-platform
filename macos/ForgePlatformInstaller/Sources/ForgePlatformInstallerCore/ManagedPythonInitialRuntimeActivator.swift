@@ -38,7 +38,7 @@ struct MacOSManagedPythonInitialRuntimeActivator: ManagedPythonRuntimeActivating
     ) async -> Result<ManagedPythonRuntimeInstalledReadback, ManagedPythonRuntimeActivationFailure> {
         guard request.action != .upgrade else { return .failure(.rejected) }
         let state: ManagedPythonRuntimeInstalledReadback
-        switch hostState.readOrBootstrap() {
+        switch hostState.observe() {
         case .success(let readback): state = readback
         case .failure(let failure): return .failure(failure)
         }
