@@ -75,6 +75,115 @@ final class MacOSManagedInstallerProviderHostInspectorTests: XCTestCase {
         )
     }
 
+    func testEPProductInspectorUsesFrozenInstanceRuntimeAndGitHubConfig() async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .githubCLI, epProductLayout: true
+        )
+        let runner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 0, standardOutput: nil)),
+        ])
+        let inspector = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, runner: runner
+        )
+
+        let observed = try await inspector.inspectProvider(
+            fixture.requirement, for: fixture.request
+        ).get()
+        XCTAssertEqual(observed.state, .verified)
+        XCTAssertEqual(observed.executableSHA256, fixture.executableSHA256)
+        let calls = await runner.recordedCommands()
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(calls[0].executableURL.resolvingSymlinksInPath(),
+                       fixture.executable.resolvingSymlinksInPath())
+        XCTAssertTrue(calls[1].environment["GH_CONFIG_DIR"]?.hasSuffix(
+            "/instances/ep-one/providers/github/config"
+        ) == true)
+        XCTAssertTrue(fixture.executable.path.hasSuffix(
+            "/instances/ep-one/providers/github/runtime/bin/gh"
+        ))
+        XCTAssertTrue(fixture.home.path.hasSuffix(
+            "/instances/ep-one/providers/github/config"
+        ))
+    }
+
+    func testEPProductInspectorRejectsWrongRuntimePathAndIgnoresLegacySlot() async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .codex, epProductLayout: true
+        )
+        let oldLayout = MacOSManagedInstallerProviderHostInspector(
+            rootDirectory: fixture.root, runner: ProviderProbeRunnerSpy(results: [])
+        )
+        let oldReadback = try await oldLayout.inspectProvider(
+            fixture.requirement, for: fixture.request
+        ).get()
+        XCTAssertEqual(oldReadback.state, .absent)
+
+        let wrongRuntime = try ProviderRuntimeRequirement(
+            version: InstallerVersion("2.70.0"),
+            archiveKind: .zip,
+            artifactURL: "https://artifacts.example.test/provider.zip",
+            artifactSHA256: "sha256:" + String(repeating: "6", count: 64),
+            executableRelativePath: "release/bin/codex",
+            executableSHA256: fixture.executableSHA256
+        )
+        let wrongRequirement = ProviderRequirement(
+            provider: .codex,
+            isRequired: true,
+            minimumVersion: try InstallerVersion("1.0.0"),
+            credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer,
+            targetIdentity: "ep-one",
+            runtime: wrongRuntime
+        )
+        let wrongFixture = try ProviderInspectionFixture(
+            provider: .codex, requestRequirementOverride: wrongRequirement,
+            epProductLayout: true
+        )
+        let runner = ProviderProbeRunnerSpy(results: [])
+        let rejected = await MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: wrongFixture.root, runner: runner
+        ).inspectProvider(wrongRequirement, for: wrongFixture.request)
+        XCTAssertEqual(rejected.failure, .rejected)
+        let calls = await runner.recordedCommands()
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testEPProductInspectorRequiresComponentOwnedTargetAndPrivateConfig() async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .githubCLI, epProductLayout: true
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: fixture.home.path
+        )
+        let runner = ProviderProbeRunnerSpy(results: [])
+        let failed = await MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, runner: runner
+        ).inspectProvider(fixture.requirement, for: fixture.request)
+        XCTAssertEqual(failed.failure, .readbackFailed)
+        let calls = await runner.recordedCommands()
+        XCTAssertTrue(calls.isEmpty)
+
+        let forgeRequirement = ProviderRequirement(
+            provider: .githubCLI,
+            isRequired: true,
+            minimumVersion: try InstallerVersion("1.0.0"),
+            credentialScope: .component,
+            ownerComponent: .forgeRuntime,
+            targetIdentity: "forge-one",
+            runtime: fixture.requirement.runtime
+        )
+        let forgeFixture = try ProviderInspectionFixture(
+            provider: .githubCLI, requestRequirementOverride: forgeRequirement,
+            epProductLayout: true
+        )
+        let rejected = await MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: forgeFixture.root, runner: runner
+        ).inspectProvider(forgeRequirement, for: forgeFixture.request)
+        XCTAssertEqual(rejected.failure, .rejected)
+    }
+
     func testSystemRunnerExecutesOnlyDerivedCodexProbes() async throws {
         let script = """
         #!/bin/sh
@@ -361,7 +470,8 @@ private struct ProviderInspectionFixture {
         version: String = "2.70.0",
         executableBytes: Data = Data("fixed-provider-executable".utf8),
         declaredExecutableSHA256: String? = nil,
-        requestRequirementOverride: ProviderRequirement? = nil
+        requestRequirementOverride: ProviderRequirement? = nil,
+        epProductLayout: Bool = false
     ) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "provider-inspector-\(UUID().uuidString)",
@@ -420,39 +530,45 @@ private struct ProviderInspectionFixture {
             request: activationRequest
         )
 
-        let targetRoot = root
-            .appendingPathComponent("deployments", isDirectory: true)
-            .appendingPathComponent(request.deploymentID, isDirectory: true)
-            .appendingPathComponent("providers", isDirectory: true)
-            .appendingPathComponent(
-                ProviderOwnerComponent.engineeringPlatformServer.rawValue,
-                isDirectory: true
-            )
-            .appendingPathComponent("ep-one", isDirectory: true)
-            .appendingPathComponent(provider.rawValue, isDirectory: true)
-        home = targetRoot.appendingPathComponent("home", isDirectory: true)
-        let runtimeRoot = targetRoot
-            .appendingPathComponent("runtime", isDirectory: true)
-            .appendingPathComponent(version, isDirectory: true)
+        let targetRoot: URL
+        if epProductLayout {
+            targetRoot = root
+                .appendingPathComponent("instances", isDirectory: true)
+                .appendingPathComponent("ep-one", isDirectory: true)
+                .appendingPathComponent("providers", isDirectory: true)
+                .appendingPathComponent(provider == .codex ? "codex" : "github",
+                                        isDirectory: true)
+        } else {
+            targetRoot = root
+                .appendingPathComponent("deployments", isDirectory: true)
+                .appendingPathComponent(request.deploymentID, isDirectory: true)
+                .appendingPathComponent("providers", isDirectory: true)
+                .appendingPathComponent(
+                    ProviderOwnerComponent.engineeringPlatformServer.rawValue,
+                    isDirectory: true
+                )
+                .appendingPathComponent("ep-one", isDirectory: true)
+                .appendingPathComponent(provider.rawValue, isDirectory: true)
+        }
+        home = targetRoot.appendingPathComponent(
+            epProductLayout && provider == .githubCLI ? "config" : "home",
+            isDirectory: true
+        )
+        let runtimeRoot = epProductLayout
+            ? targetRoot.appendingPathComponent("runtime", isDirectory: true)
+            : targetRoot.appendingPathComponent("runtime", isDirectory: true)
+                .appendingPathComponent(version, isDirectory: true)
         executable = runtimeRoot
             .appendingPathComponent("bin", isDirectory: true)
             .appendingPathComponent(provider == .githubCLI ? "gh" : "codex")
-        for directory in [
-            root.appendingPathComponent("deployments", isDirectory: true),
-            root.appendingPathComponent("deployments", isDirectory: true)
-                .appendingPathComponent(request.deploymentID, isDirectory: true),
-            root.appendingPathComponent("deployments", isDirectory: true)
-                .appendingPathComponent(request.deploymentID, isDirectory: true)
-                .appendingPathComponent("providers", isDirectory: true),
-            targetRoot.deletingLastPathComponent().deletingLastPathComponent(),
-            targetRoot.deletingLastPathComponent(),
-            targetRoot,
-            home,
-            runtimeRoot.deletingLastPathComponent(),
-            runtimeRoot,
-            executable.deletingLastPathComponent(),
-        ] {
+        var directory = root
+        for segment in targetRoot.path.dropFirst(root.path.count).split(separator: "/") {
+            directory.appendPathComponent(String(segment), isDirectory: true)
             try Self.createPrivateDirectory(directory)
+        }
+        for child in [home, runtimeRoot.deletingLastPathComponent(),
+                      runtimeRoot, executable.deletingLastPathComponent()] {
+            try Self.createPrivateDirectory(child)
         }
         try executableBytes.write(to: executable, options: .withoutOverwriting)
         try FileManager.default.setAttributes(

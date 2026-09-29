@@ -183,12 +183,29 @@ public struct MacOSManagedInstallerProviderHostInspector:
     ManagedInstallerProviderHostInspecting, Sendable {
     private static let maximumExecutableBytes = 512 * 1_024 * 1_024
 
+    private enum LayoutKind: Equatable, Sendable {
+        case installerVersioned
+        case engineeringPlatformProduct
+    }
+
     private let rootDirectory: URL
+    private let layoutKind: LayoutKind
     private let runner: any MacOSManagedInstallerProviderProbeRunning
 
     public init(rootDirectory: URL) {
         self.init(
             rootDirectory: rootDirectory,
+            layoutKind: .installerVersioned,
+            runner: MacOSSystemManagedInstallerProviderProbeRunner()
+        )
+    }
+
+    /// The privileged helper selects this frozen EP product root. Its
+    /// instance/provider path comes only from the reviewed requirement.
+    public init(epProductRoot: URL) {
+        self.init(
+            rootDirectory: epProductRoot,
+            layoutKind: .engineeringPlatformProduct,
             runner: MacOSSystemManagedInstallerProviderProbeRunner()
         )
     }
@@ -197,7 +214,24 @@ public struct MacOSManagedInstallerProviderHostInspector:
         rootDirectory: URL,
         runner: any MacOSManagedInstallerProviderProbeRunning
     ) {
+        self.init(rootDirectory: rootDirectory, layoutKind: .installerVersioned, runner: runner)
+    }
+
+    init(
+        epProductRoot: URL,
+        runner: any MacOSManagedInstallerProviderProbeRunning
+    ) {
+        self.init(rootDirectory: epProductRoot, layoutKind: .engineeringPlatformProduct,
+                  runner: runner)
+    }
+
+    private init(
+        rootDirectory: URL,
+        layoutKind: LayoutKind,
+        runner: any MacOSManagedInstallerProviderProbeRunning
+    ) {
         self.rootDirectory = Self.canonicalRootDirectory(rootDirectory)
+        self.layoutKind = layoutKind
         self.runner = runner
     }
 
@@ -212,7 +246,13 @@ public struct MacOSManagedInstallerProviderHostInspector:
               requirement.credentialScope == .component,
               let owner = requirement.ownerComponent,
               let targetIdentity = requirement.targetIdentity,
-              let runtime = requirement.runtime else {
+              let runtime = requirement.runtime,
+              (layoutKind != .engineeringPlatformProduct || (
+                  owner == .engineeringPlatformServer
+                      && runtime.executableRelativePath == "bin/" + (
+                          requirement.provider == .codex ? "codex" : "gh"
+                      )
+              )) else {
             return .failure(.rejected)
         }
         let layout = Layout(
@@ -221,7 +261,8 @@ public struct MacOSManagedInstallerProviderHostInspector:
             owner: owner,
             targetIdentity: targetIdentity,
             provider: requirement.provider,
-            runtime: runtime
+            runtime: runtime,
+            layoutKind: layoutKind
         )
 
         let before: ExecutableEvidence
@@ -422,7 +463,8 @@ public struct MacOSManagedInstallerProviderHostInspector:
         var current = root
         var ownedDescriptors: [Int32] = []
         defer { ownedDescriptors.forEach { _ = Darwin.close($0) } }
-        for segment in layout.providerTargetDirectorySegments + ["home"] {
+        for segment in layout.providerTargetDirectorySegments
+            + [layout.providerHomeDirectoryName] {
             let next = try openDirectory(segment, at: current)
             ownedDescriptors.append(next)
             current = next
@@ -604,9 +646,16 @@ public struct MacOSManagedInstallerProviderHostInspector:
         let targetIdentity: String
         let provider: ProviderID
         let runtime: ProviderRuntimeRequirement
+        let layoutKind: LayoutKind
 
         var providerTargetDirectorySegments: [String] {
-            [
+            if layoutKind == .engineeringPlatformProduct {
+                return [
+                    "instances", targetIdentity, "providers",
+                    provider == .codex ? "codex" : "github",
+                ]
+            }
+            return [
                 "deployments", deploymentID, "providers", owner.rawValue,
                 targetIdentity, provider.rawValue,
             ]
@@ -614,8 +663,13 @@ public struct MacOSManagedInstallerProviderHostInspector:
 
         var executableDirectorySegments: [String] {
             providerTargetDirectorySegments
-                + ["runtime", runtime.version.description]
+                + runtimeDirectorySegments
                 + runtime.executableRelativePath.split(separator: "/").dropLast().map(String.init)
+        }
+
+        var runtimeDirectorySegments: [String] {
+            layoutKind == .engineeringPlatformProduct
+                ? ["runtime"] : ["runtime", runtime.version.description]
         }
 
         var executableFileName: String {
@@ -625,12 +679,20 @@ public struct MacOSManagedInstallerProviderHostInspector:
         var providerHomeURL: URL {
             providerTargetDirectorySegments.reduce(rootDirectory) {
                 $0.appendingPathComponent($1, isDirectory: true)
-            }.appendingPathComponent("home", isDirectory: true)
+            }.appendingPathComponent(
+                providerHomeDirectoryName,
+                isDirectory: true
+            )
+        }
+
+        var providerHomeDirectoryName: String {
+            layoutKind == .engineeringPlatformProduct && provider == .githubCLI
+                ? "config" : "home"
         }
 
         var executableURL: URL {
             let runtimeRoot = (providerTargetDirectorySegments
-                + ["runtime", runtime.version.description]).reduce(rootDirectory) {
+                + runtimeDirectorySegments).reduce(rootDirectory) {
                     $0.appendingPathComponent($1, isDirectory: true)
                 }
             return runtime.executableRelativePath.split(separator: "/").reduce(runtimeRoot) {
@@ -639,11 +701,14 @@ public struct MacOSManagedInstallerProviderHostInspector:
         }
 
         var identityMaterial: Data {
-            Data([
+            let existingFields = [
                 deploymentID, owner.rawValue, targetIdentity, provider.rawValue,
                 runtime.version.description, runtime.executableRelativePath,
                 runtime.executableSHA256,
-            ].joined(separator: "\u{0}").utf8)
+            ]
+            let fields = layoutKind == .engineeringPlatformProduct
+                ? ["ep-product"] + existingFields : existingFields
+            return Data(fields.joined(separator: "\u{0}").utf8)
         }
     }
 
