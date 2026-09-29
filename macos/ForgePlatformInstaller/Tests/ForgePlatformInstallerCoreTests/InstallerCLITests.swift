@@ -339,6 +339,7 @@ final class InstallerCLITests: XCTestCase {
 
         XCTAssertEqual(result.exitCode, .success)
         XCTAssertEqual(result.status, "planned")
+        XCTAssertEqual(result.details["provider_targets"], "")
         XCTAssertEqual(result.records.count, 2)
         XCTAssertEqual(
             result.records[0]["artifact_digest"],
@@ -350,6 +351,24 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(executionCalls, 0)
         let handoffCalls = await coordinator.handoffCallCount()
         XCTAssertEqual(handoffCalls, 0)
+    }
+
+    func testProviderBoundDeploymentPlanDoesNotInstallOrAuthenticateBeforeReview() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let coordinator = CLIWizardCoordinator(session: try session(providers: [provider]))
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        ).planDeployment("new", options: InstallerCLIOptions(nonInteractive: true))
+
+        XCTAssertEqual(result.exitCode, .success)
+        XCTAssertEqual(result.status, "planned")
+        XCTAssertEqual(result.details["provider_targets"], provider.id.rawValue)
+        let calls = await coordinator.calls()
+        let providerActions = await coordinator.providerActions()
+        let executionCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(calls, ["inventory", "session", "preflight", "review"])
+        XCTAssertEqual(providerActions, [])
+        XCTAssertEqual(executionCalls, 0)
     }
 
     func testProviderFreeApplyRunsSameGatesAndProducesTerminalSummary() async throws {
@@ -436,8 +455,11 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(assumeYes: true),
-            confirm: { _ in true }
+            options: InstallerCLIOptions(),
+            confirm: { prompt in
+                XCTAssertTrue(prompt.contains("provider target=\(provider.id.rawValue)"))
+                return true
+            }
         )
         XCTAssertEqual(result.exitCode, .success)
         let providerActions2 = await coordinator.providerActions()

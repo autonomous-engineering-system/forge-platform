@@ -1169,7 +1169,13 @@ public struct InstallerWizardState: Equatable, Sendable {
         case .preflight:
             return hasAcceptedSessionPlan && preflight.isPassed
         case .providers:
-            return hasAcceptedSessionPlan && preflight.isPassed && enabledProvidersVerified
+            // Provider selection belongs in the reviewed diff. A fresh
+            // deployment cannot authenticate its component-owned homes until
+            // the helper has created them after review. This transition is
+            // read-only; execution still requires independent verification.
+            return hasAcceptedSessionPlan && preflight.isPassed
+                && providerRequirementsAreProjected
+                && !enabledProviders.contains { Self.isProviderActionInFlight($0.state) }
         case .review:
             return hasAcceptedSessionPlan
                 && preflight.isPassed
@@ -1368,11 +1374,16 @@ public struct InstallerWizardState: Equatable, Sendable {
               hasAcceptedSessionPlan,
               preflight.isPassed,
               providerRequirementsAreProjected,
+              let plan = acceptedSessionPlan,
               let index = providers.firstIndex(where: { $0.id == targetID }) else {
             return false
         }
         guard !providers[index].requirement.isRequired || isSelected else {
             return false
+        }
+        if providers[index].isSelected != isSelected {
+            composition = CompositionReview(manifestIdentity: plan.compositionIdentity)
+            preMutationCurrency = .pending
         }
         providers[index].isSelected = isSelected
         providers[index].state = isSelected ? .selected : .notSelected

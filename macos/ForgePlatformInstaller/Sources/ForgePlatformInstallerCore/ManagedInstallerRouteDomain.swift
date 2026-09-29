@@ -188,7 +188,7 @@ public extension InstallerWizardState {
               let plan = acceptedSessionPlan,
               let selected = selectedDeploymentRouteContext,
               preflight.isPassed,
-              enabledProvidersVerified else {
+              providerRequirementsAreProjected else {
             return false
         }
         switch result {
