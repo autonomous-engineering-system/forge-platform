@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// The signed release descriptor exposes a raw archive digest to native
 /// self-update, whereas the fixed Python worker wire requires a tagged digest.
@@ -36,6 +37,7 @@ enum ManagedInstallerFreshProductWorkerAuthorityAdmission {
         plan: ManagedInstallerStablePlan,
         material: ManagedVerifiedCompositionMaterial,
         snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
+        priorAuthority: ManagedInstallerProductWorkerAuthoritySnapshot? = nil,
         accounts: [ManagedInstallerProductServiceAccountReadback],
         activation: ManagedPythonRuntimeActivationReceipt,
         venvEvidence: [ManagedInstallerProductWorkerVenvPublicationEvidence]
@@ -49,8 +51,10 @@ enum ManagedInstallerFreshProductWorkerAuthorityAdmission {
                 digest: plan.session.manifestSHA256,
                 canonicalPayload: material.manifestBytes
               ),
-              snapshot.candidateManifests == [manifest],
-              snapshot.installedManifests.isEmpty,
+              preservesPriorAuthority(
+                snapshot, prior: priorAuthority, adding: manifest,
+                deploymentID: plan.deployment.id
+              ),
               snapshot.usesVenvSlots,
               let claims = try? ManagedInstallerProductServiceAccountPlanner()
                 .plan(stablePlan: plan, material: material).get(),
@@ -72,8 +76,12 @@ enum ManagedInstallerFreshProductWorkerAuthorityAdmission {
 
         let routeClaims: [(component: String, instance: String, account: String,
                            digest: String, slot: String)]
-        if let route = snapshot.routes.first, snapshot.routes.count == 1,
-           snapshot.singleRoutes.isEmpty, route.deploymentID == plan.deployment.id,
+        if let route = snapshot.routes.first(where: {
+            $0.deploymentID == plan.deployment.id
+        }), snapshot.routes.filter({ $0.deploymentID == plan.deployment.id }).count == 1,
+           snapshot.singleRoutes.allSatisfy({
+               $0.deploymentID != plan.deployment.id
+           }),
            let forgeSlot = route.forgeVenvSlotName,
            let epSlot = route.engineeringPlatformVenvSlotName {
             routeClaims = [
@@ -83,9 +91,14 @@ enum ManagedInstallerFreshProductWorkerAuthorityAdmission {
                  route.engineeringPlatformServiceAccount,
                  route.engineeringPlatformArtifactSHA256, epSlot),
             ]
-        } else if let route = snapshot.singleRoutes.first,
-                  snapshot.singleRoutes.count == 1, snapshot.routes.isEmpty,
-                  route.deploymentID == plan.deployment.id,
+        } else if let route = snapshot.singleRoutes.first(where: {
+            $0.deploymentID == plan.deployment.id
+        }), snapshot.singleRoutes.filter({
+            $0.deploymentID == plan.deployment.id
+        }).count == 1,
+                  snapshot.routes.allSatisfy({
+                      $0.deploymentID != plan.deployment.id
+                  }),
                   let slot = route.venvSlotName {
             routeClaims = [(route.componentIdentity, route.instanceID,
                             route.serviceAccount, route.artifactSHA256, slot)]
@@ -122,6 +135,42 @@ enum ManagedInstallerFreshProductWorkerAuthorityAdmission {
         }
         return true
     }
+
+    private static func preservesPriorAuthority(
+        _ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
+        prior: ManagedInstallerProductWorkerAuthoritySnapshot?,
+        adding manifest: ManagedInstallerProductWorkerManifestAuthority,
+        deploymentID: String
+    ) -> Bool {
+        let previousCandidates = prior?.candidateManifests ?? []
+        let expectedCandidates = previousCandidates.contains(manifest)
+            ? previousCandidates : previousCandidates + [manifest]
+        guard Set(snapshot.candidateManifests.map(\.digest))
+                == Set(expectedCandidates.map(\.digest)),
+              snapshot.candidateManifests.count == expectedCandidates.count,
+              expectedCandidates.allSatisfy(snapshot.candidateManifests.contains),
+              snapshot.installedManifests == (prior?.installedManifests ?? []),
+              prior.map({ $0.installerRelease == snapshot.installerRelease }) ?? true
+        else { return false }
+
+        let oldPaired = prior?.routes ?? []
+        let oldSingle = prior?.singleRoutes ?? []
+        let oldTargetPaired = oldPaired.filter { $0.deploymentID == deploymentID }
+        let oldTargetSingle = oldSingle.filter { $0.deploymentID == deploymentID }
+        let newTargetPaired = snapshot.routes.filter { $0.deploymentID == deploymentID }
+        let newTargetSingle = snapshot.singleRoutes.filter {
+            $0.deploymentID == deploymentID
+        }
+        guard oldTargetPaired.isEmpty || oldTargetPaired == newTargetPaired,
+              oldTargetSingle.isEmpty || oldTargetSingle == newTargetSingle,
+              snapshot.routes.filter({ $0.deploymentID != deploymentID })
+                == oldPaired.filter({ $0.deploymentID != deploymentID }),
+              snapshot.singleRoutes.filter({ $0.deploymentID != deploymentID })
+                == oldSingle.filter({ $0.deploymentID != deploymentID }),
+              newTargetPaired.count + newTargetSingle.count == 1
+        else { return false }
+        return true
+    }
 }
 
 extension FileManagedInstallerProductWorkerAuthorityPublisher {
@@ -136,13 +185,19 @@ extension FileManagedInstallerProductWorkerAuthorityPublisher {
         accountReader: any ManagedInstallerFreshProductAccountReading,
         activation: ManagedPythonRuntimeActivationReceipt,
         venvEvidence: [ManagedInstallerProductWorkerVenvPublicationEvidence],
+        priorVenvEvidence: [ManagedInstallerProductWorkerVenvPublicationEvidence] = [],
         reader: any ManagedInstallerProductWorkerVenvReading,
-        wheel: any ManagedPythonProductVenvWheelInstalling,
-        expectedExistingSHA256: String? = nil
+        wheel: any ManagedPythonProductVenvWheelInstalling
     ) async -> Result<ManagedInstallerProductWorkerAuthorityPublicationReceipt,
                       ManagedInstallerProductWorkerAuthorityPublicationFailure> {
+        let prior: ManagedInstallerProductWorkerAuthoritySnapshot?
+        switch readExistingAuthorityForFreshInstall() {
+        case .success(let value): prior = value
+        case .failure: return .failure(.invalidAuthority)
+        }
         guard ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
-            plan: plan, material: material, snapshot: snapshot, accounts: accounts,
+            plan: plan, material: material, snapshot: snapshot,
+            priorAuthority: prior, accounts: accounts,
             activation: activation, venvEvidence: venvEvidence
         ) else { return .failure(.invalidAuthority) }
         for account in accounts {
@@ -150,8 +205,31 @@ extension FileManagedInstallerProductWorkerAuthorityPublisher {
                 account.claim
             ), fresh == account else { return .failure(.invalidAuthority) }
         }
+        let priorKeys = (prior?.routes.filter {
+            $0.deploymentID != plan.deployment.id
+        }.flatMap { route in
+            ["\(route.deploymentID):forge-runtime",
+             "\(route.deploymentID):engineering-platform-server"]
+        } ?? []) + (prior?.singleRoutes.filter {
+            $0.deploymentID != plan.deployment.id
+        }.map {
+            "\($0.deploymentID):\($0.componentIdentity)"
+        } ?? [])
+        let evidenceKeys = priorVenvEvidence.map {
+            "\($0.request.deploymentID):\($0.request.componentIdentity)"
+        }
+        guard Set(priorKeys) == Set(evidenceKeys),
+              priorKeys.count == priorVenvEvidence.count,
+              evidenceKeys.count == Set(evidenceKeys).count else {
+            return .failure(.invalidAuthority)
+        }
+        let expectedExistingSHA256 = prior.map {
+            "sha256:" + SHA256.hash(data: $0.canonicalJSONData())
+                .map { String(format: "%02x", $0) }.joined()
+        }
         return await publishVerifiedProductWorkerAuthority(
-            snapshot, evidence: venvEvidence, reader: reader, wheel: wheel,
+            snapshot, evidence: priorVenvEvidence + venvEvidence,
+            reader: reader, wheel: wheel,
             expectedExistingSHA256: expectedExistingSHA256
         )
     }
