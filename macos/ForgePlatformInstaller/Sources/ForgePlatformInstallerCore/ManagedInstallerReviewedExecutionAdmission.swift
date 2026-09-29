@@ -24,6 +24,14 @@ public struct ManagedInstallerReviewedExecutionAdmission: Sendable {
         self.executor = executor
     }
 
+    static func whenReady(
+        loader: (any ManagedInstallerHelperOwnedStablePlanLoading)?,
+        executor: (any ManagedInstallerStablePlanExecuting)?
+    ) -> Self? {
+        guard let loader, let executor else { return nil }
+        return Self(loader: loader, executor: executor)
+    }
+
     public func execute(
         canonicalIntent: Data
     ) async -> ManagedDeploymentExecutionResult {

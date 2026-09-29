@@ -565,6 +565,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     private let execution: (any ManagedInstallerHelperReviewedIntentExecuting)?
 
     public convenience override init() {
+        let registration = ManagedInstallerHelperReviewedSelectionRegistration.production()
         self.init(
             rootDirectory: Self.productionRoot,
             expectedOwner: 0,
@@ -573,8 +574,11 @@ public final class FileManagedInstallerReleasedRouteXPCService:
                 candidate: FileManagedInstallerManagedDeploymentCreateCandidateStore()
             ),
             registryReader: FileManagedInstallerManagedDeploymentRegistryReader(),
-            registration: ManagedInstallerHelperReviewedSelectionRegistration.production(),
-            execution: nil
+            registration: registration,
+            execution: ManagedInstallerReviewedExecutionAdmission.whenReady(
+                loader: registration,
+                executor: ManagedInstallerHelperFreshInstallPlanExecutor.production()
+            )
         )
     }
 

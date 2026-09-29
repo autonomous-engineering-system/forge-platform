@@ -3,6 +3,33 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReviewedExecutionAdmissionTests: XCTestCase {
+    func testReleasedBindingRequiresBothPrivateLoaderAndHelperExecutor()
+        async throws {
+        let plan = try makePlan()
+        let events = AdmissionEvents()
+        let loader = AdmissionPlanLoader(
+            results: [.success(plan), .success(plan)], events: events
+        )
+        let executor = AdmissionExecutor(events: events)
+        XCTAssertNil(ManagedInstallerReviewedExecutionAdmission.whenReady(
+            loader: nil, executor: executor
+        ))
+        XCTAssertNil(ManagedInstallerReviewedExecutionAdmission.whenReady(
+            loader: loader, executor: nil
+        ))
+        let bound = try XCTUnwrap(
+            ManagedInstallerReviewedExecutionAdmission.whenReady(
+                loader: loader, executor: executor
+            )
+        )
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+        let result = await bound.execute(canonicalIntent: intent.canonicalJSONData())
+        XCTAssertEqual(result,
+                       .completed(stages: [], summaryItems: []))
+        let calls = await events.calls
+        XCTAssertEqual(calls, ["load", "load", "execute"])
+    }
+
     func testExactCanonicalIntentRefreshesPlanBeforeCallingExecutor() async throws {
         let plan = try makePlan()
         let events = AdmissionEvents()
