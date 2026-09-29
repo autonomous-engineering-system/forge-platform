@@ -598,8 +598,12 @@ public struct MacOSManagedInstallerProviderHostInspector:
         var ownedDescriptors: [Int32] = []
         defer { ownedDescriptors.forEach { _ = Darwin.close($0) } }
         do {
-            for segment in layout.executableDirectorySegments {
-                let next = try openDirectory(segment, at: current)
+            let segments = layout.executableDirectorySegments
+            for (index, segment) in segments.enumerated() {
+                let next = try openDirectory(
+                    segment, at: current,
+                    allowPublishedBin: index == segments.count - 1 && segment == "bin"
+                )
                 ownedDescriptors.append(next)
                 current = next
             }
@@ -656,7 +660,8 @@ public struct MacOSManagedInstallerProviderHostInspector:
 
     private func openDirectory(
         _ name: String, at parent: Int32,
-        expectedOwner: uid_t? = nil, expectedGroup: gid_t? = nil
+        expectedOwner: uid_t? = nil, expectedGroup: gid_t? = nil,
+        allowPublishedBin: Bool = false
     ) throws -> Int32 {
         guard Self.isSafePathSegment(name) else { throw InspectionError.insecure }
         let descriptor = name.withCString {
@@ -667,7 +672,8 @@ public struct MacOSManagedInstallerProviderHostInspector:
             throw InspectionError.insecure
         }
         guard Self.isSecureDirectory(descriptor, owner: expectedOwner,
-                                     group: expectedGroup) else {
+                                     group: expectedGroup,
+                                     allowPublishedBin: allowPublishedBin) else {
             _ = Darwin.close(descriptor)
             throw InspectionError.insecure
         }
@@ -761,14 +767,21 @@ public struct MacOSManagedInstallerProviderHostInspector:
     }
 
     private static func isSecureDirectory(
-        _ descriptor: Int32, owner: uid_t? = nil, group: gid_t? = nil
+        _ descriptor: Int32, owner: uid_t? = nil, group: gid_t? = nil,
+        allowPublishedBin: Bool = false
     ) -> Bool {
         var details = stat()
-        return Darwin.fstat(descriptor, &details) == 0
+        guard Darwin.fstat(descriptor, &details) == 0
             && (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
             && details.st_uid == (owner ?? Darwin.geteuid())
-            && (group == nil || details.st_gid == group)
-            && (details.st_mode & mode_t(0o7777)) == mode_t(0o700)
+            && (group == nil || details.st_gid == group) else { return false }
+        let mode = details.st_mode & mode_t(0o7777)
+        if mode == mode_t(0o700) { return true }
+        guard allowPublishedBin, mode == mode_t(0o755) || mode == mode_t(0o555)
+        else { return false }
+        let acl = Darwin.acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED)
+        if let acl { _ = Darwin.acl_free(UnsafeMutableRawPointer(acl)) }
+        return acl == nil && errno == ENOENT
     }
 
     private static func isSecureExecutable(_ details: stat) -> Bool {

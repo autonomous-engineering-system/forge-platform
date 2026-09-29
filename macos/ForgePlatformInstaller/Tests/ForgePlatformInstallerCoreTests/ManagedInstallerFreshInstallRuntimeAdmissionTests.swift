@@ -1,8 +1,153 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
+    func testPhysicalFreshProviderAccessBindsReceiptAndPrivateRuntime() throws {
+        let runtime = try ProviderRuntimeRequirement(
+            version: InstallerVersion("2.70.0"), archiveKind: .tarGzip,
+            artifactURL: "https://example.invalid/gh.tar.gz",
+            artifactSHA256: "sha256:" + String(repeating: "a", count: 64),
+            executableRelativePath: "bin/gh",
+            executableSHA256: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let requirement = ProviderRequirement(
+            provider: .githubCLI, isRequired: true,
+            minimumVersion: runtime.version, credentialScope: .component,
+            ownerComponent: .forgeRuntime, targetIdentity: "deployment-a",
+            runtime: runtime
+        )
+        let epRuntime = try ProviderRuntimeRequirement(
+            version: InstallerVersion("1.2.3"), archiveKind: .zip,
+            artifactURL: "https://example.invalid/codex.zip",
+            artifactSHA256: "sha256:" + String(repeating: "c", count: 64),
+            executableRelativePath: "bin/codex",
+            executableSHA256: "sha256:" + String(repeating: "d", count: 64)
+        )
+        let epRequirement = ProviderRequirement(
+            provider: .codex, isRequired: true,
+            minimumVersion: epRuntime.version, credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer,
+            targetIdentity: "deployment-a", runtime: epRuntime
+        )
+        let fixture = try FreshRuntimeFixture(providers: [epRequirement, requirement])
+        let current = try XCTUnwrap(Darwin.getpwuid(geteuid())?.pointee)
+        let other = try XCTUnwrap(Darwin.getpwnam("daemon")?.pointee)
+        XCTAssertNotEqual(current.pw_uid, other.pw_uid)
+        XCTAssertNotEqual(current.pw_gid, other.pw_gid)
+        let accounts = try ManagedInstallerProductServiceAccountPreproviderReceipt(
+            stablePlan: fixture.plan, material: fixture.material,
+            parentJournalRecord: fixture.preprovider.parentJournalRecord,
+            accounts: fixture.preprovider.accounts.enumerated().map { index, account in
+                ManagedInstallerProductServiceAccountReadback(
+                    claim: account.claim,
+                    uid: index == 0 ? current.pw_uid : other.pw_uid,
+                    gid: index == 0 ? current.pw_gid : other.pw_gid,
+                    evidenceReference: account.evidenceReference
+                )
+            }
+        )
+        let base = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("fresh-provider-access-\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent(
+            "AutonomousEngineeringSystem/ForgePlatformInstaller", isDirectory: true
+        )
+        let target = root.appendingPathComponent(
+            "provider-contexts/deployments/\(fixture.plan.deployment.id)/providers/"
+                + "forge-runtime/\(fixture.plan.deployment.id)/github-cli/runtime/"
+                + "2.70.0/bin", isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: target, withIntermediateDirectories: true
+        )
+        let epInstance = ManagedInstallerProductServiceAccountPlanner.instanceID(
+            deploymentID: fixture.plan.deployment.id,
+            componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue
+        )
+        let epBin = root.appendingPathComponent(
+            "products/engineering-platform/instances/\(epInstance)/providers/"
+                + "codex/runtime/bin", isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: epBin, withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("state/deployments"),
+            withIntermediateDirectories: true
+        )
+        var path = base
+        for segment in ["AutonomousEngineeringSystem", "ForgePlatformInstaller",
+                        "provider-contexts", "deployments", fixture.plan.deployment.id,
+                        "providers", "forge-runtime", fixture.plan.deployment.id,
+                        "github-cli", "runtime", "2.70.0", "bin"] {
+            path.appendPathComponent(segment, isDirectory: true)
+            XCTAssertEqual(chmod(path.path, segment == "bin" ? 0o755 : 0o700), 0)
+        }
+        path = root
+        for segment in ["products", "engineering-platform", "instances",
+                        epInstance, "providers", "codex", "runtime", "bin"] {
+            path.appendPathComponent(segment, isDirectory: true)
+            XCTAssertEqual(chmod(path.path, segment == "bin" ? 0o755 : 0o700), 0)
+        }
+        XCTAssertEqual(chmod(root.appendingPathComponent("state").path, 0o700), 0)
+        XCTAssertEqual(chmod(root.appendingPathComponent("state/deployments").path,
+                             0o700), 0)
+        let executable = target.appendingPathComponent("gh")
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: executable.path, contents: Data("provider-binary".utf8)
+        ))
+        XCTAssertEqual(chmod(executable.path, 0o500), 0)
+        let epExecutable = epBin.appendingPathComponent("codex")
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: epExecutable.path, contents: Data("ep-provider-binary".utf8)
+        ))
+        XCTAssertEqual(chmod(epExecutable.path, 0o500), 0)
+        let access = MacOSManagedInstallerFreshProviderProbeAccess(
+            root: root, expectedOwner: geteuid(), requiredEffectiveUID: geteuid(),
+            accounts: FreshRuntimeAccountReader(readbacks: accounts.accounts)
+        )
+        let provider = try XCTUnwrap(fixture.provider)
+        XCTAssertNoThrow(try access.grant(
+            stablePlan: fixture.plan, material: fixture.material,
+            preprovider: accounts, providers: provider
+        ).get())
+        XCTAssertNoThrow(try access.grant(
+            stablePlan: fixture.plan, material: fixture.material,
+            preprovider: accounts, providers: provider
+        ).get())
+        let fileACL = try XCTUnwrap(acl_get_file(
+            executable.path, ACL_TYPE_EXTENDED
+        ))
+        _ = acl_free(UnsafeMutableRawPointer(fileACL))
+        let epACL = try XCTUnwrap(acl_get_file(
+            epExecutable.path, ACL_TYPE_EXTENDED
+        ))
+        _ = acl_free(UnsafeMutableRawPointer(epACL))
+        let wrongUID = MacOSManagedInstallerFreshProviderProbeAccess(
+            root: root, expectedOwner: geteuid(),
+            requiredEffectiveUID: geteuid() + 1,
+            accounts: FreshRuntimeAccountReader(readbacks: accounts.accounts)
+        )
+        XCTAssertEqual(wrongUID.grant(
+            stablePlan: fixture.plan, material: fixture.material,
+            preprovider: accounts, providers: provider
+        ).failure, .rejected)
+        XCTAssertEqual(chmod(root.path, 0o755), 0)
+        XCTAssertEqual(access.grant(
+            stablePlan: fixture.plan, material: fixture.material,
+            preprovider: accounts, providers: provider
+        ).failure, .rejected)
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        XCTAssertEqual(chmod(executable.path, 0o550), 0)
+        XCTAssertEqual(access.grant(
+            stablePlan: fixture.plan, material: fixture.material,
+            preprovider: accounts, providers: provider
+        ).failure, .rejected)
+    }
+
     func testExactJournalAccountsProvidersPythonOrderAndReceipt() async throws {
         let fixture = try FreshRuntimeFixture()
         let events = FreshRuntimeEvents()
@@ -24,13 +169,16 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         let coordinator = ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
             material: fixture.material, materialAdmission: admission,
             preprovider: preprovider,
-            providers: builder, managedPython: python
+            providers: builder,
+            providerProbeAccess: FreshRuntimeProbeAccess(events: events),
+            managedPython: python
         )
         let receipt = try await coordinator.prepareRuntimes(
             stablePlan: fixture.plan
         ).get()
         XCTAssertEqual(events.values,
-                       ["material", "preprovider", "provider-build", "provider", "python"])
+                       ["material", "preprovider", "provider-build", "provider",
+                        "provider-access", "python"])
         XCTAssertEqual(receipt.parentJournalRecord,
                        fixture.preprovider.parentJournalRecord)
         XCTAssertEqual(receipt.providerRuntimeReceipt, try XCTUnwrap(fixture.provider))
@@ -59,7 +207,9 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         let coordinator = ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
             material: fixture.material, materialAdmission: admission,
             preprovider: preprovider,
-            providers: builder, managedPython: python
+            providers: builder,
+            providerProbeAccess: FreshRuntimeProbeAccess(events: events),
+            managedPython: python
         )
         let failedPreprovider = await coordinator.prepareRuntimes(stablePlan: fixture.plan)
         XCTAssertEqual(failedPreprovider.failure, .rejected)
@@ -76,6 +226,18 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         XCTAssertEqual(events.values.suffix(3),
                        ["preprovider", "provider-build", "provider"])
         provider.result = .success(try XCTUnwrap(fixture.provider))
+        let probeAccess = FreshRuntimeProbeAccess(events: events)
+        probeAccess.fail = true
+        let inaccessible = ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
+            material: fixture.material, materialAdmission: admission,
+            preprovider: preprovider, providers: builder,
+            providerProbeAccess: probeAccess, managedPython: python
+        )
+        let refusedAccess = await inaccessible.prepareRuntimes(
+            stablePlan: fixture.plan
+        )
+        XCTAssertEqual(refusedAccess.failure, .rejected)
+        XCTAssertEqual(events.values.last, "provider-access")
         python.result = .failure(.unavailable)
         let failedPython = await coordinator.prepareRuntimes(stablePlan: fixture.plan)
         XCTAssertEqual(failedPython.failure, .managedPythonPreparation(.unavailable))
@@ -99,6 +261,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             material: foreign.material, materialAdmission: admission,
             preprovider: preprovider,
             providers: builder,
+            providerProbeAccess: FreshRuntimeProbeAccess(events: events),
             managedPython: FreshRuntimePython(result: .success(fixture.python),
                                                events: events)
         )
@@ -133,6 +296,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                     result: .success(try XCTUnwrap(fixture.provider)), events: events
                 ), events: events
             ),
+            providerProbeAccess: FreshRuntimeProbeAccess(events: events),
             managedPython: FreshRuntimePython(
                 result: .success(fixture.python), events: events
             )
@@ -274,15 +438,55 @@ private struct FreshRuntimeFixture {
                 )
             }
         )
-        provider = providers.isEmpty
-            ? try ManagedInstallerProviderRuntimePlanPreparationReceipt(
-                stablePlan: plan, providerReceipts: []
-              ) : nil
+        let localPlan = plan
+        provider = try ManagedInstallerProviderRuntimePlanPreparationReceipt(
+            stablePlan: localPlan, providerReceipts: try providers.sorted {
+                $0.id.rawValue < $1.id.rawValue
+            }.map { requirement in
+                try freshRuntimeProviderReceipt(
+                    operationID: ManagedInstallerProviderRuntimePlanPreparationReceipt
+                        .operationID(stablePlan: localPlan, requirement: requirement),
+                    deploymentID: localPlan.deployment.id, requirement: requirement
+                )
+            }
+        )
         python = try ActivationFixture(
             overrideSession: material.session,
             overrideDeployment: wheel.deployment
         ).preparation
     }
+}
+
+private func freshRuntimeProviderReceipt(
+    operationID: String, deploymentID: String, requirement: ProviderRequirement
+) throws -> ManagedInstallerProviderRuntimePreparationReceipt {
+    let runtime = try XCTUnwrap(requirement.runtime)
+    let staged = try ManagedInstallerProviderStagedArchive(
+        operationID: operationID, providerTargetID: requirement.id,
+        provider: requirement.provider, runtime: runtime,
+        opaqueReference: "fresh-provider-stage",
+        fileIdentity: ManagedInstallerProviderStagedFileIdentity(
+            volumeReference: "fresh-volume", fileReference: "fresh-file", byteCount: 123
+        )
+    )
+    let inspection = try ManagedInstallerProviderRuntimeArchiveInspection(
+        providerTargetID: requirement.id, provider: requirement.provider,
+        runtime: runtime, archiveEntryCount: 3, expandedByteCount: 321,
+        executableArchitectures: ["arm64"],
+        minimumMacOSVersion: InstallerVersion("26.0.0"),
+        evidenceReference: "receipt:fresh-provider-inspection"
+    )
+    let request = try ManagedInstallerProviderRuntimeMutationRequest(
+        deploymentID: deploymentID, stagedArchive: staged,
+        requirement: requirement, inspection: inspection
+    )
+    return try ManagedInstallerProviderRuntimePreparationReceipt(
+        operationID: operationID, deploymentID: deploymentID,
+        requirement: requirement, stagedArchive: staged, inspection: inspection,
+        mutation: ManagedInstallerProviderRuntimeMutationReceipt(
+            request: request, evidenceReference: "receipt:fresh-provider-ready"
+        )
+    )
 }
 
 private final class FreshRuntimeEvents: @unchecked Sendable {
@@ -384,6 +588,34 @@ private final class FreshRuntimePython:
                   ManagedPythonRuntimePreparationFailure> {
         events.values.append("python")
         return result
+    }
+}
+
+private final class FreshRuntimeProbeAccess:
+    ManagedInstallerFreshProviderProbeAccessGranting, @unchecked Sendable {
+    let events: FreshRuntimeEvents
+    var fail = false
+
+    init(events: FreshRuntimeEvents) { self.events = events }
+
+    func grant(
+        stablePlan: ManagedInstallerStablePlan,
+        material: ManagedVerifiedCompositionMaterial,
+        preprovider: ManagedInstallerProductServiceAccountPreproviderReceipt,
+        providers: ManagedInstallerProviderRuntimePlanPreparationReceipt
+    ) -> Result<Void, ManagedInstallerFreshProviderProbeAccessFailure> {
+        events.values.append("provider-access")
+        return fail ? .failure(.rejected) : .success(())
+    }
+}
+
+private struct FreshRuntimeAccountReader: ManagedInstallerFreshProductAccountReading {
+    let readbacks: [ManagedInstallerProductServiceAccountReadback]
+
+    func readAccountSynchronously(_ claim: ManagedInstallerProductServiceAccountClaim)
+        -> Result<ManagedInstallerProductServiceAccountReadback?,
+                  ManagedInstallerProductServiceAccountPreparationFailure> {
+        .success(readbacks.first(where: { $0.claim == claim }))
     }
 }
 
