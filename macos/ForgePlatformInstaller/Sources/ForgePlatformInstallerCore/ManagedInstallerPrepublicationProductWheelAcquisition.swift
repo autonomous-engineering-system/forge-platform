@@ -25,11 +25,23 @@ enum ManagedInstallerPrepublicationProductWheelAcquisitionFailure:
     case rejected
 }
 
+protocol ManagedInstallerPrepublicationProductWheelAcquiring: Sendable {
+    func acquire(
+        deployment: ManagedDeploymentTarget,
+        componentIdentities: [String],
+        componentIdentity: String,
+        expectedInstallerRelease: VerifiedInstallerRelease,
+        expectedSession: VerifiedCompositionSessionPlan
+    ) async -> Result<ManagedInstallerPrepublicationProductWheelStagingReceipt,
+                      ManagedInstallerPrepublicationProductWheelAcquisitionFailure>
+}
+
 /// Fetches and stages an exact first-install wheel without relying on a
 /// worker-authority file that cannot exist until after product installation.
 /// Every admission is helper-owned signed material; no caller path, URL,
 /// account, product instance ID or credential is accepted here.
-struct ManagedInstallerPrepublicationProductWheelAcquisition {
+struct ManagedInstallerPrepublicationProductWheelAcquisition:
+    ManagedInstallerPrepublicationProductWheelAcquiring, Sendable {
     private let admission: any ManagedInstallerPrepublicationMaterialAdmitting
     private let authority = ManagedInstallerPrepublicationProductWheelAuthority()
     private let transport: any ManagedInstallerPrepublicationProductWheelFetching
