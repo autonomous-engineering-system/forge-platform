@@ -171,6 +171,10 @@ public enum ForgePlatformInstallerPrivilegedHelperMain {
     }
 
     public static func main() {
+        if CommandLine.arguments.dropFirst().first
+            == ManagedInstallerProviderAccountProbeChild.flag {
+            Darwin.exit(ManagedInstallerProviderAccountProbeChild.run(CommandLine.arguments))
+        }
         let status = run(
             arguments: CommandLine.arguments,
             makeRuntime: MacOSManagedInstallerPrivilegedHelperRuntime.init,
