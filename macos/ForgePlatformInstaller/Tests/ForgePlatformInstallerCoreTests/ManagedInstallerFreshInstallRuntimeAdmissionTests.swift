@@ -464,6 +464,242 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         let thirdCount = await downstream.calls()
         XCTAssertEqual(thirdCount, 1)
     }
+
+    func testSingleProductAuthorityPublishesBeforeDispatch() async throws {
+        let fixture = try FreshRuntimeFixture(components: ["forge-runtime"])
+        let receipt = try freshRuntimeTransactionReceipt(
+            fixture: fixture, includeAccounts: true
+        )
+        let authority = FreshSingleRouteAuthority()
+        let downstream = FreshAccountProductDispatch()
+        let operations = singleRouteOperations(
+            fixture: fixture, authority: authority, downstream: downstream
+        )
+        let result = await operations.executeProductOperations(
+            stablePlan: fixture.plan, runtimeTransactionReceipt: receipt
+        )
+        XCTAssertEqual(result, .failed(.executionFailed, stages: []))
+        let calls = await downstream.calls()
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(authority.publications, 1)
+        XCTAssertEqual(authority.snapshot?.singleRoutes.first?.instanceID,
+                       fixture.preprovider.accounts[0].claim.instanceID)
+    }
+
+    func testSingleProductAuthorityFailsClosedBeforeDispatch() async throws {
+        let fixture = try FreshRuntimeFixture(components: ["forge-runtime"])
+        let receipt = try freshRuntimeTransactionReceipt(
+            fixture: fixture, includeAccounts: true
+        )
+        for failure in ["account", "wheel", "material", "publisher", "currency"] {
+            let authority = FreshSingleRouteAuthority(failPublication: failure == "publisher")
+            let downstream = FreshAccountProductDispatch()
+            let operations = singleRouteOperations(
+                fixture: fixture, authority: authority,
+                downstream: downstream, failure: failure
+            )
+            let result = await operations.executeProductOperations(
+                stablePlan: fixture.plan, runtimeTransactionReceipt: receipt
+            )
+            XCTAssertEqual(result, .failed(
+                failure == "wheel" ? .executionFailed : .staleSession,
+                stages: []
+            ), failure)
+            let calls = await downstream.calls()
+            XCTAssertEqual(calls, 0, failure)
+        }
+        let paired = try FreshRuntimeFixture()
+        let authority = FreshSingleRouteAuthority()
+        let downstream = FreshAccountProductDispatch()
+        let result = await singleRouteOperations(
+            fixture: paired, authority: authority, downstream: downstream
+        ).executeProductOperations(
+            stablePlan: paired.plan,
+            runtimeTransactionReceipt: try freshRuntimeTransactionReceipt(
+                fixture: paired, includeAccounts: true
+            )
+        )
+        XCTAssertEqual(result, .failed(.staleSession, stages: []))
+        XCTAssertEqual(authority.publications, 0)
+        let calls = await downstream.calls()
+        XCTAssertEqual(calls, 0)
+    }
+
+    private func singleRouteOperations(
+        fixture: FreshRuntimeFixture,
+        authority: FreshSingleRouteAuthority,
+        downstream: FreshAccountProductDispatch,
+        failure: String = ""
+    ) -> ManagedInstallerFreshSingleProductWorkerPublishingOperations {
+        let admitted = ManagedInstallerHelperExecutionMaterial(
+            material: fixture.material,
+            currentRelease: fixture.plan.reviewedOperation.currentInstallerRelease
+        )
+        let accounts = failure == "account" ? [] : fixture.preprovider.accounts
+        return ManagedInstallerFreshSingleProductWorkerPublishingOperations(
+            material: FreshSingleRouteMaterial(
+                admitted: admitted, failSecondRead: failure == "material"
+            ),
+            currency: FreshSingleRouteCurrency(
+                release: admitted.currentRelease, fail: failure == "currency"
+            ),
+            accounts: FreshRuntimeAccountReader(readbacks: accounts),
+            authority: authority, authorityReadback: authority,
+            ports: .init(probe: FreshSingleRoutePortProbe()),
+            wheelFactory: { _ in
+                failure == "wheel" ? nil : FreshSingleRouteWheel()
+            },
+            readerFactory: { _ in
+                FreshSingleRouteVenvReader(
+                    reference: "receipt:fresh-venv-forge-runtime"
+                )
+            }, downstream: downstream
+        )
+    }
+}
+
+private actor FreshSingleRouteMaterial: ManagedInstallerHelperExecutionMaterialAdmitting {
+    let admitted: ManagedInstallerHelperExecutionMaterial
+    let failSecondRead: Bool
+    var reads = 0
+
+    init(admitted: ManagedInstallerHelperExecutionMaterial, failSecondRead: Bool) {
+        self.admitted = admitted
+        self.failSecondRead = failSecondRead
+    }
+
+    func admit(deployment: ManagedDeploymentTarget, componentIdentities: [String]) async
+        -> ManagedInstallerHelperExecutionMaterial? {
+        reads += 1
+        return failSecondRead && reads > 1 ? nil : admitted
+    }
+}
+
+private struct FreshSingleRouteCurrency: ManagedInstallerMutationCurrencyChecking {
+    let release: VerifiedInstallerRelease
+    let fail: Bool
+
+    func recheckInstallerBeforeMutation(currentVersion: InstallerVersion) async
+        -> InstallerCurrencyCheckResult {
+        fail ? .failed("stale") : .current(release)
+    }
+}
+
+private struct FreshSingleRoutePortProbe: ManagedInstallerProductWorkerPortProbing {
+    func isAvailableOnLoopback(_ port: Int) -> Bool { true }
+}
+
+private struct FreshSingleRouteWheel: ManagedPythonProductVenvWheelInstalling {
+    func installIntoPending(_ pending: URL, published: URL,
+                            request: ManagedPythonProductVenvMutationRequest) async
+        -> Result<String, ManagedPythonRuntimeActivationFailure> {
+        .failure(.rejected)
+    }
+
+    func readPublished(_ published: URL,
+                       request: ManagedPythonProductVenvMutationRequest) async
+        -> Result<String, ManagedPythonRuntimeActivationFailure> {
+        .success("sha256:" + String(repeating: "a", count: 64))
+    }
+}
+
+private struct FreshSingleRouteVenvReader: ManagedInstallerProductWorkerVenvReading {
+    let reference: String
+
+    func readPublished(_ request: ManagedPythonProductVenvMutationRequest)
+        -> Result<ManagedPythonProductVenvReceipt?, ManagedPythonRuntimeActivationFailure> {
+        .success(try? ManagedPythonProductVenvReceipt(
+            operationID: request.operationID, deploymentID: request.deploymentID,
+            componentIdentity: request.componentIdentity,
+            venvIdentity: request.venvIdentity,
+            runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+            runtimeSlotIdentity: request.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: request.runtimeSlotEvidenceReference,
+            state: .ready, evidenceReference: reference
+        ))
+    }
+}
+
+private final class FreshSingleRouteAuthority:
+    ManagedInstallerFreshSingleProductWorkerAuthorityPublishing,
+    ManagedInstallerProductWorkerAuthorityReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private let failPublication: Bool
+    private var storedSnapshot: ManagedInstallerProductWorkerAuthoritySnapshot?
+    private var storedPublications = 0
+
+    init(failPublication: Bool = false) {
+        self.failPublication = failPublication
+    }
+
+    var snapshot: ManagedInstallerProductWorkerAuthoritySnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedSnapshot
+    }
+
+    var publications: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedPublications
+    }
+
+    func readExistingAuthorityForFreshInstall() -> Result<
+        ManagedInstallerProductWorkerAuthoritySnapshot?,
+        ManagedInstallerProductWorkerAuthorityReadFailure
+    > {
+        .success(snapshot)
+    }
+
+    func publishVerifiedFreshInstallProductWorkerAuthority(
+        plan: ManagedInstallerStablePlan,
+        material: ManagedVerifiedCompositionMaterial,
+        snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
+        accounts: [ManagedInstallerProductServiceAccountReadback],
+        accountReader: any ManagedInstallerFreshProductAccountReading,
+        activation: ManagedPythonRuntimeActivationReceipt,
+        venvEvidence: [ManagedInstallerProductWorkerVenvPublicationEvidence],
+        priorVenvEvidence: [ManagedInstallerProductWorkerVenvPublicationEvidence],
+        reader: any ManagedInstallerProductWorkerVenvReading,
+        wheel: any ManagedPythonProductVenvWheelInstalling
+    ) async -> Result<ManagedInstallerProductWorkerAuthorityPublicationReceipt,
+                      ManagedInstallerProductWorkerAuthorityPublicationFailure> {
+        guard !failPublication, priorVenvEvidence.isEmpty,
+              ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
+                  plan: plan, material: material, snapshot: snapshot,
+                  accounts: accounts, activation: activation,
+                  venvEvidence: venvEvidence
+              ), let evidence = venvEvidence.first,
+              case .success(let reread?) = reader.readPublished(evidence.request),
+              reread == evidence.activationReceipt,
+              case .success(let wheelDigest) = await wheel.readPublished(
+                  URL(fileURLWithPath: "/var/empty"), request: evidence.request
+              ), wheelDigest == evidence.wheelBindingEvidence else {
+            return .failure(.invalidAuthority)
+        }
+        recordPublication(snapshot)
+        let bytes = snapshot.canonicalJSONData()
+        return .success(ManagedInstallerProductWorkerAuthorityPublicationReceipt(
+            fileName: "product-worker-authority.json",
+            sha256: "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: bytes),
+            byteCount: bytes.count
+        ))
+    }
+
+    func readAuthorityDigest() -> Result<String,
+        ManagedInstallerProductWorkerAuthorityReadFailure> {
+        guard let snapshot else { return .failure(.unavailable) }
+        return .success("sha256:" + GitHubInstallerReleaseDescriptor.sha256(
+            of: snapshot.canonicalJSONData()
+        ))
+    }
+
+    private func recordPublication(_ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot) {
+        lock.lock()
+        defer { lock.unlock() }
+        storedSnapshot = snapshot
+        storedPublications += 1
+    }
 }
 
 private func freshRuntimeTransactionReceipt(
@@ -540,9 +776,12 @@ private struct FreshRuntimeFixture {
     let python: ManagedPythonRuntimePreparationReceipt
 
     init(wheelBytes: Data = Data("qualified-wheel-test-bytes".utf8),
-         providers: [ProviderRequirement] = []) throws {
+         providers: [ProviderRequirement] = [],
+         components: [String] = ["forge-runtime", "engineering-platform-server"])
+        throws {
         let wheel = try PrepublicationWheelFixture(
-            wheelBytes: wheelBytes, providerRequirements: providers
+            wheelBytes: wheelBytes, providerRequirements: providers,
+            componentIdentities: components
         )
         material = wheel.material
         let activation = try ManagedPythonRuntimeActivationPlan(
@@ -570,7 +809,7 @@ private struct FreshRuntimeFixture {
                     artifactDigest: wheel.artifactDigest,
                     detail: "Exact Forge install"
                 ),
-            ]
+            ].filter { components.contains($0.componentID) }
         )
         let journal = try ManagedPythonRuntimeParentJournalRecord(
             plan: plan.activationPlan, stablePlanFingerprint: plan.fingerprint,
