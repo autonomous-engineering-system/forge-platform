@@ -10,7 +10,7 @@ final class ManagedInstallerProductServiceAccountSearchACLTests: XCTestCase {
         let grant = MacOSManagedInstallerProductServiceAccountSearchACL(
             directory: root, expectedOwner: geteuid(), requiredEffectiveUID: geteuid()
         )
-        let account = try localAccount(uid: geteuid())
+        let account = localAccount(uid: geteuid())
         XCTAssertNoThrow(try grant.ensureSearch(for: [account]).get())
         XCTAssertNoThrow(try grant.ensureSearch(for: [account]).get())
         let details = try FileManager.default.attributesOfItem(atPath: root.path)
@@ -34,7 +34,7 @@ final class ManagedInstallerProductServiceAccountSearchACLTests: XCTestCase {
     func testRejectsWrongEffectiveUIDLooseModeAndSymlink() throws {
         let root = try privateRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let account = try localAccount(uid: geteuid())
+        let account = localAccount(uid: geteuid())
         let wrongProcess = MacOSManagedInstallerProductServiceAccountSearchACL(
             directory: root, expectedOwner: geteuid(),
             requiredEffectiveUID: geteuid() + 1
@@ -65,11 +65,11 @@ final class ManagedInstallerProductServiceAccountSearchACLTests: XCTestCase {
         let grant = MacOSManagedInstallerProductServiceAccountSearchACL(
             directory: root, expectedOwner: geteuid(), requiredEffectiveUID: geteuid()
         )
-        let account = try localAccount(uid: geteuid())
+        let account = localAccount(uid: geteuid())
         XCTAssertEqual(grant.ensureSearch(for: []).failure, .invalidRequest)
         XCTAssertEqual(grant.ensureSearch(for: [account, account]).failure,
                        .invalidRequest)
-        let invalid = try localAccount(uid: 0)
+        let invalid = localAccount(uid: 0)
         XCTAssertEqual(grant.ensureSearch(for: [invalid]).failure, .invalidRequest)
         XCTAssertNil(acl_get_file(root.path, ACL_TYPE_EXTENDED))
     }
@@ -77,7 +77,7 @@ final class ManagedInstallerProductServiceAccountSearchACLTests: XCTestCase {
     func testRejectsExistingBroaderACLWithoutRewritingIt() throws {
         let root = try privateRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let account = try localAccount(uid: geteuid())
+        let account = localAccount(uid: geteuid())
         let record = try XCTUnwrap(getpwuid(geteuid()))
         let username = String(cString: record.pointee.pw_name)
         let command = Process()
@@ -97,19 +97,16 @@ final class ManagedInstallerProductServiceAccountSearchACLTests: XCTestCase {
         XCTAssertEqual(details[.posixPermissions] as? Int, 0o700)
     }
 
-    private func localAccount(uid: uid_t) throws ->
-        ManagedInstallerProviderLocalServiceAccount {
-        let authority = ManagedInstallerProviderServiceAccountAuthority(
+    private func localAccount(uid: uid_t) ->
+        ManagedInstallerProductServiceAccountBinding {
+        ManagedInstallerProductServiceAccountBinding(
             deploymentID: "deployment-a",
-            providerTargetID: try XCTUnwrap(ProviderTargetID(
-                rawValue: "github-cli:engineering-platform-server:ep-one"
-            )),
-            productArtifactSHA256: "sha256:" + String(repeating: "a", count: 64),
+            componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue,
+            instanceID: "ep-one",
             serviceAccount: "_ep_test",
+            artifactSHA256: "sha256:" + String(repeating: "a", count: 64),
+            uid: uid, gid: getegid(),
             authoritySHA256: "sha256:" + String(repeating: "b", count: 64)
-        )
-        return ManagedInstallerProviderLocalServiceAccount(
-            authority: authority, uid: uid, gid: getegid()
         )
     }
 
