@@ -5,6 +5,40 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProductWorkerAuthorityReaderTests: XCTestCase {
+    func testOptionalAuthorityDistinguishesVerifiedAbsenceFromDrift() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertNil(try reader(root).readCanonicalAuthorityIfPresent().get())
+        let file = root.appendingPathComponent(
+            FileManagedInstallerProductWorkerAuthorityReader.fileName
+        )
+        try FileManager.default.createSymbolicLink(
+            at: file, withDestinationURL: root.appendingPathComponent("missing")
+        )
+        XCTAssertNotNil(reader(root).readCanonicalAuthorityIfPresent().failure)
+        try FileManager.default.removeItem(at: file)
+        _ = try write(Data("malformed".utf8), in: root)
+        XCTAssertEqual(reader(root).readCanonicalAuthorityIfPresent().failure,
+                       .invalidState)
+    }
+
+    func testOptionalAuthorityReadsExactPublishedSnapshot() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let bytes = try Data(contentsOf: package.appendingPathComponent(
+            "Fixtures/product-worker-authority-v4.json"
+        ))
+        let snapshot = try FileManagedInstallerProductWorkerAuthorityPublisher
+            .decodeCanonicalAuthority(bytes)
+        _ = try FileManagedInstallerProductWorkerAuthorityPublisher(
+            rootDirectory: root, expectedOwner: geteuid()
+        ).publishProductWorkerAuthority(snapshot).get()
+        XCTAssertEqual(try reader(root).readCanonicalAuthorityIfPresent().get(),
+                       snapshot)
+    }
+
     func testReadsOnlyDigestFromExactPrivateFile() throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
