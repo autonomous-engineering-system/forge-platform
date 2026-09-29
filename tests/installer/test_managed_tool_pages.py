@@ -188,6 +188,15 @@ class ManagedToolPagesTests(unittest.TestCase):
                 mutate(candidate)
                 with self.assertRaisesRegex(pages.PublicationError, reason):
                     pages.validate_backing_release(self.config, candidate, source)
+        draft = copy.deepcopy(release)
+        draft["draft"] = True
+        with self.assertRaisesRegex(pages.PublicationError, "visibility"):
+            pages.validate_backing_release(self.config, draft, source)
+        extra = copy.deepcopy(release)
+        extra["assets"].append({"name": "unreviewed", "state": "uploaded",
+                                "size": 1, "digest": None})
+        with self.assertRaisesRegex(pages.PublicationError, "ambiguous"):
+            pages.validate_backing_release(self.config, extra, source)
 
 
 if __name__ == "__main__":

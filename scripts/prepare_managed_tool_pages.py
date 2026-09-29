@@ -142,13 +142,16 @@ def validate_backing_release(
         or release.get("target_commitish") != source_sha
         or type(release.get("draft")) is not bool
         or release.get("prerelease") is not False
+        or (release["draft"] is True and release.get("published_at") is not None)
         or (release["draft"] is False and not release.get("published_at"))):
         raise PublicationError("backing release identity or visibility differs")
     assets = release.get("assets")
     if not isinstance(assets, list) or not all(isinstance(a, dict) for a in assets):
         raise PublicationError("backing release asset metadata is invalid")
     names = [a.get("name") for a in assets]
-    if any(not isinstance(name, str) for name in names) or len(set(names)) != len(names):
+    if (any(not isinstance(name, str) for name in names)
+        or len(set(names)) != len(names)
+        or len(names) != len(config["assets"])):
         raise PublicationError("backing release asset names are ambiguous")
     by_name = {a["name"]: a for a in assets}
     for expected in config["assets"]:
