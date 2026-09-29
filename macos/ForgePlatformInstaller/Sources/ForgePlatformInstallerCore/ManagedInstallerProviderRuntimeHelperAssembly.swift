@@ -8,28 +8,33 @@ enum ManagedInstallerProviderRuntimeHelperAssemblyFailure: Error, Equatable {
 /// Constructs the complete per-target provider preparation route from one
 /// reviewed stable plan and exact helper-admitted composition material. No
 /// caller path, OS account, credential or command is accepted. Construction
-/// does not mutate; missing canonical product authority still fails closed
-/// when the route is executed.
+/// does not mutate; provider mutation requires the exact journaled account
+/// receipt and a fresh full OS account readback.
 struct ManagedInstallerProviderRuntimeHelperAssembly {
     static func makeProduction(
         stablePlan: ManagedInstallerStablePlan,
-        material: ManagedVerifiedCompositionMaterial
+        material: ManagedVerifiedCompositionMaterial,
+        preprovider: ManagedInstallerProductServiceAccountPreproviderReceipt
     ) -> Result<ManagedInstallerProviderRuntimePlanPreparationCoordinator,
                 ManagedInstallerProviderRuntimeHelperAssemblyFailure> {
         make(
             stablePlan: stablePlan, material: material,
+            preprovider: preprovider,
             helperRoot: FileManagedInstallerReleasedRouteXPCService.productionRoot,
             expectedOwner: 0,
-            fetcher: HTTPSManagedInstallerProviderRuntimeTransport()
+            fetcher: HTTPSManagedInstallerProviderRuntimeTransport(),
+            accountDirectory: MacOSOpenDirectoryLocalAccountStore()
         )
     }
 
     static func make(
         stablePlan: ManagedInstallerStablePlan,
         material: ManagedVerifiedCompositionMaterial,
+        preprovider: ManagedInstallerProductServiceAccountPreproviderReceipt,
         helperRoot: URL,
         expectedOwner: uid_t,
-        fetcher: any ManagedInstallerProviderRuntimeArchiveFetching
+        fetcher: any ManagedInstallerProviderRuntimeArchiveFetching,
+        accountDirectory: any ManagedInstallerLocalDirectoryOperating
     ) -> Result<ManagedInstallerProviderRuntimePlanPreparationCoordinator,
                 ManagedInstallerProviderRuntimeHelperAssemblyFailure> {
         let requirements = stablePlan.enabledProviderRequirements
@@ -38,12 +43,17 @@ struct ManagedInstallerProviderRuntimeHelperAssembly {
               !requirements.isEmpty,
               Set(requirements.map(\.id)).count == requirements.count,
               requirements.allSatisfy({
-                  $0.credentialScope == .component && $0.targetIdentity != nil
+                  $0.credentialScope == .component
+                      && $0.targetIdentity == stablePlan.deployment.id
                       && $0.runtime != nil && ($0.ownerComponent == .forgeRuntime
                           || $0.ownerComponent == .engineeringPlatformServer)
               }),
               helperRoot.isFileURL, helperRoot.baseURL == nil,
-              helperRoot.path.hasPrefix("/"), helperRoot.path != "/" else {
+              helperRoot.path.hasPrefix("/"), helperRoot.path != "/",
+              let binder = ManagedInstallerPreproviderProviderAccountBinding(
+                stablePlan: stablePlan, material: material,
+                receipt: preprovider, directory: accountDirectory
+              ) else {
             return .failure(.rejected)
         }
         let stateRoot = helperRoot.appendingPathComponent(
@@ -66,13 +76,6 @@ struct ManagedInstallerProviderRuntimeHelperAssembly {
         )
         let inspector = MacOSManagedInstallerProviderRuntimeArchiveInspector(
             staging: staging
-        )
-        let binder = ManagedInstallerProviderServiceAccountOSBinder(
-            authority: ManagedInstallerProviderServiceAccountAuthorityResolver(
-                reader: FileManagedInstallerProductWorkerAuthorityReader(
-                    rootDirectory: helperRoot, expectedOwner: expectedOwner
-                )
-            )
         )
         var targets: [ProviderTargetID: ManagedInstallerProviderRuntimeHelperTarget] = [:]
         for requirement in requirements {
