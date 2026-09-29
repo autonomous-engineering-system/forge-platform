@@ -98,7 +98,7 @@ final class ManagedInstallerManagedGitArchiveInspectorTests: XCTestCase {
     }
 }
 
-private struct GitArchiveFixture {
+struct GitArchiveFixture {
     static let sourceSHA256 = "sha256:" + String(repeating: "b", count: 64)
     static let buildSHA256 = "sha256:" + String(repeating: "c", count: 64)
     static let artifactURL = "https://artifacts.example.test/managed-git.tar.gz"

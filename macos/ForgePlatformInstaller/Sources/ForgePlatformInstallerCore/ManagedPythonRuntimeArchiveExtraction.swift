@@ -17,10 +17,16 @@ struct ManagedPythonRuntimeArchiveExtractionReadback: Equatable {
 struct MacOSManagedPythonRuntimeArchiveExtractor {
     private let destination: URL
     private let expectedOwner: uid_t
+    private let evidenceDomain: ManagedArchiveTreeEvidenceDomain
 
-    init(destination: URL, expectedOwner: uid_t = 0) {
+    init(
+        destination: URL,
+        expectedOwner: uid_t = 0,
+        evidenceDomain: ManagedArchiveTreeEvidenceDomain = .python
+    ) {
         self.destination = destination
         self.expectedOwner = expectedOwner
+        self.evidenceDomain = evidenceDomain
     }
 
     func extract(
@@ -35,6 +41,24 @@ struct MacOSManagedPythonRuntimeArchiveExtractor {
         } catch {
             return .failure(.rejected)
         }
+        switch materialize(archive: archive, members: inventory.members) {
+        case .success(let treeEvidence):
+            return .success(ManagedPythonRuntimeArchiveExtractionReadback(
+                inspection: inventory.inspection,
+                treeEvidenceReference: treeEvidence
+            ))
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
+    /// Materializes only a previously admitted inventory in one empty private
+    /// directory. Both Python and managed Git use this same descriptor-bound
+    /// extractor and complete post-extraction tree verifier.
+    func materialize(
+        archive: Data,
+        members: [ManagedPythonRuntimeArchiveMember]
+    ) -> Result<String, ManagedPythonRuntimeArchiveExtractionFailure> {
         do {
             let directory = try openEmptyPrivateDestination()
             defer { _ = Darwin.close(directory.descriptor) }
@@ -73,15 +97,13 @@ struct MacOSManagedPythonRuntimeArchiveExtractor {
                 return .failure(.rejected)
             }
             let treeEvidence = try MacOSManagedPythonRuntimeExtractedTreeVerifier(
-                slotRoot: destination, expectedOwner: expectedOwner
-            ).verify(members: inventory.members)
+                slotRoot: destination, expectedOwner: expectedOwner,
+                evidenceDomain: evidenceDomain
+            ).verify(members: members)
             guard try destinationIsSamePrivateDirectory(directory) else {
                 return .failure(.rejected)
             }
-            return .success(ManagedPythonRuntimeArchiveExtractionReadback(
-                inspection: inventory.inspection,
-                treeEvidenceReference: treeEvidence
-            ))
+            return .success(treeEvidence)
         } catch {
             return .failure(.rejected)
         }
