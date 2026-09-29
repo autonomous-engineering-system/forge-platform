@@ -21,6 +21,8 @@ fail() {
 [[ -n "${FORGE_PLATFORM_NOTARYTOOL_PROFILE:-}" ]] || fail notary-profile-required
 [[ -n "${FORGE_PLATFORM_RELEASE_TRUST_RESOURCE:-}" ]] || fail release-trust-resource-required
 [[ -n "${FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE:-}" ]] || fail catalog-trust-resource-required
+[[ -n "${FORGE_PLATFORM_FORGE_UPDATE_CONTROLLER:-}" ]] || fail forge-controller-required
+[[ -n "${FORGE_PLATFORM_FORGE_RELEASE_COMPLETE_RECEIPT:-}" ]] || fail forge-release-receipt-required
 [[ -n "${FORGE_PLATFORM_OFFLINE_RELEASE_ROOT:-}" ]] || fail offline-release-root-required
 [[ -n "${RELEASE_SEQUENCE:-}" && "$RELEASE_SEQUENCE" =~ ^[1-9][0-9]*$ ]] || fail release-sequence-required
 
@@ -107,6 +109,8 @@ python3 scripts/package_macos_installer_app.py \
   --cli-executable "$cli" \
   --helper-executable "$helper" \
   --product-worker "$product_worker" \
+  --forge-update-controller "$FORGE_PLATFORM_FORGE_UPDATE_CONTROLLER" \
+  --forge-release-complete-receipt "$FORGE_PLATFORM_FORGE_RELEASE_COMPLETE_RECEIPT" \
   --sealed-release-trust-resource "$FORGE_PLATFORM_RELEASE_TRUST_RESOURCE" \
   --sealed-release-provenance-resource "$provenance" \
   --sealed-composition-catalog-trust-resource "$FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE" \
@@ -114,6 +118,15 @@ python3 scripts/package_macos_installer_app.py \
   --bundle-identifier "$(python3 scripts/validate_installer_release_identity.py --field bundle_identifier)" \
   >"$private/package-app.log" 2>&1 || fail final-app-packaging-failed
 [[ -f "$app/Contents/Resources/forge-platform-product-worker.pyz" ]] || fail product-worker-not-packaged
+python3 - "$app" <<'PY' || fail forge-update-resources-not-packaged
+from pathlib import Path
+import sys
+from forge_platform.forge_update_resources import read_forge_update_resources
+
+app = Path(sys.argv[1])
+worker = app / "Contents/Resources/forge-platform-product-worker.pyz"
+read_forge_update_resources(worker)
+PY
 
 # Resolve exactly one reviewed Developer ID identity from public certificate metadata.
 security find-identity -v -p codesigning >"$private/identities.txt" 2>"$private/identity-error.txt" || fail identity-read-failed
