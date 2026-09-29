@@ -57,26 +57,15 @@ jobs:
           git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
           test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$SOURCE_SHA"
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/managed-tool-release.json"
-          python3 - "$RUNNER_TEMP/managed-tool-release.json" <<'PY'
+          python3 - "$RUNNER_TEMP/managed-tool-release.json" "$SOURCE_SHA" <<'PY'
           import json
           from pathlib import Path
           import sys
-          from scripts.prepare_managed_tool_pages import load_config
+          from scripts.prepare_managed_tool_pages import load_config, validate_backing_release
 
           release = json.loads(Path(sys.argv[1]).read_text())
           config = load_config(Path("managed-tool-pages.json"))
-          if release.get("draft") is not False or release.get("prerelease") is not False or not release.get("published_at"):
-              raise SystemExit("backing release is not published and stable")
-          assets = release.get("assets")
-          if not isinstance(assets, list) or len({a.get("name") for a in assets}) != len(assets):
-              raise SystemExit("release asset metadata is incomplete or ambiguous")
-          by_name = {asset["name"]: asset for asset in assets}
-          for expected in config["assets"]:
-              actual = by_name.get(expected["asset_name"])
-              if actual is None or actual.get("state") != "uploaded" or actual.get("size") != expected["size"]:
-                  raise SystemExit("released backing asset identity/size differs")
-              if actual.get("digest") not in (None, expected["sha256"]):
-                  raise SystemExit("released backing asset digest differs")
+          validate_backing_release(config, release, sys.argv[2])
           PY
           python3 - <<'PY'
           from pathlib import Path
@@ -112,7 +101,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     permissions:
-      contents: read
+      contents: write
       pages: write
       id-token: write
     steps:
@@ -174,15 +163,88 @@ jobs:
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: ${{ runner.temp }}/managed-tool-site
-      - name: Recheck exact main and no-clobber marker before deployment
+      - name: Recheck exact bytes, publish backing release, then deploy Pages
         env:
+          GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --max-redirs 0 \
-            https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/publication.json)" = 404
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$SOURCE_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release-before-publication.json"
+          python3 - "$RUNNER_TEMP/release-before-publication.json" "$SOURCE_SHA" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          from scripts.prepare_managed_tool_pages import load_config, validate_backing_release
+          validate_backing_release(
+              load_config(Path("managed-tool-pages.json")),
+              json.loads(Path(sys.argv[1]).read_text()), sys.argv[2],
+          )
+          PY
+          mkdir "$RUNNER_TEMP/fresh-release-readback"
+          while IFS= read -r name; do
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --dir "$RUNNER_TEMP/fresh-release-readback" --pattern "$name"
+          done < <(python3 - <<'PY'
+          from pathlib import Path
+          from scripts.prepare_managed_tool_pages import load_config
+          for asset in load_config(Path("managed-tool-pages.json"))["assets"]:
+              print(asset["asset_name"])
+          PY
+          )
+          python3 - "$RUNNER_TEMP/fresh-release-readback" <<'PY'
+          from pathlib import Path
+          import sys
+          from scripts.prepare_managed_tool_pages import load_config, _digest, PublicationError
+          config = load_config(Path("managed-tool-pages.json"))
+          for asset in config["assets"]:
+              if _digest(Path(sys.argv[1]) / asset["asset_name"], asset["size"]) != asset["sha256"]:
+                  raise PublicationError("fresh backing asset changed before release publication")
+          PY
+          python3 - <<'PY'
+          from pathlib import Path
+          import urllib.error
+          import urllib.request
+          from scripts.prepare_managed_tool_pages import load_config, SITE_PREFIX, PublicationError
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, request, fp, code, msg, headers, newurl):
+                  raise PublicationError("existing public path redirected")
+
+          opener = urllib.request.build_opener(NoRedirect())
+          config = load_config(Path("managed-tool-pages.json"))
+          git = next(a for a in config["assets"] if a["kind"] == "managed-git-runtime")
+          git_directory = git["relative_path"].split("/")[0]
+          for url in [SITE_PREFIX + "publication.json",
+                      SITE_PREFIX + git_directory + "/index.html",
+                      *(a["url"] for a in config["assets"])]:
+              try:
+                  opener.open(urllib.request.Request(url, method="HEAD"), timeout=30)
+              except urllib.error.HTTPError as error:
+                  if error.code == 404:
+                      continue
+                  raise
+              raise SystemExit("managed-tool Pages path already exists")
+          PY
+          if test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release-published.json"
+          python3 - "$RUNNER_TEMP/release-published.json" "$SOURCE_SHA" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          from scripts.prepare_managed_tool_pages import load_config, validate_backing_release
+          if validate_backing_release(
+              load_config(Path("managed-tool-pages.json")),
+              json.loads(Path(sys.argv[1]).read_text()), sys.argv[2],
+          ):
+              raise SystemExit("backing release remains draft")
+          PY
       - id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
       - name: Independently read exact public bytes

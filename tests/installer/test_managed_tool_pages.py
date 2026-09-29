@@ -156,6 +156,48 @@ class ManagedToolPagesTests(unittest.TestCase):
         self.assertIn("MANAGED_TOOL_PAGES=BLOCKED", result.stderr)
         self.assertFalse(self.output.exists())
 
+    def test_backing_release_is_exact_draft_then_exact_public(self) -> None:
+        source = "a" * 40
+        release = {
+            "tag_name": self.config["release_tag"],
+            "target_commitish": source,
+            "draft": True,
+            "prerelease": False,
+            "published_at": None,
+            "assets": [{"name": a["asset_name"], "state": "uploaded",
+                        "size": a["size"], "digest": a["sha256"]}
+                       for a in self.config["assets"]],
+        }
+        self.assertTrue(pages.validate_backing_release(self.config, release, source))
+        release["draft"] = False
+        release["published_at"] = "2026-09-29T20:00:00Z"
+        self.assertFalse(pages.validate_backing_release(self.config, release, source))
+        mutations = [
+            (lambda r: r.update(tag_name="wrong"), "identity"),
+            (lambda r: r.update(target_commitish="b" * 40), "identity"),
+            (lambda r: r.update(prerelease=True), "visibility"),
+            (lambda r: r.update(published_at=None), "visibility"),
+            (lambda r: r["assets"][0].update(size=0), "asset differs"),
+            (lambda r: r["assets"][0].update(digest="sha256:" + "0" * 64), "asset differs"),
+            (lambda r: r["assets"][0].update(state="starter"), "asset differs"),
+            (lambda r: r["assets"].append(copy.deepcopy(r["assets"][0])), "ambiguous"),
+        ]
+        for mutate, reason in mutations:
+            with self.subTest(reason=reason):
+                candidate = copy.deepcopy(release)
+                mutate(candidate)
+                with self.assertRaisesRegex(pages.PublicationError, reason):
+                    pages.validate_backing_release(self.config, candidate, source)
+        draft = copy.deepcopy(release)
+        draft["draft"] = True
+        with self.assertRaisesRegex(pages.PublicationError, "visibility"):
+            pages.validate_backing_release(self.config, draft, source)
+        extra = copy.deepcopy(release)
+        extra["assets"].append({"name": "unreviewed", "state": "uploaded",
+                                "size": 1, "digest": None})
+        with self.assertRaisesRegex(pages.PublicationError, "ambiguous"):
+            pages.validate_backing_release(self.config, extra, source)
+
 
 if __name__ == "__main__":
     unittest.main()
