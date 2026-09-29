@@ -47,6 +47,7 @@ python3 tests/installer/test_forge_update_resources.py
 python3 -m unittest tests.installer.test_managed_product_wheel_inspection
 python3 -m unittest tests.installer.test_managed_product_wheel_materialization
 python3 -m unittest tests.installer.test_managed_product_wheel_readback
+python3 -m unittest tests.installer.test_managed_product_wheel_worker
 python3 tests/installer/test_composition_catalog_trust.py
 python3 tests/installer/test_package_macos_installer_app.py
 python3 tests/installer/test_package_macos_installer_archive.py
