@@ -6,7 +6,8 @@ import XCTest
 final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
     func testEPProductRuntimePublishesToExactUnversionedInstancePath() throws {
         let fixture = try ProviderArchiveFixture(
-            kind: .zip, provider: .githubCLI, target: "ep-primary"
+            kind: .zip, provider: .githubCLI, target: "ep-primary",
+            epCanonicalExecutable: true
         )
         let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
             .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
@@ -39,8 +40,12 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: executable), fixture.executable)
         XCTAssertFalse(FileManager.default.fileExists(atPath: providerRoot
             .appendingPathComponent(fixture.runtime.version.description).path))
+        XCTAssertTrue(executable.path.hasSuffix(
+            "/instances/ep-primary/providers/github/runtime/bin/gh"
+        ))
         let other = try ProviderArchiveFixture(
-            kind: .zip, provider: .githubCLI, target: "ep-other"
+            kind: .zip, provider: .githubCLI, target: "ep-other",
+            epCanonicalExecutable: true
         )
         XCTAssertEqual(publisher.readPublishedSlot(
             requirement: other.requirement, request: request
@@ -50,6 +55,45 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
             requirement: try ProviderArchiveFixture().requirement,
             expectedOwner: geteuid()
         ))
+        let wrongArchiveLayout = try ProviderArchiveFixture(
+            kind: .zip, provider: .githubCLI, target: "ep-primary"
+        )
+        XCTAssertNil(MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            epProductRoot: epRoot, expectedDeploymentID: "deployment-a",
+            requirement: wrongArchiveLayout.requirement, expectedOwner: geteuid()
+        ))
+    }
+
+    func testEPProductCodexPublishesOnlyCanonicalBinExecutable() throws {
+        let fixture = try ProviderArchiveFixture(
+            kind: .zip, provider: .codex, target: "ep-primary",
+            ownerComponent: .engineeringPlatformServer
+        )
+        let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
+        let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-a", stagedArchive: fixture.staged,
+            requirement: fixture.requirement, inspection: inspection
+        )
+        let epRoot = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("ep-provider-codex-\(UUID().uuidString)",
+                                    isDirectory: true)
+        let providerRoot = epRoot
+            .appendingPathComponent("instances/ep-primary/providers/codex", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: providerRoot, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: epRoot) }
+        XCTAssertEqual(chmod(providerRoot.path, 0o700), 0)
+        let publisher = try XCTUnwrap(MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            epProductRoot: epRoot, expectedDeploymentID: "deployment-a",
+            requirement: fixture.requirement, expectedOwner: geteuid()
+        ))
+        _ = try providerSlotReadback(publisher.publish(
+            archive: fixture.archive, requirement: fixture.requirement, request: request
+        ))
+        XCTAssertEqual(try Data(contentsOf: providerRoot
+            .appendingPathComponent("runtime/bin/codex")), fixture.executable)
     }
 
     func testSlotAdapterUsesExactStagingThenCachedRestartReadback() async throws {
@@ -598,9 +642,13 @@ private struct ProviderArchiveFixture: Sendable {
         kind: ProviderRuntimeArchiveKind = .tarGzip,
         provider: ProviderID = .codex,
         target: String = "forge-primary",
-        mutation: ProviderArchiveMutation? = nil
+        mutation: ProviderArchiveMutation? = nil,
+        epCanonicalExecutable: Bool = false,
+        ownerComponent: ProviderOwnerComponent? = nil
     ) throws {
-        let executablePath = provider == .codex ? "bin/codex" : "release/bin/gh"
+        let executablePath = provider == .codex ? "bin/codex" : (
+            epCanonicalExecutable ? "bin/gh" : "release/bin/gh"
+        )
         executable = providerArchiveMachO(wrong: mutation == .wrongMachO)
         var entries = providerArchiveEntries(
             executablePath: executablePath,
@@ -641,7 +689,9 @@ private struct ProviderArchiveFixture: Sendable {
             isRequired: true,
             minimumVersion: version,
             credentialScope: .component,
-            ownerComponent: provider == .codex ? .forgeRuntime : .engineeringPlatformServer,
+            ownerComponent: ownerComponent ?? (
+                provider == .codex ? .forgeRuntime : .engineeringPlatformServer
+            ),
             targetIdentity: target,
             runtime: runtime
         )

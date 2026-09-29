@@ -44,7 +44,10 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
               requirement.ownerComponent == .engineeringPlatformServer,
               requirement.credentialScope == .component,
               let instanceID = requirement.targetIdentity,
-              requirement.runtime != nil else {
+              let runtime = requirement.runtime,
+              runtime.executableRelativePath == "bin/" + (
+                  requirement.provider == .codex ? "codex" : "gh"
+              ) else {
             return nil
         }
         let productProvider = requirement.provider == .codex ? "codex" : "github"
