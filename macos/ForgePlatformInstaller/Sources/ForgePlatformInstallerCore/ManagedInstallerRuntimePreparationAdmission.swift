@@ -20,6 +20,7 @@ public struct ManagedInstallerRuntimePreparationAdmissionReceipt:
     public let parentJournalRecord: ManagedPythonRuntimeParentJournalRecord
     public let providerRuntimeReceipt: ManagedInstallerProviderRuntimePlanPreparationReceipt
     public let managedPythonReceipt: ManagedPythonRuntimePreparationReceipt
+    let preproviderAccountReceipt: ManagedInstallerProductServiceAccountPreproviderReceipt?
     public let state: State
 
     public init(
@@ -28,9 +29,29 @@ public struct ManagedInstallerRuntimePreparationAdmissionReceipt:
         providerRuntimeReceipt: ManagedInstallerProviderRuntimePlanPreparationReceipt,
         managedPythonReceipt: ManagedPythonRuntimePreparationReceipt
     ) throws {
+        try self.init(
+            stablePlan: stablePlan, parentJournalRecord: parentJournalRecord,
+            providerRuntimeReceipt: providerRuntimeReceipt,
+            managedPythonReceipt: managedPythonReceipt,
+            preproviderAccountReceipt: nil
+        )
+    }
+
+    init(
+        stablePlan: ManagedInstallerStablePlan,
+        parentJournalRecord: ManagedPythonRuntimeParentJournalRecord,
+        providerRuntimeReceipt: ManagedInstallerProviderRuntimePlanPreparationReceipt,
+        managedPythonReceipt: ManagedPythonRuntimePreparationReceipt,
+        preproviderAccountReceipt:
+            ManagedInstallerProductServiceAccountPreproviderReceipt?
+    ) throws {
         guard Self.journal(parentJournalRecord, matches: stablePlan),
               Self.providers(providerRuntimeReceipt, match: stablePlan),
-              Self.managedPython(managedPythonReceipt, matches: stablePlan) else {
+              Self.managedPython(managedPythonReceipt, matches: stablePlan),
+              preproviderAccountReceipt.map({
+                  $0.parentJournalRecord == parentJournalRecord
+                      && $0.matches(stablePlan)
+              }) ?? true else {
             throw ManagedInstallerRuntimePreparationAdmissionFailure.invalidRequest
         }
         stablePlanFingerprint = stablePlan.fingerprint
@@ -38,6 +59,7 @@ public struct ManagedInstallerRuntimePreparationAdmissionReceipt:
         self.parentJournalRecord = parentJournalRecord
         self.providerRuntimeReceipt = providerRuntimeReceipt
         self.managedPythonReceipt = managedPythonReceipt
+        self.preproviderAccountReceipt = preproviderAccountReceipt
         state = .runtimesReady
     }
 
