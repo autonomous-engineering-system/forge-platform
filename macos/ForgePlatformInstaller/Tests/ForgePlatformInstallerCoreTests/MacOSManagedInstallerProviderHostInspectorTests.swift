@@ -108,6 +108,45 @@ final class MacOSManagedInstallerProviderHostInspectorTests: XCTestCase {
         ))
     }
 
+    func testFreshEPInspectorReadsDerivedProductInstanceAndRejectsCrossedDeployment()
+        async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .githubCLI, epProductLayout: true, freshEPProduct: true
+        )
+        let runner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 0, standardOutput: nil)),
+        ])
+        let inspector = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root,
+            freshDeploymentID: fixture.request.deploymentID, runner: runner
+        )
+        let observed = try await inspector.inspectProvider(
+            fixture.requirement, for: fixture.request
+        ).get()
+        XCTAssertEqual(observed.state, .verified)
+        let instance = ManagedInstallerProductServiceAccountPlanner.instanceID(
+            deploymentID: fixture.request.deploymentID,
+            componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue
+        )
+        XCTAssertTrue(fixture.executable.path.hasSuffix(
+            "/instances/\(instance)/providers/github/runtime/bin/gh"
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root
+            .appendingPathComponent("instances/\(fixture.request.deploymentID)").path))
+        let crossed = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshDeploymentID: "other-deployment",
+            runner: ProviderProbeRunnerSpy(results: [])
+        )
+        let refused = await crossed.inspectProvider(
+            fixture.requirement, for: fixture.request
+        )
+        XCTAssertEqual(refused.failure, .rejected)
+        let calls = await runner.recordedCommands()
+        XCTAssertEqual(calls.count, 2)
+    }
+
     func testEPProductInspectorRejectsWrongRuntimePathAndIgnoresLegacySlot() async throws {
         let fixture = try ProviderInspectionFixture(
             provider: .codex, epProductLayout: true
@@ -471,7 +510,8 @@ private struct ProviderInspectionFixture {
         executableBytes: Data = Data("fixed-provider-executable".utf8),
         declaredExecutableSHA256: String? = nil,
         requestRequirementOverride: ProviderRequirement? = nil,
-        epProductLayout: Bool = false
+        epProductLayout: Bool = false,
+        freshEPProduct: Bool = false
     ) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "provider-inspector-\(UUID().uuidString)",
@@ -496,7 +536,7 @@ private struct ProviderInspectionFixture {
             minimumVersion: try InstallerVersion("1.0.0"),
             credentialScope: .component,
             ownerComponent: .engineeringPlatformServer,
-            targetIdentity: "ep-one",
+            targetIdentity: freshEPProduct ? "activation-deployment" : "ep-one",
             runtime: runtime
         )
         requirement = requestRequirementOverride ?? boundRequirement
@@ -532,9 +572,14 @@ private struct ProviderInspectionFixture {
 
         let targetRoot: URL
         if epProductLayout {
+            let instanceID = freshEPProduct
+                ? ManagedInstallerProductServiceAccountPlanner.instanceID(
+                    deploymentID: request.deploymentID,
+                    componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue
+                ) : "ep-one"
             targetRoot = root
                 .appendingPathComponent("instances", isDirectory: true)
-                .appendingPathComponent("ep-one", isDirectory: true)
+                .appendingPathComponent(instanceID, isDirectory: true)
                 .appendingPathComponent("providers", isDirectory: true)
                 .appendingPathComponent(provider == .codex ? "codex" : "github",
                                         isDirectory: true)

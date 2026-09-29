@@ -190,12 +190,14 @@ public struct MacOSManagedInstallerProviderHostInspector:
 
     private let rootDirectory: URL
     private let layoutKind: LayoutKind
+    private let freshEPDeploymentID: String?
     private let runner: any MacOSManagedInstallerProviderProbeRunning
 
     public init(rootDirectory: URL) {
         self.init(
             rootDirectory: rootDirectory,
             layoutKind: .installerVersioned,
+            freshEPDeploymentID: nil,
             runner: MacOSSystemManagedInstallerProviderProbeRunner()
         )
     }
@@ -206,15 +208,27 @@ public struct MacOSManagedInstallerProviderHostInspector:
         self.init(
             rootDirectory: epProductRoot,
             layoutKind: .engineeringPlatformProduct,
+            freshEPDeploymentID: nil,
             runner: MacOSSystemManagedInstallerProviderProbeRunner()
         )
+    }
+
+    /// Fresh EP preparation is keyed by the reviewed deployment, but its
+    /// product-owned provider context belongs to the distinct EP instance.
+    init(epProductRoot: URL, freshDeploymentID: String,
+         runner: any MacOSManagedInstallerProviderProbeRunning =
+            MacOSSystemManagedInstallerProviderProbeRunner()) {
+        self.init(rootDirectory: epProductRoot,
+                  layoutKind: .engineeringPlatformProduct,
+                  freshEPDeploymentID: freshDeploymentID, runner: runner)
     }
 
     init(
         rootDirectory: URL,
         runner: any MacOSManagedInstallerProviderProbeRunning
     ) {
-        self.init(rootDirectory: rootDirectory, layoutKind: .installerVersioned, runner: runner)
+        self.init(rootDirectory: rootDirectory, layoutKind: .installerVersioned,
+                  freshEPDeploymentID: nil, runner: runner)
     }
 
     init(
@@ -222,16 +236,18 @@ public struct MacOSManagedInstallerProviderHostInspector:
         runner: any MacOSManagedInstallerProviderProbeRunning
     ) {
         self.init(rootDirectory: epProductRoot, layoutKind: .engineeringPlatformProduct,
-                  runner: runner)
+                  freshEPDeploymentID: nil, runner: runner)
     }
 
     private init(
         rootDirectory: URL,
         layoutKind: LayoutKind,
+        freshEPDeploymentID: String?,
         runner: any MacOSManagedInstallerProviderProbeRunning
     ) {
         self.rootDirectory = Self.canonicalRootDirectory(rootDirectory)
         self.layoutKind = layoutKind
+        self.freshEPDeploymentID = freshEPDeploymentID
         self.runner = runner
     }
 
@@ -247,6 +263,11 @@ public struct MacOSManagedInstallerProviderHostInspector:
               let owner = requirement.ownerComponent,
               let targetIdentity = requirement.targetIdentity,
               let runtime = requirement.runtime,
+              (freshEPDeploymentID == nil || (
+                  layoutKind == .engineeringPlatformProduct
+                      && request.deploymentID == freshEPDeploymentID
+                      && targetIdentity == freshEPDeploymentID
+              )),
               (layoutKind != .engineeringPlatformProduct || (
                   owner == .engineeringPlatformServer
                       && runtime.executableRelativePath == "bin/" + (
@@ -255,11 +276,17 @@ public struct MacOSManagedInstallerProviderHostInspector:
               )) else {
             return .failure(.rejected)
         }
+        let resolvedTargetIdentity = freshEPDeploymentID.map {
+            ManagedInstallerProductServiceAccountPlanner.instanceID(
+                deploymentID: $0,
+                componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue
+            )
+        } ?? targetIdentity
         let layout = Layout(
             rootDirectory: rootDirectory,
             deploymentID: request.deploymentID,
             owner: owner,
-            targetIdentity: targetIdentity,
+            targetIdentity: resolvedTargetIdentity,
             provider: requirement.provider,
             runtime: runtime,
             layoutKind: layoutKind
