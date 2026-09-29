@@ -422,7 +422,7 @@ final class InstallerWizardViewModel: ObservableObject {
         guard !isReviewRequestInFlight,
               state.step == .review,
               state.preflight.isPassed,
-              state.enabledProvidersVerified,
+              state.providerRequirementsAreProjected,
               let session = state.acceptedSessionPlan,
               case .selected(let deployment, _) = state.deploymentSelection else {
             return
@@ -1148,7 +1148,7 @@ private struct ProviderScreen: View {
     var body: some View {
         ScreenHeader(
             title: "Providers toevoegen",
-            subtitle: "Codex CLI en GitHub CLI komen uitsluitend uit de eerder geverifieerde compositiesessie. Iedere ingeschakelde provider moet onafhankelijk zijn geïnstalleerd, geauthenticeerd en geverifieerd voordat u verder kunt."
+            subtitle: "Kies de providertargets uit de geverifieerde compositiesessie. De keuze wordt onderdeel van het wijzigingsplan. Voor uitvoering moet elke gekozen provider onafhankelijk zijn geïnstalleerd, aangemeld en geverifieerd."
         )
 
         VStack(alignment: .leading, spacing: 14) {
@@ -1165,8 +1165,8 @@ private struct ProviderScreen: View {
 
             let verified = viewModel.state.enabledProvidersVerified
             Label(
-                verified ? "Alle ingeschakelde providers zijn geverifieerd." : "De volgende stap blijft geblokkeerd totdat iedere ingeschakelde provider is geverifieerd.",
-                systemImage: verified ? "checkmark.circle.fill" : "lock.fill"
+                verified ? "Alle gekozen providers zijn geverifieerd." : "Je kunt het wijzigingsplan bekijken. Uitvoering blijft geblokkeerd tot verificatie.",
+                systemImage: verified ? "checkmark.circle.fill" : "info.circle"
             )
             .foregroundStyle(verified ? .green : .secondary)
             .padding(.top, 4)
@@ -1256,7 +1256,7 @@ private struct CompositionReviewScreen: View {
     var body: some View {
         ScreenHeader(
             title: "Compositie en wijzigingsplan",
-            subtitle: "Na host-, tool- en providergates toont de wizard uitsluitend de reviewdiff voor de eerder geverifieerde immutable compositie. Product-adapters beslissen afzonderlijk over runtime, data, migratie en rollback."
+            subtitle: "Na de host- en toolcontrole toont de wizard het wijzigingsplan voor de gekozen compositie en providertargets. Uitvoering vereist daarna onafhankelijke providerverificatie."
         )
 
         VStack(alignment: .leading, spacing: 16) {
@@ -1293,6 +1293,17 @@ private struct CompositionReviewScreen: View {
             } else {
                 ForEach(viewModel.state.composition.components) { component in
                     ComponentDiffRow(component: component)
+                }
+            }
+
+            GroupBox("Gekozen providertargets") {
+                if viewModel.state.enabledProviders.isEmpty {
+                    Text("Geen")
+                } else {
+                    ForEach(viewModel.state.enabledProviders) { provider in
+                        Text("\(provider.requirement.provider.displayName) · \(provider.id.rawValue)")
+                            .textSelection(.enabled)
+                    }
                 }
             }
 

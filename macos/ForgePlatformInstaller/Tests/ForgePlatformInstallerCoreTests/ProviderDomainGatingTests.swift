@@ -103,10 +103,10 @@ final class ProviderDomainGatingTests: XCTestCase {
         XCTAssertTrue(state.providers[0].isSelected)
         XCTAssertEqual(state.providers[0].state, .selected)
         XCTAssertFalse(state.enabledProvidersVerified)
-        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.canAdvance)
     }
 
-    func testSelectedOptionalProviderMustBeVerifiedBeforeTheGateCanAdvance() throws {
+    func testSelectedOptionalProviderCanBeReviewedButMustVerifyBeforeExecution() throws {
         var state = try providerState([
             ProviderRequirement(provider: .githubCLI, isRequired: false),
         ])
@@ -118,7 +118,7 @@ final class ProviderDomainGatingTests: XCTestCase {
         XCTAssertEqual(state.enabledProviders.map(\.id), [.githubCLI])
         XCTAssertEqual(state.providers[0].state, .selected)
         XCTAssertFalse(state.enabledProvidersVerified)
-        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.canAdvance)
 
         verify(.githubCLI, in: &state)
 
@@ -141,7 +141,7 @@ final class ProviderDomainGatingTests: XCTestCase {
         XCTAssertEqual(state.providers[0].state.displayName, "Mislukt")
         XCTAssertEqual(ProviderFailureCode.authenticationFailed.userFacingMessage, "Aanmelding bij de provider is mislukt.")
         XCTAssertFalse(state.enabledProvidersVerified)
-        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.canAdvance)
     }
 
     func testAllEnabledRequiredAndOptionalProvidersMustVerifyBeforePassing() throws {
@@ -154,7 +154,7 @@ final class ProviderDomainGatingTests: XCTestCase {
         verify(.codex, in: &state)
 
         XCTAssertFalse(state.enabledProvidersVerified)
-        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.canAdvance)
 
         verify(.githubCLI, in: &state)
 
@@ -182,6 +182,7 @@ final class ProviderDomainGatingTests: XCTestCase {
         XCTAssertTrue(state.requestProviderAction(.install, for: .codex))
 
         XCTAssertFalse(state.canGoBack)
+        XCTAssertFalse(state.canAdvance)
         XCTAssertFalse(state.goBack())
         XCTAssertEqual(state.step, .providers)
         state.applyProviderActionResult(.installationReady, for: .codex, action: .install)
@@ -200,7 +201,7 @@ final class ProviderDomainGatingTests: XCTestCase {
 
         XCTAssertEqual(state.providers[0].state, .failed(.unexpectedActionResult))
         XCTAssertFalse(state.enabledProvidersVerified)
-        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.canAdvance)
     }
 
     func testTypedFailureResultRedactsArbitraryCoordinatorText() throws {
@@ -221,7 +222,7 @@ final class ProviderDomainGatingTests: XCTestCase {
         XCTAssertEqual(ProviderFailureCode.coordinatorUnavailable.userFacingMessage, "Providercoördinatie is niet beschikbaar.")
         XCTAssertFalse(String(describing: state.providers[0].state).contains(unsafeDiagnostic))
         XCTAssertFalse(ProviderFailureCode.coordinatorUnavailable.userFacingMessage.contains(unsafeDiagnostic))
-        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.canAdvance)
     }
 
     func testSameProviderIdentityCanHaveIndependentForgeAndEPTargets() throws {

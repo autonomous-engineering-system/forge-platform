@@ -723,15 +723,8 @@ public struct InstallerCLIWorkflow: Sendable {
             return Self.blocked("De sessiespecifieke host- en toolcontrole is niet geslaagd.")
         }
 
-        let providerResult = await verifyProviders(
-            state: &state,
-            options: options
-        )
-        if let providerResult {
-            return providerResult
-        }
         guard state.advance() else {
-            return Self.blocked("Niet alle vereiste providertargets zijn geverifieerd.")
+            return Self.blocked("De providertargets konden niet uit de geverifieerde sessie worden afgeleid.")
         }
 
         let reviewResult = await coordinator.prepareCompositionReview(
@@ -752,6 +745,8 @@ public struct InstallerCLIWorkflow: Sendable {
                 "composition": session.compositionIdentity,
                 "manifest_sha256": session.manifestSHA256,
                 "component_count": String(state.composition.components.count),
+                "provider_targets": state.enabledProviders.map(\.id.rawValue)
+                    .sorted().joined(separator: ","),
             ],
             records: Self.reviewRecords(state.composition)
         )
@@ -836,7 +831,10 @@ public struct InstallerCLIWorkflow: Sendable {
                     records: Self.reviewRecords(state.composition)
                 )
             }
-            guard await confirm(Self.reviewPrompt(state.composition)) else {
+            guard await confirm(Self.reviewPrompt(
+                state.composition,
+                providers: state.enabledProviders
+            )) else {
                 return InstallerCLIResult(
                     exitCode: .confirmationRequired,
                     status: "cancelled",
@@ -1067,7 +1065,10 @@ public struct InstallerCLIWorkflow: Sendable {
         }
     }
 
-    private static func reviewPrompt(_ review: CompositionReview) -> String {
+    private static func reviewPrompt(
+        _ review: CompositionReview,
+        providers: [ProviderProgress]
+    ) -> String {
         let records = reviewRecords(review)
         var lines = [
             "Gekwalificeerd wijzigingsplan: \(review.manifestIdentity)",
@@ -1084,6 +1085,9 @@ public struct InstallerCLIWorkflow: Sendable {
                 line += " digest=\(digest)"
             }
             lines.append(line)
+        }
+        for provider in providers.sorted(by: { $0.id.rawValue < $1.id.rawValue }) {
+            lines.append("- provider target=\(provider.id.rawValue) scope=\(provider.requirement.credentialScope.rawValue)")
         }
         lines.append("Voer deze \(records.count) beoordeelde componentwijziging(en) uit?")
         return lines.joined(separator: "\n")
