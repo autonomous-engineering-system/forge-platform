@@ -985,6 +985,31 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         await transport.invalidate()
     }
 
+    func testHelperLocalProductTransportUsesSameBoundedReceiptContract() async throws {
+        let (request, receipt) = try productOperationXPCFixture()
+        let executor = ProductOperationHelperExecutor(results: [.success(receipt)])
+        let transport = ManagedInstallerHelperLocalProductOperationTransport(
+            executor: executor
+        )
+        let response = try await transport.executeProductOperation(
+            request.canonicalJSONData()
+        ).get()
+        let calls = await executor.calls()
+        let invalid = await transport.executeProductOperation(Data("{}".utf8))
+        let noncanonical = await transport.executeProductOperation(
+            request.canonicalJSONData() + Data(" ".utf8)
+        )
+        XCTAssertEqual(response, receipt.canonicalJSONData())
+        XCTAssertEqual(calls, [request])
+        XCTAssertEqual(invalid.failure, .invalidRequest)
+        XCTAssertEqual(noncanonical.failure, .invalidRequest)
+        let unavailable = ManagedInstallerHelperLocalProductOperationTransport(
+            executor: ProductOperationHelperExecutor(results: [.failure(.unavailable)])
+        )
+        let failed = await unavailable.executeProductOperation(request.canonicalJSONData())
+        XCTAssertEqual(failed.failure, .unavailable)
+    }
+
     func testProductOperationXPCTransportRejectsInvalidRequestsBeforeIPC() async throws {
         let (request, receipt) = try productOperationXPCFixture()
         let service = RawProductOperationXPCService(
