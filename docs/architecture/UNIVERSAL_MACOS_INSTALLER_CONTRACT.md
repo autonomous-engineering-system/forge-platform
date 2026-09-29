@@ -1,10 +1,11 @@
 # Universal macOS Installer contract
 
-**Current qualification hold (2026-09-28):** The historical implementation
-snapshot below is not production admission. Forge 2.7.36 and EP 2.3.103 have
-proven lifecycle ownership gaps. Their remediated Forge 2.7.37 and EP 2.3.104
-releases are published and released-wheel-qualified in
-[forge#142 revision 24](https://github.com/pcvantol/forge/issues/142#issuecomment-5873771111).
+**Current qualification hold (2026-09-29):** The historical implementation
+snapshot below is not production admission. Forge 2.7.36 and EP 2.3.103/2.3.104
+have proven lifecycle ownership gaps. Forge 2.7.38 and EP 2.3.106 are the
+current separate released-wheel producer dependencies in
+[forge#142 terminal revision 27](https://github.com/pcvantol/forge/issues/142#issuecomment-5892374672).
+EP 2.3.105 retains its historical evidence and inherited-cwd defect.
 Production composition and live Forge/EP lifecycle qualification remain held
 until Forge Platform consumes the exact producer evidence in
 [forge#141](https://github.com/pcvantol/forge/issues/141). The installer 0.2.4
@@ -752,7 +753,7 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 The active `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923` source slice
 implements the ADR-0007 management model. Its source contracts currently model
 Forge 2.7.38 at `0a3d6e35b01da93bb5a674ae7795558655c16c7d` and Engineering
-Platform 2.3.104 at `cfce69892278ee2b6c14412c171f5f33596acb0e`.
+Platform 2.3.106 at `7b99b578153ae5d72372a09db194306b49ec9f9c`.
 The lifecycle producer hold above supersedes any earlier qualification claim
 for those exact artifacts. Binding corrected qualified producers into the
 production composition and released installer remains consumer work. The exact implementation/limitations
@@ -766,7 +767,7 @@ Server deployment/service adapter.
 
 These source surfaces do not by themselves claim installer publication or live
 Mac success. Forge 2.7.38 supplies product-owned update assessment, legacy
-uninstall and preserve/purge/restore boundaries; EP 2.3.104 supplies the matching
+uninstall and preserve/purge/restore boundaries; EP 2.3.106 supplies the matching
 system-instance lifecycle. Forge Platform must still bind the exact producer
 executables and artifacts and complete reviewed lifecycle execution before those
 operations can be released. Signing/notarization, provider-supported real authentication,

@@ -70,7 +70,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
     }
 
     /// The helper selects `epProductRoot`; no XPC request can supply it. The
-    /// exact provider/instance path follows EP 2.3.104's frozen topology.
+    /// exact provider/instance path follows the selected EP-owned topology.
     init?(
         epProductRoot: URL,
         expectedDeploymentID: String,

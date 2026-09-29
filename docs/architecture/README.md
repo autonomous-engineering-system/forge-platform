@@ -54,7 +54,7 @@ no-follow asset staging/readback boundary are present.
 The active Managed Installer V1 implementation adds
 a durable multi-instance deployment registry/saga, target-aware provider
 requirements and fan-out coordination, a native deployment-selection gate,
-target-aware manifest/session projection, an EP 2.3.104 system-provisioner
+target-aware manifest/session projection, an EP 2.3.106 system-provisioner
 adapter and the Forge Server deployment adapter, with exact 2.7.37 and 2.7.38
 lifecycle artifact admission. See
 [Managed Installer V1](MANAGED_INSTALLER_V1.md).

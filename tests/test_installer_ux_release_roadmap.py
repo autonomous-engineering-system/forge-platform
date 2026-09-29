@@ -42,9 +42,9 @@ class InstallerUXReleaseRoadmapTests(unittest.TestCase):
                          "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8")
         self.assertEqual(baselines["forge"]["contract"],
                          "forge-server-instance-lifecycle/v1")
-        self.assertEqual(baselines["engineering-platform"]["version"], "2.3.104")
+        self.assertEqual(baselines["engineering-platform"]["version"], "2.3.106")
         self.assertEqual(baselines["engineering-platform"]["wheel_sha256"],
-                         "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb")
+                         "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694")
         self.assertEqual(baselines["engineering-platform"]["contract"],
                          "engineering-platform.system-instance-lifecycle/v1")
         self.assertTrue(all(item["status"] == "QUALIFIED" for item in baselines.values()))

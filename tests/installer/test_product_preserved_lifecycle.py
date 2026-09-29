@@ -21,8 +21,8 @@ _IDENTITIES = {
         "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
     ),
     EP_COMPONENT: (
-        "2.3.104", "cfce69892278ee2b6c14412c171f5f33596acb0e",
-        "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb",
+        "2.3.106", "7b99b578153ae5d72372a09db194306b49ec9f9c",
+        "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694",
     ),
 }
 _REQUEST = "sha256:" + "a" * 64
@@ -149,7 +149,7 @@ class ProductPreservedLifecycleTests(unittest.TestCase):
                     component, QualifiedArtifact(**modified)
                 ))
 
-    def test_historical_ownership_gap_wheels_remain_rejected(self) -> None:
+    def test_historical_wheels_lack_new_mutation_authority(self) -> None:
         historical = {
             FORGE_COMPONENT: QualifiedArtifact(
                 "2.7.36", "ed1e623ef3cedd8c4f720510e0052409b2d5ab1f",
@@ -166,6 +166,22 @@ class ProductPreservedLifecycleTests(unittest.TestCase):
         }
         for component, artifact in historical.items():
             self.assertFalse(frozen_preserved_release(component, artifact))
+
+        for version, source, digest in (
+            (
+                "2.3.104", "cfce69892278ee2b6c14412c171f5f33596acb0e",
+                "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb",
+            ),
+            (
+                "2.3.105", "ad44263f6ec87ea018cda11f053fa12521ae9d79",
+                "sha256:22dd1e49c263b55dc9eee396810a09fc43509984fe685f3c00d26289d55e8adc",
+            ),
+        ):
+            self.assertFalse(frozen_preserved_release(
+                EP_COMPONENT, QualifiedArtifact(
+                    version, source, "released-wheel", digest, "release-complete",
+                ),
+            ))
 
     def test_all_product_terminal_operations_bind_exact_status(self) -> None:
         for component in _IDENTITIES:

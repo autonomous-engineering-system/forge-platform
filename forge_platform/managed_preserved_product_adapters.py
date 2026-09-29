@@ -203,7 +203,7 @@ class ForgePreservedProductAdapter:
 
 
 class EPPreservedProductAdapter:
-    """Invoke only the exact released EP 2.3.104 system-instance CLI."""
+    """Invoke the selected exact released EP system-instance CLI."""
 
     def __init__(
         self, *, provisioner_executable: Path, product_root: Path,

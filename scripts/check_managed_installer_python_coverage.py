@@ -54,6 +54,7 @@ TARGETS = (
     "forge_platform/product_worker_authority.py",
     "forge_platform/product_preserved_lifecycle.py",
     "forge_platform/qualified_forge_lifecycle.py",
+    "forge_platform/qualified_ep_lifecycle.py",
     "forge_platform/provider_fanout.py",
     "forge_platform/engineering_platform_system_adapter.py",
     "forge_platform/engineering_platform_provider_target.py",
