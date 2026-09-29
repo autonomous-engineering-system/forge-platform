@@ -53,7 +53,7 @@ struct ManagedInstallerPostToolComponentProviderInspector:
             activationRequest: activationRequest,
             forge: MacOSManagedInstallerProviderHostInspector(rootDirectory: forgeRoot),
             engineeringPlatform: MacOSManagedInstallerProviderHostInspector(
-                epProductRoot: epRoot
+                epProductRoot: epRoot, freshDeploymentID: stablePlan.deployment.id
             )
         )
     }
