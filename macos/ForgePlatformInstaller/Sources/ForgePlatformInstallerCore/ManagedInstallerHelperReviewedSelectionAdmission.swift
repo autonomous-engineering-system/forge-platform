@@ -3,6 +3,7 @@ import Foundation
 struct ManagedInstallerHelperSelectionMaterial: Equatable, Sendable {
     let session: VerifiedCompositionSessionPlan
     let currentRelease: VerifiedInstallerRelease
+    let manifestBytes: Data
 }
 
 protocol ManagedInstallerHelperSelectionMaterialAdmitting: Sendable {
@@ -36,7 +37,8 @@ struct ProductionManagedInstallerHelperSelectionMaterialAdmission:
         ) else { return nil }
         return ManagedInstallerHelperSelectionMaterial(
             session: verified.material.session,
-            currentRelease: verified.currentRelease.record.release
+            currentRelease: verified.currentRelease.record.release,
+            manifestBytes: verified.material.manifestBytes
         )
     }
 }
@@ -140,6 +142,9 @@ struct ManagedInstallerHelperReviewedSelectionAdmission: Sendable {
             request: selection.routeRequest,
             session: first.session
         )
+        guard Self.reviewMatchesManifest(snapshot.review, material: first) else {
+            throw ManagedInstallerHelperReviewedPlanAdmissionFailure.staleReview
+        }
         let plan = try ManagedInstallerHelperReviewedPlanAdmission().prepare(
             selection: selection,
             helperSnapshot: snapshot,
@@ -152,5 +157,36 @@ struct ManagedInstallerHelperReviewedSelectionAdmission: Sendable {
             throw ManagedInstallerHelperReviewedPlanAdmissionFailure.staleReview
         }
         return plan
+    }
+
+    private static func reviewMatchesManifest(
+        _ review: CompositionReview,
+        material: ManagedInstallerHelperSelectionMaterial
+    ) -> Bool {
+        guard material.manifestBytes.count <= CompositionCatalogFeedReadback.maximumCatalogBytes,
+              var reader = try? StrictJSONResourceReader(data: material.manifestBytes),
+              let value = try? reader.parseDocument(),
+              StrictSignedJSON.canonicalPayload(from: value) == material.manifestBytes,
+              let fields = value.objectValue,
+              fields["composition_id"]?.stringValue == material.session.compositionIdentity,
+              let components = fields["components"]?.arrayValue,
+              components.count == review.components.count else { return false }
+        var candidates: [String: (String, String)] = [:]
+        for component in components {
+            guard let item = component.objectValue,
+                  let identity = item["identity"]?.stringValue,
+                  let artifact = item["artifact"]?.objectValue,
+                  let version = artifact["version"]?.stringValue,
+                  let digest = artifact["digest"]?.stringValue,
+                  !version.isEmpty,
+                  CompositionCatalogValidation.isTaggedSHA256(digest),
+                  candidates.updateValue((version, digest), forKey: identity) == nil
+            else { return false }
+        }
+        return review.components.allSatisfy { component in
+            guard let candidate = candidates[component.componentID] else { return false }
+            return component.candidateVersion == candidate.0
+                && component.artifactDigest == candidate.1
+        }
     }
 }

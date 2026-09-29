@@ -424,8 +424,9 @@ These refine existing FP-EP-CI-6/7/Q for its selected scope and MVP-INST-001 for
 the broader horizon; they are not reverse dependencies on completed umbrella
 programmes. Keep existing product, clock/trust, signing and clean-host authority
 gates where applicable. External producer evidence is conditional on selected
-roles, not a dependency on every product being finished. Only the four owning
-Forge/EP producer contract/release nodes are `QUALIFIED`; consumer nodes are
-`DESIGNED` or `PLANNED` with no consumer qualification receipts. No runner,
+roles, not a dependency on every product being finished. The four owning
+Forge/EP producer contract/release nodes and the exact Forge 2.7.38 / EP 2.3.106
+consumer rebaseline are `QUALIFIED` on their own protected evidence. Later
+consumer execution and live nodes remain `DESIGNED` or `PLANNED`. No runner,
 signer, workflow, product installation, installer release, active Mission or
 executable DAG changes here.

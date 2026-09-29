@@ -174,8 +174,12 @@
         "IUR-LC-FORGE-RELEASE",
         "IUR-LC-EP-RELEASE"
       ],
-      "status": "DESIGNED",
-      "qualification_evidence": []
+      "status": "QUALIFIED",
+      "qualification_evidence": [
+        "https://github.com/autonomous-engineering-system/forge-platform/pull/403",
+        "https://github.com/pcvantol/forge/issues/141#issuecomment-5893027195",
+        "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694"
+      ]
     },
     {
       "id": "IUR-LC-PRESERVED-INVENTORY",
