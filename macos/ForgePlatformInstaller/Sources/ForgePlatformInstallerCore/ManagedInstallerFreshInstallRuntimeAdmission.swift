@@ -42,15 +42,18 @@ struct ManagedInstallerProductionFreshInstallProviderBuilder:
 struct ManagedInstallerFreshInstallRuntimeAdmissionCoordinator:
     ManagedInstallerRuntimeAdmissionPreparing, Sendable {
     private let material: ManagedVerifiedCompositionMaterial
+    private let materialAdmission: any ManagedInstallerFreshInstallMaterialAdmitting
     private let preprovider: any ManagedInstallerFreshInstallPreproviderPreparing
     private let providers: any ManagedInstallerFreshInstallProviderBuilding
     private let managedPython: any ManagedPythonRuntimePreparing
 
     init(material: ManagedVerifiedCompositionMaterial,
+         materialAdmission: any ManagedInstallerFreshInstallMaterialAdmitting,
          preprovider: any ManagedInstallerFreshInstallPreproviderPreparing,
          providers: any ManagedInstallerFreshInstallProviderBuilding,
          managedPython: any ManagedPythonRuntimePreparing) {
         self.material = material
+        self.materialAdmission = materialAdmission
         self.preprovider = preprovider
         self.providers = providers
         self.managedPython = managedPython
@@ -61,6 +64,10 @@ struct ManagedInstallerFreshInstallRuntimeAdmissionCoordinator:
                   ManagedInstallerRuntimePreparationAdmissionFailure> {
         guard stablePlan.session == material.session else {
             return .failure(.invalidRequest)
+        }
+        switch await materialAdmission.admit(stablePlan: stablePlan) {
+        case .success(let fresh) where fresh == material: break
+        case .success, .failure: return .failure(.rejected)
         }
         let beforeProviders: ManagedInstallerProductServiceAccountPreproviderReceipt
         switch await preprovider.prepare(stablePlan: stablePlan, material: material) {
@@ -114,6 +121,8 @@ enum ManagedInstallerFreshInstallRuntimeAdmissionHelperAssembly {
     ) -> Result<ManagedInstallerFreshInstallRuntimeAdmissionCoordinator,
                 ManagedInstallerProductServiceAccountHelperAssemblyFailure> {
         guard stablePlan.session == material.session,
+              let materialAdmission =
+                ManagedInstallerProductionFreshInstallMaterialAdmission.production(),
               case .success(let accountCoordinator) =
                 ManagedInstallerProductServiceAccountHelperAssembly.makeProduction(
                     stablePlan: stablePlan, material: material
@@ -128,6 +137,7 @@ enum ManagedInstallerFreshInstallRuntimeAdmissionHelperAssembly {
         )
         return .success(ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
             material: material,
+            materialAdmission: materialAdmission,
             preprovider: ManagedInstallerProductServiceAccountPreproviderCoordinator(
                 journal: journal, accounts: accountCoordinator
             ),
