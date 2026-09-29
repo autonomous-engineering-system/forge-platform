@@ -491,7 +491,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         let receipt = try freshRuntimeTransactionReceipt(
             fixture: fixture, includeAccounts: true
         )
-        for failure in ["account", "wheel", "material", "publisher", "currency"] {
+        for failure in ["account", "wheel", "material", "evidence", "publisher", "currency"] {
             let authority = FreshSingleRouteAuthority(failPublication: failure == "publisher")
             let downstream = FreshAccountProductDispatch()
             let operations = singleRouteOperations(
@@ -545,6 +545,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             ),
             accounts: FreshRuntimeAccountReader(readbacks: accounts),
             authority: authority, authorityReadback: authority,
+            evidenceStore: FreshSingleRouteEvidenceStore(fail: failure == "evidence"),
             ports: .init(probe: FreshSingleRoutePortProbe()),
             wheelFactory: { _ in
                 failure == "wheel" ? nil : FreshSingleRouteWheel()
@@ -587,6 +588,22 @@ private struct FreshSingleRouteCurrency: ManagedInstallerMutationCurrencyCheckin
 
 private struct FreshSingleRoutePortProbe: ManagedInstallerProductWorkerPortProbing {
     func isAvailableOnLoopback(_ port: Int) -> Bool { true }
+}
+
+private struct FreshSingleRouteEvidenceStore:
+    ManagedInstallerProductWorkerVenvEvidenceStoring {
+    let fail: Bool
+
+    func persist(_ evidence: ManagedInstallerProductWorkerVenvPublicationEvidence)
+        -> Result<Void, ManagedInstallerProductWorkerVenvEvidenceStoreFailure> {
+        fail ? .failure(.rejected) : .success(())
+    }
+
+    func load(deploymentID: String, componentIdentity: String)
+        -> Result<ManagedInstallerProductWorkerVenvPublicationEvidence?,
+                  ManagedInstallerProductWorkerVenvEvidenceStoreFailure> {
+        .success(nil)
+    }
 }
 
 private struct FreshSingleRouteWheel: ManagedPythonProductVenvWheelInstalling {
