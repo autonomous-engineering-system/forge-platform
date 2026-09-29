@@ -1,0 +1,34 @@
+{
+  "schema": "forge-platform.provider-runtime-pages/v1",
+  "status": "REVIEWED_CANDIDATE",
+  "release_tag": "forge-platform-provider-runtimes-v1",
+  "preserved_managed_tool_tag": "forge-platform-managed-tools-v1",
+  "preserved_managed_tool_marker_sha256": "sha256:2c254627718ad65bb7b7f676957012fe61e94b02653e42385d97bd50be78cbca",
+  "preserved_managed_tool_marker_size": 677,
+  "assets": [
+    {
+      "kind": "codex-runtime",
+      "asset_name": "forge-platform-provider-codex-0.157.1-arm64.tar.gz",
+      "relative_path": "codex-0.157.1-arm64/forge-platform-provider-codex-0.157.1-arm64.tar.gz",
+      "url": "https://autonomous-engineering-system.github.io/forge-platform/provider-runtimes/v1/codex-0.157.1-arm64/forge-platform-provider-codex-0.157.1-arm64.tar.gz",
+      "sha256": "sha256:a096caeec7ca0f29c6fe0e3389d34d5c0f8be01cd9291f983a54439a2a63d7ee",
+      "size": 94726370
+    },
+    {
+      "kind": "github-cli-runtime",
+      "asset_name": "forge-platform-provider-gh-2.101.0-arm64.tar.gz",
+      "relative_path": "github-cli-2.101.0-arm64/forge-platform-provider-gh-2.101.0-arm64.tar.gz",
+      "url": "https://autonomous-engineering-system.github.io/forge-platform/provider-runtimes/v1/github-cli-2.101.0-arm64/forge-platform-provider-gh-2.101.0-arm64.tar.gz",
+      "sha256": "sha256:493e6fa64f918810ee057fcab446a0006989a92dd3edbf2802ab13d3da9e1cc0",
+      "size": 13759850
+    },
+    {
+      "kind": "provider-provenance",
+      "asset_name": "provider-runtime-provenance.json",
+      "relative_path": "provider-runtime-provenance.json",
+      "url": "https://autonomous-engineering-system.github.io/forge-platform/provider-runtimes/v1/provider-runtime-provenance.json",
+      "sha256": "sha256:760e1874e2b7cd62e3c86fba5420cd2c7216d3d62995a3aaad5caa0e21943152",
+      "size": 1844
+    }
+  ]
+}

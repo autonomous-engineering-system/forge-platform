@@ -75,11 +75,15 @@ TARGETS = (
     "scripts/package_macos_installer_archive.py",
     "scripts/prepare_managed_tool_pages.py",
     "scripts/verify_managed_tool_pages.py",
+    "scripts/prepare_provider_runtime_pages.py",
+    "scripts/build_provider_runtime_archives.py",
 )
 
 TESTS = (
     "tests/installer/test_managed_tool_pages.py",
     "tests/installer/test_verify_managed_tool_pages.py",
+    "tests/installer/test_provider_runtime_pages.py",
+    "tests/installer/test_build_provider_runtime_archives.py",
     "tests/component_operations/test_component_operations.py",
     "tests/component_operations/test_durable_component_operations.py",
     "tests/component_operations/test_ep_system_provisioner_adapter.py",
