@@ -56,6 +56,14 @@ struct MacOSManagedInstallerProductServiceAccountDirectoryMutation:
     func readAccount(_ claim: ManagedInstallerProductServiceAccountClaim) async
         -> Result<ManagedInstallerProductServiceAccountReadback?,
                   ManagedInstallerProductServiceAccountPreparationFailure> {
+        readAccountSynchronously(claim)
+    }
+
+    /// The provider binder needs a fresh complete local-directory readback at
+    /// its synchronous mutation boundary, not only a POSIX name/UID lookup.
+    func readAccountSynchronously(_ claim: ManagedInstallerProductServiceAccountClaim)
+        -> Result<ManagedInstallerProductServiceAccountReadback?,
+                  ManagedInstallerProductServiceAccountPreparationFailure> {
         guard let expected = expectedIdentity(claim) else { return .failure(.invalidRequest) }
         switch collisions(expected) {
         case .failure(let failure): return .failure(failure)
@@ -108,7 +116,7 @@ struct MacOSManagedInstallerProductServiceAccountDirectoryMutation:
             }
         case .failure(let failure): return .failure(failure)
         }
-        switch await readAccount(claim) {
+        switch readAccountSynchronously(claim) {
         case .success(let value?): return .success(value)
         case .success(nil): return .failure(.rejected)
         case .failure(let failure): return .failure(failure)
