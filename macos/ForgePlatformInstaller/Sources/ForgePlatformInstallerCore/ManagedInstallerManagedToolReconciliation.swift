@@ -21,6 +21,7 @@ public struct ManagedInstallerManagedToolMutationRequest: Equatable, Sendable {
     public let targetVersion: InstallerVersion
     public let targetArtifactSHA256: String
     public let managedRootIdentity: String
+    public let reviewedInitialReadback: ManagedToolInstalledReadback
 
     public init(
         stablePlan: ManagedInstallerStablePlan,
@@ -28,6 +29,8 @@ public struct ManagedInstallerManagedToolMutationRequest: Equatable, Sendable {
     ) throws {
         guard plannedAction.action != .noChange,
               plannedAction.requirement.identity == .git,
+              plannedAction.hasReviewedInitialState,
+              let initialReadback = plannedAction.initialReadback,
               stablePlan.originalManagedToolActions.contains(plannedAction),
               ManagedPythonRuntimePostToolQualification.isFingerprint(
                   stablePlan.fingerprint
@@ -44,6 +47,7 @@ public struct ManagedInstallerManagedToolMutationRequest: Equatable, Sendable {
         targetVersion = plannedAction.requirement.version
         targetArtifactSHA256 = plannedAction.requirement.artifact.sha256
         managedRootIdentity = ManagedToolRequirement.managedRootIdentity
+        reviewedInitialReadback = initialReadback
     }
 }
 

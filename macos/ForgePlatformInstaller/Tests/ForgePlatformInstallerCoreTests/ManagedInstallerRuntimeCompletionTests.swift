@@ -1695,13 +1695,35 @@ private struct RuntimeCompletionFixture {
         )]
         default: nil
         }
+        let gitActions: [ManagedToolOriginalPlanAction]
+        if let managedGitAction {
+            let initial = try ManagedToolInstalledReadback(
+                identity: .git,
+                state: managedGitAction == .install ? .absent : .active,
+                version: managedGitAction == .install ? nil : (
+                    managedGitAction == .noChange ? git.version
+                        : try InstallerVersion("2.44.0")
+                ),
+                artifactSHA256: managedGitAction == .install ? nil : (
+                    managedGitAction == .noChange ? git.artifact.sha256
+                        : "sha256:" + String(repeating: "6", count: 64)
+                ),
+                managedRootIdentity: managedGitAction == .install ? nil
+                    : ManagedToolRequirement.managedRootIdentity,
+                evidenceReference: "receipt:completion-reviewed-git-initial"
+            )
+            gitActions = [.init(
+                requirement: git, action: managedGitAction,
+                initialReadback: initial
+            )]
+        } else {
+            gitActions = []
+        }
         stablePlan = try managedInstallerTestStablePlan(
             session: activationFixture.session,
             deployment: deployment,
             activationPlan: plan,
-            actions: managedGitAction.map {
-                [ManagedToolOriginalPlanAction(requirement: git, action: $0)]
-            } ?? [],
+            actions: gitActions,
             components: singleComponents
         )
         let journal = try ManagedPythonRuntimeParentJournalRecord(
