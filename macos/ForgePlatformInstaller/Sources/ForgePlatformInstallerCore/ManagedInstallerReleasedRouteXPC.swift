@@ -519,7 +519,14 @@ enum ManagedInstallerReleasedRouteXPCCodec {
     }
 }
 
-/// Read-only XPC backend over helper-owned route evidence. The app can select
+protocol ManagedInstallerHelperReviewedIntentExecuting: Sendable {
+    func execute(canonicalIntent: Data) async -> ManagedDeploymentExecutionResult
+}
+
+extension ManagedInstallerReviewedExecutionAdmission:
+    ManagedInstallerHelperReviewedIntentExecuting {}
+
+/// XPC backend over helper-owned route evidence. The app can select
 /// only a correlation request; file names are derived inside the helper and
 /// every document is read through a private root descriptor without following
 /// links. The released helper derives inventory from the Python-owned registry
@@ -539,6 +546,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     private let inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer?
     private let registryReader: FileManagedInstallerManagedDeploymentRegistryReader?
     private let registration: ManagedInstallerHelperReviewedSelectionRegistration?
+    private let execution: (any ManagedInstallerHelperReviewedIntentExecuting)?
 
     public convenience override init() {
         self.init(
@@ -549,7 +557,8 @@ public final class FileManagedInstallerReleasedRouteXPCService:
                 candidate: FileManagedInstallerManagedDeploymentCreateCandidateStore()
             ),
             registryReader: FileManagedInstallerManagedDeploymentRegistryReader(),
-            registration: ManagedInstallerHelperReviewedSelectionRegistration.production()
+            registration: ManagedInstallerHelperReviewedSelectionRegistration.production(),
+            execution: nil
         )
     }
 
@@ -558,13 +567,15 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         expectedOwner: uid_t,
         inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer? = nil,
         registryReader: FileManagedInstallerManagedDeploymentRegistryReader? = nil,
-        registration: ManagedInstallerHelperReviewedSelectionRegistration? = nil
+        registration: ManagedInstallerHelperReviewedSelectionRegistration? = nil,
+        execution: (any ManagedInstallerHelperReviewedIntentExecuting)? = nil
     ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
         self.inventoryProducer = inventoryProducer
         self.registryReader = registryReader
         self.registration = registration
+        self.execution = execution
         super.init()
     }
 
@@ -607,8 +618,21 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
-        _ = canonicalIntent
-        reply(nil)
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let execution,
+              let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
+                canonicalIntent
+              ), intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            let result = await execution.execute(canonicalIntent: canonicalIntent)
+            guard let bytes = ManagedInstallerReviewedExecutionResultCodec.encode(result),
+                  (try? ManagedInstallerReviewedExecutionResultCodec.decode(bytes))
+                    == result else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
     }
 
     public func registerReviewedSelection(

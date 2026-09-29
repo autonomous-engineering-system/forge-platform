@@ -97,6 +97,51 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         XCTAssertNil(denied)
     }
 
+    func testFileHelperDispatchesOnlyCanonicalReviewedIntentAndTypedReply()
+        async throws {
+        let fixture = try ReleasedRouteFixture()
+        let activation = try ManagedPythonRuntimeActivationPlan(
+            session: fixture.session, deployment: fixture.deployment,
+            initialReadback: fixture.snapshot.initialPythonRuntime
+        )
+        let plan = try ManagedInstallerStablePlan(
+            session: fixture.session, deployment: fixture.deployment,
+            activationPlan: activation, reviewedOperation: fixture.operation,
+            originalManagedToolActions: fixture.snapshot.managedToolActions
+        )
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+        let executor = ReleasedIntentExecutionProbe()
+        let service = FileManagedInstallerReleasedRouteXPCService(
+            rootDirectory: URL(fileURLWithPath: "/private/tmp", isDirectory: true),
+            expectedOwner: geteuid(), execution: executor
+        )
+        let malformed = await callIntent(service, Data("{}".utf8))
+        let noncanonical = await callIntent(
+            service, Data(" ".utf8) + intent.canonicalJSONData()
+        )
+        XCTAssertNil(malformed)
+        XCTAssertNil(noncanonical)
+        let before = await executor.callCount()
+        XCTAssertEqual(before, 0)
+        let returned = await callIntent(service, intent.canonicalJSONData())
+        let response = try XCTUnwrap(returned)
+        XCTAssertEqual(try ManagedInstallerReviewedExecutionResultCodec.decode(response),
+                       .failed(.executionFailed, stages: []))
+        let acceptedCalls = await executor.callCount()
+        XCTAssertEqual(acceptedCalls, 1)
+        await executor.useInvalidResult()
+        let invalidReply = await callIntent(service, intent.canonicalJSONData())
+        XCTAssertNil(invalidReply)
+        let invalidCalls = await executor.callCount()
+        XCTAssertEqual(invalidCalls, 2)
+        let unavailable = FileManagedInstallerReleasedRouteXPCService(
+            rootDirectory: URL(fileURLWithPath: "/private/tmp", isDirectory: true),
+            expectedOwner: geteuid()
+        )
+        let denied = await callIntent(unavailable, intent.canonicalJSONData())
+        XCTAssertNil(denied)
+    }
+
     func testInventoryCodecRejectsCrossDeploymentInstanceReuse() throws {
         let inventory = try ManagedDeploymentInventory(
             existing: [
@@ -572,6 +617,20 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         )
         return .object(fields)
     }
+}
+
+private actor ReleasedIntentExecutionProbe:
+    ManagedInstallerHelperReviewedIntentExecuting {
+    private var calls = 0
+    private var invalidResult = false
+    func execute(canonicalIntent: Data) async -> ManagedDeploymentExecutionResult {
+        calls += 1
+        return invalidResult
+            ? .completed(stages: [], summaryItems: [])
+            : .failed(.executionFailed, stages: [])
+    }
+    func callCount() -> Int { calls }
+    func useInvalidResult() { invalidResult = true }
 }
 
 private struct XPCExecutionPlanLoader: ManagedInstallerHelperOwnedStablePlanLoading {
