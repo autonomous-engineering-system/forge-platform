@@ -48,6 +48,14 @@ protocol ManagedInstallerProductWorkerRunning: Sendable {
     ) async -> Result<Data, ManagedInstallerProductWorkerFailure>
 }
 
+protocol ManagedInstallerProductWheelWorkerRunning: Sendable {
+    func runWheelWorker(
+        _ invocation: ManagedInstallerProductWorkerInvocation,
+        request: ManagedInstallerProductWheelWorkerRequest
+    ) async -> Result<ManagedInstallerProductWheelWorkerReceipt,
+                      ManagedInstallerProductWorkerFailure>
+}
+
 protocol ManagedInstallerForgeUpdateResourcesChecking: Sendable {
     func check() async -> Bool
 }
@@ -160,7 +168,8 @@ struct FileManagedInstallerProductWorkerInvocationResolver:
 /// bounded canonical JSON pipes. PATH, HOME, caller environment, shell and
 /// network-selected modules never participate in process construction.
 struct MacOSManagedInstallerProductWorkerRunner:
-    ManagedInstallerProductWorkerRunning, Sendable {
+    ManagedInstallerProductWorkerRunning,
+    ManagedInstallerProductWheelWorkerRunning, Sendable {
     private static let maximumErrorBytes = 8 * 1_024
     private static let maximumWorkerBytes = 16 * 1_024 * 1_024
     private let forgeUpdateResources: any ManagedInstallerForgeUpdateResourcesChecking
@@ -212,7 +221,45 @@ struct MacOSManagedInstallerProductWorkerRunner:
                 return .failure(.unavailable)
             }
         }
-        guard secureInterpreter(invocation), secureWorker(invocation) else {
+        return await runVerifiedWorker(
+            invocation, canonicalRequest: canonicalRequest,
+            maximumReceiptBytes: max(
+                ManagedInstallerProductOperationReceipt.maximumBytes,
+                ManagedInstallerProductRemovalReceipt.maximumBytes,
+                ManagedInstallerPreservedLifecycleReviewProposal.maximumBytes,
+                ManagedInstallerPreservedLifecycleReceipt.maximumBytes,
+                ManagedInstallerPreserveRecoveryReceipt.maximumBytes
+            )
+        )
+    }
+
+    func runWheelWorker(
+        _ invocation: ManagedInstallerProductWorkerInvocation,
+        request: ManagedInstallerProductWheelWorkerRequest
+    ) async -> Result<ManagedInstallerProductWheelWorkerReceipt,
+                      ManagedInstallerProductWorkerFailure> {
+        let raw = request.canonicalJSONData()
+        let output: Data
+        switch await runVerifiedWorker(
+            invocation, canonicalRequest: raw, maximumReceiptBytes: 8192
+        ) {
+        case .success(let value): output = value
+        case .failure(let failure): return .failure(failure)
+        }
+        guard let receipt = try? ManagedInstallerProductWheelWorkerReceipt.decode(
+            output, for: request
+        ) else { return .failure(.rejected) }
+        return .success(receipt)
+    }
+
+    private func runVerifiedWorker(
+        _ invocation: ManagedInstallerProductWorkerInvocation,
+        canonicalRequest: Data, maximumReceiptBytes: Int
+    ) async -> Result<Data, ManagedInstallerProductWorkerFailure> {
+        guard !canonicalRequest.isEmpty,
+              canonicalRequest.count <= ManagedInstallerProductOperationRequest.maximumBytes,
+              maximumReceiptBytes > 0,
+              secureInterpreter(invocation), secureWorker(invocation) else {
             return .failure(.rejected)
         }
 
@@ -243,13 +290,7 @@ struct MacOSManagedInstallerProductWorkerRunner:
 
         async let output = Self.readBounded(
             standardOutput.fileHandleForReading,
-            maximumBytes: max(
-                ManagedInstallerProductOperationReceipt.maximumBytes,
-                ManagedInstallerProductRemovalReceipt.maximumBytes,
-                ManagedInstallerPreservedLifecycleReviewProposal.maximumBytes,
-                ManagedInstallerPreservedLifecycleReceipt.maximumBytes,
-                ManagedInstallerPreserveRecoveryReceipt.maximumBytes
-            ),
+            maximumBytes: maximumReceiptBytes,
             timeoutNanoseconds: invocation.timeoutNanoseconds
         )
         async let error = Self.readBounded(
