@@ -187,6 +187,12 @@ exact 2.7.38 release, the adapter invokes the separately protected external
 controller with base Python `-I` and `--assess-only`. It verifies the exact
 controller source and bytes, release-complete receipt digest, selected
 instance/artifact, candidate, request digest and canonical assessment digest.
+The production controller binding is the corrected protected source
+`e4b99a249845a547fd6b8e7e11d22467b2d0886d` with SHA-256
+`6a6bb4ade3db9d1e45ba64a0d928e91013109de3243e8e2dbccfaa04a7a455b4`,
+qualified in [forge#142 revision 26](https://github.com/pcvantol/forge/issues/142#issuecomment-5887942490).
+The formerly pinned `bf7ae99…` controller remains historical `GAP_PROVEN`
+evidence and is not admitted for a production update.
 Immediately before mutation it repeats the product assessment and requires the
 reviewed digest to match; the same digest is passed into the owning controller's
 durable update request. Other candidate releases retain their existing

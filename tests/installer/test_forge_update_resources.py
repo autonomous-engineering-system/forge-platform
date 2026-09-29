@@ -15,6 +15,13 @@ from forge_platform import forge_update_resources as module
 
 
 class ForgeUpdateResourcesTests(unittest.TestCase):
+    def test_production_binding_uses_corrected_protected_controller(self) -> None:
+        self.assertEqual(module._CONTROLLER_SOURCE, "e4b99a249845a547fd6b8e7e11d22467b2d0886d")
+        self.assertEqual(
+            module._CONTROLLER_DIGEST,
+            "sha256:6a6bb4ade3db9d1e45ba64a0d928e91013109de3243e8e2dbccfaa04a7a455b4",
+        )
+
     def test_exact_siblings_and_fail_closed_resource_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -259,8 +259,8 @@ class ForgeServerAdapterTests(unittest.TestCase):
         binding = ForgeUpdateBinding(
             controller, root / "release-complete.json",
             "sha256:7f8f4646a369ea565e52f8420df665acb64d032e5004e1b45ef7dc8427548c49",
-            "bf7ae99c67e32fd2047965f19ece30a35071e868",
-            "sha256:9c43e1c3dcb411fb5f81a6a70d99b0c28b6bb2c79117f70703a50037e2e78183",
+            "e4b99a249845a547fd6b8e7e11d22467b2d0886d",
+            "sha256:6a6bb4ade3db9d1e45ba64a0d928e91013109de3243e8e2dbccfaa04a7a455b4",
             root / "resolver", "sha256:" + "a" * 64,
             root / "runtimes", self.target.instance_id, "installation-1",
             "sha256:" + "b" * 64, root / "old-python", old.version,

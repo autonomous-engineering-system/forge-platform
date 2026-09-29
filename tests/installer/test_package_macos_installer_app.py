@@ -182,6 +182,14 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             )
 
     def test_packages_only_exact_protected_forge_controller_with_helper_and_worker(self) -> None:
+        self.assertEqual(
+            packager._FORGE_UPDATE_CONTROLLER_SOURCE,
+            "e4b99a249845a547fd6b8e7e11d22467b2d0886d",
+        )
+        self.assertEqual(
+            packager._FORGE_UPDATE_CONTROLLER_SHA256,
+            "sha256:6a6bb4ade3db9d1e45ba64a0d928e91013109de3243e8e2dbccfaa04a7a455b4",
+        )
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             executable = self._executable(workspace)
