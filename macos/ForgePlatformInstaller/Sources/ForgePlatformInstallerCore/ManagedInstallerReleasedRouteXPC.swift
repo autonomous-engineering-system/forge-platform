@@ -563,6 +563,8 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     private let registryReader: FileManagedInstallerManagedDeploymentRegistryReader?
     private let registration: ManagedInstallerHelperReviewedSelectionRegistration?
     private let execution: (any ManagedInstallerHelperReviewedIntentExecuting)?
+    private let freshSnapshotProducer: (any ManagedInstallerReleasedRouteFreshSnapshotProducing)?
+    private let requiresFreshSnapshotPublication: Bool
 
     public convenience override init() {
         let registration = ManagedInstallerHelperReviewedSelectionRegistration.production()
@@ -575,6 +577,9 @@ public final class FileManagedInstallerReleasedRouteXPCService:
             ),
             registryReader: FileManagedInstallerManagedDeploymentRegistryReader(),
             registration: registration,
+            freshSnapshotProducer: ManagedInstallerReleasedRouteFreshSnapshotProducer
+                .production(),
+            requiresFreshSnapshotPublication: true,
             execution: ManagedInstallerReviewedExecutionAdmission.whenReady(
                 loader: registration,
                 executor: ManagedInstallerHelperFreshInstallPlanExecutor.production()
@@ -588,6 +593,8 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer? = nil,
         registryReader: FileManagedInstallerManagedDeploymentRegistryReader? = nil,
         registration: ManagedInstallerHelperReviewedSelectionRegistration? = nil,
+        freshSnapshotProducer: (any ManagedInstallerReleasedRouteFreshSnapshotProducing)? = nil,
+        requiresFreshSnapshotPublication: Bool = false,
         execution: (any ManagedInstallerHelperReviewedIntentExecuting)? = nil
     ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
@@ -595,6 +602,8 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         self.inventoryProducer = inventoryProducer
         self.registryReader = registryReader
         self.registration = registration
+        self.freshSnapshotProducer = freshSnapshotProducer
+        self.requiresFreshSnapshotPublication = requiresFreshSnapshotPublication
         self.execution = execution
         super.init()
     }
@@ -620,18 +629,33 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         withReply reply: @escaping (Data?) -> Void
     ) {
         guard let request = try? ManagedInstallerReleasedRouteRequest.decodeJSON(canonicalRequest),
-              request.canonicalJSONData() == canonicalRequest,
-              let loaded = loadInventory(),
+              request.canonicalJSONData() == canonicalRequest else { reply(nil); return }
+        guard requiresFreshSnapshotPublication else {
+            reply(loadStoredRoute(canonicalRequest, request: request))
+            return
+        }
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let freshSnapshotProducer else { gate.complete(nil); return }
+        Task {
+            guard case .success = await freshSnapshotProducer.produceAndPublish(
+                request: request
+            ) else { gate.complete(nil); return }
+            gate.complete(loadStoredRoute(canonicalRequest, request: request))
+        }
+    }
+
+    private func loadStoredRoute(
+        _ canonicalRequest: Data,
+        request: ManagedInstallerReleasedRouteRequest
+    ) -> Data? {
+        guard let loaded = loadInventory(),
               let data = try? readSecureFile(named: Self.routeFileName(for: canonicalRequest)),
               (try? ManagedInstallerReleasedRouteXPCCodec.validateStoredSnapshot(
                   data,
                   request: request,
                   inventory: loaded.inventory
-              )) != nil else {
-            reply(nil)
-            return
-        }
-        reply(data)
+              )) != nil else { return nil }
+        return data
     }
 
     public func executeReviewedIntent(
