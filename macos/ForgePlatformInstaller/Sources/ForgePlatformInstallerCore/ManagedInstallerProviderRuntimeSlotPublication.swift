@@ -21,12 +21,14 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
     private let expectedDeploymentID: String
     private let expectedOwner: uid_t
     private let boundEPRequirement: ProviderRequirement?
+    private let epProductRoot: URL?
 
     init(slotsRoot: URL, expectedDeploymentID: String, expectedOwner: uid_t = 0) {
         self.slotsRoot = slotsRoot
         self.expectedDeploymentID = expectedDeploymentID
         self.expectedOwner = expectedOwner
         boundEPRequirement = nil
+        epProductRoot = nil
     }
 
     /// The helper selects `epProductRoot`; no XPC request can supply it. The
@@ -59,6 +61,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         self.expectedDeploymentID = expectedDeploymentID
         self.expectedOwner = expectedOwner
         boundEPRequirement = requirement
+        self.epProductRoot = epProductRoot
     }
 
     func readPublishedSlot(
@@ -102,6 +105,8 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         let inventory: ManagedInstallerProviderRuntimeArchiveExtractionInventory
         do { inventory = try self.inventory(archive, requirement: requirement,
                                             request: request) }
+        catch { return .failure(.rejected) }
+        do { try prepareEPProviderRootIfNeeded() }
         catch { return .failure(.rejected) }
         switch cache(for: requirement).retain(
             archive, archiveSHA256: request.runtime.artifactSHA256
@@ -222,6 +227,53 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         } catch {
             _ = Darwin.close(descriptor)
             throw error
+        }
+    }
+
+    /// Product registration needs installed provider bytes before `create`.
+    /// Seed only the exact helper-selected private product topology, never a
+    /// caller-supplied parent or a symlink. Repeating after interruption is
+    /// idempotent; an existing insecure directory always fails closed.
+    private func prepareEPProviderRootIfNeeded() throws {
+        guard let epProductRoot, let requirement = boundEPRequirement,
+              let instanceID = requirement.targetIdentity else { return }
+        guard Darwin.geteuid() == expectedOwner,
+              epProductRoot.isFileURL, epProductRoot.baseURL == nil,
+              epProductRoot.path.hasPrefix("/"), epProductRoot.path != "/" else {
+            throw ManagedInstallerProviderRuntimeMutationFailure.rejected
+        }
+        let root = epProductRoot.path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard root >= 0 else {
+            throw ManagedInstallerProviderRuntimeMutationFailure.rejected
+        }
+        defer { _ = Darwin.close(root) }
+        try requirePrivateDirectory(root)
+        var parent = root
+        var opened: [Int32] = []
+        defer { opened.forEach { _ = Darwin.close($0) } }
+        for segment in [
+            "instances", instanceID, "providers",
+            requirement.provider == .codex ? "codex" : "github",
+        ] {
+            let created = segment.withCString { Darwin.mkdirat(parent, $0, mode_t(0o700)) }
+            guard created == 0 || errno == EEXIST else {
+                throw ManagedInstallerProviderRuntimeMutationFailure.rejected
+            }
+            let child = segment.withCString {
+                Darwin.openat(parent, $0,
+                              O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+            }
+            guard child >= 0 else {
+                throw ManagedInstallerProviderRuntimeMutationFailure.rejected
+            }
+            opened.append(child)
+            try requirePrivateDirectory(child)
+            if created == 0 && Darwin.fsync(parent) != 0 {
+                throw ManagedInstallerProviderRuntimeMutationFailure.unavailable
+            }
+            parent = child
         }
     }
 

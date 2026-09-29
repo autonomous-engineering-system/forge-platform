@@ -22,6 +22,17 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
                 isDirectory: true
             ),
             expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.productsDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.productsDirectoryName,
+                isDirectory: true
+            ).appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.engineeringPlatformDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
                 ManagedInstallerHelperStateRootBootstrap.stateDirectoryName,
                 isDirectory: true
             ),
@@ -100,6 +111,30 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
         )
         try FileManager.default.createSymbolicLink(at: venvs, withDestinationURL: outside)
         XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    func testRejectsUnsafeEPProductRootWithoutFollowingSymlink() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = try testBootstrap(parent).prepare()
+        let product = root.appendingPathComponent("products/engineering-platform",
+                                                isDirectory: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: product.path
+        )
+        XCTAssertThrowsError(try testBootstrap(parent).prepare())
+
+        try FileManager.default.removeItem(at: product)
+        let outside = parent.appendingPathComponent("outside-product", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside,
+                                                withIntermediateDirectories: false)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: outside.path
+        )
+        try FileManager.default.createSymbolicLink(at: product,
+                                                   withDestinationURL: outside)
+        XCTAssertThrowsError(try testBootstrap(parent).prepare())
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
 
