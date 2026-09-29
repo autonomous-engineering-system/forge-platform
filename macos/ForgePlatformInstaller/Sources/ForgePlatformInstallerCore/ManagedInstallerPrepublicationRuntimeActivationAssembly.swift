@@ -34,7 +34,9 @@ struct ManagedInstallerPrepublicationRuntimeActivationAssembly {
         case .success(let prepared): wheel = prepared
         case .failure(let failure): return .failure(failure)
         }
-        let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
+        let root = ManagedInstallerHelperStateRootBootstrap.operationStateRoot(
+            for: FileManagedInstallerReleasedRouteXPCService.productionRoot
+        )
         let mutation = ManagedPythonInitialRuntimeHelperAssembly.makeProduction(
             runtime: stablePlan.session.managedPythonRuntime,
             wheel: wheel

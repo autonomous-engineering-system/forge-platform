@@ -14,6 +14,12 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
 
         XCTAssertEqual(try bootstrap.prepare(), expected)
         XCTAssertEqual(try bootstrap.prepare(), expected)
+        XCTAssertEqual(
+            ManagedInstallerHelperStateRootBootstrap.operationStateRoot(
+                for: expected
+            ),
+            expected.appendingPathComponent("state", isDirectory: true)
+        )
         for directory in [
             expected.deletingLastPathComponent(), expected,
             expected.appendingPathComponent("managed-python-runtime-slots", isDirectory: true),

@@ -5,8 +5,15 @@ import XCTest
 
 final class ManagedInstallerManagedToolOperationLockTests: XCTestCase {
     func testGitAndPythonUseTheSameHostLease() throws {
-        let root = try lockRoot()
-        defer { try? FileManager.default.removeItem(at: root) }
+        let helperRoot = try lockRoot()
+        defer { try? FileManager.default.removeItem(at: helperRoot) }
+        try FileManager.default.createDirectory(
+            at: helperRoot, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+        )
+        let root = ManagedInstallerHelperStateRootBootstrap.operationStateRoot(
+            for: helperRoot
+        )
         let git = FileManagedInstallerManagedToolOperationLock(rootDirectory: root)
         let python = FileManagedPythonRuntimeOperationLock(rootDirectory: root)
 
@@ -27,6 +34,16 @@ final class ManagedInstallerManagedToolOperationLockTests: XCTestCase {
         else { throw LockTestFailure.unexpected }
         let secondGitLease = try acquired(git.acquireExclusiveManagedToolOperationLock())
         try released(secondGitLease.releaseExclusiveManagedToolOperationLock())
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(
+                FileManagedPythonRuntimeOperationLock.lockFileName
+            ).path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: helperRoot.appendingPathComponent(
+                FileManagedPythonRuntimeOperationLock.lockFileName
+            ).path
+        ))
     }
 
     func testInsecureRootOrLockFileFailsClosed() throws {

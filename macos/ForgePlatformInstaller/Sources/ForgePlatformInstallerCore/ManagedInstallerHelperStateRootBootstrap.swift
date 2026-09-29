@@ -17,6 +17,13 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
     static let engineeringPlatformDirectoryName = "engineering-platform"
     static let stagedDirectoryName = "staged"
     static let stateDirectoryName = "state"
+
+    /// One fixed private root for the host-wide Python/Git operation lease,
+    /// runtime recovery records and post-tool observation. The helper
+    /// bootstrap creates and verifies this directory before listeners start.
+    public static func operationStateRoot(for helperRoot: URL) -> URL {
+        helperRoot.appendingPathComponent(stateDirectoryName, isDirectory: true)
+    }
     static let deploymentsDirectoryName = "deployments"
     static let productOperationsDirectoryName = "product-operations"
     static let componentOperationsDirectoryName = "component-operations"
