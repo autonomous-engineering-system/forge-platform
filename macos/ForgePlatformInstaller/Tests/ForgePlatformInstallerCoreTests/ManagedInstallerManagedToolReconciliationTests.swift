@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import ForgePlatformInstallerCore
@@ -143,6 +144,301 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
         XCTAssertEqual(store.persist(complete, replacing: staged).journalFailure, .rejected)
     }
 
+    func testManagedGitJournalMutatorSelectsExactSlotAndRepeatsIdempotently()
+        async throws {
+        let fixture = try ManagedToolReconciliationFixture(action: .install)
+        let request = try XCTUnwrap(fixture.request)
+        let root = try temporaryManagedGitJournalRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let host = MutableManagedGitHost(readback: request.reviewedInitialReadback)
+        let slot = managedGitTestSlot(fixture: fixture)
+        let mutator = managedGitMutator(
+            fixture: fixture, host: host, root: root, slot: slot
+        )
+
+        let first = try mutatorReceipt(await mutator.reconcileManagedTool(request))
+        XCTAssertEqual(first.operationID, request.operationID)
+        XCTAssertEqual(first.finalReadbackEvidenceReference, slot.treeEvidenceReference)
+        XCTAssertEqual(host.persistCount, 1)
+        XCTAssertTrue(host.snapshot().matches(fixture.requirement))
+        let journal = FileManagedInstallerManagedGitOperationJournalStore(rootDirectory: root)
+        XCTAssertNil(try journal.loadPending().get())
+        XCTAssertEqual(try journal.loadTerminal(operationID: request.operationID).get()?.phase,
+                       .complete)
+
+        let repeated = try mutatorReceipt(await mutator.resumeManagedTool(
+            request, observedCurrentReadback: host.snapshot()
+        ))
+        XCTAssertEqual(repeated, first)
+        XCTAssertEqual(host.persistCount, 1)
+    }
+
+    func testManagedGitJournalMutatorResumesAfterActiveMarkerBeforeTerminal()
+        async throws {
+        let fixture = try ManagedToolReconciliationFixture(action: .upgrade)
+        let request = try XCTUnwrap(fixture.request)
+        let root = try temporaryManagedGitJournalRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let slot = managedGitTestSlot(fixture: fixture)
+        let journal = FileManagedInstallerManagedGitOperationJournalStore(rootDirectory: root)
+        let planned = try ManagedInstallerManagedGitOperationRecord(request: request)
+        let staged = try planned.staged(
+            slotEvidenceReference: slot.treeEvidenceReference
+        )
+        XCTAssertEqual(journal.persist(planned, replacing: nil).journalFailure, nil)
+        XCTAssertEqual(journal.persist(staged, replacing: planned).journalFailure, nil)
+        let selected = try ManagedToolInstalledReadback(
+            identity: .git, state: .active,
+            version: fixture.requirement.version,
+            artifactSHA256: fixture.requirement.artifact.sha256,
+            managedRootIdentity: ManagedToolRequirement.managedRootIdentity,
+            evidenceReference: slot.treeEvidenceReference
+        )
+        let host = MutableManagedGitHost(readback: selected)
+        let mutator = managedGitMutator(
+            fixture: fixture, host: host, root: root, slot: slot
+        )
+        let receipt = try mutatorReceipt(await mutator.resumeManagedTool(
+            request, observedCurrentReadback: selected
+        ))
+        XCTAssertEqual(receipt.finalReadbackEvidenceReference,
+                       slot.treeEvidenceReference)
+        XCTAssertEqual(host.persistCount, 0)
+        XCTAssertNil(try journal.loadPending().get())
+        XCTAssertEqual(try journal.loadTerminal(operationID: request.operationID).get()?.phase,
+                       .complete)
+    }
+
+    func testSharedCoordinatorAdmitsOnlyJournalBoundGitResume() async throws {
+        let fixture = try ManagedToolReconciliationFixture(action: .install)
+        let request = try XCTUnwrap(fixture.request)
+        let slot = managedGitTestSlot(fixture: fixture)
+        let root = try temporaryManagedGitJournalRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = FileManagedInstallerManagedGitOperationJournalStore(rootDirectory: root)
+        let planned = try ManagedInstallerManagedGitOperationRecord(request: request)
+        let staged = try planned.staged(
+            slotEvidenceReference: slot.treeEvidenceReference
+        )
+        XCTAssertEqual(journal.persist(planned, replacing: nil).journalFailure, nil)
+        XCTAssertEqual(journal.persist(staged, replacing: planned).journalFailure, nil)
+        let active = try ManagedToolInstalledReadback(
+            identity: .git, state: .active,
+            version: fixture.requirement.version,
+            artifactSHA256: fixture.requirement.artifact.sha256,
+            managedRootIdentity: ManagedToolRequirement.managedRootIdentity,
+            evidenceReference: slot.treeEvidenceReference
+        )
+        let host = MutableManagedGitHost(readback: active)
+        let events = ManagedToolReconciliationEvents()
+        let coordinator = ManagedInstallerManagedToolReconciliationCoordinator(
+            mutation: managedGitMutator(
+                fixture: fixture, host: host, root: root, slot: slot
+            ),
+            readback: host,
+            operationLock: ManagedToolReconciliationLock(events: events)
+        )
+        let receipt = try managedToolSuccess(await coordinator.reconcileManagedTools(
+            stablePlan: fixture.stablePlan
+        ))
+        XCTAssertEqual(receipt.mutationReceipts.count, 1)
+        XCTAssertEqual(receipt.mutationReceipts[0].finalReadbackEvidenceReference,
+                       slot.treeEvidenceReference)
+        XCTAssertEqual(host.persistCount, 0)
+        XCTAssertEqual(events.snapshot(), ["lock", "release"])
+    }
+
+    func testManagedGitJournalMutatorRejectsStaleForeignAndBrokenEvidence()
+        async throws {
+        let fixture = try ManagedToolReconciliationFixture(action: .install)
+        let request = try XCTUnwrap(fixture.request)
+        let slot = managedGitTestSlot(fixture: fixture)
+
+        do {
+            let root = try temporaryManagedGitJournalRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let host = MutableManagedGitHost(readback: try ManagedToolInstalledReadback(
+                identity: .git, state: .active,
+                version: fixture.requirement.version,
+                artifactSHA256: fixture.requirement.artifact.sha256,
+                managedRootIdentity: ManagedToolRequirement.managedRootIdentity,
+                evidenceReference: slot.treeEvidenceReference
+            ))
+            let mutator = managedGitMutator(
+                fixture: fixture, host: host, root: root, slot: slot
+            )
+            let outcome = await mutator.resumeManagedTool(
+                request, observedCurrentReadback: host.snapshot()
+            )
+            XCTAssertEqual(outcome.journalFailure, .staleReviewedState)
+            XCTAssertEqual(host.persistCount, 0)
+        }
+
+        do {
+            let root = try temporaryManagedGitJournalRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let other = try ManagedToolReconciliationFixture(
+                action: .install, deploymentID: "other-deployment"
+            )
+            let foreign = try ManagedInstallerManagedGitOperationRecord(
+                request: XCTUnwrap(other.request)
+            )
+            let journal = FileManagedInstallerManagedGitOperationJournalStore(rootDirectory: root)
+            XCTAssertEqual(journal.persist(foreign, replacing: nil).journalFailure, nil)
+            let host = MutableManagedGitHost(readback: request.reviewedInitialReadback)
+            let mutator = managedGitMutator(
+                fixture: fixture, host: host, root: root, slot: slot
+            )
+            let outcome = await mutator.reconcileManagedTool(request)
+            XCTAssertEqual(outcome.journalFailure, .rejected)
+            XCTAssertEqual(host.persistCount, 0)
+        }
+
+        do {
+            let root = try temporaryManagedGitJournalRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let host = MutableManagedGitHost(readback: request.reviewedInitialReadback)
+            let mutator = managedGitMutator(
+                fixture: fixture, host: host, root: root, slot: slot,
+                binaryEvidence: "bad-reference"
+            )
+            let outcome = await mutator.reconcileManagedTool(request)
+            XCTAssertEqual(outcome.journalFailure, .rejected)
+            XCTAssertEqual(host.persistCount, 0)
+        }
+
+        do {
+            let root = try temporaryManagedGitJournalRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let host = MutableManagedGitHost(readback: request.reviewedInitialReadback)
+            let wrongSlot = ManagedInstallerManagedGitSlotReceipt(
+                operationID: slot.operationID, version: slot.version,
+                archiveSHA256: slot.archiveSHA256,
+                binarySHA256: slot.binarySHA256,
+                managedRootIdentity: slot.managedRootIdentity,
+                slotIdentity: "managed-git-foreign-slot",
+                treeEvidenceReference: slot.treeEvidenceReference
+            )
+            let mutator = managedGitMutator(
+                fixture: fixture, host: host, root: root, slot: wrongSlot
+            )
+            let outcome = await mutator.reconcileManagedTool(request)
+            XCTAssertEqual(outcome.journalFailure, .rejected)
+            XCTAssertEqual(host.persistCount, 0)
+        }
+    }
+
+    func testManagedGitBinaryVerifierRequiresExactPrivateBinaryAndVersion()
+        async throws {
+        let fixture = try ManagedToolReconciliationFixture(action: .install)
+        let bytes = Data("test-git-executable".utf8)
+        let digest = "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: bytes)
+        let identity = "managed-git-"
+            + fixture.requirement.artifact.sha256.dropFirst("sha256:".count)
+        let root = try temporaryManagedGitJournalRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let slotRoot = root.appendingPathComponent(identity, isDirectory: true)
+        let bin = slotRoot.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        for directory in [slotRoot, bin] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: directory.path
+            )
+        }
+        let executable = bin.appendingPathComponent("git")
+        try bytes.write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: executable.path
+        )
+        let slot = ManagedInstallerManagedGitSlotReceipt(
+            operationID: fixture.request!.operationID,
+            version: fixture.requirement.version,
+            archiveSHA256: fixture.requirement.artifact.sha256,
+            binarySHA256: digest,
+            managedRootIdentity: ManagedToolRequirement.managedRootIdentity,
+            slotIdentity: identity,
+            treeEvidenceReference: "receipt:git-test-tree"
+        )
+        let goodOutput = Data("git version 2.45.0\n".utf8)
+        let runner = RecordingGitVersionRunner(output: goodOutput)
+        let verifier = MacOSManagedInstallerManagedGitBinaryVerifier(
+            slotsRoot: root, expectedOwner: Darwin.geteuid(), runner: runner
+        )
+        let good = await verifier.verifyGitBinary(
+            requirement: fixture.requirement, slot: slot
+        )
+        XCTAssertNotNil(good.journalValue)
+        XCTAssertEqual(runner.lastCommand?.arguments, ["--version"])
+        XCTAssertTrue(runner.lastCommand?.executableURL.path.hasSuffix(
+            "/\(root.lastPathComponent)/\(identity)/bin/git"
+        ) == true)
+        XCTAssertEqual(runner.lastCommand?.environment["HOME"], "/var/empty")
+        XCTAssertEqual(runner.lastCommand?.environment["GIT_CONFIG_NOSYSTEM"], "1")
+
+        runner.output = Data("git version 2.46.0\n".utf8)
+        let wrongVersion = await verifier.verifyGitBinary(
+            requirement: fixture.requirement, slot: slot
+        )
+        XCTAssertEqual(wrongVersion.journalFailure, .rejected)
+        runner.output = goodOutput
+        var wrongDigest = slot
+        wrongDigest = ManagedInstallerManagedGitSlotReceipt(
+            operationID: slot.operationID, version: slot.version,
+            archiveSHA256: slot.archiveSHA256,
+            binarySHA256: "sha256:" + String(repeating: "0", count: 64),
+            managedRootIdentity: slot.managedRootIdentity,
+            slotIdentity: slot.slotIdentity,
+            treeEvidenceReference: slot.treeEvidenceReference
+        )
+        let tampered = await verifier.verifyGitBinary(
+            requirement: fixture.requirement, slot: wrongDigest
+        )
+        XCTAssertEqual(tampered.journalFailure, .rejected)
+
+        try FileManager.default.removeItem(at: executable)
+        try FileManager.default.createSymbolicLink(
+            at: executable, withDestinationURL: URL(fileURLWithPath: "/usr/bin/git")
+        )
+        let linked = await verifier.verifyGitBinary(
+            requirement: fixture.requirement, slot: slot
+        )
+        XCTAssertEqual(linked.journalFailure, .rejected)
+    }
+
+    private func managedGitTestSlot(
+        fixture: ManagedToolReconciliationFixture
+    ) -> ManagedInstallerManagedGitSlotReceipt {
+        ManagedInstallerManagedGitSlotReceipt(
+            operationID: fixture.request!.operationID,
+            version: fixture.requirement.version,
+            archiveSHA256: fixture.requirement.artifact.sha256,
+            binarySHA256: "sha256:" + String(repeating: "7", count: 64),
+            managedRootIdentity: ManagedToolRequirement.managedRootIdentity,
+            slotIdentity: "managed-git-"
+                + fixture.requirement.artifact.sha256.dropFirst("sha256:".count),
+            treeEvidenceReference: "receipt:managed-git-test-tree"
+        )
+    }
+
+    private func managedGitMutator(
+        fixture: ManagedToolReconciliationFixture,
+        host: MutableManagedGitHost,
+        root: URL,
+        slot: ManagedInstallerManagedGitSlotReceipt,
+        binaryEvidence: String = "receipt:managed-git-test-binary"
+    ) -> MacOSManagedInstallerManagedGitJournalMutator {
+        MacOSManagedInstallerManagedGitJournalMutator(
+            requirement: fixture.requirement,
+            acquisition: FixedManagedGitAcquisition(slot: slot),
+            slots: FixedManagedGitSlots(slot: slot),
+            binary: FixedManagedGitBinary(evidence: binaryEvidence),
+            host: host, state: host,
+            journal: FileManagedInstallerManagedGitOperationJournalStore(
+                rootDirectory: root
+            )
+        )
+    }
+
     private func temporaryManagedGitJournalRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "managed-git-operation-test-\(UUID().uuidString)", isDirectory: true
@@ -283,6 +579,34 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
         }
     }
 
+    func testChangedHostStateRequiresConcreteSameOperationRecovery() async throws {
+        let fixture = try ManagedToolReconciliationFixture(action: .install)
+        let events = ManagedToolReconciliationEvents()
+        let receipt = try managedToolSuccess(await coordinator(
+            fixture: fixture,
+            events: events,
+            recovery: .success(try XCTUnwrap(fixture.mutationReceipt)),
+            initialReadback: .success(fixture.finalReadback),
+            operationLock: ManagedToolReconciliationLock(events: events)
+        ).reconcileManagedTools(stablePlan: fixture.stablePlan))
+        XCTAssertEqual(receipt.mutationReceipts, [fixture.mutationReceipt!])
+        XCTAssertEqual(events.snapshot(), ["lock", "readback", "mutation", "readback", "release"])
+
+        let wrong = try ManagedToolReconciliationFixture(
+            action: .install, deploymentID: "other-deployment"
+        )
+        let rejected = await coordinator(
+            fixture: fixture,
+            events: ManagedToolReconciliationEvents(),
+            recovery: .success(try XCTUnwrap(wrong.mutationReceipt)),
+            initialReadback: .success(fixture.finalReadback),
+            operationLock: ManagedToolReconciliationLock(
+                events: ManagedToolReconciliationEvents()
+            )
+        ).reconcileManagedTools(stablePlan: fixture.stablePlan)
+        XCTAssertEqual(rejected.failure, .rejected)
+    }
+
     func testDriftedMutationReceiptIsRejectedBeforeReadback() async throws {
         let fixture = try ManagedToolReconciliationFixture(action: .install)
         let other = try ManagedToolReconciliationFixture(
@@ -410,6 +734,10 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
             ManagedInstallerManagedToolMutationReceipt,
             ManagedInstallerManagedToolReconciliationFailure
         >? = nil,
+        recovery: Result<
+            ManagedInstallerManagedToolMutationReceipt,
+            ManagedInstallerManagedToolReconciliationFailure
+        >? = nil,
         readback: Result<
             ManagedToolInstalledReadback,
             ManagedPythonRuntimeTerminalReceiptFailure
@@ -425,6 +753,7 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
                 result: mutation
                     ?? fixture.mutationReceipt.map(Result.success)
                     ?? .failure(.invalidRequest),
+                recoveryResult: recovery,
                 events: events
             ),
             readback: ManagedToolReconciliationReadback(
@@ -521,6 +850,131 @@ private struct ManagedToolReconciliationFixture {
     }
 }
 
+private final class MutableManagedGitHost:
+    ManagedToolPostMutationReading,
+    ManagedInstallerManagedGitHostStatePersisting,
+    @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: ManagedToolInstalledReadback
+    private var writes = 0
+
+    init(readback: ManagedToolInstalledReadback) { value = readback }
+
+    var persistCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return writes
+    }
+
+    func snapshot() -> ManagedToolInstalledReadback {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func readManagedTool(_ requirement: ManagedToolRequirement) async
+        -> Result<ManagedToolInstalledReadback,
+                  ManagedPythonRuntimeTerminalReceiptFailure> {
+        _ = requirement
+        return .success(snapshot())
+    }
+
+    func persistManagedGitHostState(_ readback: ManagedToolInstalledReadback)
+        -> Result<Void, ManagedPythonRuntimeTerminalReceiptFailure> {
+        lock.lock()
+        defer { lock.unlock() }
+        value = readback
+        writes += 1
+        return .success(())
+    }
+}
+
+private struct FixedManagedGitAcquisition: ManagedInstallerManagedGitSlotAcquiring {
+    let slot: ManagedInstallerManagedGitSlotReceipt
+
+    func acquire(requirement: ManagedToolRequirement, operationID: String) async
+        -> Result<ManagedInstallerManagedGitSlotReceipt,
+                  ManagedInstallerManagedGitAcquisitionFailure> {
+        _ = requirement
+        _ = operationID
+        return .success(slot)
+    }
+}
+
+private struct FixedManagedGitSlots: ManagedInstallerManagedGitSlotReading {
+    let slot: ManagedInstallerManagedGitSlotReceipt
+
+    func readPublishedSlotFromCache(
+        requirement: ManagedToolRequirement, operationID: String
+    ) -> Result<ManagedInstallerManagedGitSlotReceipt?, ManagedInstallerManagedGitSlotFailure> {
+        _ = requirement
+        _ = operationID
+        return .success(slot)
+    }
+}
+
+private struct FixedManagedGitBinary: ManagedInstallerManagedGitBinaryVerifying {
+    let evidence: String
+
+    func verifyGitBinary(
+        requirement: ManagedToolRequirement,
+        slot: ManagedInstallerManagedGitSlotReceipt
+    ) async -> Result<String, ManagedInstallerManagedToolReconciliationFailure> {
+        _ = requirement
+        _ = slot
+        return .success(evidence)
+    }
+}
+
+private final class RecordingGitVersionRunner:
+    MacOSManagedInstallerProviderProbeRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var currentOutput: Data
+    private var command: MacOSManagedInstallerProviderProbeCommand?
+
+    init(output: Data) { currentOutput = output }
+
+    var output: Data {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return currentOutput
+        }
+        set {
+            lock.lock()
+            currentOutput = newValue
+            lock.unlock()
+        }
+    }
+
+    var lastCommand: MacOSManagedInstallerProviderProbeCommand? {
+        lock.lock()
+        defer { lock.unlock() }
+        return command
+    }
+
+    func runProviderProbe(_ value: MacOSManagedInstallerProviderProbeCommand) async
+        -> Result<MacOSManagedInstallerProviderProbeResult,
+                  ManagedPythonRuntimeTerminalReceiptFailure> {
+        let captured = record(value)
+        return .success(.init(exitStatus: 0, standardOutput: captured))
+    }
+
+    private func record(_ value: MacOSManagedInstallerProviderProbeCommand) -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        command = value
+        return currentOutput
+    }
+}
+
+private func mutatorReceipt(
+    _ result: Result<ManagedInstallerManagedToolMutationReceipt,
+                    ManagedInstallerManagedToolReconciliationFailure>
+) throws -> ManagedInstallerManagedToolMutationReceipt {
+    try result.get()
+}
+
 private final class ManagedToolReconciliationEvents: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String] = []
@@ -543,6 +997,10 @@ private struct ManagedToolReconciliationMutation: ManagedInstallerManagedToolMut
         ManagedInstallerManagedToolMutationReceipt,
         ManagedInstallerManagedToolReconciliationFailure
     >
+    let recoveryResult: Result<
+        ManagedInstallerManagedToolMutationReceipt,
+        ManagedInstallerManagedToolReconciliationFailure
+    >?
     let events: ManagedToolReconciliationEvents
 
     func reconcileManagedTool(
@@ -554,6 +1012,20 @@ private struct ManagedToolReconciliationMutation: ManagedInstallerManagedToolMut
         _ = request
         events.append("mutation")
         return result
+    }
+
+    func resumeManagedTool(
+        _ request: ManagedInstallerManagedToolMutationRequest,
+        observedCurrentReadback: ManagedToolInstalledReadback
+    ) async -> Result<
+        ManagedInstallerManagedToolMutationReceipt,
+        ManagedInstallerManagedToolReconciliationFailure
+    > {
+        _ = request
+        _ = observedCurrentReadback
+        guard let recoveryResult else { return .failure(.staleReviewedState) }
+        events.append("mutation")
+        return recoveryResult
     }
 }
 

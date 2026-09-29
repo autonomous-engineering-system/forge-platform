@@ -168,6 +168,29 @@ public protocol ManagedInstallerManagedToolMutating: Sendable {
         ManagedInstallerManagedToolMutationReceipt,
         ManagedInstallerManagedToolReconciliationFailure
     >
+
+    /// Called only when the fresh host observation differs from the reviewed
+    /// initial observation. A concrete helper mutator must bind this exact
+    /// state to its own durable journal before it can resume any mutation.
+    func resumeManagedTool(
+        _ request: ManagedInstallerManagedToolMutationRequest,
+        observedCurrentReadback: ManagedToolInstalledReadback
+    ) async -> Result<
+        ManagedInstallerManagedToolMutationReceipt,
+        ManagedInstallerManagedToolReconciliationFailure
+    >
+}
+
+public extension ManagedInstallerManagedToolMutating {
+    func resumeManagedTool(
+        _ request: ManagedInstallerManagedToolMutationRequest,
+        observedCurrentReadback: ManagedToolInstalledReadback
+    ) async -> Result<
+        ManagedInstallerManagedToolMutationReceipt,
+        ManagedInstallerManagedToolReconciliationFailure
+    > {
+        .failure(.staleReviewedState)
+    }
 }
 
 public protocol ManagedInstallerManagedToolOperationLock: Sendable {
@@ -263,20 +286,23 @@ public struct ManagedInstallerManagedToolReconciliationCoordinator: Sendable {
     > {
         var receipts: [ManagedInstallerManagedToolMutationReceipt] = []
         for (action, request) in zip(actions, requests) {
-            // The host lease spans this read and the mutation. A completed
-            // target from an earlier attempt is not adopted here: only a
-            // future durable same-operation recovery admission may permit it.
+            // The host lease spans both observations and the mutation. Only
+            // the concrete mutator's journal-bound resume method may admit
+            // drift from the reviewed initial observation.
+            let observed: ManagedToolInstalledReadback
             switch await readback.readManagedTool(action.requirement) {
-            case .success(let observed) where observed == request.reviewedInitialReadback:
-                break
-            case .success:
-                return .failure(.staleReviewedState)
+            case .success(let value): observed = value
             case .failure:
                 return .failure(.readbackFailed)
             }
 
             let receipt: ManagedInstallerManagedToolMutationReceipt
-            switch await mutation.reconcileManagedTool(request) {
+            let result = observed == request.reviewedInitialReadback
+                ? await mutation.reconcileManagedTool(request)
+                : await mutation.resumeManagedTool(
+                    request, observedCurrentReadback: observed
+                )
+            switch result {
             case .success(let returned) where returned.matches(request):
                 receipt = returned
             case .success:
