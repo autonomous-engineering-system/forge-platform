@@ -486,13 +486,50 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                        fixture.preprovider.accounts[0].claim.instanceID)
     }
 
+    func testSecondSingleProductRouteRereadsPriorBeforeDispatch() async throws {
+        let fixture = try FreshRuntimeFixture(components: ["forge-runtime"])
+        let prior = try priorSingleRoute(fixture: fixture)
+        XCTAssertTrue(ManagedInstallerFreshPriorWorkerRegistryAdmission.accepts(
+            prior: prior.authority, registry: prior.registry,
+            adding: fixture.plan.deployment.id
+        ))
+        guard case .success(let previousEvidence) =
+            ManagedInstallerFreshPriorWorkerVenvEvidenceAdmission.load(
+                prior: prior.authority, registry: prior.registry,
+                excluding: fixture.plan.deployment.id,
+                store: FreshSingleRouteEvidenceStore(
+                    fail: false, prior: prior.evidence
+                )
+            ) else { return XCTFail("prior recovery evidence rejected") }
+        XCTAssertEqual(previousEvidence.count, 1)
+        let authority = FreshSingleRouteAuthority(prior: prior.authority)
+        let downstream = FreshAccountProductDispatch()
+        let operations = singleRouteOperations(
+            fixture: fixture, authority: authority, downstream: downstream,
+            prior: prior
+        )
+        let result = await operations.executeProductOperations(
+            stablePlan: fixture.plan,
+            runtimeTransactionReceipt: try freshRuntimeTransactionReceipt(
+                fixture: fixture, includeAccounts: true
+            )
+        )
+        XCTAssertEqual(result, .failed(.executionFailed, stages: []))
+        XCTAssertEqual(authority.publications, 1)
+        XCTAssertEqual(authority.snapshot?.singleRoutes.count, 2)
+        XCTAssertEqual(Set(authority.snapshot?.singleRoutes.map(\.deploymentID) ?? []),
+                       Set(["deployment-a", "prior-deployment"]))
+        let calls = await downstream.calls()
+        XCTAssertEqual(calls, 1)
+    }
+
     func testSingleProductAuthorityFailsClosedBeforeDispatch() async throws {
         let fixture = try FreshRuntimeFixture(components: ["forge-runtime"])
         let receipt = try freshRuntimeTransactionReceipt(
             fixture: fixture, includeAccounts: true
         )
         for failure in ["account", "wheel", "material", "evidence", "registry",
-                        "publisher", "currency"] {
+                        "registry-drift", "publisher", "currency"] {
             let authority = FreshSingleRouteAuthority(failPublication: failure == "publisher")
             let downstream = FreshAccountProductDispatch()
             let operations = singleRouteOperations(
@@ -530,7 +567,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         fixture: FreshRuntimeFixture,
         authority: FreshSingleRouteAuthority,
         downstream: FreshAccountProductDispatch,
-        failure: String = ""
+        failure: String = "",
+        prior: FreshPriorSingleRouteFixture? = nil
     ) -> ManagedInstallerFreshSingleProductWorkerPublishingOperations {
         let admitted = ManagedInstallerHelperExecutionMaterial(
             material: fixture.material,
@@ -546,11 +584,19 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             ),
             accounts: FreshRuntimeAccountReader(readbacks: accounts),
             authority: authority, authorityReadback: authority,
-            evidenceStore: FreshSingleRouteEvidenceStore(fail: failure == "evidence"),
-            registry: FreshSingleRouteRegistry(fail: failure == "registry"),
+            evidenceStore: FreshSingleRouteEvidenceStore(
+                fail: failure == "evidence", prior: prior?.evidence
+            ),
+            registry: FreshSingleRouteRegistry(
+                fail: failure == "registry", prior: prior?.registry,
+                driftOnSecondRead: failure == "registry-drift"
+            ),
             ports: .init(probe: FreshSingleRoutePortProbe()),
             wheelFactory: { _ in
                 failure == "wheel" ? nil : FreshSingleRouteWheel()
+            },
+            priorWheelFactory: { _, _, _, _ in
+                prior == nil ? nil : FreshSingleRouteWheel()
             },
             readerFactory: { _ in
                 FreshSingleRouteVenvReader(
@@ -559,6 +605,101 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             }, downstream: downstream
         )
     }
+
+    private func priorSingleRoute(fixture: FreshRuntimeFixture) throws
+        -> FreshPriorSingleRouteFixture {
+        let environment = try XCTUnwrap(
+            fixture.plan.session.productVirtualEnvironments.first
+        )
+        let request = ManagedPythonProductVenvMutationRequest(
+            operationID: "prior-operation", deploymentID: "prior-deployment",
+            environment: environment,
+            runtimeSlotIdentity: ManagedPythonRuntimeSlotMutationRequest
+                .runtimeSlotIdentity(for: environment.pythonRuntimeIdentitySHA256),
+            runtimeSlotEvidenceReference: "receipt:prior-runtime-slot"
+        )
+        let receipt = try ManagedPythonProductVenvReceipt(
+            operationID: request.operationID,
+            deploymentID: request.deploymentID,
+            componentIdentity: request.componentIdentity,
+            venvIdentity: request.venvIdentity,
+            runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+            runtimeSlotIdentity: request.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: request.runtimeSlotEvidenceReference,
+            state: .ready,
+            evidenceReference: "receipt:fresh-venv-forge-runtime"
+        )
+        let evidence = ManagedInstallerProductWorkerVenvPublicationEvidence(
+            request: request, activationReceipt: receipt,
+            wheelBindingEvidence: "sha256:" + String(repeating: "a", count: 64)
+        )
+        let artifact = "sha256:" + String(repeating: "d", count: 64)
+        let route = try ManagedInstallerProductWorkerSingleRouteAuthority(
+            deploymentID: request.deploymentID,
+            componentIdentity: request.componentIdentity,
+            instanceID: "forge-prior", serviceAccount: "_fpi_prior",
+            bindPort: 31_001, artifactSHA256: artifact,
+            forgeInstallationID: "forge-prior",
+            venvSlotName: MacOSManagedPythonProductVenvSlotLayout.slotName(for: request)
+        )
+        let priorManifestValue: StrictJSONResourceValue = .object([
+            "composition_id": .string("prior-composition"),
+            "components": .array([.object([
+                "identity": .string("forge-runtime"),
+                "artifact": .object(["digest": .string(artifact)]),
+            ])]),
+            "product_venvs": .array([.object([
+                "component_identity": .string("forge-runtime"),
+                "venv_identity": .string(environment.venvIdentity),
+                "python_runtime_identity":
+                    .string(environment.pythonRuntimeIdentitySHA256),
+            ])]),
+        ])
+        let priorManifestBytes = StrictSignedJSON.canonicalPayload(
+            from: priorManifestValue
+        )
+        let manifest = try ManagedInstallerProductWorkerManifestAuthority(
+            digest: "sha256:" + GitHubInstallerReleaseDescriptor.sha256(
+                of: priorManifestBytes
+            ), canonicalPayload: priorManifestBytes
+        )
+        let release = try XCTUnwrap(ManagedInstallerProductWorkerReleaseBinding
+            .workerRelease(for: fixture.plan.reviewedOperation.currentInstallerRelease))
+        let authority = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: release, candidateManifests: [manifest],
+            routes: [], singleRoutes: [route]
+        )
+        let record: StrictJSONResourceValue = .object([
+            "schema": .string("forge-platform.managed-deployment/v2"),
+            "deployment_id": .string(request.deploymentID),
+            "revision": .integer("1"), "label": .null,
+            "components": .array([.object([
+                "component": .string("forge-runtime"),
+                "instance_id": .string("forge-prior"),
+                "receipt_reference": .string("receipt:forge-prior"),
+            ])]),
+            "peer_binding": .null,
+            "composition_binding": .object([
+                "composition_id": .string(manifest.compositionIdentity),
+                "manifest_digest": .string(manifest.digest),
+                "receipt_reference": .string("receipt:composition-prior"),
+            ]),
+        ])
+        let terminal = try ManagedInstallerManagedDeploymentRegistryRecord.decode(
+            StrictSignedJSON.canonicalPayload(from: record) + Data([0x0A]),
+            expectedDeploymentID: request.deploymentID
+        )
+        return .init(authority: authority,
+                     registry: .init(records: [terminal], evidenceReference:
+                        "registry:sha256:" + String(repeating: "a", count: 64)),
+                     evidence: evidence)
+    }
+}
+
+private struct FreshPriorSingleRouteFixture: Sendable {
+    let authority: ManagedInstallerProductWorkerAuthoritySnapshot
+    let registry: ManagedInstallerManagedDeploymentRegistrySnapshot
+    let evidence: ManagedInstallerProductWorkerVenvPublicationEvidence
 }
 
 private actor FreshSingleRouteMaterial: ManagedInstallerHelperExecutionMaterialAdmitting {
@@ -595,6 +736,7 @@ private struct FreshSingleRoutePortProbe: ManagedInstallerProductWorkerPortProbi
 private struct FreshSingleRouteEvidenceStore:
     ManagedInstallerProductWorkerVenvEvidenceStoring {
     let fail: Bool
+    var prior: ManagedInstallerProductWorkerVenvPublicationEvidence? = nil
 
     func persist(_ evidence: ManagedInstallerProductWorkerVenvPublicationEvidence)
         -> Result<Void, ManagedInstallerProductWorkerVenvEvidenceStoreFailure> {
@@ -604,16 +746,38 @@ private struct FreshSingleRouteEvidenceStore:
     func load(deploymentID: String, componentIdentity: String)
         -> Result<ManagedInstallerProductWorkerVenvPublicationEvidence?,
                   ManagedInstallerProductWorkerVenvEvidenceStoreFailure> {
-        .success(nil)
+        .success(prior?.request.deploymentID == deploymentID
+            && prior?.request.componentIdentity == componentIdentity ? prior : nil)
     }
 }
 
-private struct FreshSingleRouteRegistry: ManagedInstallerFreshProductRegistryReading {
+private final class FreshSingleRouteRegistry:
+    ManagedInstallerFreshProductRegistryReading, @unchecked Sendable {
     let fail: Bool
+    let prior: ManagedInstallerManagedDeploymentRegistrySnapshot?
+    let driftOnSecondRead: Bool
+    private let lock = NSLock()
+    private var reads = 0
+
+    init(fail: Bool,
+         prior: ManagedInstallerManagedDeploymentRegistrySnapshot? = nil,
+         driftOnSecondRead: Bool = false) {
+        self.fail = fail
+        self.prior = prior
+        self.driftOnSecondRead = driftOnSecondRead
+    }
 
     func read() -> Result<ManagedInstallerManagedDeploymentRegistrySnapshot,
                           ManagedInstallerManagedDeploymentRegistryReadFailure> {
-        fail ? .failure(.invalidState) : .success(
+        lock.lock()
+        reads += 1
+        let count = reads
+        lock.unlock()
+        if driftOnSecondRead && count >= 2 {
+            return .success(.init(records: [], evidenceReference: "registry:sha256:"
+                + String(repeating: "b", count: 64)))
+        }
+        return fail ? .failure(.invalidState) : .success(prior ??
             ManagedInstallerManagedDeploymentRegistrySnapshot(
                 records: [], evidenceReference: "registry:sha256:"
                     + String(repeating: "a", count: 64)
@@ -661,8 +825,10 @@ private final class FreshSingleRouteAuthority:
     private var storedSnapshot: ManagedInstallerProductWorkerAuthoritySnapshot?
     private var storedPublications = 0
 
-    init(failPublication: Bool = false) {
+    init(failPublication: Bool = false,
+         prior: ManagedInstallerProductWorkerAuthoritySnapshot? = nil) {
         self.failPublication = failPublication
+        storedSnapshot = prior
     }
 
     var snapshot: ManagedInstallerProductWorkerAuthoritySnapshot? {
@@ -697,9 +863,10 @@ private final class FreshSingleRouteAuthority:
         wheel: any ManagedPythonProductVenvWheelInstalling
     ) async -> Result<ManagedInstallerProductWorkerAuthorityPublicationReceipt,
                       ManagedInstallerProductWorkerAuthorityPublicationFailure> {
-        guard !failPublication, priorVenvEvidence.isEmpty,
+        guard !failPublication,
               ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
                   plan: plan, material: material, snapshot: snapshot,
+                  priorAuthority: self.snapshot,
                   accounts: accounts, activation: activation,
                   venvEvidence: venvEvidence
               ), let evidence = venvEvidence.first,
@@ -709,6 +876,15 @@ private final class FreshSingleRouteAuthority:
                   URL(fileURLWithPath: "/var/empty"), request: evidence.request
               ), wheelDigest == evidence.wheelBindingEvidence else {
             return .failure(.invalidAuthority)
+        }
+        for previous in priorVenvEvidence {
+            guard case .success(let reread?) = reader.readPublished(previous.request),
+                  reread == previous.activationReceipt,
+                  case .success(let digest) = await wheel.readPublished(
+                    URL(fileURLWithPath: "/var/empty"), request: previous.request
+                  ), digest == previous.wheelBindingEvidence else {
+                return .failure(.invalidAuthority)
+            }
         }
         recordPublication(snapshot)
         let bytes = snapshot.canonicalJSONData()
