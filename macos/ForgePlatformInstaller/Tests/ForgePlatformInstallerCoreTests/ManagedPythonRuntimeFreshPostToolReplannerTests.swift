@@ -1495,6 +1495,74 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(unavailable.failure, .readbackFailed)
     }
 
+    func testPhysicalPythonPostToolReadbackRequiresExactPlanAndActiveVenvEvidence()
+        async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let final = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: fixture.request.runtimeIdentitySHA256,
+            activeRuntimeSlotIdentity: fixture.request.runtimeSlotIdentity,
+            retainedRuntimeIdentitySHA256s:
+                fixture.request.requiredRetainedRuntimeIdentitySHA256s,
+            evidenceReference: fixture.request.expectedResumeEvidenceReference
+        )
+        let physical = PhysicalPythonReadbackProbe(result: .success(final))
+        let reader = try ManagedInstallerPostToolPhysicalPythonHostReader(
+            stablePlan: fixture.stablePlan,
+            activationRequest: fixture.request,
+            readback: physical
+        )
+        let observed = try await reader.readPostToolPythonRuntime(for: request).get()
+        XCTAssertEqual(observed, final)
+        let other = try FreshReplannerFixture(deploymentID: "other-deployment")
+        let crossed = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: other.stablePlan, request: other.request
+        )
+        let crossedResult = await reader.readPostToolPythonRuntime(for: crossed)
+        XCTAssertEqual(crossedResult.failure, .rejected)
+        let calls = await physical.calls
+        XCTAssertEqual(calls, 1)
+
+        for stale in [fixture.finalReadback,
+                      try fixture.activation.missingReadback()] {
+            let staleReader = try ManagedInstallerPostToolPhysicalPythonHostReader(
+                stablePlan: fixture.stablePlan,
+                activationRequest: fixture.request,
+                readback: PhysicalPythonReadbackProbe(result: .success(stale))
+            )
+            let staleResult = await staleReader.readPostToolPythonRuntime(for: request)
+            XCTAssertEqual(staleResult.failure, .rejected)
+        }
+    }
+
+    func testPhysicalPythonPostToolReadbackPreservesFailClosedReadbackFailures()
+        async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let cases: [(ManagedPythonRuntimeActivationFailure,
+                     ManagedPythonRuntimeTerminalReceiptFailure)] = [
+            (.invalidRequest, .rejected), (.rejected, .rejected),
+            (.unavailable, .readbackFailed),
+            (.operationInProgress, .operationInProgress),
+            (.operationLockUnavailable, .operationLockUnavailable),
+            (.operationLockReleaseFailed, .operationLockReleaseFailed),
+            (.receiptPersistenceFailed, .receiptPersistenceFailed),
+        ]
+        for (failure, expected) in cases {
+            let reader = try ManagedInstallerPostToolPhysicalPythonHostReader(
+                stablePlan: fixture.stablePlan,
+                activationRequest: fixture.request,
+                readback: PhysicalPythonReadbackProbe(result: .failure(failure))
+            )
+            let result = await reader.readPostToolPythonRuntime(for: request)
+            XCTAssertEqual(result.failure, expected)
+        }
+    }
+
     func testAtomicHostSourceReaderStopsAtEveryFailedSourceBoundary() async throws {
         let fixture = try FreshReplannerFixture()
         let request = try ManagedInstallerPostToolHostObservationRequest(
@@ -4064,6 +4132,34 @@ private struct PythonReadback: ManagedPythonRuntimeActivationReading {
         case .failure:
             return .failure(.unavailable)
         }
+    }
+}
+
+private actor PhysicalPythonReadbackProbe: ManagedPythonRuntimeActivationReading {
+    let result: Result<ManagedPythonRuntimeInstalledReadback,
+                       ManagedPythonRuntimeActivationFailure>
+    private(set) var calls = 0
+
+    init(result: Result<ManagedPythonRuntimeInstalledReadback,
+                        ManagedPythonRuntimeActivationFailure>) {
+        self.result = result
+    }
+
+    func readProductVenv(
+        _ request: ManagedPythonProductVenvMutationRequest
+    ) async -> Result<ManagedPythonProductVenvReceipt?,
+                      ManagedPythonRuntimeActivationFailure> {
+        _ = request
+        return .failure(.unavailable)
+    }
+
+    func readActiveRuntime(
+        _ request: ManagedPythonRuntimeActivationRequest
+    ) async -> Result<ManagedPythonRuntimeInstalledReadback,
+                      ManagedPythonRuntimeActivationFailure> {
+        _ = request
+        calls += 1
+        return result
     }
 }
 
