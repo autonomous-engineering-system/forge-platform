@@ -2,7 +2,160 @@ import Foundation
 import XCTest
 @testable import ForgePlatformInstallerCore
 
+private extension Result where Failure == ManagedInstallerManagedToolReconciliationFailure {
+    var journalFailure: Failure? {
+        if case .failure(let failure) = self { return failure }
+        return nil
+    }
+
+    var journalValue: Success? {
+        if case .success(let value) = self { return value }
+        return nil
+    }
+}
+
 final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
+    func testManagedGitJournalPersistsExactCrashRecoveryPhases() throws {
+        let fixture = try ManagedToolReconciliationFixture(action: .install)
+        let request = try XCTUnwrap(fixture.request)
+        let root = try temporaryManagedGitJournalRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerManagedGitOperationJournalStore(rootDirectory: root)
+        let planned = try ManagedInstallerManagedGitOperationRecord(request: request)
+        let staged = try planned.staged(slotEvidenceReference: "receipt:git-slot")
+        let complete = try staged.completed(
+            mutationEvidenceReference: "receipt:git-mutation",
+            finalReadbackEvidenceReference: "receipt:git-final"
+        )
+
+        XCTAssertNil(try store.loadPending().get())
+        XCTAssertEqual(store.persist(planned, replacing: nil).journalFailure, nil)
+        XCTAssertEqual(store.persist(planned, replacing: nil).journalFailure, nil)
+        XCTAssertEqual(store.loadPending().journalValue, planned)
+        XCTAssertEqual(store.persist(staged, replacing: planned).journalFailure, nil)
+        XCTAssertEqual(store.persist(staged, replacing: planned).journalFailure, nil)
+        XCTAssertEqual(store.loadPending().journalValue, staged)
+        XCTAssertEqual(store.persist(complete, replacing: staged).journalFailure, nil)
+        XCTAssertEqual(store.loadPending().journalValue, complete)
+        XCTAssertEqual(store.seal(complete).journalFailure, nil)
+        XCTAssertEqual(store.seal(complete).journalFailure, nil)
+        XCTAssertNil(try store.loadPending().get())
+        XCTAssertEqual(store.loadTerminal(operationID: request.operationID).journalValue, complete)
+        XCTAssertEqual(try ManagedInstallerManagedGitOperationRecord.decode(
+            complete.canonicalJSONData()
+        ), complete)
+    }
+
+    func testManagedGitJournalRejectsCrossOperationAndSkippedTransitions() throws {
+        let first = try ManagedToolReconciliationFixture(action: .install)
+        let other = try ManagedToolReconciliationFixture(
+            action: .install, deploymentID: "other-deployment"
+        )
+        let planned = try ManagedInstallerManagedGitOperationRecord(
+            request: XCTUnwrap(first.request)
+        )
+        let wrong = try ManagedInstallerManagedGitOperationRecord(
+            request: XCTUnwrap(other.request)
+        )
+        let staged = try planned.staged(slotEvidenceReference: "receipt:git-slot")
+        let complete = try staged.completed(
+            mutationEvidenceReference: "receipt:git-mutation",
+            finalReadbackEvidenceReference: "receipt:git-final"
+        )
+        let root = try temporaryManagedGitJournalRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerManagedGitOperationJournalStore(rootDirectory: root)
+
+        XCTAssertThrowsError(try planned.completed(
+            mutationEvidenceReference: "receipt:git-mutation",
+            finalReadbackEvidenceReference: "receipt:git-final"
+        ))
+        XCTAssertThrowsError(try complete.staged(slotEvidenceReference: "receipt:other"))
+        XCTAssertThrowsError(try planned.staged(slotEvidenceReference: "bad-reference"))
+        XCTAssertFalse(planned.matches(try XCTUnwrap(other.request)))
+        XCTAssertFalse(staged.canReplace(wrong))
+        XCTAssertFalse(complete.canReplace(planned))
+        XCTAssertEqual(store.persist(staged, replacing: nil).journalFailure, .rejected)
+        XCTAssertEqual(store.persist(planned, replacing: nil).journalFailure, nil)
+        XCTAssertEqual(store.persist(wrong, replacing: nil).journalFailure, .rejected)
+        XCTAssertEqual(store.persist(planned, replacing: wrong).journalFailure, .rejected)
+        XCTAssertEqual(store.persist(staged, replacing: wrong).journalFailure, .rejected)
+        XCTAssertEqual(store.persist(complete, replacing: planned).journalFailure, .rejected)
+        XCTAssertEqual(store.seal(complete).journalFailure, .rejected)
+        XCTAssertEqual(store.loadPending().journalValue, planned)
+    }
+
+    func testManagedGitJournalRejectsCorruptAndNoncanonicalRecords() throws {
+        let fixture = try ManagedToolReconciliationFixture(action: .upgrade)
+        let planned = try ManagedInstallerManagedGitOperationRecord(
+            request: XCTUnwrap(fixture.request)
+        )
+        let data = planned.canonicalJSONData()
+        XCTAssertEqual(try ManagedInstallerManagedGitOperationRecord.decode(data), planned)
+        let text = String(decoding: data, as: UTF8.self)
+        for corrupt in [
+            Data(" \(text)".utf8),
+            Data(text.replacingOccurrences(of: "PLANNED", with: "COMPLETE").utf8),
+            Data(text.replacingOccurrences(of: "sha256:", with: "sha1:").utf8),
+            Data(text.replacingOccurrences(of: "\"schema\":", with: "\"extra\":0,\"schema\":").utf8),
+            Data("{}".utf8),
+        ] {
+            XCTAssertThrowsError(try ManagedInstallerManagedGitOperationRecord.decode(corrupt))
+        }
+
+        let root = try temporaryManagedGitJournalRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pending = root.appendingPathComponent(
+            FileManagedInstallerManagedGitOperationJournalStore.pendingFileName
+        )
+        try Data("{}".utf8).write(to: pending)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: pending.path
+        )
+        let store = FileManagedInstallerManagedGitOperationJournalStore(rootDirectory: root)
+        XCTAssertEqual(store.loadPending().journalFailure, .rejected)
+        XCTAssertEqual(store.persist(planned, replacing: nil).journalFailure, .rejected)
+    }
+
+    func testManagedGitJournalRejectsInsecureRootAndTerminalMismatch() throws {
+        let fixture = try ManagedToolReconciliationFixture(action: .install)
+        let request = try XCTUnwrap(fixture.request)
+        let planned = try ManagedInstallerManagedGitOperationRecord(request: request)
+        let staged = try planned.staged(slotEvidenceReference: "receipt:git-slot")
+        let complete = try staged.completed(
+            mutationEvidenceReference: "receipt:git-mutation",
+            finalReadbackEvidenceReference: "receipt:git-final"
+        )
+        let root = try temporaryManagedGitJournalRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerManagedGitOperationJournalStore(rootDirectory: root)
+        XCTAssertEqual(store.seal(planned).journalFailure, .invalidRequest)
+        XCTAssertEqual(store.loadTerminal(operationID: "../bad").journalFailure, .invalidRequest)
+        XCTAssertNil(try store.loadTerminal(operationID: request.operationID).get())
+        XCTAssertEqual(store.persist(planned, replacing: nil).journalFailure, nil)
+        XCTAssertEqual(store.persist(staged, replacing: planned).journalFailure, nil)
+        XCTAssertEqual(store.seal(complete).journalFailure, .rejected)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: root.path
+        )
+        XCTAssertEqual(store.loadPending().journalFailure, .rejected)
+        XCTAssertEqual(store.persist(complete, replacing: staged).journalFailure, .rejected)
+    }
+
+    private func temporaryManagedGitJournalRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "managed-git-operation-test-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: false
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: root.path
+        )
+        return root
+    }
+
     func testRequestProjectsOnlyFrozenPlanIdentities() throws {
         let fixture = try ManagedToolReconciliationFixture(action: .upgrade)
         let request = try XCTUnwrap(fixture.request)
