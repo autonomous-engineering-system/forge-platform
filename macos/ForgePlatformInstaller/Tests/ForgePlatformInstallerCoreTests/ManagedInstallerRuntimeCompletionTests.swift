@@ -480,6 +480,45 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         }
     }
 
+    func testHelperStablePlanUsesSameCurrencyRuntimeProductCore() async throws {
+        let fixture = try RuntimeCompletionFixture()
+        let events = RuntimeCompletionEvents()
+        let release = fixture.stablePlan.reviewedOperation.currentInstallerRelease
+        let product: ManagedDeploymentExecutionResult = .completed(
+            stages: [ExecutionStage(
+                id: "readiness", title: "Readiness", detail: "Exact product receipt",
+                state: .passed
+            )],
+            summaryItems: [InstallationSummaryItem(
+                componentID: "forge-runtime", title: "Forge", status: "Gereed"
+            )]
+        )
+        let core = ManagedInstallerStablePlanExecutionCoordinator(
+            currency: ReviewedExecutionCurrency(result: .current(release), events: events),
+            runtimeTransaction: ReviewedExecutionRuntime(
+                result: .success(try fixture.transactionReceipt()), events: events
+            ),
+            productOperations: ReviewedExecutionProduct(result: product, events: events)
+        )
+
+        let result = await core.execute(stablePlan: fixture.stablePlan)
+        XCTAssertEqual(result, product)
+        XCTAssertEqual(events.snapshot(), ["currency", "runtime", "product"])
+
+        let staleEvents = RuntimeCompletionEvents()
+        let stale = await ManagedInstallerStablePlanExecutionCoordinator(
+            currency: ReviewedExecutionCurrency(
+                result: .failed("stale signed release"), events: staleEvents
+            ),
+            runtimeTransaction: ReviewedExecutionRuntime(
+                result: .success(try fixture.transactionReceipt()), events: staleEvents
+            ),
+            productOperations: ReviewedExecutionProduct(result: product, events: staleEvents)
+        ).execute(stablePlan: fixture.stablePlan)
+        XCTAssertEqual(stale, .failed(.executionFailed, stages: []))
+        XCTAssertEqual(staleEvents.snapshot(), ["currency"])
+    }
+
     func testReviewedExecutionRejectsRuntimeFailureAndSubstitutedReceipt() async throws {
         let fixture = try RuntimeCompletionFixture()
         let other = try RuntimeCompletionFixture(deploymentID: "other-deployment")
