@@ -67,6 +67,63 @@ final class ManagedPythonProductVenvWheelInstallerTests: XCTestCase {
         let failedCalls = await failing.runner.requests.count
         XCTAssertEqual(failedCalls, 1)
     }
+
+    func testPrepublicationWheelUsesExactPendingAndPublishedWorkerRoute() async throws {
+        let fixture = try WheelInstallerFixture()
+        let installer = fixture.prepublicationInstaller()
+        let installed = try await installer.installIntoPending(
+            fixture.pending, published: fixture.published, request: fixture.request
+        ).get()
+        XCTAssertEqual(installed, fixture.bindingEvidence)
+        let initial = await fixture.runner.requests
+        XCTAssertEqual(initial.count, 1)
+        XCTAssertEqual(initial.first?.artifactSHA256, fixture.binding.artifactSHA256)
+        XCTAssertEqual(initial.first?.publishedSlotName, fixture.slot)
+
+        try FileManager.default.createDirectory(
+            at: fixture.published.appendingPathComponent("bin"),
+            withIntermediateDirectories: true
+        )
+        try Data(contentsOf: fixture.base).write(
+            to: fixture.published.appendingPathComponent("bin/python3")
+        )
+        let read = try await installer.readPublished(
+            fixture.published, request: fixture.request
+        ).get()
+        XCTAssertEqual(read, installed)
+        let actions = await fixture.runner.requests.map(\.action)
+        XCTAssertEqual(actions, [.installPending, .readPublished])
+    }
+
+    func testPrepublicationStaleOrWrongVenvBindingBlocksWorker() async throws {
+        let fixture = try WheelInstallerFixture()
+        let stale = await fixture.prepublicationInstaller(
+            authorityAvailable: false
+        ).installIntoPending(
+            fixture.pending, published: fixture.published, request: fixture.request
+        )
+        XCTAssertEqual(stale.failure, .rejected)
+        let wrongVenv = await fixture.prepublicationInstaller(
+            venvIdentity: "foreign-venv"
+        ).installIntoPending(
+            fixture.pending, published: fixture.published, request: fixture.request
+        )
+        XCTAssertEqual(wrongVenv.failure, .rejected)
+        let calls = await fixture.runner.requests.count
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testPrepublicationAuthorityDriftAfterWorkerWithholdsReceipt() async throws {
+        let fixture = try WheelInstallerFixture()
+        let result = await fixture.prepublicationInstaller(
+            validAdmissionCount: 2
+        ).installIntoPending(
+            fixture.pending, published: fixture.published, request: fixture.request
+        )
+        XCTAssertEqual(result.failure, .rejected)
+        let calls = await fixture.runner.requests.count
+        XCTAssertEqual(calls, 1)
+    }
 }
 
 private final class WheelInstallerFixture {
@@ -142,7 +199,63 @@ private final class WheelInstallerFixture {
         )
     }
 
+    func prepublicationInstaller(
+        authorityAvailable: Bool = true,
+        venvIdentity: String? = nil,
+        validAdmissionCount: Int = .max
+    ) -> MacOSManagedPythonProductVenvWheelInstaller {
+        let artifact = binding.artifactSHA256
+        let prepublication = ManagedInstallerPrepublicationProductWheelBinding(
+            deploymentID: request.deploymentID,
+            compositionIdentity: "forge-ep-managed-v3",
+            manifestSHA256: "sha256:" + String(repeating: "1", count: 64),
+            componentIdentity: request.componentIdentity,
+            venvIdentity: venvIdentity ?? request.venvIdentity,
+            version: binding.version,
+            sourceRevision: binding.sourceRevision,
+            sourceURL: binding.sourceURL,
+            qualificationURL: binding.qualificationURL,
+            artifactSHA256: artifact
+        )
+        let authority = WheelInstallerPrepublicationAuthority(
+            binding: prepublication,
+            validAdmissionCount: authorityAvailable ? validAdmissionCount : 0
+        )
+        return MacOSManagedPythonProductVenvWheelInstaller(
+            helperRoot: root,
+            staged: .init(
+                binding: prepublication,
+                fileName: String(artifact.dropFirst(7)) + ".artifact",
+                byteCount: 1024
+            ),
+            runtime: WheelInstallerRuntime(base: base),
+            resource: WheelInstallerResource(root: root),
+            runner: runner,
+            expectedOwner: Darwin.geteuid(),
+            authorityCheck: { await authority.read() }
+        )
+    }
+
     deinit { try? FileManager.default.removeItem(at: root) }
+}
+
+private actor WheelInstallerPrepublicationAuthority {
+    let binding: ManagedInstallerPrepublicationProductWheelBinding
+    let validAdmissionCount: Int
+    private var reads = 0
+
+    init(
+        binding: ManagedInstallerPrepublicationProductWheelBinding,
+        validAdmissionCount: Int
+    ) {
+        self.binding = binding
+        self.validAdmissionCount = validAdmissionCount
+    }
+
+    func read() -> ManagedInstallerPrepublicationProductWheelBinding? {
+        reads += 1
+        return reads <= validAdmissionCount ? binding : nil
+    }
 }
 
 private struct WheelInstallerRuntime: ManagedPythonProductVenvRuntimeVerifying {
