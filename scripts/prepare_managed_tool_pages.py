@@ -133,11 +133,13 @@ def load_config(path: Path) -> dict[str, object]:
 
 
 def validate_backing_release(
-    config: dict[str, object], release: object, source_sha: str
+    config: dict[str, object], release: object, source_sha: str, release_id: int
 ) -> bool:
     """Return draft state after checking one exact same-repository release."""
     if (not isinstance(release, dict)
         or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None
+        or type(release_id) is not int or release_id <= 0
+        or type(release.get("id")) is not int or release["id"] != release_id
         or release.get("tag_name") != config["release_tag"]
         or release.get("target_commitish") != source_sha
         or type(release.get("draft")) is not bool
@@ -162,6 +164,15 @@ def validate_backing_release(
             or actual.get("digest") not in (None, expected["sha256"])):
             raise PublicationError("backing release asset differs from reviewed candidate")
     return release["draft"]
+
+
+def validate_release_tag_binding(draft: bool, tag_sha: str | None, source_sha: str) -> None:
+    """A draft may lack a Git ref; a public release must have the exact ref."""
+    if (type(draft) is not bool
+        or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None
+        or (tag_sha is not None and tag_sha != source_sha)
+        or (not draft and tag_sha is None)):
+        raise PublicationError("backing release tag does not bind exact source")
 
 
 def _digest(path: Path, expected_size: int) -> str:
