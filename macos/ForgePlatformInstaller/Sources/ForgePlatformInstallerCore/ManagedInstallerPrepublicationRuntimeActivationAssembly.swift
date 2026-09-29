@@ -1,5 +1,10 @@
 import Foundation
 
+struct ManagedInstallerPreparedRuntimeActivation: Sendable {
+    let coordinator: ManagedPythonRuntimeActivationCoordinator
+    let readback: any ManagedPythonRuntimeActivationReading
+}
+
 /// Joins reviewed first-install wheel acquisition with the existing native
 /// runtime activation coordinator. The coordinator takes the helper's exclusive
 /// runtime lock before any venv creation or signed-worker invocation; fresh
@@ -17,6 +22,26 @@ struct ManagedInstallerPrepublicationRuntimeActivationAssembly {
             )
         }
     ) async -> Result<ManagedPythonRuntimeActivationCoordinator,
+                      ManagedInstallerPrepublicationWheelAssemblyFailure> {
+        switch await makeProductionParts(
+            stablePlan: stablePlan, wheelFactory: wheelFactory
+        ) {
+        case .success(let parts): return .success(parts.coordinator)
+        case .failure(let failure): return .failure(failure)
+        }
+    }
+
+    /// Keeps the exact same readback collaborator used by activation available
+    /// to terminal completion; it does not construct a second wheel/runtime
+    /// actor or give the caller an executable path.
+    static func makeProductionParts(
+        stablePlan: ManagedInstallerStablePlan,
+        wheelFactory: @escaping WheelFactory = {
+            await ManagedInstallerPrepublicationWheelHelperAssembly.makeProduction(
+                stablePlan: $0
+            )
+        }
+    ) async -> Result<ManagedInstallerPreparedRuntimeActivation,
                       ManagedInstallerPrepublicationWheelAssemblyFailure> {
         let components = stablePlan.session.productVirtualEnvironments
             .map(\.componentIdentity).sorted()
@@ -41,14 +66,17 @@ struct ManagedInstallerPrepublicationRuntimeActivationAssembly {
             runtime: stablePlan.session.managedPythonRuntime,
             wheel: wheel
         )
-        return .success(ManagedPythonRuntimeActivationCoordinator(
-            mutation: mutation,
-            operationLock: FileManagedPythonRuntimeOperationLock(
-                rootDirectory: root
+        return .success(ManagedInstallerPreparedRuntimeActivation(
+            coordinator: ManagedPythonRuntimeActivationCoordinator(
+                mutation: mutation,
+                operationLock: FileManagedPythonRuntimeOperationLock(
+                    rootDirectory: root
+                ),
+                receiptStore: FileManagedPythonRuntimeRecoveryStore(
+                    rootDirectory: root
+                )
             ),
-            receiptStore: FileManagedPythonRuntimeRecoveryStore(
-                rootDirectory: root
-            )
+            readback: mutation
         ))
     }
 }

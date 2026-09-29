@@ -19,6 +19,22 @@ final class ManagedInstallerPrepublicationRuntimeActivationAssemblyTests:
         XCTAssertEqual(calls, [plan.fingerprint])
     }
 
+    func testFreshActivationSharesItsExactReadbackCollaborator() async throws {
+        let plan = try makePlan()
+        let factory = RuntimeWheelFactorySpy(available: true)
+        let result = await ManagedInstallerPrepublicationRuntimeActivationAssembly
+            .makeProductionParts(
+                stablePlan: plan,
+                wheelFactory: { await factory.make($0) }
+            )
+        guard case .success(let parts) = result else {
+            return XCTFail("expected paired activation and readback")
+        }
+        let calls = await factory.calls
+        XCTAssertEqual(calls, [plan.fingerprint])
+        _ = parts.readback
+    }
+
     func testNonInstallReviewFailsBeforeWheelAcquisition() async throws {
         let plan = try makePlan(forgeChange: .update)
         let factory = RuntimeWheelFactorySpy(available: true)
