@@ -716,7 +716,7 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
     }
 }
 
-private enum ArchiveInspectionMutation: Equatable {
+enum ArchiveInspectionMutation: Equatable {
     case missingManifest, emptyManifest, missingInterpreter, emptyInterpreter
     case missingBinDirectory, interpreterNotExecutable, duplicateInterpreter
     case setuidManifest, writableInterpreter, writableGenericFile, nonTraversableBinDirectory
@@ -1005,13 +1005,13 @@ private actor ArchiveInspectionStaging: ManagedPythonRuntimeAssetStaging {
     func observedKinds() -> [ManagedPythonRuntimeAssetKind] { observations }
 }
 
-private enum ArchiveTarEntry {
+enum ArchiveTarEntry {
     case file(String, Data, UInt64)
     case directory(String, UInt64)
     case symbolicLink(String, String)
 }
 
-private func archiveTar(_ entries: [ArchiveTarEntry]) -> Data {
+func archiveTar(_ entries: [ArchiveTarEntry]) -> Data {
     var archive = Data()
     for entry in entries {
         let path: String
@@ -1052,7 +1052,7 @@ private func archiveTar(_ entries: [ArchiveTarEntry]) -> Data {
     return archive
 }
 
-private func archiveGZIP(_ body: Data) throws -> Data {
+func archiveGZIP(_ body: Data) throws -> Data {
     var compressed = Data(count: body.count + 1024)
     let count = compressed.withUnsafeMutableBytes { destination in
         body.withUnsafeBytes { source in
@@ -1075,7 +1075,7 @@ private func archiveGZIP(_ body: Data) throws -> Data {
     return result
 }
 
-private func archiveMachO(mutation: ArchiveInspectionMutation?) -> Data {
+func archiveMachO(mutation: ArchiveInspectionMutation?) -> Data {
     let commandCount: UInt32 = mutation == .missingBuildVersion ? 1 : (mutation == .duplicateBuildVersion ? 2 : 1)
     let commandSize: UInt32 = mutation == .malformedLoadCommand ? 7 : 24
     let totalCommandBytes = mutation == .duplicateBuildVersion ? 48 : Int(commandSize)
