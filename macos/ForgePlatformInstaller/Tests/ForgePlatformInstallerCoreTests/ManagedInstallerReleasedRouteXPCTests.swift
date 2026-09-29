@@ -50,7 +50,6 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         )
         let admission = ManagedInstallerReviewedExecutionAdmission(
             loader: XPCExecutionPlanLoader(plan: plan),
-            preparer: XPCExecutionPlanPreparer(plan: plan),
             executor: XPCExecutionRouteExecutor()
         )
         let handler = ManagedInstallerReleasedRouteXPCServiceHandler(
@@ -643,40 +642,10 @@ private struct XPCExecutionPlanLoader: ManagedInstallerHelperOwnedStablePlanLoad
     }
 }
 
-private struct XPCExecutionPlanPreparer: ManagedInstallerStablePlanPreparing {
-    let plan: ManagedInstallerStablePlan
-    func prepareStablePlan(
-        for operation: ReviewedManagedDeploymentOperation
-    ) async -> ManagedInstallerStablePlanPreparationResult {
-        _ = operation
-        return .prepared(plan)
-    }
-}
-
-private struct XPCExecutionRouteExecutor: ManagedDeploymentRouteCoordinating {
-    func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
-        .unavailable(.coordinatorUnavailable)
-    }
-    func prepareHostPreflight(
-        session: VerifiedCompositionSessionPlan,
-        deployment: ManagedDeploymentTarget
-    ) async -> HostPreflightPreparationResult {
-        _ = session
-        _ = deployment
-        return .unavailable(.coordinatorUnavailable)
-    }
-    func prepareCompositionReview(
-        session: VerifiedCompositionSessionPlan,
-        deployment: ManagedDeploymentTarget
-    ) async -> CompositionReviewPreparationResult {
-        _ = session
-        _ = deployment
-        return .unavailable(.coordinatorUnavailable)
-    }
-    func executeReviewedManagedDeployment(
-        _ operation: ReviewedManagedDeploymentOperation
+private struct XPCExecutionRouteExecutor: ManagedInstallerStablePlanExecuting {
+    func execute(stablePlan: ManagedInstallerStablePlan
     ) async -> ManagedDeploymentExecutionResult {
-        _ = operation
+        _ = stablePlan
         return .failed(.executionFailed, stages: [])
     }
 }
