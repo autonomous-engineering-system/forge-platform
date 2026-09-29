@@ -159,6 +159,7 @@ class ManagedToolPagesTests(unittest.TestCase):
     def test_backing_release_is_exact_draft_then_exact_public(self) -> None:
         source = "a" * 40
         release = {
+            "id": 4242,
             "tag_name": self.config["release_tag"],
             "target_commitish": source,
             "draft": True,
@@ -168,11 +169,12 @@ class ManagedToolPagesTests(unittest.TestCase):
                         "size": a["size"], "digest": a["sha256"]}
                        for a in self.config["assets"]],
         }
-        self.assertTrue(pages.validate_backing_release(self.config, release, source))
+        self.assertTrue(pages.validate_backing_release(self.config, release, source, 4242))
         release["draft"] = False
         release["published_at"] = "2026-09-29T20:00:00Z"
-        self.assertFalse(pages.validate_backing_release(self.config, release, source))
+        self.assertFalse(pages.validate_backing_release(self.config, release, source, 4242))
         mutations = [
+            (lambda r: r.update(id=4243), "identity"),
             (lambda r: r.update(tag_name="wrong"), "identity"),
             (lambda r: r.update(target_commitish="b" * 40), "identity"),
             (lambda r: r.update(prerelease=True), "visibility"),
@@ -187,16 +189,34 @@ class ManagedToolPagesTests(unittest.TestCase):
                 candidate = copy.deepcopy(release)
                 mutate(candidate)
                 with self.assertRaisesRegex(pages.PublicationError, reason):
-                    pages.validate_backing_release(self.config, candidate, source)
+                    pages.validate_backing_release(self.config, candidate, source, 4242)
         draft = copy.deepcopy(release)
         draft["draft"] = True
         with self.assertRaisesRegex(pages.PublicationError, "visibility"):
-            pages.validate_backing_release(self.config, draft, source)
+            pages.validate_backing_release(self.config, draft, source, 4242)
         extra = copy.deepcopy(release)
         extra["assets"].append({"name": "unreviewed", "state": "uploaded",
                                 "size": 1, "digest": None})
         with self.assertRaisesRegex(pages.PublicationError, "ambiguous"):
-            pages.validate_backing_release(self.config, extra, source)
+            pages.validate_backing_release(self.config, extra, source, 4242)
+        with self.assertRaisesRegex(pages.PublicationError, "identity"):
+            pages.validate_backing_release(self.config, release, source, 4243)
+        with self.assertRaisesRegex(pages.PublicationError, "identity"):
+            pages.validate_backing_release(self.config, release, source, True)
+
+    def test_draft_and_public_tag_binding(self) -> None:
+        source = "a" * 40
+        pages.validate_release_tag_binding(True, None, source)
+        pages.validate_release_tag_binding(True, source, source)
+        pages.validate_release_tag_binding(False, source, source)
+        for draft, tag_sha in [(True, "b" * 40), (False, None), (False, "b" * 40)]:
+            with self.subTest(draft=draft, tag_sha=tag_sha):
+                with self.assertRaisesRegex(pages.PublicationError, "tag"):
+                    pages.validate_release_tag_binding(draft, tag_sha, source)
+        with self.assertRaisesRegex(pages.PublicationError, "tag"):
+            pages.validate_release_tag_binding(1, source, source)
+        with self.assertRaisesRegex(pages.PublicationError, "tag"):
+            pages.validate_release_tag_binding(True, None, "invalid")
 
 
 if __name__ == "__main__":
