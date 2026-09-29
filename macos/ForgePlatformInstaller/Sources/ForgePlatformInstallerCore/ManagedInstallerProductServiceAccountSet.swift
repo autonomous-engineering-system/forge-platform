@@ -17,6 +17,23 @@ struct ManagedInstallerProductServiceAccountBinding: Equatable {
     let uid: uid_t
     let gid: gid_t
     let authoritySHA256: String
+    let venvSlotName: String?
+
+    init(
+        deploymentID: String, componentIdentity: String, instanceID: String,
+        serviceAccount: String, artifactSHA256: String, uid: uid_t, gid: gid_t,
+        authoritySHA256: String, venvSlotName: String? = nil
+    ) {
+        self.deploymentID = deploymentID
+        self.componentIdentity = componentIdentity
+        self.instanceID = instanceID
+        self.serviceAccount = serviceAccount
+        self.artifactSHA256 = artifactSHA256
+        self.uid = uid
+        self.gid = gid
+        self.authoritySHA256 = authoritySHA256
+        self.venvSlotName = venvSlotName
+    }
 }
 
 /// Re-reads the one helper-owned product-worker authority and binds every
@@ -56,7 +73,8 @@ struct ManagedInstallerProductServiceAccountSetResolver {
                     componentIdentity: ProviderOwnerComponent.forgeRuntime.rawValue,
                     instanceID: route.forgeInstanceID,
                     serviceAccount: route.forgeServiceAccount,
-                    artifactSHA256: route.forgeArtifactSHA256
+                    artifactSHA256: route.forgeArtifactSHA256,
+                    venvSlotName: route.forgeVenvSlotName
                 ),
                 Claim(
                     deploymentID: route.deploymentID,
@@ -64,7 +82,8 @@ struct ManagedInstallerProductServiceAccountSetResolver {
                         ProviderOwnerComponent.engineeringPlatformServer.rawValue,
                     instanceID: route.engineeringPlatformInstanceID,
                     serviceAccount: route.engineeringPlatformServiceAccount,
-                    artifactSHA256: route.engineeringPlatformArtifactSHA256
+                    artifactSHA256: route.engineeringPlatformArtifactSHA256,
+                    venvSlotName: route.engineeringPlatformVenvSlotName
                 ),
             ]
         } + snapshot.singleRoutes.map { route in
@@ -73,7 +92,8 @@ struct ManagedInstallerProductServiceAccountSetResolver {
                 componentIdentity: route.componentIdentity,
                 instanceID: route.instanceID,
                 serviceAccount: route.serviceAccount,
-                artifactSHA256: route.artifactSHA256
+                artifactSHA256: route.artifactSHA256,
+                venvSlotName: route.venvSlotName
             )
         }
         guard !claims.isEmpty,
@@ -94,7 +114,10 @@ struct ManagedInstallerProductServiceAccountSetResolver {
                         == ProviderOwnerComponent.engineeringPlatformServer.rawValue,
                   ManagedInstallerProductWorkerRouteAuthority
                     .isServiceAccount(claim.serviceAccount),
-                  CompositionCatalogValidation.isTaggedSHA256(claim.artifactSHA256)
+                  CompositionCatalogValidation.isTaggedSHA256(claim.artifactSHA256),
+                  claim.venvSlotName.map(
+                    ManagedInstallerProductWorkerRouteAuthority.isVenvSlot
+                  ) ?? true
             else { return .failure(.rejected) }
             switch lookup.lookup(claim.serviceAccount) {
             case .success(let observed):
@@ -111,7 +134,8 @@ struct ManagedInstallerProductServiceAccountSetResolver {
                     artifactSHA256: claim.artifactSHA256,
                     uid: observed.uid,
                     gid: observed.gid,
-                    authoritySHA256: digest
+                    authoritySHA256: digest,
+                    venvSlotName: claim.venvSlotName
                 ))
             case .failure(.unavailable): return .failure(.unavailable)
             case .failure: return .failure(.rejected)
@@ -129,5 +153,6 @@ struct ManagedInstallerProductServiceAccountSetResolver {
         let instanceID: String
         let serviceAccount: String
         let artifactSHA256: String
+        let venvSlotName: String?
     }
 }

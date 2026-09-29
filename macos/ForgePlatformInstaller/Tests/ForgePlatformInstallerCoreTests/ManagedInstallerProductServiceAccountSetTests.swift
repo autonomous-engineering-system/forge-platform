@@ -34,6 +34,49 @@ final class ManagedInstallerProductServiceAccountSetTests: XCTestCase {
         })
     }
 
+    func testV5BindsDistinctProductVenvSlotsToTheirOwnAccounts() throws {
+        let original = try fixture()
+        let route = try XCTUnwrap(original.routes.first)
+        let forgeSlot = "venv-" + String(repeating: "a", count: 64)
+        let epSlot = "venv-" + String(repeating: "b", count: 64)
+        let paired = try ManagedInstallerProductWorkerRouteAuthority(
+            deploymentID: route.deploymentID,
+            forgeInstanceID: route.forgeInstanceID,
+            forgeInstallationID: route.forgeInstallationID,
+            forgeServiceAccount: route.forgeServiceAccount,
+            forgeBindPort: route.forgeBindPort,
+            forgeArtifactSHA256: route.forgeArtifactSHA256,
+            engineeringPlatformArtifactSHA256: route.engineeringPlatformArtifactSHA256,
+            engineeringPlatformInstanceID: route.engineeringPlatformInstanceID,
+            engineeringPlatformDisplayLabel: route.engineeringPlatformDisplayLabel,
+            engineeringPlatformServiceAccount: route.engineeringPlatformServiceAccount,
+            engineeringPlatformBindPort: route.engineeringPlatformBindPort,
+            pairing: route.pairing,
+            forgeVenvSlotName: forgeSlot,
+            engineeringPlatformVenvSlotName: epSlot
+        )
+        let snapshot = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: original.installerRelease,
+            candidateManifests: original.candidateManifests,
+            routes: [paired]
+        )
+        let bound = try ManagedInstallerProductServiceAccountSetResolver(
+            reader: AccountSetAuthorityReader(snapshot: snapshot),
+            lookup: AccountSetLookup(records: [
+                route.forgeServiceAccount: .init(
+                    accountName: route.forgeServiceAccount, uid: 501, gid: 20
+                ),
+                route.engineeringPlatformServiceAccount: .init(
+                    accountName: route.engineeringPlatformServiceAccount, uid: 502, gid: 20
+                ),
+            ])
+        ).resolve(expectedInstallerRelease: snapshot.installerRelease).get()
+        XCTAssertEqual(bound.count, 2)
+        XCTAssertEqual(bound.first(where: { $0.uid == 501 })?.venvSlotName, forgeSlot)
+        XCTAssertEqual(bound.first(where: { $0.uid == 502 })?.venvSlotName, epSlot)
+        XCTAssertNotEqual(forgeSlot, epSlot)
+    }
+
     func testBindsOneSingleProductRouteWithoutTouchingOtherAccounts() throws {
         let paired = try fixture()
         let route = try XCTUnwrap(paired.routes.first)
