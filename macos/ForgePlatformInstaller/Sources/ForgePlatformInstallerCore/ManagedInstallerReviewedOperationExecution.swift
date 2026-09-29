@@ -48,13 +48,20 @@ public protocol ManagedInstallerProductOperationsExecuting: Sendable {
     ) async -> ManagedDeploymentExecutionResult
 }
 
+/// The helper executes the exact plan it has just re-admitted. It must not
+/// reconstruct an app-side review actor or select a different operation.
+public protocol ManagedInstallerStablePlanExecuting: Sendable {
+    func execute(stablePlan: ManagedInstallerStablePlan) async
+        -> ManagedDeploymentExecutionResult
+}
+
 /// Bridges one exact reviewed wizard operation into the native runtime
 /// transaction and then into product-owned operations. The coordinator builds
 /// no product commands and owns no credentials. It performs a fresh signed
 /// installer currency check immediately before the runtime transaction, and it
 /// rejects every substituted plan or receipt before product execution.
 public struct ManagedInstallerReviewedOperationExecutionCoordinator:
-    ManagedDeploymentRouteCoordinating, Sendable {
+    ManagedDeploymentRouteCoordinating, ManagedInstallerStablePlanExecuting, Sendable {
     private let routePreparation: any ManagedDeploymentRouteCoordinating
     private let stablePlan: any ManagedInstallerStablePlanPreparing
     private let currency: any ManagedInstallerMutationCurrencyChecking
@@ -106,6 +113,13 @@ public struct ManagedInstallerReviewedOperationExecutionCoordinator:
             return .failed(failure, stages: [])
         }
 
+        return await execute(stablePlan: plan)
+    }
+
+    public func execute(
+        stablePlan plan: ManagedInstallerStablePlan
+    ) async -> ManagedDeploymentExecutionResult {
+        let operation = plan.reviewedOperation
         switch await currency.recheckInstallerBeforeMutation(
             currentVersion: operation.currentInstallerRelease.version
         ) {

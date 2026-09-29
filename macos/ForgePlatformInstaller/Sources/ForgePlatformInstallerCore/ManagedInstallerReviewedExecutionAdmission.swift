@@ -9,20 +9,18 @@ public protocol ManagedInstallerHelperOwnedStablePlanLoading: Sendable {
 }
 
 /// Admits one canonical execution intent only after the helper resolves the
-/// exact plan and independently refreshes the reviewed route. The executor
-/// still performs its own pre-mutation currency and product gates.
+/// exact plan and independently reloads it from signed material and private
+/// route state. The executor still performs pre-mutation currency and product
+/// gates for that same plan.
 public struct ManagedInstallerReviewedExecutionAdmission: Sendable {
     private let loader: any ManagedInstallerHelperOwnedStablePlanLoading
-    private let preparer: any ManagedInstallerStablePlanPreparing
-    private let executor: any ManagedDeploymentRouteCoordinating
+    private let executor: any ManagedInstallerStablePlanExecuting
 
     public init(
         loader: any ManagedInstallerHelperOwnedStablePlanLoading,
-        preparer: any ManagedInstallerStablePlanPreparing,
-        executor: any ManagedDeploymentRouteCoordinating
+        executor: any ManagedInstallerStablePlanExecuting
     ) {
         self.loader = loader
-        self.preparer = preparer
         self.executor = executor
     }
 
@@ -45,15 +43,16 @@ public struct ManagedInstallerReviewedExecutionAdmission: Sendable {
             return .failed(.staleSession, stages: [])
         }
 
-        let operation = trustedPlan.reviewedOperation
-        switch await preparer.prepareStablePlan(for: operation) {
-        case .prepared(let refreshed) where refreshed == trustedPlan
-            && intent.matches(refreshed):
-            return await executor.executeReviewedManagedDeployment(operation)
-        case .prepared:
-            return .failed(.staleSession, stages: [])
-        case .unavailable(let failure):
-            return .failed(failure, stages: [])
+        let refreshed: ManagedInstallerStablePlan
+        do {
+            refreshed = try await loader.loadStablePlan(for: intent)
+        } catch {
+            return .failed(.coordinatorUnavailable, stages: [])
         }
+        guard refreshed == trustedPlan,
+              intent.matches(refreshed) else {
+            return .failed(.staleSession, stages: [])
+        }
+        return await executor.execute(stablePlan: refreshed)
     }
 }

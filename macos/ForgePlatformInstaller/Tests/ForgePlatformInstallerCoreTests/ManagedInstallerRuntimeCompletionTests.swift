@@ -367,6 +367,30 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(events.snapshot(), ["plan", "currency", "runtime", "product"])
     }
 
+    func testHelperExecutionUsesReadmittedPlanWithoutAppReviewState() async throws {
+        let fixture = try RuntimeCompletionFixture(managedGitAction: .install)
+        let events = RuntimeCompletionEvents()
+        let completed: ManagedDeploymentExecutionResult = .completed(
+            stages: [ExecutionStage(
+                id: "readiness", title: "Readiness", detail: "Exact instance",
+                state: .passed
+            )],
+            summaryItems: [InstallationSummaryItem(
+                componentID: "forge-runtime", title: "Forge", status: "Gereed"
+            )]
+        )
+        let result = await reviewedExecutionCoordinator(
+            stablePlan: .unavailable(.reviewUnavailable),
+            currency: .current(fixture.stablePlan.reviewedOperation.currentInstallerRelease),
+            runtime: .success(try fixture.transactionReceipt()),
+            product: completed,
+            events: events
+        ).execute(stablePlan: fixture.stablePlan)
+
+        XCTAssertEqual(result, completed)
+        XCTAssertEqual(events.snapshot(), ["currency", "runtime", "product"])
+    }
+
     func testReviewedExecutionForwardsReadOnlyRoutePreparation() async throws {
         let fixture = try RuntimeCompletionFixture()
         let coordinator = reviewedExecutionCoordinator(
