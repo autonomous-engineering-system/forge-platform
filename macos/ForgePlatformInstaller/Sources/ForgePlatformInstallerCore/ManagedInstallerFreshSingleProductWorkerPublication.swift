@@ -189,6 +189,11 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                   prior: prior, registry: priorRegistry,
                   adding: plan.deployment.id
               ),
+              case .success(let priorEvidence) =
+                ManagedInstallerFreshPriorWorkerVenvEvidenceAdmission.load(
+                    prior: prior, registry: priorRegistry,
+                    excluding: plan.deployment.id, store: evidenceStore
+                ),
               prior?.routes.isEmpty != false,
               prior?.singleRoutes.filter({
                   $0.deploymentID != plan.deployment.id
@@ -220,7 +225,8 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                     plan: plan, material: admitted.material, snapshot: snapshot,
                     accounts: preprovider.accounts, accountReader: accounts,
                     activation: activation, venvEvidence: evidence,
-                    priorVenvEvidence: [], reader: readerFactory(plan), wheel: wheel
+                    priorVenvEvidence: priorEvidence,
+                    reader: readerFactory(plan), wheel: wheel
                 ),
               publication.sha256 == "sha256:" + GitHubInstallerReleaseDescriptor
                 .sha256(of: snapshot.canonicalJSONData()),
