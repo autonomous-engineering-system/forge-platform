@@ -13,10 +13,19 @@ struct ManagedInstallerProductWheelStagingReceipt: Equatable {
     let byteCount: Int
 }
 
+protocol ManagedInstallerProductWheelStaging {
+    func stage(
+        _ bytes: Data, expectedInstallerRelease: VerifiedInstallerRelease,
+        deploymentID: String, componentIdentity: String, instanceID: String
+    ) -> Result<ManagedInstallerProductWheelStagingReceipt,
+                ManagedInstallerProductWheelStagingFailure>
+}
+
 /// Retains only exact digest-bound wheel bytes beneath the fixed private
 /// helper root. The product worker receives the same digest-derived filename;
 /// no GUI/CLI path, shell, account or credential value is used for staging.
-struct MacOSManagedInstallerProductWheelStager {
+struct MacOSManagedInstallerProductWheelStager:
+    ManagedInstallerProductWheelStaging {
     private static let maximumWheelBytes = 256 * 1_024 * 1_024
     private let bootstrap: ManagedInstallerHelperStateRootBootstrap
     private let authority: ManagedInstallerProductWheelAuthorityResolver
