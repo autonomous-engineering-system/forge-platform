@@ -8,6 +8,7 @@ public enum ManagedInstallerManagedToolReconciliationFailure:
     case operationLockReleaseFailed
     case unavailable
     case readbackFailed
+    case staleReviewedState
     case rejected
 }
 
@@ -262,6 +263,18 @@ public struct ManagedInstallerManagedToolReconciliationCoordinator: Sendable {
     > {
         var receipts: [ManagedInstallerManagedToolMutationReceipt] = []
         for (action, request) in zip(actions, requests) {
+            // The host lease spans this read and the mutation. A completed
+            // target from an earlier attempt is not adopted here: only a
+            // future durable same-operation recovery admission may permit it.
+            switch await readback.readManagedTool(action.requirement) {
+            case .success(let observed) where observed == request.reviewedInitialReadback:
+                break
+            case .success:
+                return .failure(.staleReviewedState)
+            case .failure:
+                return .failure(.readbackFailed)
+            }
+
             let receipt: ManagedInstallerManagedToolMutationReceipt
             switch await mutation.reconcileManagedTool(request) {
             case .success(let returned) where returned.matches(request):

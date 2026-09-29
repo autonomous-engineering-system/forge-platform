@@ -59,7 +59,7 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
             operationLock: lock
         ).reconcileManagedTools(stablePlan: fixture.stablePlan))
 
-        XCTAssertEqual(events.snapshot(), ["lock", "mutation", "readback", "release"])
+        XCTAssertEqual(events.snapshot(), ["lock", "readback", "mutation", "readback", "release"])
         XCTAssertEqual(receipt.stablePlanFingerprint, fixture.stablePlan.fingerprint)
         XCTAssertEqual(receipt.operationID, fixture.stablePlan.activationPlan.operationID)
         XCTAssertEqual(receipt.mutationReceipts, [fixture.mutationReceipt!])
@@ -94,7 +94,40 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
         ).reconcileManagedTools(stablePlan: fixture.stablePlan)
 
         XCTAssertEqual(result.failure, .unavailable)
-        XCTAssertEqual(events.snapshot(), ["lock", "mutation", "release"])
+        XCTAssertEqual(events.snapshot(), ["lock", "readback", "mutation", "release"])
+    }
+
+    func testFreshUnderLeaseGitStateMustEqualReviewedInitialObservation()
+        async throws {
+        let fixture = try ManagedToolReconciliationFixture(action: .install)
+        let stale = try ManagedToolInstalledReadback(
+            identity: .git, state: .active,
+            version: fixture.requirement.version,
+            artifactSHA256: fixture.requirement.artifact.sha256,
+            managedRootIdentity: ManagedToolRequirement.managedRootIdentity,
+            evidenceReference: "receipt:another-operation"
+        )
+        let changedEvidence = try ManagedToolInstalledReadback(
+            identity: .git, state: .absent, version: nil,
+            artifactSHA256: nil, managedRootIdentity: nil,
+            evidenceReference: "receipt:changed-initial-observation"
+        )
+        for (fresh, expected) in [
+            (Result<ManagedToolInstalledReadback,
+                    ManagedPythonRuntimeTerminalReceiptFailure>.success(stale),
+             ManagedInstallerManagedToolReconciliationFailure.staleReviewedState),
+            (.success(changedEvidence), .staleReviewedState),
+            (.failure(.readbackFailed), .readbackFailed),
+        ] {
+            let events = ManagedToolReconciliationEvents()
+            let result = await coordinator(
+                fixture: fixture, events: events,
+                initialReadback: fresh,
+                operationLock: ManagedToolReconciliationLock(events: events)
+            ).reconcileManagedTools(stablePlan: fixture.stablePlan)
+            XCTAssertEqual(result.failure, expected)
+            XCTAssertEqual(events.snapshot(), ["lock", "readback", "release"])
+        }
     }
 
     func testDriftedMutationReceiptIsRejectedBeforeReadback() async throws {
@@ -113,7 +146,7 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
         ).reconcileManagedTools(stablePlan: fixture.stablePlan)
 
         XCTAssertEqual(result.failure, .rejected)
-        XCTAssertEqual(events.snapshot(), ["lock", "mutation", "release"])
+        XCTAssertEqual(events.snapshot(), ["lock", "readback", "mutation", "release"])
     }
 
     func testReadbackFailureAndDriftFailClosed() async throws {
@@ -155,7 +188,7 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
                 operationLock: ManagedToolReconciliationLock(events: events)
             ).reconcileManagedTools(stablePlan: fixture.stablePlan)
             XCTAssertEqual(outcome.failure, expected)
-            XCTAssertEqual(events.snapshot(), ["lock", "mutation", "readback", "release"])
+            XCTAssertEqual(events.snapshot(), ["lock", "readback", "mutation", "readback", "release"])
         }
     }
 
@@ -189,7 +222,7 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
             )
         ).reconcileManagedTools(stablePlan: fixture.stablePlan)
         XCTAssertEqual(release.failure, .operationLockReleaseFailed)
-        XCTAssertEqual(events.snapshot(), ["lock", "mutation", "release"])
+        XCTAssertEqual(events.snapshot(), ["lock", "readback", "mutation", "release"])
     }
 
     func testReceiptRejectsMissingDuplicateAndCrossPlanMutationEvidence() throws {
@@ -228,6 +261,10 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
             ManagedToolInstalledReadback,
             ManagedPythonRuntimeTerminalReceiptFailure
         >? = nil,
+        initialReadback: Result<
+            ManagedToolInstalledReadback,
+            ManagedPythonRuntimeTerminalReceiptFailure
+        >? = nil,
         operationLock: ManagedToolReconciliationLock
     ) -> ManagedInstallerManagedToolReconciliationCoordinator {
         ManagedInstallerManagedToolReconciliationCoordinator(
@@ -238,7 +275,11 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
                 events: events
             ),
             readback: ManagedToolReconciliationReadback(
-                result: readback ?? .success(fixture.finalReadback),
+                initial: initialReadback ?? .success(
+                    fixture.request?.reviewedInitialReadback
+                        ?? fixture.stablePlan.originalManagedToolActions[0].initialReadback!
+                ),
+                final: readback ?? .success(fixture.finalReadback),
                 events: events
             ),
             operationLock: operationLock
@@ -364,7 +405,11 @@ private struct ManagedToolReconciliationMutation: ManagedInstallerManagedToolMut
 }
 
 private struct ManagedToolReconciliationReadback: ManagedToolPostMutationReading {
-    let result: Result<
+    let initial: Result<
+        ManagedToolInstalledReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    >
+    let final: Result<
         ManagedToolInstalledReadback,
         ManagedPythonRuntimeTerminalReceiptFailure
     >
@@ -378,7 +423,7 @@ private struct ManagedToolReconciliationReadback: ManagedToolPostMutationReading
     > {
         _ = requirement
         events.append("readback")
-        return result
+        return events.snapshot().contains("mutation") ? final : initial
     }
 }
 
