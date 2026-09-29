@@ -121,9 +121,14 @@ struct ManagedInstallerPostToolPhysicalAtomicHostReader:
             .map(\.componentIdentity).sorted()
         guard let admitted = await material.admit(
             deployment: stablePlan.deployment, componentIdentities: components
-        ), admitted.material.session == stablePlan.session,
-           admitted.currentRelease == stablePlan.reviewedOperation.currentInstallerRelease,
-           let requirement = ManagedInstallerPostToolSignedHostRequirement.parse(
+        ) else { return .failure(.readbackFailed) }
+        let installerCurrencyPassed = admitted.currentRelease
+            == stablePlan.reviewedOperation.currentInstallerRelease
+        let compositionCurrencyPassed = admitted.material.session == stablePlan.session
+            && stablePlan.session.manifestSHA256 == "sha256:" +
+                GitHubInstallerReleaseDescriptor.sha256(of: admitted.material.manifestBytes)
+        guard installerCurrencyPassed, compositionCurrencyPassed,
+              let requirement = ManagedInstallerPostToolSignedHostRequirement.parse(
                 admitted.material.manifestBytes
            ) else { return .failure(.readbackFailed) }
 
@@ -164,11 +169,30 @@ struct ManagedInstallerPostToolPhysicalAtomicHostReader:
             "manifest": .string(materialSHA),
             "installer_release": .string(admitted.currentRelease.sha256),
         ])
+        let reviewedComponents = stablePlan.reviewedOperation.components.sorted {
+            $0.componentID < $1.componentID
+        }
+        let currentComponents = try? ManagedInstallerReleasedRouteCandidateReview()
+            .installDiffs(
+                compositionIdentity: stablePlan.session.compositionIdentity,
+                manifestSHA256: stablePlan.session.manifestSHA256,
+                componentIdentities: components,
+                manifestBytes: admitted.material.manifestBytes
+            ).sorted { $0.componentID < $1.componentID }
+        let productPlanPassed = currentComponents == reviewedComponents && {
+            if case .success(let claims) = ManagedInstallerProductServiceAccountPlanner()
+                .plan(stablePlan: stablePlan, material: admitted.material) {
+                return claims.count == components.count
+            }
+            return false
+        }()
         let gates: [ManagedInstallerPostToolGateReadback]
         do {
             gates = try [
-                Self.gate(.installerCurrency, passed: true, context: context),
-                Self.gate(.compositionCurrency, passed: true, context: context),
+                Self.gate(.installerCurrency, passed: installerCurrencyPassed,
+                          context: context),
+                Self.gate(.compositionCurrency, passed: compositionCurrencyPassed,
+                          context: context),
                 Self.gate(
                     .hostPreflight,
                     passed: requirement.permits(
@@ -177,7 +201,7 @@ struct ManagedInstallerPostToolPhysicalAtomicHostReader:
                     context: .array([context, factsValue])
                 ),
                 providerGate,
-                Self.gate(.productPlan, passed: true, context: context),
+                Self.gate(.productPlan, passed: productPlanPassed, context: context),
             ].sorted { $0.gate.rawValue < $1.gate.rawValue }
             let provisional = try ManagedInstallerPostToolAtomicHostReadback(
                 managedTools: [gitReadback], pythonRuntime: pythonReadback,
@@ -197,7 +221,10 @@ struct ManagedInstallerPostToolPhysicalAtomicHostReader:
         _ identity: ManagedInstallerPostToolGate,
         passed: Bool, context: StrictJSONResourceValue
     ) throws -> ManagedInstallerPostToolGateReadback {
-        let digest = sha256(StrictSignedJSON.canonicalPayload(from: context))
+        let digest = sha256(StrictSignedJSON.canonicalPayload(from: .object([
+            "context": context,
+            "passed": .boolean(passed),
+        ])))
         return try ManagedInstallerPostToolGateReadback(
             gate: identity, passed: passed,
             evidenceReference: "receipt:post-tool-\(identity.rawValue)-\(digest)"
