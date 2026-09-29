@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -393,6 +394,68 @@ class CompositionProducerObserverTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(OBSERVER.ObservationError, "digest drifted"):
             OBSERVER._observe_external(validated, FakeFetch({url: b"changed"}))
+        self.assertEqual(
+            OBSERVER._observe_external(
+                validated, FakeFetch({}), lambda requested: "sha256:" + sha256(raw).hexdigest()
+            )["status"], "READY",
+        )
+        with self.assertRaisesRegex(OBSERVER.ObservationError, "digest drifted"):
+            OBSERVER._observe_external(validated, FakeFetch({}), lambda requested: "sha256:" + "0" * 64)
+
+    def test_external_asset_stream_is_bounded_and_direct(self) -> None:
+        url = "https://example.invalid/managed/archive.tar.gz"
+
+        class Response:
+            def __init__(self, chunks: list[bytes], *, actual_url: str = url, status: int = 200):
+                self.chunks = iter(chunks)
+                self.actual_url = actual_url
+                self.status = status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def geturl(self):
+                return self.actual_url
+
+            def read(self, amount):
+                self.assert_amount = amount
+                return next(self.chunks, b"")
+
+        class Opener:
+            def __init__(self, response):
+                self.response = response
+
+            def open(self, request, timeout):
+                self.request = request
+                self.timeout = timeout
+                if isinstance(self.response, Exception):
+                    raise self.response
+                return self.response
+
+        data = b"archive" * 1024
+        opener = Opener(Response([data[:3000], data[3000:]]))
+        with patch.object(OBSERVER, "build_opener", return_value=opener):
+            self.assertEqual(OBSERVER._network_external_digest(url), "sha256:" + sha256(data).hexdigest())
+        self.assertEqual(opener.request.full_url, url)
+        self.assertEqual(opener.timeout, 30)
+        for response, reason in [
+            (Response([data], actual_url="https://other.invalid/archive"), "URL or HTTP"),
+            (Response([data], status=206), "URL or HTTP"),
+            (Response([]), "empty"),
+            (Response([b"x" * (1024 * 1024)] * 101), "asset boundary"),
+            (HTTPError(url, 404, "missing", {}, None), "HTTP 404"),
+            (URLError("offline"), "transport failed"),
+        ]:
+            with self.subTest(reason=reason), patch.object(OBSERVER, "build_opener", return_value=Opener(response)):
+                with self.assertRaisesRegex(OBSERVER.ObservationError, reason):
+                    OBSERVER._network_external_digest(url)
+        with self.assertRaisesRegex(OBSERVER.ObservationError, "redirected"):
+            OBSERVER._NoExternalRedirect().redirect_request(None, None, 302, "move", {}, "https://other.invalid")
+        with self.assertRaisesRegex(OBSERVER.ObservationError, "canonical HTTPS"):
+            OBSERVER._network_external_digest("http://example.invalid/archive")
 
     def test_configuration_timestamp_and_cli_fail_closed(self) -> None:
         config, documents = self.inputs()
