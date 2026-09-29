@@ -9,8 +9,8 @@ final class ManagedInstallerHelperReviewedSelectionAdmissionTests: XCTestCase {
         let expected = try plan(fixture)
         let selection = try ManagedInstallerReviewedSelection(stablePlan: expected)
         let material = SelectionMaterialStub(values: [
-            .init(session: fixture.session, currentRelease: fixture.release),
-            .init(session: fixture.session, currentRelease: fixture.release),
+            selectionMaterial(fixture),
+            selectionMaterial(fixture),
         ])
         let reader = SelectionSnapshotStub(snapshot: fixture.snapshot)
         let admission = ManagedInstallerHelperReviewedSelectionAdmission(
@@ -30,10 +30,7 @@ final class ManagedInstallerHelperReviewedSelectionAdmissionTests: XCTestCase {
     func testMissingOrDriftedSignedMaterialFailsClosed() async throws {
         let fixture = try ReleasedRouteFixture()
         let selection = try ManagedInstallerReviewedSelection(stablePlan: plan(fixture))
-        let good = ManagedInstallerHelperSelectionMaterial(
-            session: fixture.session,
-            currentRelease: fixture.release
-        )
+        let good = selectionMaterial(fixture)
         let changed = ManagedInstallerHelperSelectionMaterial(
             session: fixture.session,
             currentRelease: VerifiedInstallerRelease(
@@ -42,10 +39,20 @@ final class ManagedInstallerHelperReviewedSelectionAdmissionTests: XCTestCase {
                 assetName: fixture.release.assetName,
                 sha256: fixture.release.sha256,
                 signingKeyID: fixture.release.signingKeyID
+            ),
+            manifestBytes: good.manifestBytes
+        )
+        let changedCandidate = ManagedInstallerHelperSelectionMaterial(
+            session: fixture.session,
+            currentRelease: fixture.release,
+            manifestBytes: Data(
+                String(decoding: good.manifestBytes, as: UTF8.self)
+                    .replacingOccurrences(of: "2.7.34", with: "2.7.38")
+                    .utf8
             )
         )
         let cases: [[ManagedInstallerHelperSelectionMaterial?]] = [
-            [nil], [good, nil], [good, changed],
+            [nil], [good, nil], [good, changed], [good, changedCandidate],
         ]
         for values in cases {
             let admission = ManagedInstallerHelperReviewedSelectionAdmission(
@@ -65,10 +72,7 @@ final class ManagedInstallerHelperReviewedSelectionAdmissionTests: XCTestCase {
     func testMissingPrivateRouteFailsClosed() async throws {
         let fixture = try ReleasedRouteFixture()
         let selection = try ManagedInstallerReviewedSelection(stablePlan: plan(fixture))
-        let material = ManagedInstallerHelperSelectionMaterial(
-            session: fixture.session,
-            currentRelease: fixture.release
-        )
+        let material = selectionMaterial(fixture)
         let admission = ManagedInstallerHelperReviewedSelectionAdmission(
             material: SelectionMaterialStub(values: [material]),
             snapshots: SelectionSnapshotStub(snapshot: nil)
@@ -79,6 +83,46 @@ final class ManagedInstallerHelperReviewedSelectionAdmissionTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? ManagedInstallerHelperReviewedPlanAdmissionFailure,
                            .staleReview)
+        }
+    }
+
+    func testReviewedCandidatesMustMatchFreshSignedManifest() async throws {
+        let fixture = try ReleasedRouteFixture()
+        let selection = try ManagedInstallerReviewedSelection(stablePlan: plan(fixture))
+        let good = selectionMaterial(fixture)
+        let original = String(decoding: good.manifestBytes, as: UTF8.self)
+        let altered = [
+            original.replacingOccurrences(of: "2.7.34", with: "2.7.38"),
+            original.replacingOccurrences(
+                of: String(repeating: "2", count: 64),
+                with: String(repeating: "3", count: 64)
+            ),
+            original.replacingOccurrences(
+                of: fixture.session.compositionIdentity,
+                with: "different-composition"
+            ),
+            "{}",
+        ]
+        for payload in altered {
+            XCTAssertNotEqual(payload, original)
+            let changed = ManagedInstallerHelperSelectionMaterial(
+                session: good.session,
+                currentRelease: good.currentRelease,
+                manifestBytes: Data(payload.utf8)
+            )
+            let admission = ManagedInstallerHelperReviewedSelectionAdmission(
+                material: SelectionMaterialStub(values: [changed]),
+                snapshots: SelectionSnapshotStub(snapshot: fixture.snapshot)
+            )
+            do {
+                _ = try await admission.prepare(selection)
+                XCTFail("changed candidate manifest must not authorize the review")
+            } catch {
+                XCTAssertEqual(
+                    error as? ManagedInstallerHelperReviewedPlanAdmissionFailure,
+                    .staleReview
+                )
+            }
         }
     }
 
@@ -148,9 +192,7 @@ final class ManagedInstallerHelperReviewedSelectionAdmissionTests: XCTestCase {
         let store = FileManagedInstallerHelperReviewedSelectionStore(
             rootDirectory: root, expectedOwner: getuid()
         )
-        let evidence = ManagedInstallerHelperSelectionMaterial(
-            session: fixture.session, currentRelease: fixture.release
-        )
+        let evidence = selectionMaterial(fixture)
         let registration = ManagedInstallerHelperReviewedSelectionRegistration(
             admission: ManagedInstallerHelperReviewedSelectionAdmission(
                 material: SelectionMaterialStub(values: [evidence, evidence]),
@@ -207,9 +249,7 @@ final class ManagedInstallerHelperReviewedSelectionAdmissionTests: XCTestCase {
         let store = FileManagedInstallerHelperReviewedSelectionStore(
             rootDirectory: root, expectedOwner: getuid()
         )
-        let evidence = ManagedInstallerHelperSelectionMaterial(
-            session: fixture.session, currentRelease: fixture.release
-        )
+        let evidence = selectionMaterial(fixture)
         let registration = ManagedInstallerHelperReviewedSelectionRegistration(
             admission: ManagedInstallerHelperReviewedSelectionAdmission(
                 material: SelectionMaterialStub(values: [evidence, evidence]),
@@ -254,6 +294,29 @@ final class ManagedInstallerHelperReviewedSelectionAdmissionTests: XCTestCase {
             candidate: fixture.operation,
             helperSnapshot: fixture.snapshot,
             helperCurrentRelease: fixture.release
+        )
+    }
+
+    private func selectionMaterial(
+        _ fixture: ReleasedRouteFixture
+    ) -> ManagedInstallerHelperSelectionMaterial {
+        let components = fixture.review.components.map { component in
+            StrictJSONResourceValue.object([
+                "identity": .string(component.componentID),
+                "artifact": .object([
+                    "version": .string(component.candidateVersion!),
+                    "digest": .string(component.artifactDigest!),
+                ]),
+            ])
+        }
+        let bytes = StrictSignedJSON.canonicalPayload(from: .object([
+            "composition_id": .string(fixture.session.compositionIdentity),
+            "components": .array(components),
+        ]))
+        return ManagedInstallerHelperSelectionMaterial(
+            session: fixture.session,
+            currentRelease: fixture.release,
+            manifestBytes: bytes
         )
     }
 }

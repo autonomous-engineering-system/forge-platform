@@ -53,9 +53,10 @@ class InstallerUXReleaseRoadmapTests(unittest.TestCase):
         qualified = {
             "IUR-LC-FORGE-CONTRACT", "IUR-LC-FORGE-RELEASE",
             "IUR-LC-EP-CONTRACT", "IUR-LC-EP-RELEASE",
+            "IUR-LC-PRODUCER-REBASELINE",
         }
         designed = {
-            "IUR-LC-PRODUCER-REBASELINE", "IUR-LC-PRESERVED-INVENTORY",
+            "IUR-LC-PRESERVED-INVENTORY",
             "IUR-LC-RESTORE-PLAN", "IUR-LC-PURGE-PLAN",
         }
         self.assertTrue(all(nodes[node_id]["status"] == "QUALIFIED" for node_id in qualified))
