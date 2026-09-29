@@ -86,6 +86,11 @@ struct ManagedInstallerProviderRuntimeHelperAssembly {
                         componentIdentity: owner.rawValue
                     ) else { return .failure(.rejected) }
             let root = owner == .forgeRuntime ? forgeRoot : epRoot
+            let freshEPInstanceID = owner == .engineeringPlatformServer
+                ? ManagedInstallerProductServiceAccountPlanner.instanceID(
+                    deploymentID: stablePlan.deployment.id,
+                    componentIdentity: owner.rawValue
+                ) : nil
             let publisher: MacOSManagedInstallerProviderRuntimeSlotPublisher?
             if owner == .forgeRuntime {
                 publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
@@ -97,7 +102,9 @@ struct ManagedInstallerProviderRuntimeHelperAssembly {
                 publisher = MacOSManagedInstallerProviderRuntimeSlotPublisher(
                     epProductRoot: epRoot,
                     expectedDeploymentID: stablePlan.deployment.id,
-                    requirement: requirement, expectedOwner: expectedOwner
+                    requirement: requirement,
+                    freshProductInstanceID: freshEPInstanceID,
+                    expectedOwner: expectedOwner
                 )
             }
             guard let publisher else { return .failure(.rejected) }
@@ -113,6 +120,7 @@ struct ManagedInstallerProviderRuntimeHelperAssembly {
                     root: root, deploymentID: stablePlan.deployment.id,
                     requirement: requirement,
                     epProductLayout: owner == .engineeringPlatformServer,
+                    freshEPInstanceID: freshEPInstanceID,
                     expectedOwner: expectedOwner
                 )
             )

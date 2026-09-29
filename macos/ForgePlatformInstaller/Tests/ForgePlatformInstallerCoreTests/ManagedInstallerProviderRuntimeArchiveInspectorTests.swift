@@ -154,6 +154,61 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         ))
     }
 
+    func testFreshEPProviderRuntimeUsesProductInstanceRatherThanDeploymentRoot()
+        throws {
+        let fixture = try ProviderArchiveFixture(
+            kind: .zip, provider: .githubCLI, target: "deployment-a",
+            epCanonicalExecutable: true,
+            ownerComponent: .engineeringPlatformServer
+        )
+        let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
+        let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-a", stagedArchive: fixture.staged,
+            requirement: fixture.requirement, inspection: inspection
+        )
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent(
+            "ep-fresh-provider-" + UUID().uuidString, isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        let instance = ManagedInstallerProductServiceAccountPlanner.instanceID(
+            deploymentID: "deployment-a",
+            componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue
+        )
+        let publisher = try XCTUnwrap(MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            epProductRoot: root, expectedDeploymentID: "deployment-a",
+            requirement: fixture.requirement, freshProductInstanceID: instance,
+            expectedOwner: geteuid()
+        ))
+        let published = try providerSlotReadback(publisher.publish(
+            archive: fixture.archive, requirement: fixture.requirement, request: request
+        ))
+        XCTAssertEqual(try XCTUnwrap(providerSlotReadback(publisher.readPublishedSlot(
+            requirement: fixture.requirement, request: request
+        ))), published)
+        let executable = root.appendingPathComponent(
+            "instances/\(instance)/providers/github/runtime/bin/gh"
+        )
+        XCTAssertEqual(try Data(contentsOf: executable), fixture.executable)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root
+            .appendingPathComponent("instances/deployment-a").path))
+        XCTAssertNil(MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            epProductRoot: root, expectedDeploymentID: "deployment-a",
+            requirement: fixture.requirement,
+            freshProductInstanceID: "foreign-instance", expectedOwner: geteuid()
+        ))
+        XCTAssertNil(MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            epProductRoot: root, expectedDeploymentID: "deployment-b",
+            requirement: fixture.requirement,
+            freshProductInstanceID: instance, expectedOwner: geteuid()
+        ))
+    }
+
     func testEPProductCodexPublishesOnlyCanonicalBinExecutable() throws {
         let fixture = try ProviderArchiveFixture(
             kind: .zip, provider: .codex, target: "ep-primary",

@@ -30,6 +30,29 @@ final class ManagedInstallerProviderHomeProvisioningTests: XCTestCase {
         ).get()?.providerHomeIdentity, fixture.request.providerHomeIdentity)
     }
 
+    func testFreshEPHomeFollowsDerivedProductInstanceAndRejectsForeignDeployment()
+        throws {
+        let fixture = try HomeFixture(
+            provider: .githubCLI, owner: .engineeringPlatformServer,
+            epProduct: true, freshEPProduct: true
+        )
+        defer { fixture.remove() }
+        let provisioner = fixture.provisioner()
+        XCTAssertNil(try provisioner.read(fixture.request,
+                                         account: fixture.account).get())
+        XCTAssertEqual(try provisioner.ensure(fixture.request,
+                                             account: fixture.account).get(),
+                       try provisioner.read(fixture.request,
+                                            account: fixture.account).get())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.target
+            .appendingPathComponent("config", isDirectory: true).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root
+            .appendingPathComponent("instances/deployment-a").path))
+        XCTAssertEqual(fixture.provisioner(deploymentID: "deployment-b").ensure(
+            fixture.request, account: fixture.account
+        ).failure, .invalidRequest)
+    }
+
     func testRejectsForeignTargetAccountAndInsecureExistingHome() throws {
         let fixture = try HomeFixture(provider: .codex, owner: .forgeRuntime)
         defer { fixture.remove() }
@@ -77,11 +100,17 @@ private struct HomeFixture {
     let request: ManagedInstallerProviderRuntimeMutationRequest
     let account: ManagedInstallerProviderLocalServiceAccount
     let epProduct: Bool
+    let freshEPInstanceID: String?
     let homeName: String
 
     init(provider: ProviderID, owner: ProviderOwnerComponent,
-         epProduct: Bool = false) throws {
+         epProduct: Bool = false, freshEPProduct: Bool = false) throws {
         self.epProduct = epProduct
+        freshEPInstanceID = freshEPProduct
+            ? ManagedInstallerProductServiceAccountPlanner.instanceID(
+                deploymentID: "deployment-a",
+                componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue
+            ) : nil
         root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
             .appendingPathComponent("provider-home-\(UUID().uuidString)", isDirectory: true)
         let runtime = try ProviderRuntimeRequirement(
@@ -94,7 +123,8 @@ private struct HomeFixture {
         requirement = ProviderRequirement(
             provider: provider, isRequired: true, minimumVersion: runtime.version,
             credentialScope: .component, ownerComponent: owner,
-            targetIdentity: "instance-a", runtime: runtime
+            targetIdentity: freshEPProduct ? "deployment-a" : "instance-a",
+            runtime: runtime
         )
         let staged = try ManagedInstallerProviderStagedArchive(
             operationID: "provider-home-operation", providerTargetID: requirement.id,
@@ -122,7 +152,8 @@ private struct HomeFixture {
             ), uid: geteuid(), gid: getegid()
         )
         let segments = epProduct
-            ? ["instances", "instance-a", "providers", provider == .codex ? "codex" : "github"]
+            ? ["instances", freshEPInstanceID ?? "instance-a", "providers",
+               provider == .codex ? "codex" : "github"]
             : ["deployments", "deployment-a", "providers", owner.rawValue,
                "instance-a", provider.rawValue]
         target = segments.reduce(root) { $0.appendingPathComponent($1, isDirectory: true) }
@@ -140,7 +171,8 @@ private struct HomeFixture {
         -> MacOSManagedInstallerProviderHomeProvisioner {
         MacOSManagedInstallerProviderHomeProvisioner(
             root: root, deploymentID: deploymentID, requirement: requirement,
-            epProductLayout: epProduct, expectedOwner: geteuid()
+            epProductLayout: epProduct, freshEPInstanceID: freshEPInstanceID,
+            expectedOwner: geteuid()
         )
     }
 
