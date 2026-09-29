@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import ForgePlatformInstallerCore
@@ -67,12 +68,19 @@ final class ManagedInstallerPrepublicationProductWheelAuthorityTests: XCTestCase
     }
 }
 
-private struct PrepublicationWheelFixture {
+struct PrepublicationWheelFixture {
     let deployment: ManagedDeploymentTarget
     let material: ManagedVerifiedCompositionMaterial
-    let artifactDigest = "sha256:" + String(repeating: "a", count: 64)
+    let wheelBytes: Data
+    let artifactDigest: String
 
-    init(duplicateForge: Bool = false, sourceSuffix: String = "forge.whl") throws {
+    init(
+        duplicateForge: Bool = false, sourceSuffix: String = "forge.whl",
+        wheelBytes: Data = Data("qualified-wheel-test-bytes".utf8)
+    ) throws {
+        self.wheelBytes = wheelBytes
+        artifactDigest = "sha256:" + SHA256.hash(data: wheelBytes)
+            .map { String(format: "%02x", $0) }.joined()
         deployment = try ManagedDeploymentTarget(id: "deployment-a", exists: false)
         let forge: StrictJSONResourceValue = .object([
             "identity": .string("forge-runtime"),
