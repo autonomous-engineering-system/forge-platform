@@ -45,17 +45,20 @@ struct ManagedInstallerFreshInstallRuntimeAdmissionCoordinator:
     private let materialAdmission: any ManagedInstallerFreshInstallMaterialAdmitting
     private let preprovider: any ManagedInstallerFreshInstallPreproviderPreparing
     private let providers: any ManagedInstallerFreshInstallProviderBuilding
+    private let providerProbeAccess: any ManagedInstallerFreshProviderProbeAccessGranting
     private let managedPython: any ManagedPythonRuntimePreparing
 
     init(material: ManagedVerifiedCompositionMaterial,
          materialAdmission: any ManagedInstallerFreshInstallMaterialAdmitting,
          preprovider: any ManagedInstallerFreshInstallPreproviderPreparing,
          providers: any ManagedInstallerFreshInstallProviderBuilding,
+         providerProbeAccess: any ManagedInstallerFreshProviderProbeAccessGranting,
          managedPython: any ManagedPythonRuntimePreparing) {
         self.material = material
         self.materialAdmission = materialAdmission
         self.preprovider = preprovider
         self.providers = providers
+        self.providerProbeAccess = providerProbeAccess
         self.managedPython = managedPython
     }
 
@@ -96,6 +99,11 @@ struct ManagedInstallerFreshInstallRuntimeAdmissionCoordinator:
             providerReceipt = value
         case .failure(let failure): return .failure(.providerPreparation(failure))
         }
+
+        guard case .success = providerProbeAccess.grant(
+            stablePlan: stablePlan, material: material,
+            preprovider: beforeProviders, providers: providerReceipt
+        ) else { return .failure(.rejected) }
 
         let pythonReceipt: ManagedPythonRuntimePreparationReceipt
         switch await managedPython.prepareRuntime(
@@ -140,6 +148,7 @@ enum ManagedInstallerFreshInstallRuntimeAdmissionHelperAssembly {
                 journal: journal, accounts: accountCoordinator
             ),
             providers: ManagedInstallerProductionFreshInstallProviderBuilder(),
+            providerProbeAccess: MacOSManagedInstallerFreshProviderProbeAccess(),
             managedPython: ManagedPythonRuntimePreparationHelperAssembly.makeProduction(
                 runtime: stablePlan.session.managedPythonRuntime,
                 initialReadback: stablePlan.activationPlan.initialReadback

@@ -5,6 +5,31 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class MacOSManagedInstallerProviderHostInspectorTests: XCTestCase {
+    func testPublishedBinAllowsOnlySafeRootOwnedSearchMode() async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .githubCLI, epProductLayout: true
+        )
+        let bin = fixture.executable.deletingLastPathComponent()
+        XCTAssertEqual(chmod(bin.path, 0o755), 0)
+        let runner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 0, standardOutput: nil)),
+        ])
+        let inspector = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, runner: runner
+        )
+        let observed = try await inspector.inspectProvider(
+            fixture.requirement, for: fixture.request
+        ).get()
+        XCTAssertEqual(observed.state, .verified)
+        XCTAssertEqual(chmod(bin.path, 0o750), 0)
+        let refused = await inspector.inspectProvider(
+            fixture.requirement, for: fixture.request
+        )
+        XCTAssertEqual(refused.failure, .readbackFailed)
+    }
+
     func testCommandFactoryUsesOnlyFixedArgumentsAndScrubbedContext() throws {
         let executable = URL(fileURLWithPath: "/private/provider/bin/tool")
         let home = URL(fileURLWithPath: "/private/provider/home", isDirectory: true)

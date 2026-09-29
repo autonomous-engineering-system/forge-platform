@@ -8,7 +8,7 @@ enum ManagedInstallerProductServiceAccountSetFailure: Error, Equatable {
     case rejected
 }
 
-struct ManagedInstallerProductServiceAccountBinding: Equatable {
+struct ManagedInstallerProductServiceAccountBinding: Equatable, Sendable {
     let deploymentID: String
     let componentIdentity: String
     let instanceID: String
