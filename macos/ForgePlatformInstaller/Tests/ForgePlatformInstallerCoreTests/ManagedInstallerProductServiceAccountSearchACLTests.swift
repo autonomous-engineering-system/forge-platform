@@ -4,6 +4,66 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProductServiceAccountSearchACLTests: XCTestCase {
+    func testPrivateExecutableGrantsOnlyReadAndExecuteToExactAccount() throws {
+        let root = try privateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appendingPathComponent("gh")
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: executable.path, contents: Data("binary".utf8)
+        ))
+        XCTAssertEqual(chmod(executable.path, 0o500), 0)
+        let account = localAccount(uid: geteuid())
+        let grant = MacOSManagedInstallerProductServiceAccountSearchACL(
+            executable: executable, expectedOwner: geteuid(),
+            requiredEffectiveUID: geteuid()
+        )
+        XCTAssertNoThrow(try grant.ensureExecute(for: [account]).get())
+        XCTAssertNoThrow(try grant.ensureExecute(for: [account]).get())
+        XCTAssertEqual(grant.ensureSearch(for: [account]).failure, .invalidRequest)
+        let attributes = try FileManager.default.attributesOfItem(atPath: executable.path)
+        XCTAssertEqual(attributes[.posixPermissions] as? Int, 0o500)
+        let descriptor = open(executable.path, O_RDONLY | O_NOFOLLOW_ANY)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { _ = close(descriptor) }
+        let acl = try XCTUnwrap(acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED))
+        defer { _ = acl_free(UnsafeMutableRawPointer(acl)) }
+        var entry: acl_entry_t?
+        XCTAssertEqual(acl_get_entry(acl, ACL_FIRST_ENTRY.rawValue, &entry), 0)
+        var mask: acl_permset_mask_t = 0
+        XCTAssertEqual(acl_get_permset_mask_np(try XCTUnwrap(entry), &mask), 0)
+        XCTAssertEqual(mask, acl_permset_mask_t(
+            ACL_READ_DATA.rawValue | ACL_EXECUTE.rawValue
+        ))
+        XCTAssertEqual(acl_get_entry(acl, ACL_NEXT_ENTRY.rawValue, &entry), -1)
+    }
+
+    func testPrivateExecutableRejectsModeDriftAndSymlink() throws {
+        let root = try privateRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appendingPathComponent("codex")
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: executable.path, contents: Data("binary".utf8)
+        ))
+        let account = localAccount(uid: geteuid())
+        let grant = MacOSManagedInstallerProductServiceAccountSearchACL(
+            executable: executable, expectedOwner: geteuid(),
+            requiredEffectiveUID: geteuid()
+        )
+        XCTAssertEqual(chmod(executable.path, 0o550), 0)
+        XCTAssertEqual(grant.ensureExecute(for: [account]).failure, .rejected)
+        XCTAssertEqual(chmod(executable.path, 0o500), 0)
+        let link = root.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(
+            at: link, withDestinationURL: executable
+        )
+        let throughLink = MacOSManagedInstallerProductServiceAccountSearchACL(
+            executable: link, expectedOwner: geteuid(),
+            requiredEffectiveUID: geteuid()
+        )
+        XCTAssertEqual(throughLink.ensureExecute(for: [account]).failure, .rejected)
+        XCTAssertNil(acl_get_file(executable.path, ACL_TYPE_EXTENDED))
+    }
+
     func testGrantsOnlySearchAndRepeatsWithoutChangingPrivateMode() throws {
         let root = try privateRoot()
         defer { try? FileManager.default.removeItem(at: root) }
