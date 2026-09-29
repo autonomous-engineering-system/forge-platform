@@ -657,6 +657,38 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
 }
 
 extension ManagedInstallerHelperSealedTrustContextTests {
+    func testHelperMutationCurrencyRequiresFreshExactSealedRelease() async throws {
+        let current = try makeCurrentRelease()
+        let matching = ManagedInstallerHelperMutationCurrency(
+            currentRelease: SequenceCurrentRelease([.success(current)])
+        )
+        let matchingResult = await matching.recheckInstallerBeforeMutation(
+            currentVersion: current.record.release.version
+        )
+        XCTAssertEqual(matchingResult, .current(current.record.release))
+        let older = ManagedInstallerHelperMutationCurrency(
+            currentRelease: SequenceCurrentRelease([.success(current)])
+        )
+        let olderResult = await older.recheckInstallerBeforeMutation(
+            currentVersion: try InstallerVersion("0.1.0")
+        )
+        XCTAssertEqual(olderResult, .updateRequired(current.record.release))
+        let future = ManagedInstallerHelperMutationCurrency(
+            currentRelease: SequenceCurrentRelease([.success(current)])
+        )
+        let futureResult = await future.recheckInstallerBeforeMutation(
+            currentVersion: try InstallerVersion("999.0.0")
+        )
+        if case .failed = futureResult {} else { XCTFail("future release accepted") }
+        let unavailable = ManagedInstallerHelperMutationCurrency(
+            currentRelease: SequenceCurrentRelease([.failure(.unavailable)])
+        )
+        let unavailableResult = await unavailable.recheckInstallerBeforeMutation(
+            currentVersion: current.record.release.version
+        )
+        if case .failed = unavailableResult {} else { XCTFail("unverified release accepted") }
+    }
+
     func testPreviousGitRequirementComesOnlyFromExactSignedCatalogManifest()
         async throws {
         let scenario = try makePreviousGitScenario()
