@@ -1586,15 +1586,20 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         }
     }
 
-    func testManagedGitHostReaderRejectsMissingAndInsecureFilesystemState() async throws {
+    func testManagedGitHostReaderTreatsMissingStateAsAbsentAndRejectsInsecureState()
+        async throws {
         let fixture = try FreshReplannerFixture()
         let readback = try fixture.toolReadback(.active)
 
         let root = try privateTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let reader = FileManagedInstallerManagedGitHostReader(rootDirectory: root)
-        let missingResult = await reader.readManagedTool(fixture.git)
-        XCTAssertEqual(missingResult.failure, .readbackFailed)
+        let missingResult = try await reader.readManagedTool(fixture.git).get()
+        XCTAssertEqual(missingResult.state, .absent)
+        XCTAssertEqual(
+            missingResult.evidenceReference,
+            FileManagedInstallerManagedGitHostReader.missingStateEvidenceReference
+        )
 
         let state = try writeManagedGitHostState(
             readback.canonicalManagedGitHostStateJSONData(),

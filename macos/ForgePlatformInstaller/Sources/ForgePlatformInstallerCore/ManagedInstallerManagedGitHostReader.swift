@@ -61,6 +61,7 @@ extension ManagedToolInstalledReadback {
 public struct FileManagedInstallerManagedGitHostReader:
     ManagedToolPostMutationReading, Sendable {
     public static let fileName = "managed-git-host-state.json"
+    static let missingStateEvidenceReference = "receipt:managed-git-host-absent"
     static let maximumBytes = 16 * 1_024
     private let rootDirectory: URL
 
@@ -78,7 +79,13 @@ public struct FileManagedInstallerManagedGitHostReader:
         do {
             let root = try openSecureRoot()
             defer { _ = Darwin.close(root) }
-            let data = try readState(in: root)
+            guard let data = try readState(in: root) else {
+                return .success(try ManagedToolInstalledReadback(
+                    identity: .git, state: .absent, version: nil,
+                    artifactSHA256: nil, managedRootIdentity: nil,
+                    evidenceReference: Self.missingStateEvidenceReference
+                ))
+            }
             let readback = try ManagedToolInstalledReadback.decodeManagedGitHostStateJSON(data)
             guard data == readback.canonicalManagedGitHostStateJSONData() else {
                 throw ReaderError.insecure
@@ -106,11 +113,14 @@ public struct FileManagedInstallerManagedGitHostReader:
         return descriptor
     }
 
-    private func readState(in root: Int32) throws -> Data {
+    private func readState(in root: Int32) throws -> Data? {
         let descriptor = Self.fileName.withCString {
             Darwin.openat(root, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
         }
-        guard descriptor >= 0 else { throw ReaderError.insecure }
+        if descriptor < 0 {
+            if errno == ENOENT { return nil }
+            throw ReaderError.insecure
+        }
         defer { _ = Darwin.close(descriptor) }
 
         var before = stat()
