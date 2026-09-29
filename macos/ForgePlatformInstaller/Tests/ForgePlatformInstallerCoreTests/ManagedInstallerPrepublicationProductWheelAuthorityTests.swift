@@ -76,7 +76,8 @@ struct PrepublicationWheelFixture {
 
     init(
         duplicateForge: Bool = false, sourceSuffix: String = "forge.whl",
-        wheelBytes: Data = Data("qualified-wheel-test-bytes".utf8)
+        wheelBytes: Data = Data("qualified-wheel-test-bytes".utf8),
+        providerRequirements: [ProviderRequirement] = []
     ) throws {
         self.wheelBytes = wheelBytes
         artifactDigest = "sha256:" + SHA256.hash(data: wheelBytes)
@@ -137,7 +138,7 @@ struct PrepublicationWheelFixture {
             componentSelectionSequence: 14,
             managedPythonRuntime: managedPythonTestRuntime,
             productVirtualEnvironments: managedPythonTestVenvs,
-            providerRequirements: []
+            providerRequirements: providerRequirements
         )
         material = .init(session: session, manifestBytes: bytes)
     }
