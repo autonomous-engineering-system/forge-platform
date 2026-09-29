@@ -1563,6 +1563,43 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         }
     }
 
+    func testPhysicalGitPostToolReadbackRequiresSignedPlanRequirementAndActiveSlot()
+        async throws {
+        let fixture = try FreshReplannerFixture()
+        let active = try fixture.toolReadback(.active)
+        let physical = HostToolSource(readback: active)
+        let reader = try ManagedInstallerPostToolPhysicalGitHostReader(
+            stablePlan: fixture.stablePlan, physical: physical
+        )
+        let observed = try await reader.readManagedTool(fixture.git).get()
+        XCTAssertEqual(observed, active)
+        XCTAssertNotNil(ManagedInstallerPostToolPhysicalGitHostReader.production(
+            stablePlan: fixture.stablePlan
+        ))
+        let substituted = ManagedToolRequirement(
+            identity: .git,
+            version: try InstallerVersion("2.46.0"),
+            artifact: fixture.git.artifact
+        )
+        let wrong = await reader.readManagedTool(substituted)
+        XCTAssertEqual(wrong.failure, .rejected)
+
+        let absent = try ManagedInstallerPostToolPhysicalGitHostReader(
+            stablePlan: fixture.stablePlan,
+            physical: HostToolSource(readback: fixture.toolReadback(.absent))
+        )
+        let absentResult = await absent.readManagedTool(fixture.git)
+        XCTAssertEqual(absentResult.failure, .rejected)
+        let unavailable = try ManagedInstallerPostToolPhysicalGitHostReader(
+            stablePlan: fixture.stablePlan,
+            physical: HostToolSource(
+                readback: active, failure: .readbackFailed
+            )
+        )
+        let unavailableResult = await unavailable.readManagedTool(fixture.git)
+        XCTAssertEqual(unavailableResult.failure, .readbackFailed)
+    }
+
     func testAtomicHostSourceReaderStopsAtEveryFailedSourceBoundary() async throws {
         let fixture = try FreshReplannerFixture()
         let request = try ManagedInstallerPostToolHostObservationRequest(
