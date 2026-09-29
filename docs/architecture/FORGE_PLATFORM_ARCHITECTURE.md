@@ -159,9 +159,13 @@ bootstraps one fixed private Forge provider-context root, and the Forge slot
 publisher derives deployment, instance and provider subdirectories from the
 reviewed target with no-follow checks. A helper factory now assembles exact
 Forge and EP preparation paths from one admitted composition and stable plan;
-construction has no side effects. First-install product service-account
-authority and released-route wiring remain absent, so live provider readiness
-is not established. A cleanup-enforcing provider preparation
+construction has no side effects. A fresh-install account planner now binds
+distinct helper-chosen non-root names to each exact reviewed component,
+deployment, product wheel and operation; an exclusive-lease coordinator
+requires independent OS readback after account creation and rejects partial,
+foreign or ambiguous identities. The concrete Open Directory mutator,
+canonical product-route publication and released-route wiring remain absent,
+so live provider readiness is not established. A cleanup-enforcing provider preparation
 coordinator now composes reconciliation, staging, inspection, that mutation
 seam and terminal discard under the same host-wide lease. Its final `READY`
 receipt rebinds every archive, inspection, runtime-slot and provider-home
