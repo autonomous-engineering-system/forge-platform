@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import XCTest
 @testable import ForgePlatformInstallerCore
 
@@ -138,6 +139,151 @@ final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
         XCTAssertEqual(release.failure, .lockReleaseFailed)
     }
 
+    func testHelperAssemblyUsesExactAccountPlanAndHostLease() async throws {
+        let fixture = try accountPlanFixture()
+        let directory = DirectoryFixture()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("account-helper-" + UUID().uuidString,
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let built = ManagedInstallerProductServiceAccountHelperAssembly.make(
+            stablePlan: fixture.plan, material: fixture.material,
+            helperRoot: root, directory: directory,
+            requiredEffectiveUID: Darwin.geteuid()
+        )
+        let coordinator = try built.get()
+        XCTAssertTrue(directory.users.isEmpty)
+        let first = try await coordinator.prepare(
+            stablePlan: fixture.plan, material: fixture.material
+        ).get()
+        XCTAssertEqual(first.count, 2)
+        XCTAssertEqual(directory.createsUser, 2)
+        XCTAssertEqual(Set(first.map(\.uid)).count, 2)
+        let repeated = try await coordinator.prepare(
+            stablePlan: fixture.plan, material: fixture.material
+        ).get()
+        XCTAssertEqual(repeated, first)
+        XCTAssertEqual(directory.createsUser, 2)
+    }
+
+    func testHelperAssemblyRejectsStaleMaterialAndUnsafeRoot() throws {
+        let fixture = try accountPlanFixture()
+        let directory = DirectoryFixture()
+        let wrong = try PrepublicationWheelFixture(
+            wheelBytes: Data("wrong-helper-wheel".utf8)
+        )
+        let root = URL(fileURLWithPath: "/private/tmp/forge-account-test")
+        XCTAssertEqual(ManagedInstallerProductServiceAccountHelperAssembly.make(
+            stablePlan: fixture.plan, material: wrong.material,
+            helperRoot: root, directory: directory,
+            requiredEffectiveUID: Darwin.geteuid()
+        ).failure, .rejected)
+        XCTAssertEqual(ManagedInstallerProductServiceAccountHelperAssembly.make(
+            stablePlan: fixture.plan, material: fixture.material,
+            helperRoot: URL(fileURLWithPath: "/"), directory: directory,
+            requiredEffectiveUID: Darwin.geteuid()
+        ).failure, .rejected)
+        XCTAssertTrue(directory.users.isEmpty)
+        _ = try ManagedInstallerProductServiceAccountHelperAssembly.makeProduction(
+            stablePlan: fixture.plan, material: fixture.material
+        ).get()
+    }
+
+    func testPreproviderAdmissionSeedsJournalBeforeAccounts() async throws {
+        let fixture = try accountPlanFixture()
+        let record = try preproviderJournal(for: fixture.plan)
+        let claims = try ManagedInstallerProductServiceAccountPlanner().plan(
+            stablePlan: fixture.plan, material: fixture.material
+        ).get()
+        let readbacks = claims.enumerated().map { index, claim in
+            ManagedInstallerProductServiceAccountReadback(
+                claim: claim, uid: UInt32(350_000 + index),
+                gid: UInt32(350_000 + index),
+                evidenceReference: "receipt:preprovider-\(index)"
+            )
+        }
+        let events = PreproviderEvents()
+        let journal = PreproviderJournal(result: .success(record), events: events)
+        let accounts = PreproviderAccounts(result: .success(readbacks), events: events)
+        let coordinator = ManagedInstallerProductServiceAccountPreproviderCoordinator(
+            journal: journal, accounts: accounts
+        )
+        let receipt = try await coordinator.prepare(
+            stablePlan: fixture.plan, material: fixture.material
+        ).get()
+        XCTAssertEqual(events.values, ["journal", "accounts"])
+        XCTAssertEqual(receipt.parentJournalRecord, record)
+        XCTAssertEqual(receipt.accounts, readbacks)
+        XCTAssertEqual(receipt.operationID, fixture.plan.activationPlan.operationID)
+        XCTAssertEqual(receipt.stablePlanFingerprint, fixture.plan.fingerprint)
+        let repeated = try await coordinator.prepare(
+            stablePlan: fixture.plan, material: fixture.material
+        ).get()
+        XCTAssertEqual(repeated, receipt)
+    }
+
+    func testPreproviderAdmissionRejectsBeforeOrAfterAccountBoundary() async throws {
+        let fixture = try accountPlanFixture()
+        let record = try preproviderJournal(for: fixture.plan)
+        let events = PreproviderEvents()
+        let journal = PreproviderJournal(result: .failure(.journalBridgeFailed),
+                                         events: events)
+        let accounts = PreproviderAccounts(result: .failure(.unavailable), events: events)
+        let coordinator = ManagedInstallerProductServiceAccountPreproviderCoordinator(
+            journal: journal, accounts: accounts
+        )
+        let failedJournal = await coordinator.prepare(
+            stablePlan: fixture.plan, material: fixture.material
+        )
+        XCTAssertEqual(failedJournal.failure, .journal(.journalBridgeFailed))
+        XCTAssertEqual(events.values, ["journal"])
+
+        let drifted = try ManagedPythonRuntimeParentJournalRecord(
+            plan: fixture.plan.activationPlan,
+            stablePlanFingerprint: String(repeating: "f", count: 64),
+            requiresManagedToolReconciliation: true
+        )
+        journal.result = .success(drifted)
+        let wrongJournal = await coordinator.prepare(
+            stablePlan: fixture.plan, material: fixture.material
+        )
+        XCTAssertEqual(wrongJournal.failure, .rejected)
+        XCTAssertEqual(events.values, ["journal", "journal"])
+
+        journal.result = .success(record)
+        let failedAccount = await coordinator.prepare(
+            stablePlan: fixture.plan, material: fixture.material
+        )
+        XCTAssertEqual(failedAccount.failure, .account(.unavailable))
+        accounts.result = .success([])
+        let missing = await coordinator.prepare(
+            stablePlan: fixture.plan, material: fixture.material
+        )
+        XCTAssertEqual(missing.failure, .rejected)
+        let foreign = try PrepublicationWheelFixture(
+            wheelBytes: Data("foreign-preprovider-wheel".utf8)
+        )
+        let invalid = await coordinator.prepare(
+            stablePlan: fixture.plan, material: foreign.material
+        )
+        XCTAssertEqual(invalid.failure, .invalidRequest)
+        XCTAssertEqual(events.values.suffix(2), ["journal", "accounts"])
+    }
+
+    private func preproviderJournal(
+        for plan: ManagedInstallerStablePlan
+    ) throws -> ManagedPythonRuntimeParentJournalRecord {
+        try ManagedPythonRuntimeParentJournalRecord(
+            plan: plan.activationPlan, stablePlanFingerprint: plan.fingerprint,
+            requiresManagedToolReconciliation: plan.activationPlan.action != .noChange
+                || plan.originalManagedToolActions.contains { $0.action != .noChange }
+        )
+    }
+
     private func accountPlanFixture(
         forgeChange: ComponentChange = .install,
         forgeArtifactDigest: String? = nil,
@@ -173,6 +319,48 @@ final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
             ]
         )
         return (plan, fixture.material)
+    }
+}
+
+private final class PreproviderEvents: @unchecked Sendable {
+    var values: [String] = []
+}
+
+private final class PreproviderJournal:
+    ManagedPythonRuntimeParentJournalSeeding, @unchecked Sendable {
+    var result: Result<ManagedPythonRuntimeParentJournalRecord,
+        ManagedPythonRuntimeTerminalReceiptFailure>
+    let events: PreproviderEvents
+    init(result: Result<ManagedPythonRuntimeParentJournalRecord,
+                 ManagedPythonRuntimeTerminalReceiptFailure>, events: PreproviderEvents) {
+        self.result = result
+        self.events = events
+    }
+    func seedPlannedOperation(stablePlan: ManagedInstallerStablePlan) async
+        -> Result<ManagedPythonRuntimeParentJournalRecord,
+                  ManagedPythonRuntimeTerminalReceiptFailure> {
+        events.values.append("journal")
+        return result
+    }
+}
+
+private final class PreproviderAccounts:
+    ManagedInstallerProductServiceAccountsPreparing, @unchecked Sendable {
+    var result: Result<[ManagedInstallerProductServiceAccountReadback],
+        ManagedInstallerProductServiceAccountPreparationFailure>
+    let events: PreproviderEvents
+    init(result: Result<[ManagedInstallerProductServiceAccountReadback],
+                 ManagedInstallerProductServiceAccountPreparationFailure>,
+         events: PreproviderEvents) {
+        self.result = result
+        self.events = events
+    }
+    func prepare(stablePlan: ManagedInstallerStablePlan,
+                 material: ManagedVerifiedCompositionMaterial) async
+        -> Result<[ManagedInstallerProductServiceAccountReadback],
+                  ManagedInstallerProductServiceAccountPreparationFailure> {
+        events.values.append("accounts")
+        return result
     }
 }
 
