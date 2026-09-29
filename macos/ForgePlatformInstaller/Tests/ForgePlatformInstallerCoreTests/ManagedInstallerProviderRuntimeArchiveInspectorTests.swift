@@ -18,13 +18,13 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         let epRoot = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
             .appendingPathComponent("ep-provider-runtime-\(UUID().uuidString)",
                                     isDirectory: true)
-        let providerRoot = epRoot
-            .appendingPathComponent("instances/ep-primary/providers/github", isDirectory: true)
         try FileManager.default.createDirectory(
-            at: providerRoot, withIntermediateDirectories: true
+            at: epRoot, withIntermediateDirectories: true
         )
         defer { try? FileManager.default.removeItem(at: epRoot) }
-        XCTAssertEqual(chmod(providerRoot.path, 0o700), 0)
+        XCTAssertEqual(chmod(epRoot.path, 0o700), 0)
+        let providerRoot = epRoot
+            .appendingPathComponent("instances/ep-primary/providers/github", isDirectory: true)
         let publisher = try XCTUnwrap(MacOSManagedInstallerProviderRuntimeSlotPublisher(
             epProductRoot: epRoot, expectedDeploymentID: "deployment-a",
             requirement: fixture.requirement, expectedOwner: geteuid()
@@ -35,6 +35,9 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(providerSlotReadback(publisher.readPublishedSlot(
             requirement: fixture.requirement, request: request
         ))), published)
+        XCTAssertEqual(try providerSlotReadback(publisher.publish(
+            archive: fixture.archive, requirement: fixture.requirement, request: request
+        )), published)
         let executable = providerRoot.appendingPathComponent("runtime", isDirectory: true)
             .appendingPathComponent(fixture.runtime.executableRelativePath)
         XCTAssertEqual(try Data(contentsOf: executable), fixture.executable)
@@ -43,6 +46,17 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         XCTAssertTrue(executable.path.hasSuffix(
             "/instances/ep-primary/providers/github/runtime/bin/gh"
         ))
+        for directory in [
+            epRoot.appendingPathComponent("instances", isDirectory: true),
+            epRoot.appendingPathComponent("instances/ep-primary", isDirectory: true),
+            epRoot.appendingPathComponent("instances/ep-primary/providers", isDirectory: true),
+            providerRoot,
+        ] {
+            let details = try FileManager.default.attributesOfItem(atPath: directory.path)
+            XCTAssertEqual(details[.posixPermissions] as? Int, 0o700)
+            XCTAssertEqual(details[.ownerAccountID] as? NSNumber,
+                           NSNumber(value: geteuid()))
+        }
         let other = try ProviderArchiveFixture(
             kind: .zip, provider: .githubCLI, target: "ep-other",
             epCanonicalExecutable: true
@@ -78,13 +92,13 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         let epRoot = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
             .appendingPathComponent("ep-provider-codex-\(UUID().uuidString)",
                                     isDirectory: true)
-        let providerRoot = epRoot
-            .appendingPathComponent("instances/ep-primary/providers/codex", isDirectory: true)
         try FileManager.default.createDirectory(
-            at: providerRoot, withIntermediateDirectories: true
+            at: epRoot, withIntermediateDirectories: true
         )
         defer { try? FileManager.default.removeItem(at: epRoot) }
-        XCTAssertEqual(chmod(providerRoot.path, 0o700), 0)
+        XCTAssertEqual(chmod(epRoot.path, 0o700), 0)
+        let providerRoot = epRoot
+            .appendingPathComponent("instances/ep-primary/providers/codex", isDirectory: true)
         let publisher = try XCTUnwrap(MacOSManagedInstallerProviderRuntimeSlotPublisher(
             epProductRoot: epRoot, expectedDeploymentID: "deployment-a",
             requirement: fixture.requirement, expectedOwner: geteuid()
@@ -94,6 +108,57 @@ final class ManagedInstallerProviderRuntimeArchiveInspectorTests: XCTestCase {
         ))
         XCTAssertEqual(try Data(contentsOf: providerRoot
             .appendingPathComponent("runtime/bin/codex")), fixture.executable)
+    }
+
+    func testEPProductRuntimeRejectsInsecureExistingProviderRoot() throws {
+        let fixture = try ProviderArchiveFixture(
+            kind: .zip, provider: .githubCLI, target: "ep-primary",
+            epCanonicalExecutable: true
+        )
+        let inspection = try MacOSManagedInstallerProviderRuntimeArchiveInspector
+            .inspectArchiveForExtraction(fixture.archive, for: fixture.requirement).inspection
+        let request = try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-a", stagedArchive: fixture.staged,
+            requirement: fixture.requirement, inspection: inspection
+        )
+        let epRoot = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("ep-provider-unsafe-\(UUID().uuidString)",
+                                    isDirectory: true)
+        let providerRoot = epRoot
+            .appendingPathComponent("instances/ep-primary/providers/github", isDirectory: true)
+        try FileManager.default.createDirectory(at: providerRoot,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: epRoot) }
+        for directory in [
+            epRoot,
+            epRoot.appendingPathComponent("instances", isDirectory: true),
+            epRoot.appendingPathComponent("instances/ep-primary", isDirectory: true),
+            epRoot.appendingPathComponent("instances/ep-primary/providers", isDirectory: true),
+        ] {
+            XCTAssertEqual(chmod(directory.path, 0o700), 0)
+        }
+        XCTAssertEqual(chmod(providerRoot.path, 0o755), 0)
+        let publisher = try XCTUnwrap(MacOSManagedInstallerProviderRuntimeSlotPublisher(
+            epProductRoot: epRoot, expectedDeploymentID: "deployment-a",
+            requirement: fixture.requirement, expectedOwner: geteuid()
+        ))
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.archive, requirement: fixture.requirement, request: request
+        ).failure, .rejected)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: providerRoot
+            .appendingPathComponent("runtime").path))
+
+        try FileManager.default.removeItem(at: providerRoot)
+        let outside = epRoot.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside,
+                                                withIntermediateDirectories: false)
+        XCTAssertEqual(chmod(outside.path, 0o700), 0)
+        try FileManager.default.createSymbolicLink(at: providerRoot,
+                                                   withDestinationURL: outside)
+        XCTAssertEqual(publisher.publish(
+            archive: fixture.archive, requirement: fixture.requirement, request: request
+        ).failure, .rejected)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
 
     func testSlotAdapterUsesExactStagingThenCachedRestartReadback() async throws {
