@@ -22,6 +22,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
     private let expectedOwner: uid_t
     private let boundEPRequirement: ProviderRequirement?
     private let epProductRoot: URL?
+    private let epInstanceID: String?
     private let boundForgeRequirement: ProviderRequirement?
     private let forgeContextRoot: URL?
 
@@ -31,6 +32,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         self.expectedOwner = expectedOwner
         boundEPRequirement = nil
         epProductRoot = nil
+        epInstanceID = nil
         boundForgeRequirement = nil
         forgeContextRoot = nil
     }
@@ -65,6 +67,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         self.expectedOwner = expectedOwner
         boundEPRequirement = nil
         epProductRoot = nil
+        epInstanceID = nil
         boundForgeRequirement = requirement
         self.forgeContextRoot = forgeContextRoot
     }
@@ -75,6 +78,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         epProductRoot: URL,
         expectedDeploymentID: String,
         requirement: ProviderRequirement,
+        freshProductInstanceID: String? = nil,
         expectedOwner: uid_t = 0
     ) {
         guard epProductRoot.isFileURL,
@@ -83,13 +87,23 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
               epProductRoot.path != "/",
               requirement.ownerComponent == .engineeringPlatformServer,
               requirement.credentialScope == .component,
-              let instanceID = requirement.targetIdentity,
+              let targetID = requirement.targetIdentity,
+              freshProductInstanceID == nil || (
+                targetID == expectedDeploymentID
+                    && freshProductInstanceID ==
+                        ManagedInstallerProductServiceAccountPlanner.instanceID(
+                            deploymentID: expectedDeploymentID,
+                            componentIdentity: ProviderOwnerComponent
+                                .engineeringPlatformServer.rawValue
+                        )
+              ),
               let runtime = requirement.runtime,
               runtime.executableRelativePath == "bin/" + (
                   requirement.provider == .codex ? "codex" : "gh"
               ) else {
             return nil
         }
+        let instanceID = freshProductInstanceID ?? targetID
         let productProvider = requirement.provider == .codex ? "codex" : "github"
         slotsRoot = epProductRoot
             .appendingPathComponent("instances", isDirectory: true)
@@ -100,6 +114,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         self.expectedOwner = expectedOwner
         boundEPRequirement = requirement
         self.epProductRoot = epProductRoot
+        epInstanceID = instanceID
         boundForgeRequirement = nil
         forgeContextRoot = nil
     }
@@ -354,14 +369,15 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
     }
 
     private func targetSegments(_ requirement: ProviderRequirement) -> [String]? {
-        guard let instanceID = requirement.targetIdentity else { return nil }
+        guard let targetID = requirement.targetIdentity else { return nil }
         if boundEPRequirement != nil {
-            return ["instances", instanceID, "providers",
+            guard let epInstanceID else { return nil }
+            return ["instances", epInstanceID, "providers",
                     requirement.provider == .codex ? "codex" : "github"]
         }
         if boundForgeRequirement != nil {
             return ["deployments", expectedDeploymentID, "providers",
-                    ProviderOwnerComponent.forgeRuntime.rawValue, instanceID,
+                    ProviderOwnerComponent.forgeRuntime.rawValue, targetID,
                     requirement.provider.rawValue, "runtime"]
         }
         return nil
