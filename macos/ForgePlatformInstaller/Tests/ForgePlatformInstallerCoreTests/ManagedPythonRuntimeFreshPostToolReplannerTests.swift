@@ -101,6 +101,18 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         )
         let malformedResult = await malformed.readAtomicPostToolHostState(for: request)
         XCTAssertEqual(malformedResult.failure, .readbackFailed)
+        let changedBytes = try physicalPostToolReader(
+            fixture: fixture,
+            material: ManagedInstallerHelperExecutionMaterial(
+                material: ManagedVerifiedCompositionMaterial(
+                    session: fixture.stablePlan.session,
+                    manifestBytes: physicalPostToolManifest() + Data(" ".utf8)
+                ),
+                currentRelease: original
+            )
+        )
+        let changedResult = await changedBytes.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(changedResult.failure, .readbackFailed)
         let gitDrift = try physicalPostToolReader(
             fixture: fixture, material: material, gitPlan: .drift
         )
@@ -114,6 +126,28 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(pythonResult.failure, .readbackFailed)
         XCTAssertFalse(ManagedInstallerPostToolPhysicalReviewedTargetVerifier()
             .verify(fixture.stablePlan))
+    }
+
+    func testPhysicalPostToolReaderBlocksDriftedReviewedProductCandidate() async throws {
+        let fixture = try FreshReplannerFixture(
+            freshInstall: true, reviewedProductCandidateDrift: true
+        )
+        let material = ManagedInstallerHelperExecutionMaterial(
+            material: ManagedVerifiedCompositionMaterial(
+                session: fixture.stablePlan.session,
+                manifestBytes: physicalPostToolManifest()
+            ),
+            currentRelease: fixture.stablePlan.reviewedOperation.currentInstallerRelease
+        )
+        let reader = try physicalPostToolReader(fixture: fixture, material: material)
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let observed = try await reader.readAtomicPostToolHostState(for: request).get()
+        XCTAssertEqual(observed.gates.first(where: { $0.gate == .productPlan })?.passed,
+                       false)
+        XCTAssertTrue(observed.gates.filter { $0.gate != .productPlan }
+            .allSatisfy(\.passed))
     }
 
     func testSignedPhysicalHostRequirementRejectsMalformedAndUnsafeFacts() throws {
@@ -3380,13 +3414,20 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
 }
 
 private func physicalPostToolManifest() -> Data {
-    Data("""
-    {"host_requirements":{"minimum_macos_version":"26.0.0",\
-    "supported_architectures":["arm64"],"minimum_available_disk_bytes":100,\
-    "backup_reserve_bytes":25,"minimum_memory_bytes":50,\
-    "requires_administrator":true,"requires_network":true,\
-    "requires_trusted_clock":true}}
-    """.utf8)
+    let fixture = try! PrepublicationWheelFixture(includeProductVenvs: true)
+    var reader = try! StrictJSONResourceReader(data: fixture.material.manifestBytes)
+    var fields = try! reader.parseDocument().objectValue!
+    fields["host_requirements"] = .object([
+        "minimum_macos_version": .string("26.0.0"),
+        "supported_architectures": .array([.string("arm64")]),
+        "minimum_available_disk_bytes": .integer("100"),
+        "backup_reserve_bytes": .integer("25"),
+        "minimum_memory_bytes": .integer("50"),
+        "requires_administrator": .boolean(true),
+        "requires_network": .boolean(true),
+        "requires_trusted_clock": .boolean(true),
+    ])
+    return StrictSignedJSON.canonicalPayload(from: .object(fields))
 }
 
 private func physicalPostToolFacts(disk: UInt64 = 1_000) ->
@@ -3468,6 +3509,7 @@ private struct FreshReplannerFixture {
         providerRequirements: [ProviderRequirement] = [],
         enabledProviderRequirements: [ProviderRequirement]? = nil,
         freshInstall: Bool = false,
+        reviewedProductCandidateDrift: Bool = false,
         components: [ComponentDiff]? = nil
     ) throws {
         git = ManagedToolRequirement(
@@ -3478,9 +3520,36 @@ private struct FreshReplannerFixture {
                 sha256: "sha256:" + String(repeating: "9", count: 64)
             )
         )
+        let freshSession: VerifiedCompositionSessionPlan?
+        if freshInstall {
+            let original = try ActivationFixture(
+                providerRequirements: providerRequirements, managedTools: [git]
+            ).session
+            freshSession = try VerifiedCompositionSessionPlan(
+                sessionID: original.sessionID,
+                compositionIdentity: original.compositionIdentity,
+                manifestSHA256: "sha256:" + GitHubInstallerReleaseDescriptor.sha256(
+                    of: physicalPostToolManifest()
+                ),
+                installerReleaseSequence: original.installerReleaseSequence,
+                installerProvenanceSHA256: original.installerProvenanceSHA256,
+                installerReleaseTrustConfigurationSHA256:
+                    original.installerReleaseTrustConfigurationSHA256,
+                compositionCatalogFeed: original.compositionCatalogFeed,
+                compositionCatalog: original.compositionCatalog,
+                componentCombinationCatalog: original.componentCombinationCatalog,
+                componentSelectionSequence: original.componentSelectionSequence,
+                managedPythonRuntime: original.managedPythonRuntime,
+                productVirtualEnvironments: original.productVirtualEnvironments,
+                providerRequirements: original.providerRequirements,
+                managedTools: original.managedTools
+            )
+        } else {
+            freshSession = nil
+        }
         activation = try ActivationFixture(
             providerRequirements: providerRequirements,
-            managedTools: [git],
+            managedTools: [git], overrideSession: freshSession,
             overrideDeployment: freshInstall ? ManagedDeploymentTarget(
                 id: "activation-deployment", exists: false
             ) : nil
@@ -3518,6 +3587,24 @@ private struct FreshReplannerFixture {
             request: request,
             activationReceipt: try terminalReceipt(request)
         )
+        let candidateComponents = freshInstall
+            ? try ManagedInstallerReleasedRouteCandidateReview().installDiffs(
+                compositionIdentity: activation.session.compositionIdentity,
+                manifestSHA256: activation.session.manifestSHA256,
+                componentIdentities: activation.session.productVirtualEnvironments
+                    .map(\.componentIdentity).sorted(),
+                manifestBytes: physicalPostToolManifest()
+            ) : components
+        let reviewedComponents = reviewedProductCandidateDrift
+            ? candidateComponents?.map { component in
+                component.componentID == "forge-runtime"
+                    ? ComponentDiff(
+                        componentID: component.componentID, title: component.title,
+                        change: .install, candidateVersion: "2.7.99",
+                        artifactDigest: component.artifactDigest,
+                        detail: component.detail
+                    ) : component
+            } : candidateComponents
         stablePlan = try managedInstallerTestStablePlan(
             session: activation.session,
             deployment: deployment,
@@ -3528,7 +3615,7 @@ private struct FreshReplannerFixture {
             ),
             actions: [ManagedToolOriginalPlanAction(requirement: git, action: .install)],
             enabledProviderRequirements: enabledProviderRequirements,
-            components: components
+            components: reviewedComponents
         )
     }
 
