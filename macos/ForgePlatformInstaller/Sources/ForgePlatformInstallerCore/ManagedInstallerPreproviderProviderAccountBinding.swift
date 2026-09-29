@@ -67,7 +67,11 @@ struct ManagedInstallerPreproviderProviderAccountBinding:
         let matches = receipt.accounts.filter {
             $0.claim.deploymentID == request.deploymentID
                 && $0.claim.componentIdentity == owner.rawValue
-                && $0.claim.instanceID == requirement.targetIdentity
+                && $0.claim.instanceID
+                    == ManagedInstallerProductServiceAccountPlanner.instanceID(
+                        deploymentID: request.deploymentID,
+                        componentIdentity: owner.rawValue
+                    )
                 && $0.claim.productArtifactSHA256 == productArtifactSHA256
         }
         guard matches.count == 1, let account = matches.first else {

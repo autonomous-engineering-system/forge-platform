@@ -16,15 +16,26 @@ final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
         XCTAssertEqual(first.map(\.componentIdentity),
                        ["engineering-platform-server", "forge-runtime"])
         XCTAssertEqual(Set(first.map(\.accountName)).count, 2)
+        XCTAssertEqual(Set(first.map(\.instanceID)).count, 2)
         for claim in first {
             XCTAssertEqual(claim.stablePlanFingerprint, fixture.plan.fingerprint)
             XCTAssertEqual(claim.operationID, fixture.plan.activationPlan.operationID)
-            XCTAssertEqual(claim.instanceID, fixture.plan.deployment.id)
+            XCTAssertEqual(claim.instanceID,
+                ManagedInstallerProductServiceAccountPlanner.instanceID(
+                    deploymentID: fixture.plan.deployment.id,
+                    componentIdentity: claim.componentIdentity
+                ))
+            XCTAssertNotEqual(claim.instanceID, fixture.plan.deployment.id)
             XCTAssertEqual(claim.deploymentID, fixture.plan.deployment.id)
             XCTAssertTrue(claim.accountName.hasPrefix("_fpi_"))
             XCTAssertTrue(ManagedInstallerProductWorkerRouteAuthority
                 .isServiceAccount(claim.accountName))
         }
+        XCTAssertNotEqual(first[0].instanceID,
+            ManagedInstallerProductServiceAccountPlanner.instanceID(
+                deploymentID: "another-deployment",
+                componentIdentity: first[0].componentIdentity
+            ))
     }
 
     func testRejectsStaleMaterialAndNonInstallBeforeAccountProjection() throws {
