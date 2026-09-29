@@ -12,6 +12,7 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
     private static let vendorName = "AutonomousEngineeringSystem"
     private static let installerName = "ForgePlatformInstaller"
     static let productVenvsDirectoryName = "managed-python-product-venvs"
+    static let managedGitSlotsDirectoryName = "managed-git-slots"
     static let productsDirectoryName = "products"
     static let engineeringPlatformDirectoryName = "engineering-platform"
     static let stagedDirectoryName = "staged"
@@ -70,6 +71,10 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
             in: installer
         )
         defer { Darwin.close(runtimeSlots) }
+        let managedGitSlots = try createPrivateChild(
+            Self.managedGitSlotsDirectoryName, in: installer
+        )
+        defer { Darwin.close(managedGitSlots) }
         let productVenvs = try createPrivateChild(
             Self.productVenvsDirectoryName, in: installer
         )
@@ -107,6 +112,7 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
         guard Self.isPrivateDirectory(vendor, owner: expectedOwner),
               Self.isPrivateDirectory(installer, owner: expectedOwner),
               Self.isPrivateDirectory(runtimeSlots, owner: expectedOwner),
+              Self.isPrivateDirectory(managedGitSlots, owner: expectedOwner),
               Self.isPrivateDirectory(productVenvs, owner: expectedOwner),
               Self.isPrivateDirectory(products, owner: expectedOwner),
               Self.isPrivateDirectory(engineeringPlatform, owner: expectedOwner),

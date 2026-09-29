@@ -18,6 +18,10 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
             expected.deletingLastPathComponent(), expected,
             expected.appendingPathComponent("managed-python-runtime-slots", isDirectory: true),
             expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.managedGitSlotsDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
                 ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
                 isDirectory: true
             ),
@@ -91,6 +95,29 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o700], ofItemAtPath: outside.path
+        )
+        try FileManager.default.createSymbolicLink(at: slots, withDestinationURL: outside)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    func testRejectsUnsafeManagedGitSlotsRoot() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let bootstrap = testBootstrap(parent)
+        let root = try bootstrap.prepare()
+        let slots = root.appendingPathComponent(
+            ManagedInstallerHelperStateRootBootstrap.managedGitSlotsDirectoryName,
+            isDirectory: true
+        )
+        XCTAssertEqual(chmod(slots.path, 0o755), 0)
+        XCTAssertThrowsError(try bootstrap.prepare())
+
+        try FileManager.default.removeItem(at: slots)
+        let outside = parent.appendingPathComponent("outside-git-slots", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outside, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
         )
         try FileManager.default.createSymbolicLink(at: slots, withDestinationURL: outside)
         XCTAssertThrowsError(try bootstrap.prepare())
