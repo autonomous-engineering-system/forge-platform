@@ -32,6 +32,48 @@ struct ManagedInstallerProductServiceAccountPreproviderReceipt: Equatable, Senda
         self.accounts = accounts
     }
 
+    /// Reconstructs the account claim from the immutable reviewed plan after
+    /// runtime completion, when the signed manifest bytes are no longer an
+    /// input to the generic receipt boundary. The original constructor has
+    /// already checked those bytes before any account mutation.
+    func matches(_ stablePlan: ManagedInstallerStablePlan) -> Bool {
+        let components = stablePlan.reviewedOperation.components.sorted {
+            $0.componentID < $1.componentID
+        }
+        guard !stablePlan.deployment.exists,
+              stablePlanFingerprint == stablePlan.fingerprint,
+              operationID == stablePlan.activationPlan.operationID,
+              Self.journalMatches(parentJournalRecord, stablePlan: stablePlan),
+              components.count == accounts.count,
+              Set(components.map(\.componentID)).count == components.count,
+              Set(accounts.map(\.uid)).count == accounts.count,
+              Set(accounts.map(\.gid)).count == accounts.count else {
+            return false
+        }
+        for (component, account) in zip(components, accounts) {
+            let instanceID = ManagedInstallerProductServiceAccountPlanner.instanceID(
+                deploymentID: stablePlan.deployment.id,
+                componentIdentity: component.componentID
+            )
+            let claim = account.claim
+            guard component.change == .install,
+                  component.installedVersion == nil,
+                  claim.stablePlanFingerprint == stablePlan.fingerprint,
+                  claim.operationID == stablePlan.activationPlan.operationID,
+                  claim.deploymentID == stablePlan.deployment.id,
+                  claim.componentIdentity == component.componentID,
+                  claim.instanceID == instanceID,
+                  claim.productArtifactSHA256 == component.artifactDigest,
+                  claim.accountName == ManagedInstallerProductServiceAccountPlanner.name(
+                      deploymentID: stablePlan.deployment.id,
+                      componentIdentity: component.componentID,
+                      instanceID: instanceID
+                  ),
+                  account.matches(claim) else { return false }
+        }
+        return true
+    }
+
     static func journalMatches(_ record: ManagedPythonRuntimeParentJournalRecord,
                                stablePlan: ManagedInstallerStablePlan) -> Bool {
         let requiresReconciliation = stablePlan.activationPlan.action != .noChange

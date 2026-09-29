@@ -40,6 +40,51 @@ struct ProductionManagedInstallerHelperExecutionMaterialAdmission:
     }
 }
 
+/// The account set created before provider preparation must be the same set
+/// immediately before a product operation. The runtime receipt carries the
+/// original claim, and the local directory is independently reread here.
+struct ManagedInstallerFreshAccountBoundProductOperations:
+    ManagedInstallerProductOperationsExecuting, Sendable {
+    private let accounts: any ManagedInstallerFreshProductAccountReading
+    private let downstream: any ManagedInstallerProductOperationsExecuting
+
+    init(
+        accounts: any ManagedInstallerFreshProductAccountReading,
+        downstream: any ManagedInstallerProductOperationsExecuting
+    ) {
+        self.accounts = accounts
+        self.downstream = downstream
+    }
+
+    func executeProductOperations(
+        stablePlan plan: ManagedInstallerStablePlan,
+        runtimeTransactionReceipt receipt: ManagedInstallerRuntimeTransactionReceipt
+    ) async -> ManagedDeploymentExecutionResult {
+        guard !plan.deployment.exists,
+              let exact = try? ManagedInstallerRuntimeTransactionReceipt(
+                  stablePlan: plan,
+                  preparationReceipt: receipt.preparationReceipt,
+                  managedToolReconciliationReceipt:
+                    receipt.managedToolReconciliationReceipt,
+                  completionReceipt: receipt.completionReceipt
+              ), exact == receipt,
+              let preprovider = receipt.preparationReceipt.preproviderAccountReceipt,
+              preprovider.matches(plan) else {
+            return .failed(.staleSession, stages: [])
+        }
+        for account in preprovider.accounts {
+            guard case .success(let fresh?) = accounts.readAccountSynchronously(
+                account.claim
+            ), fresh == account else {
+                return .failed(.staleSession, stages: [])
+            }
+        }
+        return await downstream.executeProductOperations(
+            stablePlan: plan, runtimeTransactionReceipt: receipt
+        )
+    }
+}
+
 /// Re-admits the signed composition on both sides of runtime assembly. The
 /// reviewed intent has already been resolved from private helper state; only
 /// an exact fresh-install plan reaches the shared execution core.
@@ -81,9 +126,14 @@ struct ManagedInstallerHelperFreshInstallPlanExecutor:
                 else { return nil }
                 return coordinator
             },
-            products: ManagedInstallerCanonicalProductOperationsExecutor(
-                transport: ManagedInstallerHelperLocalProductOperationTransport(
-                    executor: ManagedInstallerPythonProductOperationExecutor()
+            products: ManagedInstallerFreshAccountBoundProductOperations(
+                accounts: MacOSManagedInstallerProductServiceAccountDirectoryMutation(
+                    directory: MacOSOpenDirectoryLocalAccountStore()
+                ),
+                downstream: ManagedInstallerCanonicalProductOperationsExecutor(
+                    transport: ManagedInstallerHelperLocalProductOperationTransport(
+                        executor: ManagedInstallerPythonProductOperationExecutor()
+                    )
                 )
             )
         )

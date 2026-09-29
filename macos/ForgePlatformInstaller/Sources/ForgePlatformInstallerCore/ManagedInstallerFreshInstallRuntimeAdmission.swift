@@ -116,7 +116,8 @@ struct ManagedInstallerFreshInstallRuntimeAdmissionCoordinator:
             stablePlan: stablePlan,
             parentJournalRecord: beforeProviders.parentJournalRecord,
             providerRuntimeReceipt: providerReceipt,
-            managedPythonReceipt: pythonReceipt
+            managedPythonReceipt: pythonReceipt,
+            preproviderAccountReceipt: beforeProviders
         ) else { return .failure(.rejected) }
         return .success(receipt)
     }

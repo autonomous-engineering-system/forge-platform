@@ -183,8 +183,34 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                        fixture.preprovider.parentJournalRecord)
         XCTAssertEqual(receipt.providerRuntimeReceipt, try XCTUnwrap(fixture.provider))
         XCTAssertEqual(receipt.managedPythonReceipt, fixture.python)
+        XCTAssertEqual(receipt.preproviderAccountReceipt, fixture.preprovider)
         XCTAssertEqual(receipt.stablePlanFingerprint, fixture.plan.fingerprint)
         XCTAssertEqual(builder.seenReceipt, fixture.preprovider)
+        let reconstructed = try ManagedInstallerRuntimePreparationAdmissionReceipt(
+            stablePlan: fixture.plan,
+            parentJournalRecord: receipt.parentJournalRecord,
+            providerRuntimeReceipt: receipt.providerRuntimeReceipt,
+            managedPythonReceipt: receipt.managedPythonReceipt,
+            preproviderAccountReceipt: receipt.preproviderAccountReceipt
+        )
+        XCTAssertEqual(reconstructed, receipt)
+        let missingAccounts = try ManagedInstallerRuntimePreparationAdmissionReceipt(
+            stablePlan: fixture.plan,
+            parentJournalRecord: receipt.parentJournalRecord,
+            providerRuntimeReceipt: receipt.providerRuntimeReceipt,
+            managedPythonReceipt: receipt.managedPythonReceipt
+        )
+        XCTAssertNotEqual(missingAccounts, receipt)
+        let foreign = try FreshRuntimeFixture(
+            wheelBytes: Data("different-wheel-for-accounts".utf8)
+        )
+        XCTAssertThrowsError(try ManagedInstallerRuntimePreparationAdmissionReceipt(
+            stablePlan: fixture.plan,
+            parentJournalRecord: receipt.parentJournalRecord,
+            providerRuntimeReceipt: receipt.providerRuntimeReceipt,
+            managedPythonReceipt: receipt.managedPythonReceipt,
+            preproviderAccountReceipt: foreign.preprovider
+        ))
         let repeated = try await coordinator.prepareRuntimes(
             stablePlan: fixture.plan
         ).get()
@@ -378,6 +404,132 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         let failedRead = await unavailable.admit(stablePlan: fixture.plan)
         XCTAssertEqual(failedRead.failure, .unavailable)
     }
+
+    func testProductDispatchRereadsOriginalFreshAccountSet() async throws {
+        let fixture = try FreshRuntimeFixture()
+        let exact = try freshRuntimeTransactionReceipt(
+            fixture: fixture, includeAccounts: true
+        )
+        let downstream = FreshAccountProductDispatch()
+        let admitted = ManagedInstallerFreshAccountBoundProductOperations(
+            accounts: FreshRuntimeAccountReader(
+                readbacks: fixture.preprovider.accounts
+            ), downstream: downstream
+        )
+        let result = await admitted.executeProductOperations(
+            stablePlan: fixture.plan, runtimeTransactionReceipt: exact
+        )
+        XCTAssertEqual(result, .failed(.executionFailed, stages: []))
+        let firstCount = await downstream.calls()
+        XCTAssertEqual(firstCount, 1)
+
+        let unavailable = ManagedInstallerFreshAccountBoundProductOperations(
+            accounts: FreshRuntimeAccountReader(readbacks: []),
+            downstream: downstream
+        )
+        let unavailableResult = await unavailable.executeProductOperations(
+            stablePlan: fixture.plan, runtimeTransactionReceipt: exact
+        )
+        XCTAssertEqual(unavailableResult, .failed(.staleSession, stages: []))
+        let secondCount = await downstream.calls()
+        XCTAssertEqual(secondCount, 1)
+
+        let changedAccounts = fixture.preprovider.accounts.enumerated().map {
+            index, account in
+            ManagedInstallerProductServiceAccountReadback(
+                claim: account.claim,
+                uid: account.uid + UInt32(index == 0 ? 1 : 0),
+                gid: account.gid,
+                evidenceReference: account.evidenceReference
+            )
+        }
+        let drifted = ManagedInstallerFreshAccountBoundProductOperations(
+            accounts: FreshRuntimeAccountReader(readbacks: changedAccounts),
+            downstream: downstream
+        )
+        let driftedResult = await drifted.executeProductOperations(
+            stablePlan: fixture.plan, runtimeTransactionReceipt: exact
+        )
+        XCTAssertEqual(driftedResult, .failed(.staleSession, stages: []))
+        let driftedCount = await downstream.calls()
+        XCTAssertEqual(driftedCount, 1)
+
+        let missingReceipt = try freshRuntimeTransactionReceipt(
+            fixture: fixture, includeAccounts: false
+        )
+        let missingResult = await admitted.executeProductOperations(
+            stablePlan: fixture.plan, runtimeTransactionReceipt: missingReceipt
+        )
+        XCTAssertEqual(missingResult, .failed(.staleSession, stages: []))
+        let thirdCount = await downstream.calls()
+        XCTAssertEqual(thirdCount, 1)
+    }
+}
+
+private func freshRuntimeTransactionReceipt(
+    fixture: FreshRuntimeFixture, includeAccounts: Bool
+) throws -> ManagedInstallerRuntimeTransactionReceipt {
+    let plan = fixture.plan
+    let preparation = try ManagedInstallerRuntimePreparationAdmissionReceipt(
+        stablePlan: plan,
+        parentJournalRecord: fixture.preprovider.parentJournalRecord,
+        providerRuntimeReceipt: try XCTUnwrap(fixture.provider),
+        managedPythonReceipt: fixture.python,
+        preproviderAccountReceipt: includeAccounts ? fixture.preprovider : nil
+    )
+    let request = try ManagedPythonRuntimeActivationRequest(
+        plan: plan.activationPlan, preparationReceipt: fixture.python
+    )
+    let productReferences = Dictionary(uniqueKeysWithValues:
+        plan.session.productVirtualEnvironments.map {
+            ($0.componentIdentity, "receipt:fresh-venv-\($0.componentIdentity)")
+        })
+    let activation = try ManagedPythonRuntimeActivationReceipt(
+        operationID: request.operationID,
+        sessionID: request.sessionID,
+        deploymentID: request.deploymentID,
+        runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+        runtimeSlotIdentity: request.runtimeSlotIdentity,
+        rollbackRuntimeIdentitySHA256: request.rollbackRuntimeIdentitySHA256,
+        assetEvidenceReferences: request.preparationReceipt.assetEvidenceReferences,
+        preparationEvidenceReferences: [
+            request.preparationReceipt.inspectionEvidenceReference,
+            request.preparationReceipt.slotEvidenceReference,
+        ],
+        productVenvEvidenceReferences: productReferences,
+        activationEvidenceReference: "receipt:fresh-runtime-activation",
+        finalReadbackEvidenceReference: "receipt:fresh-runtime-final", state: .ready
+    )
+    let reconciliation = try ManagedInstallerManagedToolReconciliationReceipt(
+        stablePlan: plan, mutationReceipts: []
+    )
+    let completion = try ManagedInstallerRuntimeCompletionReceipt(
+        stablePlan: plan, runtimeAdmissionReceipt: preparation,
+        managedToolReconciliationReceipt: reconciliation,
+        activationReceipt: activation,
+        terminalReceipt: ManagedPythonRuntimeExecutionReceipt(
+            request: request, activationReceipt: activation
+        )
+    )
+    return try ManagedInstallerRuntimeTransactionReceipt(
+        stablePlan: plan, preparationReceipt: preparation,
+        managedToolReconciliationReceipt: reconciliation,
+        completionReceipt: completion
+    )
+}
+
+private actor FreshAccountProductDispatch: ManagedInstallerProductOperationsExecuting {
+    private var count = 0
+    func executeProductOperations(
+        stablePlan: ManagedInstallerStablePlan,
+        runtimeTransactionReceipt: ManagedInstallerRuntimeTransactionReceipt
+    ) async -> ManagedDeploymentExecutionResult {
+        _ = stablePlan
+        _ = runtimeTransactionReceipt
+        count += 1
+        return .failed(.executionFailed, stages: [])
+    }
+    func calls() -> Int { count }
 }
 
 private struct FreshRuntimeFixture {
