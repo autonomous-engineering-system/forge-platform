@@ -22,6 +22,10 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
                 isDirectory: true
             ),
             expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.stagedDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
                 ManagedInstallerHelperStateRootBootstrap.productsDirectoryName,
                 isDirectory: true
             ),
@@ -112,6 +116,30 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: venvs, withDestinationURL: outside)
         XCTAssertThrowsError(try bootstrap.prepare())
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    func testRejectsSymlinkedProductArtifactStagingRoot() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let bootstrap = testBootstrap(parent)
+        let root = try bootstrap.prepare()
+        let staged = root.appendingPathComponent(
+            ManagedInstallerHelperStateRootBootstrap.stagedDirectoryName,
+            isDirectory: true
+        )
+        try FileManager.default.removeItem(at: staged)
+        let outside = parent.appendingPathComponent("outside-staged", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outside, withIntermediateDirectories: false
+        )
+        XCTAssertEqual(Darwin.chmod(outside.path, 0o700), 0)
+        try FileManager.default.createSymbolicLink(
+            at: staged, withDestinationURL: outside
+        )
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(
+            atPath: outside.path
+        ).isEmpty)
     }
 
     func testRejectsUnsafeEPProductRootWithoutFollowingSymlink() throws {
