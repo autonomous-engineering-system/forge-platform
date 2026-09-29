@@ -1,4 +1,4 @@
-"""The protected Pages stage accepts only the five exact reviewed bytes."""
+"""The protected Pages stage accepts only the six exact reviewed bytes."""
 from __future__ import annotations
 
 import copy
@@ -16,6 +16,13 @@ from scripts import prepare_managed_tool_pages as pages
 
 
 class ManagedToolPagesTests(unittest.TestCase):
+    def test_private_draft_review_has_scoped_release_access(self) -> None:
+        workflow = (ROOT / ".github/workflows/forge-platform-managed-tool-pages.yml").read_text()
+        review = workflow.split("\n  review:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        self.assertIn("\n    permissions:\n      contents: write", review)
+        self.assertIn("github.ref_protected", review)
+        self.assertIn("github.workflow_sha == inputs.source_sha", review)
+
     def setUp(self) -> None:
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)
