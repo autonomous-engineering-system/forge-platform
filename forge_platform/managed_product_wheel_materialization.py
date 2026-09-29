@@ -110,12 +110,12 @@ def materialize_product_wheel(
                     for name, contents in scripts:
                         _write_file(bin_directory, name, contents, 0o755)
                     for member in inventory.members:
-                        if _read_relative(site, member.path, expected_owner) != member.contents:
+                        if _read_relative(site, member.path, expected_owner, 0o644) != member.contents:
                             raise ManagedProductWheelMaterializationError(
                                 "installed wheel bytes changed"
                             )
                     for name, contents in scripts:
-                        if _read_file(bin_directory, name, expected_owner) != contents:
+                        if _read_file(bin_directory, name, expected_owner, 0o755) != contents:
                             raise ManagedProductWheelMaterializationError(
                                 "installed console script changed"
                             )
@@ -296,7 +296,7 @@ def _write_file(parent: int, name: str, contents: bytes, mode: int) -> None:
     os.fsync(parent)
 
 
-def _read_relative(root: int, path: str, owner: int) -> bytes:
+def _read_relative(root: int, path: str, owner: int, expected_mode: int) -> bytes:
     parts = path.split("/")
     current = os.dup(root)
     try:
@@ -304,16 +304,20 @@ def _read_relative(root: int, path: str, owner: int) -> bytes:
             child = _open_child(current, name, owner)
             os.close(current)
             current = child
-        return _read_file(current, parts[-1], owner)
+        return _read_file(current, parts[-1], owner, expected_mode)
     finally:
         os.close(current)
 
 
-def _read_file(parent: int, name: str, owner: int) -> bytes:
+def _read_file(parent: int, name: str, owner: int, expected_mode: int) -> bytes:
     descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent)
     try:
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_uid != owner or before.st_nlink != 1:
+        if (
+            not stat.S_ISREG(before.st_mode) or before.st_uid != owner
+            or before.st_nlink != 1
+            or before.st_mode & 0o7777 != expected_mode
+        ):
             raise ManagedProductWheelMaterializationError("installed file is unsafe")
         with os.fdopen(os.dup(descriptor), "rb") as stream:
             contents = stream.read(before.st_size + 1)
@@ -343,7 +347,7 @@ def _scripts(
         quoted_interpreter = shlex.quote(str(interpreter))
         result.append((name, (
             "#!/bin/sh\n"
-            f"'''exec' {quoted_interpreter} \"$0\" \"$@\"\n"
+            f"'''exec' {quoted_interpreter} -B \"$0\" \"$@\"\n"
             "' '''\n"
             f"from {module} import main\n"
             "if __name__ == '__main__':\n"
