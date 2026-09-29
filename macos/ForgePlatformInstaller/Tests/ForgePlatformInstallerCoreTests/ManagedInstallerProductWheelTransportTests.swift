@@ -72,6 +72,58 @@ final class ManagedInstallerProductWheelTransportTests: XCTestCase {
         XCTAssertNil(ProductWheelURLProtocol.lastRequest())
     }
 
+    func testFetchesPrepublicationBindingThroughSameCredentialFreeTransport() async {
+        let bytes = Data("qualified-wheel-bytes".utf8)
+        let existing = wheelBinding(bytes: bytes)
+        let prepublication = ManagedInstallerPrepublicationProductWheelBinding(
+            deploymentID: existing.deploymentID,
+            compositionIdentity: "forge-ep-managed-v3",
+            manifestSHA256: "sha256:" + String(repeating: "d", count: 64),
+            componentIdentity: existing.componentIdentity,
+            venvIdentity: "forge-test-v1",
+            version: existing.version,
+            sourceRevision: existing.sourceRevision,
+            sourceURL: existing.sourceURL,
+            qualificationURL: existing.qualificationURL,
+            artifactSHA256: existing.artifactSHA256
+        )
+        ProductWheelURLProtocol.configure(.init(
+            statusCode: 200,
+            headers: ["Content-Length": String(bytes.count)], bytes: bytes
+        ))
+        let result = await transport().fetch(prepublication)
+        guard case .success(let readback) = result else {
+            return XCTFail("expected exact prepublication wheel")
+        }
+        XCTAssertEqual(readback.binding, prepublication)
+        XCTAssertEqual(readback.bytes, bytes)
+        let request = ProductWheelURLProtocol.lastRequest()
+        XCTAssertNil(request?.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertNil(request?.value(forHTTPHeaderField: "Cookie"))
+    }
+
+    func testPrepublicationTransportRejectsDigestDrift() async {
+        let bytes = Data("qualified-wheel-bytes".utf8)
+        let existing = wheelBinding(bytes: bytes)
+        let prepublication = ManagedInstallerPrepublicationProductWheelBinding(
+            deploymentID: existing.deploymentID,
+            compositionIdentity: "forge-ep-managed-v3",
+            manifestSHA256: "sha256:" + String(repeating: "d", count: 64),
+            componentIdentity: existing.componentIdentity,
+            venvIdentity: "forge-test-v1",
+            version: existing.version,
+            sourceRevision: existing.sourceRevision,
+            sourceURL: existing.sourceURL,
+            qualificationURL: existing.qualificationURL,
+            artifactSHA256: existing.artifactSHA256
+        )
+        ProductWheelURLProtocol.configure(.init(
+            statusCode: 200, headers: [:], bytes: Data("changed".utf8)
+        ))
+        guard case .failure(.rejected) = await transport().fetch(prepublication)
+        else { return XCTFail("digest drift was accepted") }
+    }
+
     private func transport() -> HTTPSManagedInstallerProductWheelTransport {
         HTTPSManagedInstallerProductWheelTransport(
             timeout: 5, protocolClassesForTesting: [ProductWheelURLProtocol.self]

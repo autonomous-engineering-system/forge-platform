@@ -217,6 +217,46 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
         )))
     }
 
+    func testPrepublicationMaterialAdapterRetainsExactSealedReleaseAndManifest() async throws {
+        let current = try makeCurrentRelease()
+        let manifest = StrictSignedJSON.canonicalPayload(from: .object([
+            "composition_id": .string("forge-ep-managed-v1"),
+        ]))
+        let material = try makeMaterial(for: current, manifest: manifest)
+        let deployment = try ManagedDeploymentTarget(id: "deployment-new", exists: false)
+        let admission = ManagedInstallerHelperVerifiedMaterialAdmission(
+            currentRelease: SequenceCurrentRelease([.success(current), .success(current)]),
+            preparerFactory: { _ in StubHelperMaterialPreparer(.prepared(material)) }
+        )
+        let result = await ProductionManagedInstallerPrepublicationMaterialAdmission(
+            admission: admission
+        ).admit(
+            deployment: deployment,
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+        XCTAssertEqual(result, .init(
+            material: material, installerRelease: current.record.release
+        ))
+    }
+
+    func testPrepublicationMaterialAdapterFailsClosedOnUnavailableAdmission() async throws {
+        let deployment = try ManagedDeploymentTarget(id: "deployment-new", exists: false)
+        let admission = ManagedInstallerHelperVerifiedMaterialAdmission(
+            currentRelease: SequenceCurrentRelease([.failure(.unavailable)]),
+            preparerFactory: { _ in
+                StubHelperMaterialPreparer(.unavailable(.selectionUnavailable))
+            }
+        )
+        let result = await ProductionManagedInstallerPrepublicationMaterialAdmission(
+            admission: admission
+        ).admit(
+            deployment: deployment,
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+        XCTAssertNil(result)
+        XCTAssertNotNil(ProductionManagedInstallerPrepublicationMaterialAdmission.production())
+    }
+
     func testHelperMaterialAdmissionRejectsUnverifiedBytesAndCurrentnessDrift() async throws {
         let current = try makeCurrentRelease()
         let canonical = StrictSignedJSON.canonicalPayload(from: .object([

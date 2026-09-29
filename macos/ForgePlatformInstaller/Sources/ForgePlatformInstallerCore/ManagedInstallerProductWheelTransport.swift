@@ -12,6 +12,11 @@ struct ManagedInstallerProductWheelTransportReadback: Sendable {
     let bytes: Data
 }
 
+struct ManagedInstallerPrepublicationProductWheelTransportReadback: Sendable {
+    let binding: ManagedInstallerPrepublicationProductWheelBinding
+    let bytes: Data
+}
+
 protocol ManagedInstallerProductWheelFetching: Sendable {
     func fetch(_ binding: ManagedInstallerProductWheelBinding) async -> Result<
         ManagedInstallerProductWheelTransportReadback,
@@ -19,12 +24,19 @@ protocol ManagedInstallerProductWheelFetching: Sendable {
     >
 }
 
+protocol ManagedInstallerPrepublicationProductWheelFetching: Sendable {
+    func fetch(_ binding: ManagedInstallerPrepublicationProductWheelBinding) async
+        -> Result<ManagedInstallerPrepublicationProductWheelTransportReadback,
+                  ManagedInstallerProductWheelTransportFailure>
+}
+
 /// Credential-free, bounded HTTPS fetch of the exact wheel URL admitted by
 /// canonical helper authority. Only GitHub Release asset endpoints and their
 /// known asset-CDN redirects are accepted. Bytes are digest checked before
 /// they may enter the private staging boundary.
 final class HTTPSManagedInstallerProductWheelTransport: NSObject,
-    ManagedInstallerProductWheelFetching, @unchecked Sendable {
+    ManagedInstallerProductWheelFetching,
+    ManagedInstallerPrepublicationProductWheelFetching, @unchecked Sendable {
     static let maximumWheelBytes = 256 * 1_024 * 1_024
     private let timeout: TimeInterval
     private let protocolClassesForTesting: [AnyClass]
@@ -45,9 +57,33 @@ final class HTTPSManagedInstallerProductWheelTransport: NSObject,
         ManagedInstallerProductWheelTransportReadback,
         ManagedInstallerProductWheelTransportFailure
     > {
-        guard let endpoint = URL(string: binding.sourceURL),
-              Self.isExactReleaseWheelURL(endpoint, binding: binding),
-              CompositionCatalogValidation.isTaggedSHA256(binding.artifactSHA256)
+        switch await fetchBytes(
+            sourceURL: binding.sourceURL, artifactSHA256: binding.artifactSHA256
+        ) {
+        case .success(let bytes):
+            return .success(.init(binding: binding, bytes: bytes))
+        case .failure(let failure): return .failure(failure)
+        }
+    }
+
+    func fetch(_ binding: ManagedInstallerPrepublicationProductWheelBinding) async
+        -> Result<ManagedInstallerPrepublicationProductWheelTransportReadback,
+                  ManagedInstallerProductWheelTransportFailure> {
+        switch await fetchBytes(
+            sourceURL: binding.sourceURL, artifactSHA256: binding.artifactSHA256
+        ) {
+        case .success(let bytes):
+            return .success(.init(binding: binding, bytes: bytes))
+        case .failure(let failure): return .failure(failure)
+        }
+    }
+
+    private func fetchBytes(
+        sourceURL: String, artifactSHA256: String
+    ) async -> Result<Data, ManagedInstallerProductWheelTransportFailure> {
+        guard let endpoint = URL(string: sourceURL),
+              Self.isExactReleaseWheelURL(endpoint, sourceURL: sourceURL),
+              CompositionCatalogValidation.isTaggedSHA256(artifactSHA256)
         else { return .failure(.invalidRequest) }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
@@ -84,21 +120,19 @@ final class HTTPSManagedInstallerProductWheelTransport: NSObject,
             let bytes = try collector.finish()
             guard "sha256:" + SHA256.hash(data: bytes)
                 .map({ String(format: "%02x", $0) }).joined()
-                == binding.artifactSHA256 else { return .failure(.rejected) }
-            return .success(ManagedInstallerProductWheelTransportReadback(
-                binding: binding, bytes: bytes
-            ))
+                == artifactSHA256 else { return .failure(.rejected) }
+            return .success(bytes)
         } catch let failure as ManagedPythonRuntimeTransportFailure {
             return .failure(failure == .unavailable ? .unavailable : .rejected)
         } catch { return .failure(.unavailable) }
     }
 
     private static func isExactReleaseWheelURL(
-        _ url: URL, binding: ManagedInstallerProductWheelBinding
+        _ url: URL, sourceURL: String
     ) -> Bool {
         let parts = url.pathComponents
-        guard url.absoluteString == binding.sourceURL,
-              CompositionCatalogValidation.isCanonicalHTTPSURL(binding.sourceURL),
+        guard url.absoluteString == sourceURL,
+              CompositionCatalogValidation.isCanonicalHTTPSURL(sourceURL),
               url.host == "github.com", url.user == nil, url.password == nil,
               url.port == nil, url.query == nil, url.fragment == nil,
               parts.count == 7,
