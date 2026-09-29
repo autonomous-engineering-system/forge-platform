@@ -9,7 +9,7 @@ struct ManagedInstallerHelperTerminalRuntimeCompletion:
     private let pythonReadback: any ManagedPythonRuntimeActivationReading
     private let hostLock: any ManagedPythonRuntimeOperationLocking
     private let receiptStore: any ManagedPythonRuntimeActivationStoring
-    private let hostReader: any ManagedInstallerPostToolAtomicHostReading
+    private let hostReader: (any ManagedInstallerPostToolAtomicHostReading)?
     private let snapshotStore: any ManagedInstallerPostToolSnapshotPersisting
     private let snapshotReader: any ManagedInstallerPostToolSnapshotReading
     private let journal: any ManagedPythonRuntimeParentJournalAdvancing
@@ -19,7 +19,7 @@ struct ManagedInstallerHelperTerminalRuntimeCompletion:
         pythonReadback: any ManagedPythonRuntimeActivationReading,
         hostLock: any ManagedPythonRuntimeOperationLocking,
         receiptStore: any ManagedPythonRuntimeActivationStoring,
-        hostReader: any ManagedInstallerPostToolAtomicHostReading,
+        hostReader: (any ManagedInstallerPostToolAtomicHostReading)?,
         snapshotStore: any ManagedInstallerPostToolSnapshotPersisting,
         snapshotReader: any ManagedInstallerPostToolSnapshotReading,
         journal: any ManagedPythonRuntimeParentJournalAdvancing
@@ -48,9 +48,7 @@ struct ManagedInstallerHelperTerminalRuntimeCompletion:
             pythonReadback: pythonReadback,
             hostLock: FileManagedPythonRuntimeOperationLock(rootDirectory: state),
             receiptStore: recovery,
-            hostReader: FileManagedInstallerPostToolAtomicHostReader(
-                rootDirectory: root
-            ),
+            hostReader: nil,
             snapshotStore: FileManagedInstallerPostToolSnapshotStore(
                 rootDirectory: state
             ),
@@ -100,9 +98,30 @@ struct ManagedInstallerHelperTerminalRuntimeCompletion:
     ) async -> Result<ManagedPythonRuntimeExecutionReceipt,
                       ManagedPythonRuntimeTerminalReceiptFailure> {
         let borrowed = BorrowedManagedPythonHostLock(heldLease: lease)
+        let sourceReader: any ManagedInstallerPostToolAtomicHostReading
+        if let hostReader {
+            sourceReader = hostReader
+        } else {
+            guard let physical = ManagedInstallerPostToolPhysicalAtomicHostReader
+                .production(
+                    stablePlan: stablePlan,
+                    activationRequest: request,
+                    pythonReadback: pythonReadback
+                ) else { return .failure(.readbackFailed) }
+            let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
+            sourceReader = ManagedInstallerPostToolPublishingAtomicHostReader(
+                sourceReader: physical,
+                persister: FileManagedInstallerPostToolAtomicHostStateStore(
+                    rootDirectory: root
+                ),
+                durableReader: FileManagedInstallerPostToolAtomicHostReader(
+                    rootDirectory: root
+                )
+            )
+        }
         let capturer = ManagedInstallerPostToolLockedHelperSnapshotCapturer(
             operationLock: borrowed,
-            hostReader: hostReader
+            hostReader: sourceReader
         )
         let snapshot = ManagedInstallerPostToolSnapshotProducer(
             hostObserver: ManagedInstallerPostToolHostObservationAdapter(

@@ -95,9 +95,10 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
             teamIdentifier: ManagedInstallerPrivilegedHelperProcessContract
                 .appleTeamIdentifier
         )
-        let postToolBackend = Self.makePostToolService(
-            rootDirectory: FileManagedInstallerReleasedRouteXPCService.productionRoot
-        )
+        // Terminal completion captures physical state inside its already-held
+        // host lease. A separate XPC request cannot reconstruct that lease or
+        // activation context and must not replay the stored host-state file.
+        let postToolBackend = UnavailableManagedInstallerPrivilegedHelperBackend()
         let productBackend = ManagedInstallerProductOperationXPCServiceHandler(
             executor: ManagedInstallerPythonProductOperationExecutor()
         )
@@ -125,22 +126,6 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
                 productListener.invalidate,
                 routeListener.invalidate,
             ]
-        )
-    }
-
-    static func makePostToolService(
-        rootDirectory: URL
-    ) -> ManagedInstallerPostToolObservationXPCServiceHandler {
-        ManagedInstallerPostToolObservationXPCServiceHandler(
-            snapshotCapturer: ManagedInstallerPostToolLockedHelperSnapshotCapturer(
-                operationLock: FileManagedPythonRuntimeOperationLock(
-                    rootDirectory: ManagedInstallerHelperStateRootBootstrap
-                        .operationStateRoot(for: rootDirectory)
-                ),
-                hostReader: FileManagedInstallerPostToolAtomicHostReader(
-                    rootDirectory: rootDirectory
-                )
-            )
         )
     }
 

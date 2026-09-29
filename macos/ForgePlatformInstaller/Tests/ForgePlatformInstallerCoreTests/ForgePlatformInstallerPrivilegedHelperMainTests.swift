@@ -100,13 +100,8 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
         XCTAssertTrue(responses.allSatisfy { $0 == nil })
     }
 
-    func testComposedPostToolBackendRejectsMalformedRequestBeforeHostRead() async {
-        let service = MacOSManagedInstallerPrivilegedHelperRuntime.makePostToolService(
-            rootDirectory: URL(
-                fileURLWithPath: "/private/tmp/nonexistent-forge-platform-helper-state",
-                isDirectory: true
-            )
-        )
+    func testExternalPostToolBackendDeniesHostObservation() async {
+        let service = UnavailableManagedInstallerPrivilegedHelperBackend()
         let response: Data? = await withCheckedContinuation { continuation in
             service.capturePostToolObservation(Data("{}".utf8)) {
                 continuation.resume(returning: $0)
