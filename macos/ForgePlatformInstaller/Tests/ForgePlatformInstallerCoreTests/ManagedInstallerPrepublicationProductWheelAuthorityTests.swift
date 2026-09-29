@@ -77,7 +77,8 @@ struct PrepublicationWheelFixture {
     init(
         duplicateForge: Bool = false, sourceSuffix: String = "forge.whl",
         wheelBytes: Data = Data("qualified-wheel-test-bytes".utf8),
-        providerRequirements: [ProviderRequirement] = []
+        providerRequirements: [ProviderRequirement] = [],
+        includeProductVenvs: Bool = false
     ) throws {
         self.wheelBytes = wheelBytes
         artifactDigest = "sha256:" + SHA256.hash(data: wheelBytes)
@@ -114,10 +115,20 @@ struct PrepublicationWheelFixture {
         ])
         let components: [StrictJSONResourceValue] = duplicateForge
             ? [forge, forge, ep] : [forge, ep]
-        let bytes = StrictSignedJSON.canonicalPayload(from: .object([
+        var manifest: [String: StrictJSONResourceValue] = [
             "composition_id": .string("forge-ep-managed-v3"),
             "components": .array(components),
-        ]))
+        ]
+        if includeProductVenvs {
+            manifest["product_venvs"] = .array(managedPythonTestVenvs.map {
+                .object([
+                    "component_identity": .string($0.componentIdentity),
+                    "venv_identity": .string($0.venvIdentity),
+                    "python_runtime_identity": .string($0.pythonRuntimeIdentitySHA256),
+                ])
+            })
+        }
+        let bytes = StrictSignedJSON.canonicalPayload(from: .object(manifest))
         let session = try VerifiedCompositionSessionPlan(
             sessionID: "prepublication-session",
             compositionIdentity: "forge-ep-managed-v3",
