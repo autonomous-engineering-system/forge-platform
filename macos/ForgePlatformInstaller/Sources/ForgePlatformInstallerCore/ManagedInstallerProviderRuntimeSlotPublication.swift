@@ -10,8 +10,9 @@ struct ManagedInstallerProviderRuntimeSlotReadback: Equatable, Sendable {
     let treeEvidenceReference: String
 }
 
-/// Publishes one inspected provider runtime below the component-target runtime
-/// root at the versioned location used by the independent host inspector.
+/// Publishes one inspected provider runtime below a fixed helper-owned target
+/// root. The general installer layout uses a versioned slot; the EP product
+/// layout uses its frozen instance-owned, unversioned `runtime` directory.
 /// Pending extraction is never adopted after interruption. The exact archive
 /// is retained in a private digest-named cache so reboot recovery can verify
 /// every installed file without depending on the discarded staging operation.
@@ -19,11 +20,42 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
     private let slotsRoot: URL
     private let expectedDeploymentID: String
     private let expectedOwner: uid_t
+    private let boundEPRequirement: ProviderRequirement?
 
     init(slotsRoot: URL, expectedDeploymentID: String, expectedOwner: uid_t = 0) {
         self.slotsRoot = slotsRoot
         self.expectedDeploymentID = expectedDeploymentID
         self.expectedOwner = expectedOwner
+        boundEPRequirement = nil
+    }
+
+    /// The helper selects `epProductRoot`; no XPC request can supply it. The
+    /// exact provider/instance path follows EP 2.3.104's frozen topology.
+    init?(
+        epProductRoot: URL,
+        expectedDeploymentID: String,
+        requirement: ProviderRequirement,
+        expectedOwner: uid_t = 0
+    ) {
+        guard epProductRoot.isFileURL,
+              epProductRoot.baseURL == nil,
+              epProductRoot.path.hasPrefix("/"),
+              epProductRoot.path != "/",
+              requirement.ownerComponent == .engineeringPlatformServer,
+              requirement.credentialScope == .component,
+              let instanceID = requirement.targetIdentity,
+              requirement.runtime != nil else {
+            return nil
+        }
+        let productProvider = requirement.provider == .codex ? "codex" : "github"
+        slotsRoot = epProductRoot
+            .appendingPathComponent("instances", isDirectory: true)
+            .appendingPathComponent(instanceID, isDirectory: true)
+            .appendingPathComponent("providers", isDirectory: true)
+            .appendingPathComponent(productProvider, isDirectory: true)
+        self.expectedDeploymentID = expectedDeploymentID
+        self.expectedOwner = expectedOwner
+        boundEPRequirement = requirement
     }
 
     func readPublishedSlot(
@@ -135,6 +167,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
         request: ManagedInstallerProviderRuntimeMutationRequest
     ) -> Bool {
         request.deploymentID == expectedDeploymentID
+            && (boundEPRequirement == nil || requirement == boundEPRequirement)
             && requirement.id == request.providerTargetID
             && requirement.provider == request.provider
             && requirement.runtime == request.runtime
@@ -237,7 +270,7 @@ struct MacOSManagedInstallerProviderRuntimeSlotPublisher: Sendable {
     private func slotDirectoryName(
         for request: ManagedInstallerProviderRuntimeMutationRequest
     ) -> String {
-        request.runtime.version.description
+        boundEPRequirement == nil ? request.runtime.version.description : "runtime"
     }
 
     private func syncTree(
