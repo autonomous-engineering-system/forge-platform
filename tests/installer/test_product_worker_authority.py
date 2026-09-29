@@ -30,11 +30,11 @@ def _canonical(value: object) -> bytes:
 def _manifest_payload() -> dict:
     payload = manifest_payload(composition_id="forge-ep-current")
     ep = payload["components"][0]
-    ep["artifact"]["version"] = "2.3.104"
-    ep["artifact"]["source_revision"] = "cfce69892278ee2b6c14412c171f5f33596acb0e"
-    ep["artifact"]["digest"] = "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb"
-    ep["artifact"]["source"] = "https://registry.example.invalid/engineering-platform-2.3.104.whl"
-    ep["artifact"]["qualification"] = "https://evidence.example.invalid/ep-2.3.104"
+    ep["artifact"]["version"] = "2.3.106"
+    ep["artifact"]["source_revision"] = "7b99b578153ae5d72372a09db194306b49ec9f9c"
+    ep["artifact"]["digest"] = "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694"
+    ep["artifact"]["source"] = "https://registry.example.invalid/engineering-platform-2.3.106.whl"
+    ep["artifact"]["qualification"] = "https://evidence.example.invalid/ep-2.3.106"
     forge = json.loads(json.dumps(ep))
     forge["identity"] = "forge-runtime"
     forge["artifact"] = {
@@ -78,7 +78,7 @@ def _authority() -> dict:
             "forge_service_account": "_forge_prod",
             "forge_bind_port": 8875,
             "forge_artifact_sha256": "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
-            "ep_artifact_sha256": "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb",
+            "ep_artifact_sha256": "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694",
             "ep_instance_id": "ep-prod",
             "ep_display_label": "Production",
             "ep_service_account": "_ep_prod",
@@ -125,7 +125,7 @@ def _single_authority(component: str) -> dict:
         "artifact_sha256": (
             "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938"
             if forge else
-            "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb"
+            "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694"
         ),
         "forge_installation_id": "forge-installation-prod" if forge else None,
         "ep_display_label": None if forge else "Production",
@@ -373,7 +373,7 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
             set(forge.staged_artifacts),
             {
                 "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
-                "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb",
+                "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694",
             },
         )
 

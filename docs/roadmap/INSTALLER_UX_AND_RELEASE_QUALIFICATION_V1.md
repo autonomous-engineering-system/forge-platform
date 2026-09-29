@@ -14,7 +14,7 @@ and [ownership matrix](../architecture/OWNERSHIP_MATRIX.md); it does not create 
 second provisioning engine or generic workflow-policy authority.
 
 Current lifecycle observations: Platform `e92f4e4151080f7c2a9d4fdeba1541b1407d7907`,
-EP `cfce69892278ee2b6c14412c171f5f33596acb0e`,
+EP `7b99b578153ae5d72372a09db194306b49ec9f9c`,
 Forge `0a3d6e35b01da93bb5a674ae7795558655c16c7d`,
 Workspace `36d294836cb653361fda3972de38acce3d2970f8`.
 These pins are observations, not enduring peer status or installed evidence.
@@ -22,15 +22,17 @@ These pins are observations, not enduring peer status or installed evidence.
 | Producer | Released baseline | Lifecycle contract | Roadmap status |
 | --- | --- | --- | --- |
 | Forge | 2.7.38 / `forge-v2.7.38` / source `0a3d6e…` | `forge-server-instance-lifecycle/v1` plus separately bound external updater controller | `QUALIFIED` released-wheel evidence; 2.7.38 controller consumer wiring not yet qualified |
-| Engineering Platform | 2.3.104 / `engineering-platform-v2.3.104` / source `cfce698…` | `engineering-platform.system-instance-lifecycle/v1` | `QUALIFIED` released-wheel evidence; consumer binding not yet qualified |
+| Engineering Platform | 2.3.106 / `engineering-platform-v2.3.106` / source `7b99b578…` | `engineering-platform.system-instance-lifecycle/v1` | `QUALIFIED` published-wheel native evidence with declared foreground/service/provider limits; consumer binding under review |
 
 `QUALIFIED` above applies only to the owning product releases. It does not
 promote any Forge Platform adapter, composition, installer release or live Mac
 scenario. `DESIGNED` below means the consumer semantics are frozen in these
 canonical documents without source/release evidence; `PLANNED` means no such
 consumer implementation claim is made.
-Forge 2.7.36 and EP 2.3.103 remain historical `GAP_PROVEN` producer artifacts;
-the exact remediated-wheel handoff is [forge#142 revision 24](https://github.com/pcvantol/forge/issues/142#issuecomment-5873771111).
+Forge 2.7.36 and EP 2.3.103/2.3.104 remain historical `GAP_PROVEN` producer
+artifacts. EP 2.3.105 remains a separate historical released qualification with
+an inherited-cwd defect; the exact current handoff is
+[forge#142 terminal revision 27](https://github.com/pcvantol/forge/issues/142#issuecomment-5892374672).
 
 | Request | Existing owner/lane | Disposition |
 | --- | --- | --- |

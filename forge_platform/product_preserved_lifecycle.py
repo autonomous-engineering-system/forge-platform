@@ -14,6 +14,7 @@ import re
 from typing import Mapping
 
 from .component_operations import QualifiedArtifact
+from .qualified_ep_lifecycle import qualified_ep_lifecycle_artifact
 from .qualified_forge_lifecycle import qualified_forge_lifecycle_artifact
 
 
@@ -23,13 +24,6 @@ FORGE_CONTRACT = "forge-server-instance-lifecycle/v1"
 EP_CONTRACT = "engineering-platform.system-instance-lifecycle/v1"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_FROZEN_RELEASES = {
-    EP_COMPONENT: (
-        "2.3.104",
-        "cfce69892278ee2b6c14412c171f5f33596acb0e",
-        "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb",
-    ),
-}
 
 
 class ProductPreservedLifecycleError(RuntimeError):
@@ -54,10 +48,7 @@ def frozen_preserved_release(component: str, artifact: QualifiedArtifact) -> boo
         return False
     if component == FORGE_COMPONENT:
         return qualified_forge_lifecycle_artifact(artifact)
-    identity = _FROZEN_RELEASES.get(component)
-    return identity is not None and (
-        artifact.version, artifact.source_revision, artifact.digest
-    ) == identity
+    return component == EP_COMPONENT and qualified_ep_lifecycle_artifact(artifact)
 
 
 def _digest_of(component: str, value: Mapping[str, object]) -> str:

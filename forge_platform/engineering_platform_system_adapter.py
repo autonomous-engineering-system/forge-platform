@@ -1,4 +1,4 @@
-"""Concrete adapter for the frozen Engineering Platform 2.3.104 system provisioner.
+"""Concrete adapter for the qualified Engineering Platform system provisioner.
 
 The adapter invokes only the published `engineering-platform-system-provisioner`
 contract with a fixed absolute executable and product root. Runtime/service/data

@@ -20,10 +20,10 @@ from forge_platform.ep_consumer_revocation import (
 
 
 INSTANCE = "ep-prod01"
-SOURCE = "cfce69892278ee2b6c14412c171f5f33596acb0e"
+SOURCE = "7b99b578153ae5d72372a09db194306b49ec9f9c"
 ARTIFACT = QualifiedArtifact(
-    "2.3.104", SOURCE, "https://example.invalid/ep-2.3.104.whl",
-    "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb", "https://example.invalid/ep-release",
+    "2.3.106", SOURCE, "https://example.invalid/ep-2.3.106.whl",
+    "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694", "https://example.invalid/ep-release",
 )
 
 
@@ -41,7 +41,7 @@ class ProvisionerRunner:
             "data_root": self.data_root,
             "service_account": "_ep_test",
             "selected_runtime": {
-                "version": "2.3.104", "source_revision": self.source,
+                "version": "2.3.106", "source_revision": self.source,
                 "artifact_digest": ARTIFACT.digest,
                 "interpreter": str(self.root / "runtimes" / "slot" / "bin" / "python"),
             },
