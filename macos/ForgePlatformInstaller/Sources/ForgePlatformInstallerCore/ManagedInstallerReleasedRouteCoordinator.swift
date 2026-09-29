@@ -54,6 +54,7 @@ public struct ManagedInstallerReleasedRouteSnapshot: Equatable, Sendable {
               actions.count == session.managedTools.count,
               Set(actions.map(\.requirement.identity)).count == actions.count,
               actions.map(\.requirement) == session.managedTools,
+              actions.allSatisfy(\.hasReviewedInitialState),
               ManagedPythonRuntimeInstalledReadback.isEvidenceReference(evidenceReference)
         else {
             throw ManagedInstallerReleasedRouteSnapshotError.invalidSnapshot

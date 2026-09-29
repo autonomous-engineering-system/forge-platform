@@ -448,8 +448,15 @@ struct ReleasedRouteFixture {
             retainedRuntimeIdentitySHA256s: [],
             evidenceReference: "receipt:python-absent"
         )
-        managedToolActions = managedTools.map {
-            ManagedToolOriginalPlanAction(requirement: $0, action: .install)
+        managedToolActions = try managedTools.map {
+            ManagedToolOriginalPlanAction(
+                requirement: $0, action: .install,
+                initialReadback: try ManagedToolInstalledReadback(
+                    identity: $0.identity, state: .absent, version: nil,
+                    artifactSHA256: nil, managedRootIdentity: nil,
+                    evidenceReference: "receipt:managed-git-initial-absent"
+                )
+            )
         }
         release = VerifiedInstallerRelease(
             version: try InstallerVersion("0.2.4"),

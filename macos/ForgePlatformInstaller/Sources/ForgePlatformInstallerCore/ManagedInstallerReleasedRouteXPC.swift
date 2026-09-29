@@ -179,8 +179,8 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
 enum ManagedInstallerReleasedRouteXPCCodec {
     static let inventorySchema = "forge-platform.managed-deployment-inventory/v2"
     static let legacyInventorySchema = "forge-platform.managed-deployment-inventory/v1"
-    static let snapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v3"
-    static let previousSnapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v2"
+    static let snapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v4"
+    static let previousSnapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v3"
     static let legacySnapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v1"
     static let maximumResponseBytes = 128 * 1_024
 
@@ -236,6 +236,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
             .object([
                 "identity": .string($0.requirement.identity.rawValue),
                 "action": .string($0.action.rawValue),
+                "initial_readback": $0.initialReadback.map(
+                    ManagedInstallerPostToolReadbackSnapshot.toolValue
+                ) ?? .null,
             ])
         }
         let fields: [String: StrictJSONResourceValue] = [
@@ -306,15 +309,20 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         })
         let actions = try actionValues.map { value -> ManagedToolOriginalPlanAction in
             guard let actionFields = value.objectValue,
-                  Set(actionFields.keys) == Set(["identity", "action"]),
+                  Set(actionFields.keys)
+                    == Set(["identity", "action", "initial_readback"]),
                   let identityValue = actionFields["identity"]?.stringValue,
                   let identity = ManagedToolRequirement.Identity(rawValue: identityValue),
                   let requirement = requirements[identity],
                   let actionValue = actionFields["action"]?.stringValue,
-                  let action = ManagedToolOriginalPlanAction.Action(rawValue: actionValue) else {
+                  let action = ManagedToolOriginalPlanAction.Action(rawValue: actionValue),
+                  let initialValue = actionFields["initial_readback"] else {
                 throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
             }
-            return ManagedToolOriginalPlanAction(requirement: requirement, action: action)
+            let initial = try ManagedInstallerPostToolReadbackSnapshot.decodeTool(initialValue)
+            return ManagedToolOriginalPlanAction(
+                requirement: requirement, action: action, initialReadback: initial
+            )
         }
         return try ManagedInstallerReleasedRouteSnapshot(
             inventory: inventory,
@@ -389,12 +397,20 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         _ = try ManagedInstallerPostToolReadbackSnapshot.decodePython(pythonValue)
         let identities = try actionValues.map { value -> ManagedToolRequirement.Identity in
             guard let action = value.objectValue,
-                  Set(action.keys) == Set(["identity", "action"]),
+                  Set(action.keys)
+                    == Set(["identity", "action", "initial_readback"]),
                   let identityRaw = action["identity"]?.stringValue,
                   let identity = ManagedToolRequirement.Identity(rawValue: identityRaw),
                   let actionRaw = action["action"]?.stringValue,
-                  ManagedToolOriginalPlanAction.Action(rawValue: actionRaw) != nil else {
+                  let planned = ManagedToolOriginalPlanAction.Action(rawValue: actionRaw),
+                  let initial = action["initial_readback"] else {
                 throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+            }
+            let observed = try ManagedInstallerPostToolReadbackSnapshot.decodeTool(initial)
+            guard observed.identity == identity,
+                  (observed.state == .absent && planned == .install
+                    || observed.state == .active && planned != .install) else {
+                throw ManagedInstallerReleasedRouteXPCFailure.rejected
             }
             return identity
         }

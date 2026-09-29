@@ -14,6 +14,38 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
         XCTAssertEqual(request.targetVersion, fixture.requirement.version)
         XCTAssertEqual(request.targetArtifactSHA256, fixture.requirement.artifact.sha256)
         XCTAssertEqual(request.managedRootIdentity, ManagedToolRequirement.managedRootIdentity)
+        XCTAssertEqual(
+            request.reviewedInitialReadback,
+            fixture.stablePlan.originalManagedToolActions[0].initialReadback
+        )
+    }
+
+    func testMutationRequiresReviewedInitialGitObservation() throws {
+        let fixture = try ManagedToolReconciliationFixture(action: .install)
+        let unbound = ManagedToolOriginalPlanAction(
+            requirement: fixture.requirement, action: .install
+        )
+        let unboundPlan = try ManagedInstallerStablePlan(
+            session: fixture.stablePlan.session,
+            deployment: fixture.stablePlan.deployment,
+            activationPlan: fixture.stablePlan.activationPlan,
+            reviewedOperation: fixture.stablePlan.reviewedOperation,
+            originalManagedToolActions: [unbound]
+        )
+        XCTAssertThrowsError(try ManagedInstallerManagedToolMutationRequest(
+            stablePlan: unboundPlan, plannedAction: unbound
+        ))
+        let inconsistent = ManagedToolOriginalPlanAction(
+            requirement: fixture.requirement, action: .upgrade,
+            initialReadback: fixture.stablePlan.originalManagedToolActions[0].initialReadback
+        )
+        XCTAssertThrowsError(try ManagedInstallerStablePlan(
+            session: fixture.stablePlan.session,
+            deployment: fixture.stablePlan.deployment,
+            activationPlan: fixture.stablePlan.activationPlan,
+            reviewedOperation: fixture.stablePlan.reviewedOperation,
+            originalManagedToolActions: [inconsistent]
+        ))
     }
 
     func testReconcilesMutationThenRequiresIndependentExactReadback() async throws {
@@ -245,13 +277,28 @@ private struct ManagedToolReconciliationFixture {
             deployment: deployment,
             initialReadback: fixture.missingReadback()
         )
+        let initial = try ManagedToolInstalledReadback(
+            identity: .git,
+            state: action == .install ? .absent : .active,
+            version: action == .install ? nil : (
+                action == .noChange ? requirement.version : try InstallerVersion("2.44.0")
+            ),
+            artifactSHA256: action == .install ? nil : (
+                action == .noChange ? requirement.artifact.sha256
+                    : "sha256:" + String(repeating: "8", count: 64)
+            ),
+            managedRootIdentity: action == .install ? nil
+                : ManagedToolRequirement.managedRootIdentity,
+            evidenceReference: "receipt:managed-git-reviewed-initial"
+        )
         stablePlan = try managedInstallerTestStablePlan(
             session: fixture.session,
             deployment: deployment,
             activationPlan: activation,
             actions: [ManagedToolOriginalPlanAction(
                 requirement: requirement,
-                action: action
+                action: action,
+                initialReadback: initial
             )]
         )
         if action == .noChange {

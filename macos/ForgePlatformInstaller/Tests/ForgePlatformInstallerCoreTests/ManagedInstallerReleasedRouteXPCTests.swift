@@ -37,6 +37,45 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         }
     }
 
+    func testReviewedGitInitialStateIsRequiredAndActionConsistent() throws {
+        let fixture = try ReleasedRouteFixture(includeManagedGit: true)
+        let request = try ManagedInstallerReleasedRouteRequest(
+            session: fixture.session, deployment: fixture.deployment,
+            inventoryEvidenceReference: fixture.inventory.evidenceReference
+        )
+        let encoded = ManagedInstallerReleasedRouteXPCCodec.encodeSnapshot(fixture.snapshot)
+        var reader = try StrictJSONResourceReader(data: encoded)
+        let original = try XCTUnwrap(reader.parseDocument().objectValue)
+        let actions = try XCTUnwrap(original["managed_tool_actions"]?.arrayValue)
+        XCTAssertEqual(actions.count, 1)
+
+        let mutations: [(inout [String: StrictJSONResourceValue]) -> Void] = [
+            { (fields: inout [String: StrictJSONResourceValue]) in
+                fields.removeValue(forKey: "initial_readback")
+            },
+            { (fields: inout [String: StrictJSONResourceValue]) in
+                fields["initial_readback"] = .null
+            },
+            { (fields: inout [String: StrictJSONResourceValue]) in
+                fields["action"] = .string("UPGRADE")
+            },
+        ]
+        for mutated in mutations {
+            var fields = original
+            var action = try XCTUnwrap(actions[0].objectValue)
+            mutated(&action)
+            fields["managed_tool_actions"] = .array([.object(action)])
+            let drifted = StrictSignedJSON.canonicalPayload(from: .object(fields))
+            XCTAssertThrowsError(try ManagedInstallerReleasedRouteXPCCodec.decodeSnapshot(
+                drifted, request: request, session: fixture.session,
+                deployment: fixture.deployment
+            ))
+            XCTAssertThrowsError(try ManagedInstallerReleasedRouteXPCCodec.validateStoredSnapshot(
+                drifted, request: request, inventory: fixture.inventory
+            ))
+        }
+    }
+
     func testReviewedIntentXPCUsesHelperAdmissionAndRejectsMalformedInput() async throws {
         let fixture = try ReleasedRouteFixture()
         let activation = try ManagedPythonRuntimeActivationPlan(

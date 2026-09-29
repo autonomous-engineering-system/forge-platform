@@ -38,6 +38,9 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
         guard Set(actions.map(\.requirement.identity)).count == actions.count,
               Set(actions.map(\.requirement.identity)) == Set(requirements.keys),
               actions.allSatisfy({ requirements[$0.requirement.identity] == $0.requirement }),
+              actions.allSatisfy({
+                  $0.initialReadback == nil || $0.hasReviewedInitialState
+              }),
               Set(enabledProviders.map(\.id)).count == enabledProviders.count,
               enabledProviders.allSatisfy({ availableProviders[$0.id] == $0 }),
               requiredProviderIdentities.isSubset(of: Set(enabledProviders.map(\.id))),
@@ -83,7 +86,7 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
         actions: [ManagedToolOriginalPlanAction]
     ) -> String {
         let material: StrictJSONResourceValue = .object([
-            "schema": .string("forge-platform.native-stable-plan/v2"),
+            "schema": .string("forge-platform.native-stable-plan/v3"),
             "session": sessionValue(session),
             "deployment": deploymentValue(
                 deployment,
@@ -195,6 +198,9 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
             "artifact_url": .string(planned.requirement.artifact.url),
             "artifact_sha256": .string(planned.requirement.artifact.sha256),
             "action": .string(planned.action.rawValue),
+            "reviewed_initial_readback": planned.initialReadback.map(
+                ManagedInstallerPostToolReadbackSnapshot.toolValue
+            ) ?? .null,
         ])
     }
 
