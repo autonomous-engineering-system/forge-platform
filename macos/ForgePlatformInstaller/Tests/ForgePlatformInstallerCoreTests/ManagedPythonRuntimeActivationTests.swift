@@ -479,13 +479,14 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         let request = try fixture.request(initial: initial)
         let assembled = ManagedPythonInitialRuntimeHelperAssembly.make(
             helperRoot: host.root, runtime: fixture.runtime,
-            expectedOwner: Darwin.geteuid()
+            expectedOwner: Darwin.geteuid(), wheel: ManagedPythonProductWheelTestDouble()
         )
         let observed = await assembled.readActiveRuntime(request)
         XCTAssertEqual(observed, .success(initial))
         let wrongOwner = ManagedPythonInitialRuntimeHelperAssembly.make(
             helperRoot: host.root, runtime: fixture.runtime,
-            expectedOwner: Darwin.geteuid() + 1
+            expectedOwner: Darwin.geteuid() + 1,
+            wheel: ManagedPythonProductWheelTestDouble()
         )
         let rejected = await wrongOwner.readActiveRuntime(request)
         XCTAssertEqual(rejected, .failure(.rejected))
