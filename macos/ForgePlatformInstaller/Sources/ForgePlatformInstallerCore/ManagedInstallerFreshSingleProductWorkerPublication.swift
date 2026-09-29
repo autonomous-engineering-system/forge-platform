@@ -40,6 +40,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
     private let accounts: any ManagedInstallerFreshProductAccountReading
     private let authority: any ManagedInstallerFreshSingleProductWorkerAuthorityPublishing
     private let authorityReadback: any ManagedInstallerProductWorkerAuthorityReading
+    private let evidenceStore: any ManagedInstallerProductWorkerVenvEvidenceStoring
     private let ports: ManagedInstallerFreshProductWorkerPortAllocator
     private let wheelFactory: WheelFactory
     private let readerFactory: ReaderFactory
@@ -51,6 +52,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         accounts: any ManagedInstallerFreshProductAccountReading,
         authority: any ManagedInstallerFreshSingleProductWorkerAuthorityPublishing,
         authorityReadback: any ManagedInstallerProductWorkerAuthorityReading,
+        evidenceStore: any ManagedInstallerProductWorkerVenvEvidenceStoring,
         ports: ManagedInstallerFreshProductWorkerPortAllocator,
         wheelFactory: @escaping WheelFactory,
         readerFactory: @escaping ReaderFactory,
@@ -61,6 +63,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         self.accounts = accounts
         self.authority = authority
         self.authorityReadback = authorityReadback
+        self.evidenceStore = evidenceStore
         self.ports = ports
         self.wheelFactory = wheelFactory
         self.readerFactory = readerFactory
@@ -78,6 +81,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
             material: material, currency: currency, accounts: accounts,
             authority: FileManagedInstallerProductWorkerAuthorityPublisher(),
             authorityReadback: FileManagedInstallerProductWorkerAuthorityReader(),
+            evidenceStore: FileManagedInstallerProductWorkerVenvEvidenceStore.production(),
             ports: .init(probe: MacOSManagedInstallerProductWorkerPortProbe()),
             wheelFactory: { plan in
                 guard case .success(let wheel) = await
@@ -178,6 +182,11 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
             request: request, activationReceipt: venvReceipt,
             wheelBindingEvidence: wheelBinding
         )]
+        // Persist before authority publication. A crash may leave an orphan
+        // record, but cannot leave an authority without its recovery evidence.
+        guard case .success = evidenceStore.persist(evidence[0]) else {
+            return .failed(.staleSession, stages: [])
+        }
         guard let snapshot = ManagedInstallerFreshSingleProductWorkerRouteBuilder(
                   ports: ports
               ).build(
