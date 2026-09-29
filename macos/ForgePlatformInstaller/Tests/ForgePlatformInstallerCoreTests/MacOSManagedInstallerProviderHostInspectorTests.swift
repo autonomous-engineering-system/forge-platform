@@ -147,6 +147,94 @@ final class MacOSManagedInstallerProviderHostInspectorTests: XCTestCase {
         XCTAssertEqual(calls.count, 2)
     }
 
+    func testFreshEPProbeBindsFullAccountReadbackAndServiceOwnedHome()
+        async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .githubCLI, epProductLayout: true, freshEPProduct: true
+        )
+        let instance = ManagedInstallerProductServiceAccountPlanner.instanceID(
+            deploymentID: fixture.request.deploymentID,
+            componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue
+        )
+        let claim = ManagedInstallerProductServiceAccountClaim(
+            stablePlanFingerprint: fixture.request.stablePlanFingerprint,
+            operationID: fixture.request.operationID,
+            deploymentID: fixture.request.deploymentID,
+            componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue,
+            instanceID: instance,
+            productArtifactSHA256: "sha256:" + String(repeating: "a", count: 64),
+            accountName: ManagedInstallerProductServiceAccountPlanner.name(
+                deploymentID: fixture.request.deploymentID,
+                componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue,
+                instanceID: instance
+            )
+        )
+        let account = ManagedInstallerProductServiceAccountReadback(
+            claim: claim, uid: geteuid(), gid: getegid(),
+            evidenceReference: "receipt:fresh-provider-account-test"
+        )
+        let runner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 0, standardOutput: nil)),
+        ])
+        let inspector = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshClaim: claim,
+            accountReader: StaticFreshProviderAccountReader(account: account),
+            runner: runner
+        )
+        let observed = try await inspector.inspectProvider(
+            fixture.requirement, for: fixture.request
+        ).get()
+        XCTAssertEqual(observed.state, .verified)
+        let commands = await runner.recordedCommands()
+        XCTAssertEqual(commands.count, 2)
+        XCTAssertEqual(commands.map(\.account), [
+            ManagedInstallerProviderProbeAccount(
+                name: claim.accountName, uid: account.uid, gid: account.gid
+            ),
+            ManagedInstallerProviderProbeAccount(
+                name: claim.accountName, uid: account.uid, gid: account.gid
+            ),
+        ])
+        let foreign = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshClaim: claim,
+            accountReader: StaticFreshProviderAccountReader(account: nil),
+            runner: ProviderProbeRunnerSpy(results: [])
+        )
+        let refused = await foreign.inspectProvider(
+            fixture.requirement, for: fixture.request
+        )
+        XCTAssertEqual(refused.failure, .rejected)
+
+        let wrongOwner = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshClaim: claim,
+            accountReader: StaticFreshProviderAccountReader(account:
+                ManagedInstallerProductServiceAccountReadback(
+                    claim: claim, uid: account.uid + 1, gid: account.gid,
+                    evidenceReference: account.evidenceReference
+                )
+            ), runner: ProviderProbeRunnerSpy(results: [])
+        )
+        let wrongOwnerResult = await wrongOwner.inspectProvider(
+            fixture.requirement, for: fixture.request
+        )
+        XCTAssertEqual(wrongOwnerResult.failure, .readbackFailed)
+
+        if geteuid() != 0 {
+            let boundCommand = MacOSManagedInstallerProviderProbeCommandFactory.command(
+                provider: .githubCLI, probe: .authenticationStatus,
+                executableURL: fixture.executable, providerHomeURL: fixture.home,
+                account: ManagedInstallerProviderProbeAccount(
+                    name: claim.accountName, uid: account.uid, gid: account.gid
+                )
+            )
+            let unprivileged = await MacOSSystemManagedInstallerProviderProbeRunner()
+                .runProviderProbe(boundCommand)
+            XCTAssertEqual(unprivileged.failure, .rejected)
+        }
+    }
+
     func testEPProductInspectorRejectsWrongRuntimePathAndIgnoresLegacySlot() async throws {
         let fixture = try ProviderInspectionFixture(
             provider: .codex, epProductLayout: true
@@ -634,6 +722,18 @@ private struct ProviderInspectionFixture {
             [.posixPermissions: 0o700],
             ofItemAtPath: url.path
         )
+    }
+}
+
+private struct StaticFreshProviderAccountReader:
+    ManagedInstallerFreshProductAccountReading {
+    let account: ManagedInstallerProductServiceAccountReadback?
+
+    func readAccountSynchronously(_ claim: ManagedInstallerProductServiceAccountClaim)
+        -> Result<ManagedInstallerProductServiceAccountReadback?,
+                  ManagedInstallerProductServiceAccountPreparationFailure> {
+        _ = claim
+        return .success(account)
     }
 }
 

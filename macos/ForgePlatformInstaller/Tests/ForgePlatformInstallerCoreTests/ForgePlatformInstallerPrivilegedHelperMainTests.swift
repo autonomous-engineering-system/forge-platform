@@ -1,7 +1,95 @@
+import Darwin
 import XCTest
 @testable import ForgePlatformInstallerPrivilegedHelper
 
 final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
+    func testAccountProbeChildAcceptsOnlyFixedProviderAndSameOwnedHome() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/probe-root", isDirectory: true)
+        let provider = root.appendingPathComponent(
+            "products/engineering-platform/instances/fpi-one/providers/github",
+            isDirectory: true
+        )
+        let arguments = [
+            "forge-platform-installer-helper",
+            ManagedInstallerProviderAccountProbeChild.flag,
+            "_fpi_" + String(repeating: "a", count: 20), "501", "20",
+            "github-cli", "authentication-status",
+            provider.appendingPathComponent("runtime/bin/gh").path,
+            provider.appendingPathComponent("config").path,
+        ]
+        let request = try XCTUnwrap(ManagedInstallerProviderAccountProbeChild.parse(
+            arguments, allowedRoot: root
+        ))
+        XCTAssertEqual(request.arguments,
+                       ["auth", "status", "--hostname", "github.com"])
+        XCTAssertEqual(request.environment["GH_CONFIG_DIR"], arguments[8])
+        XCTAssertEqual(request.environment["HOME"], arguments[8])
+
+        let forge = root.appendingPathComponent(
+            "provider-contexts/deployments/deployment-one/providers/forge-runtime/"
+                + "fpi-two/github-cli", isDirectory: true
+        )
+        var versioned = arguments
+        versioned[6] = "version"
+        versioned[7] = forge.appendingPathComponent("runtime/2.70.0/bin/gh").path
+        versioned[8] = forge.appendingPathComponent("home").path
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.parse(
+            versioned, allowedRoot: root
+        )?.arguments, ["--version"])
+
+        for (index, value) in [
+            (2, "_fpi_foreign"), (3, "0"), (4, "020"),
+            (5, "shell"), (6, "login"),
+            (7, "/private/tmp/other/runtime/bin/gh"),
+            (8, root.appendingPathComponent("other/config").path),
+        ] {
+            var invalid = arguments
+            invalid[index] = value
+            XCTAssertNil(ManagedInstallerProviderAccountProbeChild.parse(
+                invalid, allowedRoot: root
+            ), "field \(index)")
+        }
+        var traversal = arguments
+        traversal[7] = provider.appendingPathComponent("../runtime/bin/gh").path
+        XCTAssertNil(ManagedInstallerProviderAccountProbeChild.parse(
+            traversal, allowedRoot: root
+        ))
+
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.run(
+            arguments, allowedRoot: root, effectiveUID: { 0 },
+            verifyAccount: { $0 == request }, dropPrivileges: { $0 == request },
+            launch: { $0 == request ? 0 : 78 }
+        ), 0)
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.run(
+            arguments, allowedRoot: root, effectiveUID: { 501 },
+            verifyAccount: { _ in XCTFail("no OS read after failed UID"); return true },
+            dropPrivileges: { _ in true }, launch: { _ in 0 }
+        ), 78)
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.run(
+            arguments, allowedRoot: root, effectiveUID: { 0 },
+            verifyAccount: { _ in false },
+            dropPrivileges: { _ in XCTFail("no drop after failed account"); return true },
+            launch: { _ in 0 }
+        ), 78)
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.run(
+            arguments, allowedRoot: root, effectiveUID: { 0 },
+            verifyAccount: { _ in true }, dropPrivileges: { _ in false },
+            launch: { _ in XCTFail("no launch after failed drop"); return 0 }
+        ), 78)
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.run(arguments), 78)
+
+        let currentName = try XCTUnwrap(Darwin.getpwuid(Darwin.getuid())?.pointee.pw_name)
+        let currentAccount = ManagedInstallerProviderAccountProbeChild.Request(
+            accountName: String(cString: currentName), uid: Darwin.getuid(),
+            gid: Darwin.getgid(), provider: "github-cli", probe: "version",
+            executable: "/usr/bin/true", home: "/private/tmp"
+        )
+        XCTAssertFalse(ManagedInstallerProviderAccountProbeChild.matchingLocalAccount(
+            currentAccount
+        ))
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(currentAccount), 0)
+    }
+
     func testProcessContractAndProductionRuntimeAreFixed() throws {
         XCTAssertEqual(
             ManagedInstallerPrivilegedHelperProcessContract.installerBundleIdentifier,

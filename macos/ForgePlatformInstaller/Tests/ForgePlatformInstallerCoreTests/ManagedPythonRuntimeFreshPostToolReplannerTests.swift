@@ -984,7 +984,22 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         )
         let fixture = try FreshReplannerFixture(
             providerRequirements: [forge, ep],
-            enabledProviderRequirements: [forge, ep]
+            enabledProviderRequirements: [forge, ep], freshInstall: true,
+            components: [
+                ComponentDiff(
+                    componentID: "forge-runtime", title: "Forge", change: .install,
+                    candidateVersion: "1.0.0",
+                    artifactDigest: "sha256:" + String(repeating: "8", count: 64),
+                    detail: "Fresh Forge"
+                ),
+                ComponentDiff(
+                    componentID: "engineering-platform-server",
+                    title: "Engineering Platform", change: .install,
+                    candidateVersion: "2.0.0",
+                    artifactDigest: "sha256:" + String(repeating: "7", count: 64),
+                    detail: "Fresh EP"
+                ),
+            ]
         )
         let request = try ManagedInstallerPostToolHostObservationRequest(
             stablePlan: fixture.stablePlan, request: fixture.request
@@ -3452,7 +3467,8 @@ private struct FreshReplannerFixture {
         deploymentID: String? = nil,
         providerRequirements: [ProviderRequirement] = [],
         enabledProviderRequirements: [ProviderRequirement]? = nil,
-        freshInstall: Bool = false
+        freshInstall: Bool = false,
+        components: [ComponentDiff]? = nil
     ) throws {
         git = ManagedToolRequirement(
             identity: .git,
@@ -3511,7 +3527,8 @@ private struct FreshReplannerFixture {
                 initialReadback: request.initialReadback
             ),
             actions: [ManagedToolOriginalPlanAction(requirement: git, action: .install)],
-            enabledProviderRequirements: enabledProviderRequirements
+            enabledProviderRequirements: enabledProviderRequirements,
+            components: components
         )
     }
 

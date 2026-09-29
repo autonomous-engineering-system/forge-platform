@@ -36,6 +36,44 @@ struct ManagedInstallerPostToolComponentProviderInspector:
         stablePlan: ManagedInstallerStablePlan,
         activationRequest: ManagedPythonRuntimeActivationRequest
     ) -> Self? {
+        guard !stablePlan.deployment.exists else { return nil }
+        func claim(_ owner: ProviderOwnerComponent)
+            -> ManagedInstallerProductServiceAccountClaim? {
+            let components = stablePlan.reviewedOperation.components.filter {
+                $0.componentID == owner.rawValue
+            }
+            guard components.count == 1, let component = components.first,
+                  component.change == .install,
+                  let digest = component.artifactDigest,
+                  CompositionCatalogValidation.isTaggedSHA256(digest) else {
+                return nil
+            }
+            let instance = ManagedInstallerProductServiceAccountPlanner.instanceID(
+                deploymentID: stablePlan.deployment.id,
+                componentIdentity: owner.rawValue
+            )
+            return ManagedInstallerProductServiceAccountClaim(
+                stablePlanFingerprint: stablePlan.fingerprint,
+                operationID: stablePlan.activationPlan.operationID,
+                deploymentID: stablePlan.deployment.id,
+                componentIdentity: owner.rawValue,
+                instanceID: instance, productArtifactSHA256: digest,
+                accountName: ManagedInstallerProductServiceAccountPlanner.name(
+                    deploymentID: stablePlan.deployment.id,
+                    componentIdentity: owner.rawValue, instanceID: instance
+                )
+            )
+        }
+        let forgeClaim = claim(.forgeRuntime)
+        let epClaim = claim(.engineeringPlatformServer)
+        let owners = Set(stablePlan.enabledProviderRequirements.compactMap(\.ownerComponent))
+        guard (!owners.contains(.forgeRuntime) || forgeClaim != nil),
+              (!owners.contains(.engineeringPlatformServer) || epClaim != nil) else {
+            return nil
+        }
+        let accountReader = MacOSManagedInstallerProductServiceAccountDirectoryMutation(
+            directory: MacOSOpenDirectoryLocalAccountStore()
+        )
         let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
         let forgeRoot = root.appendingPathComponent(
             ManagedInstallerHelperStateRootBootstrap.providerContextsDirectoryName,
@@ -51,10 +89,18 @@ struct ManagedInstallerPostToolComponentProviderInspector:
         return try? Self(
             stablePlan: stablePlan,
             activationRequest: activationRequest,
-            forge: MacOSManagedInstallerProviderHostInspector(rootDirectory: forgeRoot),
-            engineeringPlatform: MacOSManagedInstallerProviderHostInspector(
-                epProductRoot: epRoot, freshDeploymentID: stablePlan.deployment.id
-            )
+            forge: forgeClaim.map {
+                MacOSManagedInstallerProviderHostInspector(
+                    rootDirectory: forgeRoot, freshClaim: $0,
+                    accountReader: accountReader
+                )
+            } ?? MacOSManagedInstallerProviderHostInspector(rootDirectory: forgeRoot),
+            engineeringPlatform: epClaim.map {
+                MacOSManagedInstallerProviderHostInspector(
+                    epProductRoot: epRoot, freshClaim: $0,
+                    accountReader: accountReader
+                )
+            } ?? MacOSManagedInstallerProviderHostInspector(epProductRoot: epRoot)
         )
     }
 

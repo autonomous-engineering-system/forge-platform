@@ -12,6 +12,26 @@ struct MacOSManagedInstallerProviderProbeCommand: Equatable, Sendable {
     let executableURL: URL
     let arguments: [String]
     let environment: [String: String]
+    let provider: ProviderID?
+    let account: ManagedInstallerProviderProbeAccount?
+
+    init(probe: MacOSManagedInstallerProviderProbe, executableURL: URL,
+         arguments: [String], environment: [String: String],
+         provider: ProviderID? = nil,
+         account: ManagedInstallerProviderProbeAccount? = nil) {
+        self.probe = probe
+        self.executableURL = executableURL
+        self.arguments = arguments
+        self.environment = environment
+        self.provider = provider
+        self.account = account
+    }
+}
+
+struct ManagedInstallerProviderProbeAccount: Equatable, Sendable {
+    let name: String
+    let uid: uid_t
+    let gid: gid_t
 }
 
 struct MacOSManagedInstallerProviderProbeResult: Equatable, Sendable {
@@ -37,7 +57,8 @@ enum MacOSManagedInstallerProviderProbeCommandFactory {
         provider: ProviderID,
         probe: MacOSManagedInstallerProviderProbe,
         executableURL: URL,
-        providerHomeURL: URL
+        providerHomeURL: URL,
+        account: ManagedInstallerProviderProbeAccount? = nil
     ) -> MacOSManagedInstallerProviderProbeCommand {
         var environment = [
             "HOME": providerHomeURL.path,
@@ -64,7 +85,9 @@ enum MacOSManagedInstallerProviderProbeCommandFactory {
             probe: probe,
             executableURL: executableURL,
             arguments: arguments,
-            environment: environment
+            environment: environment,
+            provider: provider,
+            account: account
         )
     }
 }
@@ -107,8 +130,35 @@ struct MacOSSystemManagedInstallerProviderProbeRunner:
         }
 
         let process = Process()
-        process.executableURL = command.executableURL
-        process.arguments = command.arguments
+        if let account = command.account {
+            guard Darwin.geteuid() == 0, account.uid != 0, account.gid != 0,
+                  ManagedInstallerProductWorkerRouteAuthority
+                    .isServiceAccount(account.name),
+                  let provider = command.provider,
+                  let home = command.environment["HOME"],
+                  command == MacOSManagedInstallerProviderProbeCommandFactory.command(
+                    provider: provider, probe: command.probe,
+                    executableURL: command.executableURL,
+                    providerHomeURL: URL(fileURLWithPath: home, isDirectory: true),
+                    account: account
+                  ),
+                  let current = CommandLine.arguments.first,
+                  current.hasPrefix("/"),
+                  URL(fileURLWithPath: current).lastPathComponent
+                    == "forge-platform-installer-helper" else {
+                return .failure(.rejected)
+            }
+            process.executableURL = URL(fileURLWithPath: current)
+            process.arguments = [
+                "--provider-account-probe", account.name,
+                String(account.uid), String(account.gid), provider.rawValue,
+                command.probe == .version ? "version" : "authentication-status",
+                command.executableURL.path, home,
+            ]
+        } else {
+            process.executableURL = command.executableURL
+            process.arguments = command.arguments
+        }
         process.environment = command.environment
         let output: Pipe?
         let collector: BoundedProcessOutputCollector?
@@ -145,7 +195,14 @@ struct MacOSSystemManagedInstallerProviderProbeRunner:
             }
         }
         guard termination.wait(timeout: .now() + timeout) == .success else {
-            process.terminate()
+            if command.account != nil,
+               Darwin.getpgid(process.processIdentifier) == process.processIdentifier {
+                // The wrapper and provider share one private process group.
+                // Kill both on timeout so no orphaned authenticated CLI runs.
+                _ = Darwin.kill(-process.processIdentifier, SIGKILL)
+            } else {
+                process.terminate()
+            }
             if termination.wait(timeout: .now() + terminationGracePeriod) != .success {
                 _ = Darwin.kill(process.processIdentifier, SIGKILL)
                 guard termination.wait(timeout: .now() + terminationGracePeriod) == .success else {
@@ -191,6 +248,8 @@ public struct MacOSManagedInstallerProviderHostInspector:
     private let rootDirectory: URL
     private let layoutKind: LayoutKind
     private let freshEPDeploymentID: String?
+    private let freshClaim: ManagedInstallerProductServiceAccountClaim?
+    private let freshAccountReader: (any ManagedInstallerFreshProductAccountReading)?
     private let runner: any MacOSManagedInstallerProviderProbeRunning
 
     public init(rootDirectory: URL) {
@@ -223,6 +282,26 @@ public struct MacOSManagedInstallerProviderHostInspector:
                   freshEPDeploymentID: freshDeploymentID, runner: runner)
     }
 
+    init(rootDirectory: URL, freshClaim: ManagedInstallerProductServiceAccountClaim,
+         accountReader: any ManagedInstallerFreshProductAccountReading,
+         runner: any MacOSManagedInstallerProviderProbeRunning =
+            MacOSSystemManagedInstallerProviderProbeRunner()) {
+        self.init(rootDirectory: rootDirectory, layoutKind: .installerVersioned,
+                  freshEPDeploymentID: nil, freshClaim: freshClaim,
+                  freshAccountReader: accountReader, runner: runner)
+    }
+
+    init(epProductRoot: URL, freshClaim: ManagedInstallerProductServiceAccountClaim,
+         accountReader: any ManagedInstallerFreshProductAccountReading,
+         runner: any MacOSManagedInstallerProviderProbeRunning =
+            MacOSSystemManagedInstallerProviderProbeRunner()) {
+        self.init(rootDirectory: epProductRoot,
+                  layoutKind: .engineeringPlatformProduct,
+                  freshEPDeploymentID: freshClaim.deploymentID,
+                  freshClaim: freshClaim, freshAccountReader: accountReader,
+                  runner: runner)
+    }
+
     init(
         rootDirectory: URL,
         runner: any MacOSManagedInstallerProviderProbeRunning
@@ -243,11 +322,15 @@ public struct MacOSManagedInstallerProviderHostInspector:
         rootDirectory: URL,
         layoutKind: LayoutKind,
         freshEPDeploymentID: String?,
+        freshClaim: ManagedInstallerProductServiceAccountClaim? = nil,
+        freshAccountReader: (any ManagedInstallerFreshProductAccountReading)? = nil,
         runner: any MacOSManagedInstallerProviderProbeRunning
     ) {
         self.rootDirectory = Self.canonicalRootDirectory(rootDirectory)
         self.layoutKind = layoutKind
         self.freshEPDeploymentID = freshEPDeploymentID
+        self.freshClaim = freshClaim
+        self.freshAccountReader = freshAccountReader
         self.runner = runner
     }
 
@@ -275,6 +358,41 @@ public struct MacOSManagedInstallerProviderHostInspector:
                       )
               )) else {
             return .failure(.rejected)
+        }
+        let originalAccount: ManagedInstallerProductServiceAccountReadback?
+        let probeAccount: ManagedInstallerProviderProbeAccount?
+        if let freshClaim {
+            guard let freshAccountReader,
+                  freshClaim.stablePlanFingerprint == request.stablePlanFingerprint,
+                  freshClaim.operationID == request.operationID,
+                  freshClaim.deploymentID == request.deploymentID,
+                  freshClaim.componentIdentity == owner.rawValue,
+                  freshClaim.instanceID
+                    == ManagedInstallerProductServiceAccountPlanner.instanceID(
+                        deploymentID: request.deploymentID,
+                        componentIdentity: owner.rawValue
+                    ),
+                  freshClaim.accountName
+                    == ManagedInstallerProductServiceAccountPlanner.name(
+                        deploymentID: request.deploymentID,
+                        componentIdentity: owner.rawValue,
+                        instanceID: freshClaim.instanceID
+                    ),
+                  targetIdentity == request.deploymentID,
+                  case .success(let readback?) = freshAccountReader
+                    .readAccountSynchronously(freshClaim),
+                  readback.matches(freshClaim),
+                  readback.uid != 0, readback.gid != 0 else {
+                return .failure(.rejected)
+            }
+            originalAccount = readback
+            probeAccount = ManagedInstallerProviderProbeAccount(
+                name: freshClaim.accountName,
+                uid: readback.uid, gid: readback.gid
+            )
+        } else {
+            originalAccount = nil
+            probeAccount = nil
         }
         let resolvedTargetIdentity = freshEPDeploymentID.map {
             ManagedInstallerProductServiceAccountPlanner.instanceID(
@@ -318,7 +436,7 @@ public struct MacOSManagedInstallerProviderHostInspector:
             )
         }
         do {
-            try validateProviderHome(for: layout)
+            try validateProviderHome(for: layout, account: probeAccount)
         } catch {
             return .failure(.readbackFailed)
         }
@@ -327,7 +445,8 @@ public struct MacOSManagedInstallerProviderHostInspector:
             provider: requirement.provider,
             probe: .version,
             executableURL: layout.executableURL,
-            providerHomeURL: layout.providerHomeURL
+            providerHomeURL: layout.providerHomeURL,
+            account: probeAccount
         )
         let versionResult: MacOSManagedInstallerProviderProbeResult
         switch await runner.runProviderProbe(versionCommand) {
@@ -370,7 +489,8 @@ public struct MacOSManagedInstallerProviderHostInspector:
             provider: requirement.provider,
             probe: .authenticationStatus,
             executableURL: layout.executableURL,
-            providerHomeURL: layout.providerHomeURL
+            providerHomeURL: layout.providerHomeURL,
+            account: probeAccount
         )
         let authResult: MacOSManagedInstallerProviderProbeResult
         switch await runner.runProviderProbe(authCommand) {
@@ -386,6 +506,13 @@ public struct MacOSManagedInstallerProviderHostInspector:
             afterAuthentication = observed
         } catch {
             return .failure(.readbackFailed)
+        }
+        if let freshClaim, let originalAccount {
+            guard case .success(let confirmed?) = freshAccountReader?
+                .readAccountSynchronously(freshClaim),
+                  confirmed == originalAccount else {
+                return .failure(.readbackFailed)
+            }
         }
         let state: ManagedInstallerProviderHostReadback.State
         switch authResult.exitStatus {
@@ -484,15 +611,23 @@ public struct MacOSManagedInstallerProviderHostInspector:
         }
     }
 
-    private func validateProviderHome(for layout: Layout) throws {
+    private func validateProviderHome(
+        for layout: Layout, account: ManagedInstallerProviderProbeAccount?
+    ) throws {
         let root = try openRoot()
         defer { _ = Darwin.close(root) }
         var current = root
         var ownedDescriptors: [Int32] = []
         defer { ownedDescriptors.forEach { _ = Darwin.close($0) } }
-        for segment in layout.providerTargetDirectorySegments
-            + [layout.providerHomeDirectoryName] {
-            let next = try openDirectory(segment, at: current)
+        let segments = layout.providerTargetDirectorySegments
+            + [layout.providerHomeDirectoryName]
+        for (index, segment) in segments.enumerated() {
+            let home = index == segments.count - 1
+            let next = try openDirectory(
+                segment, at: current,
+                expectedOwner: home ? account?.uid : nil,
+                expectedGroup: home ? account?.gid : nil
+            )
             ownedDescriptors.append(next)
             current = next
         }
@@ -519,7 +654,10 @@ public struct MacOSManagedInstallerProviderHostInspector:
         return descriptor
     }
 
-    private func openDirectory(_ name: String, at parent: Int32) throws -> Int32 {
+    private func openDirectory(
+        _ name: String, at parent: Int32,
+        expectedOwner: uid_t? = nil, expectedGroup: gid_t? = nil
+    ) throws -> Int32 {
         guard Self.isSafePathSegment(name) else { throw InspectionError.insecure }
         let descriptor = name.withCString {
             Darwin.openat(parent, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
@@ -528,7 +666,8 @@ public struct MacOSManagedInstallerProviderHostInspector:
             if errno == ENOENT { throw InspectionError.absent }
             throw InspectionError.insecure
         }
-        guard Self.isSecureDirectory(descriptor) else {
+        guard Self.isSecureDirectory(descriptor, owner: expectedOwner,
+                                     group: expectedGroup) else {
             _ = Darwin.close(descriptor)
             throw InspectionError.insecure
         }
@@ -621,11 +760,14 @@ public struct MacOSManagedInstallerProviderHostInspector:
         return "receipt:provider-observation-\(digest)"
     }
 
-    private static func isSecureDirectory(_ descriptor: Int32) -> Bool {
+    private static func isSecureDirectory(
+        _ descriptor: Int32, owner: uid_t? = nil, group: gid_t? = nil
+    ) -> Bool {
         var details = stat()
         return Darwin.fstat(descriptor, &details) == 0
             && (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
-            && details.st_uid == Darwin.geteuid()
+            && details.st_uid == (owner ?? Darwin.geteuid())
+            && (group == nil || details.st_gid == group)
             && (details.st_mode & mode_t(0o7777)) == mode_t(0o700)
     }
 
