@@ -47,6 +47,30 @@
       },
       "identity": "managed-python-runtime",
       "status": "READY"
+    },
+    {
+      "evidence": {
+        "identity_digest": "sha256:760e1874e2b7cd62e3c86fba5420cd2c7216d3d62995a3aaad5caa0e21943152",
+        "artifacts": [
+          {
+            "kind": "codex-cli-runtime",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/provider-runtimes/v1/codex-0.157.1-arm64/forge-platform-provider-codex-0.157.1-arm64.tar.gz",
+            "digest": "sha256:a096caeec7ca0f29c6fe0e3389d34d5c0f8be01cd9291f983a54439a2a63d7ee"
+          },
+          {
+            "kind": "github-cli-runtime",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/provider-runtimes/v1/github-cli-2.101.0-arm64/forge-platform-provider-gh-2.101.0-arm64.tar.gz",
+            "digest": "sha256:493e6fa64f918810ee057fcab446a0006989a92dd3edbf2802ab13d3da9e1cc0"
+          },
+          {
+            "kind": "producer-provenance",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/provider-runtimes/v1/provider-runtime-provenance.json",
+            "digest": "sha256:760e1874e2b7cd62e3c86fba5420cd2c7216d3d62995a3aaad5caa0e21943152"
+          }
+        ]
+      },
+      "identity": "provider-runtimes",
+      "status": "READY"
     }
   ],
   "producers": [

@@ -402,6 +402,36 @@ class CompositionProducerObserverTests(unittest.TestCase):
         with self.assertRaisesRegex(OBSERVER.ObservationError, "digest drifted"):
             OBSERVER._observe_external(validated, FakeFetch({}), lambda requested: "sha256:" + "0" * 64)
 
+    def test_repository_provider_inputs_bind_published_candidate_exactly(self) -> None:
+        source = ROOT / "composition-producer-sources.json"
+        _raw, _producers, external = OBSERVER._load_config(source)
+        self.assertEqual([item["identity"] for item in external],
+                         ["managed-git", "managed-python-runtime", "provider-runtimes"])
+        provider = external[-1]
+        self.assertEqual(provider["status"], "READY")
+        published = json.loads((ROOT / "provider-runtime-pages.json").read_text())
+        provenance = ROOT / "provider-runtime-provenance.json"
+        self.assertEqual(provider["evidence"]["identity_digest"],
+                         "sha256:" + sha256(provenance.read_bytes()).hexdigest())
+        self.assertEqual(provider["evidence"]["artifacts"], [
+            {"kind": kind, "url": asset["url"], "digest": asset["sha256"]}
+            for kind, asset in zip(
+                ("codex-cli-runtime", "github-cli-runtime", "producer-provenance"),
+                published["assets"],
+            )
+        ])
+        observed = OBSERVER._observe_external(
+            provider, FakeFetch({}),
+            lambda url: next(a["digest"] for a in provider["evidence"]["artifacts"]
+                             if a["url"] == url),
+        )
+        self.assertEqual(observed["status"], "READY")
+        with self.assertRaisesRegex(OBSERVER.ObservationError, "digest drifted"):
+            OBSERVER._observe_external(
+                provider, FakeFetch({}),
+                lambda url: "sha256:" + "0" * 64,
+            )
+
     def test_external_asset_stream_is_bounded_and_direct(self) -> None:
         url = "https://example.invalid/managed/archive.tar.gz"
 
