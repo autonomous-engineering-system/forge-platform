@@ -29,16 +29,24 @@ struct MacOSManagedInstallerProductServiceAccountSearchACL {
     }
 
     func ensureSearch(
-        for accounts: [ManagedInstallerProviderLocalServiceAccount]
+        for accounts: [ManagedInstallerProductServiceAccountBinding]
     ) -> Result<Void, ManagedInstallerProductServiceAccountSearchACLFailure> {
         guard !accounts.isEmpty,
               Set(accounts.map(\.uid)).count == accounts.count,
-              Set(accounts.map { $0.authority.providerTargetID }).count == accounts.count,
+              Set(accounts.map { $0.componentIdentity + ":" + $0.instanceID })
+                .count == accounts.count,
+              Set(accounts.map(\.authoritySHA256)).count == 1,
               accounts.allSatisfy({ account in
                   account.uid != 0 && account.gid != 0
                       && ManagedInstallerProductWorkerRouteAuthority.isServiceAccount(
-                          account.authority.serviceAccount
+                          account.serviceAccount
                       )
+                      && ManagedInstallerProductWorkerRouteAuthority
+                        .isSafeIdentity(account.deploymentID)
+                      && ManagedInstallerProductWorkerRouteAuthority
+                        .isSafeIdentity(account.instanceID)
+                      && CompositionCatalogValidation
+                        .isTaggedSHA256(account.authoritySHA256)
               }) else { return .failure(.invalidRequest) }
 
         let identities: [[UInt8]]
