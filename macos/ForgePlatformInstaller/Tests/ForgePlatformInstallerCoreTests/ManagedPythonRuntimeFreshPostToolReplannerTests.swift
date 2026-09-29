@@ -1664,6 +1664,28 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(wrongIdentityResult.failure, .readbackFailed)
     }
 
+    func testManagedGitHostReaderAndStoreRejectSymlinkedRoot() async throws {
+        let fixture = try FreshReplannerFixture()
+        let readback = try fixture.toolReadback(.active)
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeManagedGitHostState(
+            readback.canonicalManagedGitHostStateJSONData(), root: root
+        )
+        let link = root.deletingLastPathComponent().appendingPathComponent(
+            "post-tool-readback-link-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
+        defer { try? FileManager.default.removeItem(at: link) }
+
+        let reader = FileManagedInstallerManagedGitHostReader(rootDirectory: link)
+        let result = await reader.readManagedTool(fixture.git)
+        XCTAssertEqual(result.failure, .readbackFailed)
+        let store = FileManagedInstallerManagedGitHostStateStore(rootDirectory: link)
+        XCTAssertEqual(store.persistManagedGitHostState(readback).failure,
+                       .receiptPersistenceFailed)
+    }
+
     func testManagedGitHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
         let fixture = try FreshReplannerFixture()
         let first = try fixture.toolReadback(.absent)

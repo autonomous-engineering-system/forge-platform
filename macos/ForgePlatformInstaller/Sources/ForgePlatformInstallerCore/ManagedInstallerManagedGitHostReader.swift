@@ -169,11 +169,14 @@ public struct FileManagedInstallerManagedGitHostReader:
         guard input.isFileURL,
               input.baseURL == nil,
               input.path.hasPrefix("/"),
-              let resolved = input.path.withCString({ Darwin.realpath($0, nil) }) else {
+              let resolved = input.deletingLastPathComponent().path.withCString({
+                  Darwin.realpath($0, nil)
+              }) else {
             return input.standardizedFileURL
         }
         defer { Darwin.free(resolved) }
         return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+            .appendingPathComponent(input.lastPathComponent, isDirectory: true)
     }
 }
 
@@ -392,11 +395,14 @@ public struct FileManagedInstallerManagedGitHostStateStore:
         guard input.isFileURL,
               input.baseURL == nil,
               input.path.hasPrefix("/"),
-              let resolved = input.path.withCString({ Darwin.realpath($0, nil) }) else {
+              let resolved = input.deletingLastPathComponent().path.withCString({
+                  Darwin.realpath($0, nil)
+              }) else {
             return input.standardizedFileURL
         }
         defer { Darwin.free(resolved) }
         return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+            .appendingPathComponent(input.lastPathComponent, isDirectory: true)
     }
 }
 
