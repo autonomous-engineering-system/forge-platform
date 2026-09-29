@@ -44,6 +44,8 @@ from .managed_product_operation_service import (
     NATIVE_PRODUCT_REMOVAL_RECEIPT_SCHEMA,
     ManagedProductOperationHelperService,
 )
+from .managed_product_wheel_worker import SCHEMA as PRODUCT_WHEEL_WORKER_SCHEMA
+from .managed_product_wheel_worker import execute_wheel_request
 from .product_worker_authority import ProductWorkerAuthorityLoader
 
 
@@ -310,7 +312,9 @@ def run(
             envelope = json.loads(request)
         except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
             envelope = None
-        if isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REVIEW_INTENT_SCHEMA:
+        if isinstance(envelope, dict) and envelope.get("schema") == PRODUCT_WHEEL_WORKER_SCHEMA:
+            response = execute_wheel_request(request)
+        elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REVIEW_INTENT_SCHEMA:
             response = execute_removal_review_intent(request, service_loader=service_loader)
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVED_LIFECYCLE_REVIEW_INTENT_SCHEMA:
             response = execute_preserved_lifecycle_review_intent(
