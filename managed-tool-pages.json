@@ -1,0 +1,48 @@
+{
+  "schema": "forge-platform.managed-tool-pages/v1",
+  "status": "REVIEWED_CANDIDATE",
+  "release_tag": "forge-platform-managed-tools-v1",
+  "handoff_manifest_sha256": "sha256:f1a343c531812af6560b773800998394958a70a97796d3bdd768a32000f02f79",
+  "assets": [
+    {
+      "kind": "managed-git-runtime",
+      "asset_name": "forge-platform-managed-git.tar.gz",
+      "relative_path": "git-2.56.0-arm64/forge-platform-managed-git.tar.gz",
+      "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/git-2.56.0-arm64/forge-platform-managed-git.tar.gz",
+      "sha256": "sha256:e862168c8153db469ae4e0ab3dccd7af31bd281e2b9b9dd45e1e5c7d069ad5ac",
+      "size": 17007890
+    },
+    {
+      "kind": "managed-python-runtime",
+      "asset_name": "forge-platform-managed-python-runtime.tar.gz",
+      "relative_path": "python-3.14.7-arm64/forge-platform-managed-python-runtime.tar.gz",
+      "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/python-3.14.7-arm64/forge-platform-managed-python-runtime.tar.gz",
+      "sha256": "sha256:4490ab17e58008a4c6c52fc36590ae5f88b2800f1db25236ef2288dc591832f6",
+      "size": 26468770
+    },
+    {
+      "kind": "cpython-source",
+      "asset_name": "cpython-3.14.7-source.tar.gz",
+      "relative_path": "python-3.14.7-arm64/cpython-3.14.7-source.tar.gz",
+      "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/python-3.14.7-arm64/cpython-3.14.7-source.tar.gz",
+      "sha256": "sha256:62859805f6fdf25e2bcbf3fa3217801e1996887ca33e6a2af80674bdfa2dbe07",
+      "size": 31414918
+    },
+    {
+      "kind": "source-provenance",
+      "asset_name": "source-provenance.json",
+      "relative_path": "python-3.14.7-arm64/source-provenance.json",
+      "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/python-3.14.7-arm64/source-provenance.json",
+      "sha256": "sha256:9b5a3fffb6fb926687370b00c3e0d0788f0eefb27c8a4413255e3d2c489aabfc",
+      "size": 7156
+    },
+    {
+      "kind": "build-provenance",
+      "asset_name": "build-provenance.json",
+      "relative_path": "python-3.14.7-arm64/build-provenance.json",
+      "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/python-3.14.7-arm64/build-provenance.json",
+      "sha256": "sha256:84245721dc4989a595074eb6202d4d2b30d414921ced48908d3ec926389515fa",
+      "size": 2295
+    }
+  ]
+}
