@@ -116,6 +116,9 @@ struct ManagedInstallerHelperFreshInstallPlanExecutor:
                 .production(),
               let currency = ManagedInstallerHelperMutationCurrency.production()
         else { return nil }
+        let accounts = MacOSManagedInstallerProductServiceAccountDirectoryMutation(
+            directory: MacOSOpenDirectoryLocalAccountStore()
+        )
         return Self(
             material: material,
             currency: currency,
@@ -127,14 +130,16 @@ struct ManagedInstallerHelperFreshInstallPlanExecutor:
                 return coordinator
             },
             products: ManagedInstallerFreshAccountBoundProductOperations(
-                accounts: MacOSManagedInstallerProductServiceAccountDirectoryMutation(
-                    directory: MacOSOpenDirectoryLocalAccountStore()
-                ),
-                downstream: ManagedInstallerCanonicalProductOperationsExecutor(
-                    transport: ManagedInstallerHelperLocalProductOperationTransport(
-                        executor: ManagedInstallerPythonProductOperationExecutor()
+                accounts: accounts,
+                downstream: ManagedInstallerFreshSingleProductWorkerPublishingOperations
+                    .production(
+                        material: material, currency: currency, accounts: accounts,
+                        downstream: ManagedInstallerCanonicalProductOperationsExecutor(
+                            transport: ManagedInstallerHelperLocalProductOperationTransport(
+                                executor: ManagedInstallerPythonProductOperationExecutor()
+                            )
+                        )
                     )
-                )
             )
         )
     }
