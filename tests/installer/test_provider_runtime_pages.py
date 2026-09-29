@@ -44,6 +44,16 @@ class Response:
 
 
 class ProviderRuntimePagesTests(unittest.TestCase):
+    def test_module_imports_from_repository_root_like_protected_workflow(self):
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "from scripts.prepare_provider_runtime_pages import load_config; "
+             "from pathlib import Path; "
+             "assert load_config(Path('provider-runtime-pages.json'))['assets']"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)

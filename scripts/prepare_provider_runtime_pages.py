@@ -8,11 +8,13 @@ import json
 from pathlib import Path
 import re
 import shutil
+import sys
 import tempfile
 import urllib.error
 import urllib.request
 
-from prepare_managed_tool_pages import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.prepare_managed_tool_pages import (
     DIGEST, PublicationError, SITE_PREFIX as TOOL_PREFIX, _digest,
     load_config as load_tool_config, stage as stage_tools,
     validate_backing_release, validate_release_tag_binding,
