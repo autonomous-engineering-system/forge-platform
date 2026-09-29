@@ -542,6 +542,18 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
         self.expectedOwner = expectedOwner
     }
 
+    /// The fresh-install publisher must compare with the exact authority it
+    /// just admitted. A missing file is valid only after a secure readback of
+    /// the private root; publication still performs its own locked CAS.
+    func readExistingAuthorityForFreshInstall() -> Result<
+        ManagedInstallerProductWorkerAuthoritySnapshot?,
+        ManagedInstallerProductWorkerAuthorityReadFailure
+    > {
+        FileManagedInstallerProductWorkerAuthorityReader(
+            rootDirectory: rootDirectory, expectedOwner: expectedOwner
+        ).readCanonicalAuthorityIfPresent()
+    }
+
     private static func canonicalRoot(_ input: URL) -> URL {
         let standardized = input.standardizedFileURL
         guard standardized.isFileURL, standardized.baseURL == nil,
