@@ -2667,6 +2667,31 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertTrue(calls.isEmpty)
     }
 
+    func testHelperLocalPostToolTransportUsesCanonicalHandlerAndExactReceipt()
+        async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let capturer = HelperSnapshotCapturerSpy(results: [
+            .success(snapshot), .failure(.readbackFailed),
+        ])
+        let transport = ManagedInstallerHelperLocalPostToolTransport(
+            capturer: capturer
+        )
+        let first = await transport.capturePostToolObservation(request)
+        if case .success(let bytes) = first {
+            XCTAssertEqual(bytes, snapshot.canonicalJSONData())
+        } else {
+            XCTFail("exact helper snapshot rejected")
+        }
+        let second = await transport.capturePostToolObservation(request)
+        XCTAssertEqual(second.failure, .receiptUnavailable)
+        let calls = await capturer.calls()
+        XCTAssertEqual(calls, [request, request])
+    }
+
     func testXPCServiceHandlerRejectsCaptureFailureAndContextDrift() async throws {
         let fixture = try FreshReplannerFixture()
         let snapshot = try fixture.snapshot()
