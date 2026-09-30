@@ -229,6 +229,55 @@ class ManagedPreservedLifecycleDispatcher:
                 operation_id=intent.operation_id, receipt_digest=receipt_digest,
             )
 
+    def require_restore_review_preflight(
+        self, intent: NativePreservedLifecycleReviewIntent, *,
+        installed_manifest: CompositionManifest, review_fingerprint: str,
+    ) -> None:
+        """Offer standalone EP RESTORE only while its owning preserve is current."""
+        if (
+            not isinstance(intent, NativePreservedLifecycleReviewIntent)
+            or intent.operation != "RESTORE" or intent.component != EP_COMPONENT
+            or not isinstance(installed_manifest, CompositionManifest)
+        ):
+            raise ManagedPreservedLifecycleDispatchError("restore review route is unavailable")
+        config = self.configurations.get(intent.deployment_id)
+        current = self.registry.load(intent.deployment_id)
+        if (
+            not isinstance(config, ReleasedManagedSingleProductRouteConfiguration)
+            or config.component_identity != EP_COMPONENT
+            or current is None or current.active_by_component
+            or set(current.preserved_by_component) != {EP_COMPONENT}
+            or current.peer_binding is not None
+            or getattr(current, "historical_peer_binding", None) is not None
+        ):
+            raise ManagedPreservedLifecycleDispatchError("standalone EP restore route changed")
+        review = prepare_preserved_lifecycle_review(
+            current=current, installed_manifest=installed_manifest,
+            operation="RESTORE", operation_id=intent.operation_id,
+            component=intent.component, instance_id=intent.instance_id,
+        )
+        if review.review_fingerprint != review_fingerprint:
+            raise ManagedPreservedLifecycleDispatchError("restore review inventory changed")
+        preserve = current.preserved_by_component[EP_COMPONENT]
+        if preserve.preserve_operation_id is None:
+            raise ManagedPreservedLifecycleDispatchError("restore lacks preserve operation")
+        record = read_terminal_preserve_evidence(
+            operations_root=self.operations_root, registry=self.registry,
+            deployment_id=intent.deployment_id,
+            operation_id=preserve.preserve_operation_id,
+            component=EP_COMPONENT, instance_id=intent.instance_id,
+            review_fingerprint=None,
+            composition_id=installed_manifest.composition_id,
+            manifest_digest=installed_manifest.manifest_digest,
+            expected_owner_uid=self.expected_owner_uid,
+        )
+        self.require_terminal_preserve(
+            replace(intent, operation="PRESERVE", operation_id=preserve.preserve_operation_id),
+            installed_manifest=installed_manifest,
+            receipt_digest=record.receipt_digest,
+            review_fingerprint=record.review_fingerprint,
+        )
+
     def _paired_revocation_after_purge(
         self, review: ManagedPreservedLifecycleReview, current: ManagedDeployment,
         config: ReleasedManagedProductRouteConfiguration,

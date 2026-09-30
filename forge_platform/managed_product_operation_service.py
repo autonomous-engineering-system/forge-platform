@@ -39,6 +39,7 @@ from .managed_product_removal_dispatch import ManagedProductRemovalDispatcher
 from .managed_preserved_lifecycle_proposal import (
     NativePreservedLifecycleReviewIntent,
     decode_native_preserved_lifecycle_review_intent,
+    decode_native_preserved_lifecycle_review_proposal,
     prepare_native_preserved_lifecycle_review,
 )
 from .managed_preserved_lifecycle_dispatch import ManagedPreservedLifecycleDispatcher
@@ -395,11 +396,22 @@ class ManagedProductOperationHelperService:
                 raise TypeError("released lifecycle review authority is unavailable")
             intent = decode_native_preserved_lifecycle_review_intent(canonical_intent)
             manifest = self.authority_resolver.resolve_installed_lifecycle_review(intent)
-            return prepare_native_preserved_lifecycle_review(
+            proposal = prepare_native_preserved_lifecycle_review(
                 canonical_intent, installed_manifest=manifest,
                 registry=self.dispatcher.coordinator.registry,
                 current_installer_release=self.authority_resolver.current_installer_release,
             )
+            if intent.operation == "RESTORE":
+                if not isinstance(self.preserved_dispatcher, ManagedPreservedLifecycleDispatcher):
+                    raise TypeError("released restore review route is unavailable")
+                reviewed = decode_native_preserved_lifecycle_review_proposal(
+                    proposal, intent=intent,
+                )["review"]
+                self.preserved_dispatcher.require_restore_review_preflight(
+                    intent, installed_manifest=manifest,
+                    review_fingerprint=reviewed["review_fingerprint"],
+                )
+            return proposal
         except Exception as error:
             raise ManagedProductOperationServiceError(
                 "native preserved lifecycle review was rejected"
