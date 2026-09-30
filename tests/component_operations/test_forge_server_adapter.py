@@ -303,6 +303,101 @@ class Probe:
 
 
 class ForgeServerAdapterTests(unittest.TestCase):
+    def test_exact_239_peer_detach_uses_product_receipt_and_independent_status(self) -> None:
+        current = QualifiedArtifact(
+            "2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
+            ARTIFACT.source,
+            "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+            ARTIFACT.qualification,
+        )
+        digest = "sha256:" + "a" * 64
+
+        class DetachRunner(Runner):
+            receipt_change: dict[str, object] = {}
+            status_change: dict[str, object] = {}
+
+            def run(self, argv):
+                args = tuple(argv)
+                self.calls.append(args)
+                request = {
+                    "contract": "forge-ep-peer-detach/v1",
+                    "operation_id": "detach-1",
+                    "instance_id": "forge-instance-1",
+                    "expected_binding_id": "binding-1",
+                    "expected_revision": 2,
+                    "expected_digest": digest,
+                    "operator_reference": hashlib.sha256(b"operator-1").hexdigest()[:16],
+                }
+                request_digest = "sha256:" + hashlib.sha256(
+                    json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                receipt = {
+                    **request, "request_digest": request_digest, "state": "COMPLETE",
+                    "local_peer_state": "DETACHED",
+                    "remote_consumer_revoke": "NOT_ASSERTED",
+                    "next_configuration_revision": 3,
+                    "completed_at": "2026-09-30T00:00:00Z",
+                }
+                receipt.update(self.receipt_change)
+                receipt["receipt_digest"] = "sha256:" + hashlib.sha256(
+                    json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                if "detach-status" in args:
+                    status = {
+                        "contract": request["contract"], "operation_id": "detach-1",
+                        "instance_id": self.instance_id,
+                        "request_digest": request_digest, "phase": "COMPLETE",
+                        "current_peer_status": "DETACHED", "receipt": receipt,
+                    }
+                    status.update(self.status_change)
+                    return ForgeCommandResult(0, json.dumps(status), "")
+                return ForgeCommandResult(0, json.dumps(receipt), "")
+
+        runner = DetachRunner()
+        runner.instance_id = self.target.instance_id
+        adapter = ForgeServerProductAdapter(
+            forge_executable=Path("/opt/forge/current/bin/forge"),
+            target=self.target, installed_artifact=current, staged_artifacts={},
+            supervisor=self.supervisor, runner=runner, readiness_probe=Probe(),
+        )
+
+        def detach():
+            return adapter.detach_ep_peer(
+                operation_id="detach-1", binding_id="binding-1", revision=2,
+                configuration_digest=digest, operator_id="operator-1",
+            )
+
+        status = detach()
+        self.assertEqual(status["phase"], "COMPLETE")
+        self.assertEqual(status["receipt"]["remote_consumer_revoke"], "NOT_ASSERTED")
+        self.assertEqual(detach(), status)
+        self.assertEqual(len(runner.calls), 4)
+        self.assertEqual(runner.calls[0][3:5], ("execution-host", "detach"))
+        for changed in (
+            {"instance_id": "forge-other"},
+            {"remote_consumer_revoke": "REVOKED"},
+            {"next_configuration_revision": 4},
+        ):
+            runner.receipt_change = changed
+            with self.assertRaisesRegex(ForgeServerAdapterError, "receipt changed"):
+                detach()
+        runner.receipt_change = {}
+        runner.status_change = {"current_peer_status": "CONFIGURED"}
+        with self.assertRaisesRegex(ForgeServerAdapterError, "terminal status changed"):
+            detach()
+        runner.status_change = {"instance_id": "forge-other"}
+        with self.assertRaisesRegex(ForgeServerAdapterError, "terminal status changed"):
+            detach()
+        runner.status_change = {}
+        with self.assertRaisesRegex(ForgeServerAdapterError, "authority is invalid"):
+            adapter.detach_ep_peer(
+                operation_id="detach-1", binding_id="binding-1", revision=True,
+                configuration_digest=digest, operator_id="operator-1",
+            )
+        adapter.installed_artifact = ARTIFACT
+        with self.assertRaisesRegex(ForgeServerAdapterError, "authority is invalid"):
+            detach()
+
     def test_exact_current_239_product_assessment_is_read_only_no_change(self) -> None:
         root = Path(self.temp.name).resolve()
         current = QualifiedArtifact(
