@@ -2328,6 +2328,13 @@ final class RawProductOperationXPCService:
         executeProductOperation(canonicalRequest, withReply: reply)
     }
 
+    func readTerminalPurgeRecovery(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalRequest, withReply: reply)
+    }
+
     func capturedRequests() -> [Data] {
         lock.lock()
         defer { lock.unlock() }

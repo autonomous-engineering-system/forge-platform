@@ -201,6 +201,9 @@ struct MacOSManagedInstallerProductWorkerRunner:
         let preserveRecovery = try? ManagedInstallerPreserveRecoveryRequest.decodeJSON(
             canonicalRequest
         )
+        let purgeRecovery = try? ManagedInstallerPurgeRecoveryRequest.decodeJSON(
+            canonicalRequest
+        )
         guard !canonicalRequest.isEmpty,
               canonicalRequest.count <= ManagedInstallerProductOperationRequest.maximumBytes,
               productRequest?.canonicalJSONData() == canonicalRequest
@@ -208,7 +211,8 @@ struct MacOSManagedInstallerProductWorkerRunner:
                 || reviewIntent?.canonicalJSONData() == canonicalRequest
                 || lifecycleIntent?.canonicalJSONData() == canonicalRequest
                 || lifecycleRequest?.canonicalJSONData() == canonicalRequest
-                || preserveRecovery?.canonicalJSONData() == canonicalRequest else {
+                || preserveRecovery?.canonicalJSONData() == canonicalRequest
+                || purgeRecovery?.canonicalJSONData() == canonicalRequest else {
             return .failure(.rejected)
         }
         let forgeUpdateRequested = productRequest?.components.contains {
@@ -216,6 +220,7 @@ struct MacOSManagedInstallerProductWorkerRunner:
         } == true || lifecycleIntent?.component == "forge-runtime"
             || lifecycleRequest?.intent.component == "forge-runtime"
             || preserveRecovery?.intent.component == "forge-runtime"
+            || purgeRecovery?.execution.intent.component == "forge-runtime"
         if forgeUpdateRequested {
             guard await forgeUpdateResources.check() else {
                 return .failure(.unavailable)
@@ -228,7 +233,8 @@ struct MacOSManagedInstallerProductWorkerRunner:
                 ManagedInstallerProductRemovalReceipt.maximumBytes,
                 ManagedInstallerPreservedLifecycleReviewProposal.maximumBytes,
                 ManagedInstallerPreservedLifecycleReceipt.maximumBytes,
-                ManagedInstallerPreserveRecoveryReceipt.maximumBytes
+                ManagedInstallerPreserveRecoveryReceipt.maximumBytes,
+                ManagedInstallerPurgeRecoveryReceipt.maximumBytes
             )
         )
     }
@@ -827,6 +833,38 @@ public actor ManagedInstallerPythonProductOperationExecutor:
         }
         guard response.count <= ManagedInstallerPreserveRecoveryReceipt.maximumBytes,
               let receipt = try? ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+                response, request: request
+              ), receipt.canonicalJSONData() == response else {
+            return .failure(.rejected)
+        }
+        return .success(receipt)
+    }
+
+    public func readTerminalPurgeRecovery(
+        _ request: ManagedInstallerPurgeRecoveryRequest
+    ) async -> Result<
+        ManagedInstallerPurgeRecoveryReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard !inFlight else { return .failure(.rejected) }
+        inFlight = true
+        defer { inFlight = false }
+        let invocation: ManagedInstallerProductWorkerInvocation
+        switch await resolver.resolveProductWorkerInvocation() {
+        case .success(let resolved): invocation = resolved
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        let response: Data
+        switch await runner.runProductWorker(
+            invocation, canonicalRequest: request.canonicalJSONData()
+        ) {
+        case .success(let completed): response = completed
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        guard response.count <= ManagedInstallerPurgeRecoveryReceipt.maximumBytes,
+              let receipt = try? ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
                 response, request: request
               ), receipt.canonicalJSONData() == response else {
             return .failure(.rejected)
