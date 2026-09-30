@@ -15,7 +15,8 @@ struct ManagedInstallerPostToolComponentProviderInspector:
         forge: any ManagedInstallerProviderHostInspecting,
         engineeringPlatform: any ManagedInstallerProviderHostInspecting
     ) throws {
-        guard activationRequest.action == .install,
+        guard activationRequest.action == .install
+                || activationRequest.action == .noChange,
               stablePlan.enabledProviderRequirements.allSatisfy({
                   $0.credentialScope == .component
                       && $0.targetIdentity == stablePlan.deployment.id

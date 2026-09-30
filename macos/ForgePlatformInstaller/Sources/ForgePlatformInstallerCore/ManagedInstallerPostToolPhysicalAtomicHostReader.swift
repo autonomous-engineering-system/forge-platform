@@ -53,7 +53,9 @@ struct ManagedInstallerPostToolPhysicalAtomicHostReader:
         providerInspector: any ManagedInstallerProviderHostInspecting,
         host: any ManagedInstallerPostToolPhysicalHostFactReading
     ) throws {
-        guard !stablePlan.deployment.exists, activationRequest.action == .install,
+        guard !stablePlan.deployment.exists,
+              activationRequest.action == .install
+                || activationRequest.action == .noChange,
               stablePlan.session.managedTools.count == 1,
               stablePlan.session.managedTools[0].identity == .git else {
             throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest

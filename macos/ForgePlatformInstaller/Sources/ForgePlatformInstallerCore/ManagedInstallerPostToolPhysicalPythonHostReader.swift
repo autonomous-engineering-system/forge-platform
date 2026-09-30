@@ -15,7 +15,8 @@ struct ManagedInstallerPostToolPhysicalPythonHostReader:
         activationRequest: ManagedPythonRuntimeActivationRequest,
         readback: any ManagedPythonRuntimeActivationReading
     ) throws {
-        guard activationRequest.action == .install else {
+        guard activationRequest.action == .install
+                || activationRequest.action == .noChange else {
             throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
         }
         expected = try ManagedInstallerPostToolHostObservationRequest(
@@ -30,11 +31,13 @@ struct ManagedInstallerPostToolPhysicalPythonHostReader:
     ) async -> Result<ManagedPythonRuntimeInstalledReadback,
                       ManagedPythonRuntimeTerminalReceiptFailure> {
         guard request == expected else { return .failure(.rejected) }
+        let expectedEvidence = activationRequest.action == .noChange
+            ? activationRequest.initialReadback.evidenceReference
+            : activationRequest.expectedResumeEvidenceReference
         switch await readback.readActiveRuntime(activationRequest) {
         case .success(let observed)
             where observed.matchesFinal(activationRequest)
-                && observed.evidenceReference
-                    == activationRequest.expectedResumeEvidenceReference:
+                && observed.evidenceReference == expectedEvidence:
             return .success(observed)
         case .success:
             return .failure(.rejected)
