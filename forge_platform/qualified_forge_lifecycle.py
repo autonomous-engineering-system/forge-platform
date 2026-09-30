@@ -1,8 +1,9 @@
 """Exact released Forge artifacts admitted by the instance lifecycle routes.
 
-Historical installed 2.7.37 instances remain addressable while new managed
-deployments select the separately qualified 2.7.38 producer. Version alone
-never grants lifecycle authority.
+Historical installed 2.7.37/2.7.38 instances remain addressable while the
+installer reconciles the separately published 2.7.39 producer. This exact
+artifact admission alone does not grant update execution or publication.
+Version alone never grants lifecycle authority.
 """
 
 from __future__ import annotations
@@ -20,6 +21,11 @@ FORGE_LIFECYCLE_RELEASES = frozenset({
         "2.7.38",
         "0a3d6e35b01da93bb5a674ae7795558655c16c7d",
         "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8",
+    ),
+    (
+        "2.7.39",
+        "ebc43dc12da27353f85c991a26da9852aa790f05",
+        "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
     ),
 })
 
@@ -62,3 +68,29 @@ def qualified_forge_238_update_selection(
         "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8",
     )
     return target == current and (selected in FORGE_238_UPDATE_SOURCES or selected == current)
+
+
+def qualified_forge_239_update_selection(
+    installed: QualifiedArtifact, candidate: QualifiedArtifact,
+) -> bool:
+    """Read-only exact 2.7.38→2.7.39 producer selection from #142 r29.
+
+    This matrix grants no updater invocation. The reviewed assessment, exact
+    published script/receipt, installed state and product-owned execution
+    must each be separately admitted at their mutation boundaries.
+    """
+    if not isinstance(installed, QualifiedArtifact) or not isinstance(candidate, QualifiedArtifact):
+        return False
+    old = (
+        "2.7.38", "0a3d6e35b01da93bb5a674ae7795558655c16c7d",
+        "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8",
+    )
+    new = (
+        "2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
+        "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+    )
+    return (
+        installed.version, installed.source_revision, installed.digest
+    ) == old and (
+        candidate.version, candidate.source_revision, candidate.digest
+    ) == new

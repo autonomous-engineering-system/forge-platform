@@ -6,11 +6,45 @@ import unittest
 from forge_platform.component_operations import QualifiedArtifact
 from forge_platform.product_preserved_lifecycle import frozen_preserved_release
 from forge_platform.qualified_forge_lifecycle import (
-    qualified_forge_238_update_selection, qualified_forge_lifecycle_artifact,
+    qualified_forge_238_update_selection, qualified_forge_239_update_selection,
+    qualified_forge_lifecycle_artifact,
 )
 
 
 class QualifiedForgeLifecycleTests(unittest.TestCase):
+    def test_exact_published_239_lifecycle_and_read_only_update_selection(self) -> None:
+        old = QualifiedArtifact(
+            "2.7.38", "0a3d6e35b01da93bb5a674ae7795558655c16c7d",
+            "released-wheel",
+            "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8",
+            "release-complete",
+        )
+        candidate = QualifiedArtifact(
+            "2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
+            "released-wheel",
+            "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+            "release-complete",
+        )
+        self.assertTrue(qualified_forge_lifecycle_artifact(candidate))
+        self.assertTrue(frozen_preserved_release("forge-runtime", candidate))
+        self.assertTrue(qualified_forge_239_update_selection(old, candidate))
+        for installed, selected in (
+            (None, candidate),
+            (old, None),
+            (candidate, candidate),
+            (replace(old, digest=candidate.digest), candidate),
+            (old, replace(candidate, source_revision=old.source_revision)),
+            (old, replace(candidate, version=old.version)),
+        ):
+            self.assertFalse(qualified_forge_239_update_selection(installed, selected))
+        for mismatched in (
+            replace(candidate, version=old.version),
+            replace(candidate, source_revision=old.source_revision),
+            replace(candidate, digest=old.digest),
+        ):
+            self.assertFalse(qualified_forge_lifecycle_artifact(mismatched))
+            self.assertFalse(frozen_preserved_release("forge-runtime", mismatched))
+
     def test_exact_public_wheel_update_matrix_to_238(self) -> None:
         target = QualifiedArtifact(
             "2.7.38", "0a3d6e35b01da93bb5a674ae7795558655c16c7d",
