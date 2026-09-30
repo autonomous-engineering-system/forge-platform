@@ -119,14 +119,22 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
         product_root: Path,
         target: EPSystemInstanceTarget,
         staged_artifacts: Mapping[str, Path],
+        launch_daemons_directory: Path | None = None,
         runner: ProductCommandRunner | None = None,
     ) -> None:
-        if not provisioner_executable.is_absolute() or not product_root.is_absolute():
+        if (
+            not provisioner_executable.is_absolute() or not product_root.is_absolute()
+            or launch_daemons_directory is not None and (
+                not isinstance(launch_daemons_directory, Path)
+                or not launch_daemons_directory.is_absolute()
+            )
+        ):
             raise ValueError("EP adapter paths must be absolute")
         self.provisioner_executable = provisioner_executable
         self.product_root = product_root
         self.target = target
         self.staged_artifacts = dict(staged_artifacts)
+        self.launch_daemons_directory = launch_daemons_directory
         self.runner = runner or SubprocessProductCommandRunner()
 
     def _validate_request(self, request: ComponentOperationRequest) -> None:
@@ -159,6 +167,8 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
             str(self.provisioner_executable),
             command,
             "--product-root", str(self.product_root),
+            *(("--launch-daemons-dir", str(self.launch_daemons_directory))
+              if self.launch_daemons_directory is not None else ()),
             *arguments,
         )
         result = self.runner.run(argv)

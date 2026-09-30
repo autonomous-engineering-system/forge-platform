@@ -176,6 +176,25 @@ class EPSystemAdapterTests(unittest.TestCase):
         self.assertEqual(observed.installation_identity, "ep-prod")
         self.assertEqual(observed.inventory_coverage, "MACHINE_WIDE")
 
+    def test_sealed_launch_daemons_directory_reaches_product_repair(self) -> None:
+        directory = Path(self.temporary.name).resolve() / "isolated-daemons"
+        adapter = EngineeringPlatformSystemProvisionerAdapter(
+            provisioner_executable=self.adapter.provisioner_executable,
+            product_root=self.adapter.product_root,
+            target=self.adapter.target, staged_artifacts={},
+            launch_daemons_directory=directory, runner=self.runner,
+        )
+        self.assertEqual(adapter.execute(request("repair")).state, "COMPLETED")
+        call = self.runner.calls[-1]
+        self.assertEqual(call[call.index("--launch-daemons-dir") + 1], str(directory))
+        with self.assertRaises(ValueError):
+            EngineeringPlatformSystemProvisionerAdapter(
+                provisioner_executable=self.adapter.provisioner_executable,
+                product_root=self.adapter.product_root,
+                target=self.adapter.target, staged_artifacts={},
+                launch_daemons_directory=Path("relative-daemons"),
+            )
+
     def test_create_uses_fixed_product_command_and_exact_release_identity(self) -> None:
         receipt = self.adapter.execute(request("install"))
         self.assertEqual(receipt.state, "COMPLETED")

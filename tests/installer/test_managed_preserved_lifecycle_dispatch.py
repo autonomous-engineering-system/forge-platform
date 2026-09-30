@@ -34,6 +34,7 @@ from forge_platform.managed_preserve_recovery import (
     encode_native_preserve_recovery_receipt,
 )
 from forge_platform.managed_preserve_execution import ManagedPreserveExecutionRecord
+from forge_platform.managed_ep_restore_execution import ManagedEPRestoreExecutionCoordinator
 from forge_platform.managed_deployments import ManagedDeploymentRegistry
 from forge_platform.managed_install_flow import ManagedForgeEPInstallationCoordinator
 from forge_platform.managed_preserved_lifecycle_dispatch import (
@@ -379,6 +380,25 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
                 runner.results.append((0, json.dumps(status)))
                 proposal = service.prepare_preserved_lifecycle_review(_wire(restore))
                 self.assertEqual(json.loads(proposal)["review"]["operation"], "RESTORE")
+                runner.results.append((0, json.dumps(status)))
+                execution = _wire(_request(
+                    manifest, registry, "RESTORE",
+                    component="engineering-platform-server", instance_id="ep-a",
+                ))
+                with patch.object(
+                    ManagedEPRestoreExecutionCoordinator, "restore",
+                    return_value=ManagedPreserveExecutionRecord(
+                        "restore-a", "reviewed-pair",
+                        json.loads(proposal)["review"]["review_fingerprint"],
+                        "engineering-platform-server", "ep-a", "COMPLETE",
+                        "sha256:" + "a" * 64, 3,
+                    ),
+                ) as continuation:
+                    response = service.execute_preserved_lifecycle(execution)
+                self.assertEqual(decode_native_preserved_lifecycle_receipt(
+                    response, request=decode_native_preserved_lifecycle_request(execution),
+                )["registry_revision"], 3)
+                self.assertEqual(continuation.call_count, 1)
                 runner.results.append((0, json.dumps({**status,
                     "receipt_sha256": "sha256:" + "0" * 64})))
                 with self.assertRaises(ManagedProductOperationServiceError):
