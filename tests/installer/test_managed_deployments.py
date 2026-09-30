@@ -202,6 +202,174 @@ class ManagedDeploymentTests(unittest.TestCase):
                 registry.commit_preserved(**(common | {"receipt": changed}))
             self.assertEqual(registry.load(current.deployment_id), current)
 
+    def test_purge_commit_releases_only_terminal_product_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ManagedDeploymentRegistry(Path(directory).resolve())
+            artifact = _artifact(FORGE_COMPONENT)
+            base = verified_forge_ep_selection(current_context()).manifest
+            manifest = replace(
+                base, manifest_digest="sha256:" + "d" * 64,
+                components=tuple(
+                    replace(item, artifact=artifact)
+                    if item.identity == FORGE_COMPONENT else item
+                    for item in base.components
+                ),
+            )
+            composition = ManagedCompositionBinding(
+                manifest.composition_id, manifest.manifest_digest,
+                "receipt:purge-composition",
+            )
+            selected = ManagedDeployment(
+                "selected", 1, "Selected", (
+                    ManagedComponentBinding(FORGE_COMPONENT, "forge-a", "receipt:forge-a"),
+                ), schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
+                composition_binding=composition,
+            )
+            sibling = ManagedDeployment(
+                "sibling", 1, "Sibling", (
+                    ManagedComponentBinding(FORGE_COMPONENT, "forge-b", "receipt:forge-b"),
+                ), schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
+                composition_binding=composition,
+            )
+            registry.create(selected)
+            registry.create(sibling)
+            preserve_receipt, preserve_status = self._preserve_evidence(
+                FORGE_COMPONENT, "forge-a", "preserve-a"
+            )
+            preserved = registry.commit_preserved(
+                deployment_id="selected", expected_revision=1,
+                component=FORGE_COMPONENT, instance_id="forge-a",
+                operation_id="preserve-a", artifact=artifact,
+                installed_manifest=manifest, request_digest=_REQUEST,
+                receipt=preserve_receipt, status=preserve_status,
+            )
+            purge_receipt, purge_status = self._purge_evidence(
+                FORGE_COMPONENT, "forge-a", "purge-a"
+            )
+            common = dict(
+                deployment_id="selected", expected_revision=preserved.revision,
+                component=FORGE_COMPONENT, instance_id="forge-a",
+                operation_id="purge-a", artifact=artifact,
+                installed_manifest=manifest, request_digest=_REQUEST,
+                receipt=purge_receipt, status=purge_status,
+            )
+            with self.assertRaisesRegex(ManagedDeploymentError, "revision changed"):
+                registry.commit_purged(**(common | {"expected_revision": 1}))
+            with self.assertRaisesRegex(ManagedDeploymentError, "invalid"):
+                registry.commit_purged(**(common | {"instance_id": "forge-b"}))
+            self.assertEqual(registry.load("selected"), preserved)
+            self.assertIsNone(registry.commit_purged(**common))
+            self.assertIsNone(registry.load("selected"))
+            self.assertEqual(registry.load("sibling"), sibling)
+            with self.assertRaisesRegex(ManagedDeploymentError, "revision changed"):
+                registry.commit_purged(**common)
+
+    def test_purge_commit_keeps_unpaired_sibling_component_and_rejects_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ManagedDeploymentRegistry(Path(directory).resolve())
+            artifact = _artifact(FORGE_COMPONENT)
+            base = verified_forge_ep_selection(current_context()).manifest
+            manifest = replace(base, manifest_digest="sha256:" + "d" * 64,
+                               components=tuple(
+                replace(item, artifact=artifact)
+                if item.identity == FORGE_COMPONENT else item
+                for item in base.components
+            ))
+            composition = ManagedCompositionBinding(
+                manifest.composition_id, manifest.manifest_digest,
+                "receipt:purge-composition",
+            )
+            components = (
+                ManagedComponentBinding(FORGE_COMPONENT, "forge-a", "receipt:forge-a"),
+                ManagedComponentBinding(EP_COMPONENT, "ep-a", "receipt:ep-a"),
+            )
+            paired = ManagedDeployment(
+                "paired", 1, None, components,
+                ManagedPeerBinding("forge-a", "ep-a", "receipt:pair-a"),
+                MANAGED_DEPLOYMENT_SCHEMA_V2, composition,
+            )
+            unpaired = ManagedDeployment(
+                "unpaired", 1, None, components, schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
+                composition_binding=composition,
+            )
+            purge_receipt, purge_status = self._purge_evidence(
+                FORGE_COMPONENT, "forge-a", "purge-a"
+            )
+            args = dict(
+                expected_revision=1, component=FORGE_COMPONENT,
+                instance_id="forge-a", operation_id="purge-a",
+                artifact=artifact, installed_manifest=manifest,
+                request_digest=_REQUEST, receipt=purge_receipt,
+                status=purge_status,
+            )
+            registry.create(paired)
+            with self.assertRaisesRegex(ManagedDeploymentError, "pairing changed"):
+                registry.commit_purged(deployment_id="paired", **args)
+            self.assertEqual(registry.load("paired"), paired)
+            registry.remove("paired", expected_revision=1)
+            registry.create(unpaired)
+            updated = registry.commit_purged(deployment_id="unpaired", **args)
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated.revision, 2)
+            self.assertEqual(updated.schema, MANAGED_DEPLOYMENT_SCHEMA_V2)
+            self.assertEqual(updated.active_by_component[EP_COMPONENT].instance_id, "ep-a")
+            self.assertNotIn(FORGE_COMPONENT, updated.active_by_component)
+
+    def test_purge_commit_preserves_other_product_tombstone_and_rejects_bad_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ManagedDeploymentRegistry(Path(directory).resolve())
+            artifacts = {component: _artifact(component) for component in (FORGE_COMPONENT, EP_COMPONENT)}
+            base = verified_forge_ep_selection(current_context()).manifest
+            manifest = replace(
+                base, manifest_digest="sha256:" + "d" * 64,
+                components=tuple(
+                    replace(item, artifact=artifacts[item.identity])
+                    for item in base.components
+                ),
+            )
+            composition = ManagedCompositionBinding(
+                manifest.composition_id, manifest.manifest_digest,
+                "receipt:purge-composition",
+            )
+            original = ManagedDeployment(
+                "selected", 1, None, (
+                    ManagedComponentBinding(FORGE_COMPONENT, "forge-a", "receipt:forge-a"),
+                    ManagedComponentBinding(EP_COMPONENT, "ep-a", "receipt:ep-a"),
+                ), schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
+                composition_binding=composition,
+            )
+            registry.create(original)
+            preserve_receipt, preserve_status = self._preserve_evidence(
+                EP_COMPONENT, "ep-a", "preserve-ep"
+            )
+            preserved = registry.commit_preserved(
+                deployment_id="selected", expected_revision=1,
+                component=EP_COMPONENT, instance_id="ep-a",
+                operation_id="preserve-ep", artifact=artifacts[EP_COMPONENT],
+                installed_manifest=manifest, request_digest=_REQUEST,
+                receipt=preserve_receipt, status=preserve_status,
+            )
+            purge_receipt, purge_status = self._purge_evidence(
+                FORGE_COMPONENT, "forge-a", "purge-forge"
+            )
+            common = dict(
+                deployment_id="selected", expected_revision=preserved.revision,
+                component=FORGE_COMPONENT, instance_id="forge-a",
+                operation_id="purge-forge", artifact=artifacts[FORGE_COMPONENT],
+                installed_manifest=manifest, request_digest=_REQUEST,
+                receipt=purge_receipt, status=purge_status,
+            )
+            with self.assertRaisesRegex(ManagedDeploymentError, "invalid"):
+                registry.commit_purged(**(common | {"status": purge_status | {"lifecycle_state": "PRESERVED"}}))
+            self.assertEqual(registry.load("selected"), preserved)
+            updated = registry.commit_purged(**common)
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated.schema, MANAGED_DEPLOYMENT_SCHEMA_V3)
+            self.assertEqual(updated.revision, preserved.revision + 1)
+            self.assertEqual(updated.preserved_by_component[EP_COMPONENT],
+                             preserved.preserved_by_component[EP_COMPONENT])
+            self.assertNotIn(FORGE_COMPONENT, updated.active_by_component)
+
     @staticmethod
     def _preserve_evidence(component: str, instance_id: str, operation_id: str):
         receipt, status = _terminal(component, "PRESERVE")
@@ -217,6 +385,21 @@ class ManagedDeploymentTests(unittest.TestCase):
             receipt["runtime_id"] = instance_id
             receipt[key] = _receipt_digest(component, {k: v for k, v in receipt.items() if k != key})
             status[key] = receipt[key]
+        return receipt, status
+
+    @staticmethod
+    def _purge_evidence(component: str, instance_id: str, operation_id: str):
+        receipt, status = _terminal(component, "PURGE")
+        receipt["instance_id"] = instance_id
+        receipt["operation_id"] = operation_id
+        key = "receipt_digest" if component == FORGE_COMPONENT else "receipt_sha256"
+        if component == FORGE_COMPONENT:
+            receipt["runtime_id"] = instance_id
+        receipt[key] = _receipt_digest(
+            component, {k: v for k, v in receipt.items() if k != key}
+        )
+        status.update({"instance_id": instance_id, "operation_id": operation_id,
+                       key: receipt[key]})
         return receipt, status
 
     def test_registry_persists_multiple_deployments_and_never_conflates_instances(self) -> None:
