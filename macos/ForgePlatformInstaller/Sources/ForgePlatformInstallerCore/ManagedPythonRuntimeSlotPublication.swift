@@ -13,6 +13,47 @@ struct MacOSManagedPythonRuntimeSlotPublisher: Sendable {
         self.expectedOwner = expectedOwner
     }
 
+    /// Independently verify an already active runtime from its exact cached
+    /// release archive and complete published tree. No staged operation or
+    /// caller-selected path is needed for this read-only host observation.
+    func verifyPublishedRuntimeFromCache(
+        _ runtime: ManagedPythonRuntimeIdentity
+    ) -> Result<String, ManagedPythonRuntimeSlotMutationFailure> {
+        let archive: Data
+        switch MacOSManagedPythonRuntimeArchiveCache(
+            slotsRoot: slotsRoot, expectedOwner: expectedOwner
+        ).read(archiveSHA256: runtime.artifact.sha256) {
+        case .success(let present?): archive = present
+        case .success(nil): return .failure(.rejected)
+        case .failure(let failure): return .failure(failure)
+        }
+        let inventory: ManagedPythonRuntimeArchiveExtractionInventory
+        do {
+            inventory = try MacOSManagedPythonRuntimeArchiveInspector
+                .inspectArchiveForExtraction(archive, for: runtime)
+            let root = try openPrivateSlotsRoot()
+            defer { _ = Darwin.close(root) }
+            let identity = ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+                for: runtime.identitySHA256
+            )
+            var details = stat()
+            guard identity.withCString({
+                Darwin.fstatat(root, $0, &details, AT_SYMLINK_NOFOLLOW)
+            }) == 0,
+                  (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+                  details.st_uid == expectedOwner,
+                  details.st_mode & mode_t(0o7777) == mode_t(0o700) else {
+                return .failure(.rejected)
+            }
+            return .success(try MacOSManagedPythonRuntimeExtractedTreeVerifier(
+                slotRoot: slotsRoot.appendingPathComponent(identity, isDirectory: true),
+                expectedOwner: expectedOwner
+            ).verify(members: inventory.members))
+        } catch let failure as ManagedPythonRuntimeSlotMutationFailure {
+            return .failure(failure)
+        } catch { return .failure(.rejected) }
+    }
+
     /// Reconstructs the exact archive inventory from the private digest cache
     /// after operation staging has been discarded. An existing slot without
     /// its archive is ambiguous and can never be accepted as installed.
