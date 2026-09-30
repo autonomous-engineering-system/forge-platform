@@ -52,6 +52,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         ])
         let inventoryReads = await route.readCount()
         XCTAssertEqual(inventoryReads, 4)
+
     }
 
     func testReleasedRuntimeReadsExactPurgeProofAfterFinalRegistryDeletion() async throws {
@@ -87,6 +88,36 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         let reads = await route.readCount()
         XCTAssertEqual(calls, [request.canonicalJSONData()])
         XCTAssertEqual(reads, 2)
+    }
+
+    func testPrivatePurgeRecoveryStoreSurvivesRestartAndRejectsCorruptRecord() throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let intent = try lifecycleIntent(release: record.release, operation: "PURGE")
+        let execution = try ManagedInstallerPreservedLifecycleRequest(
+            intent: intent, proposal: lifecycleProposal(intent),
+            confirmedInstanceID: intent.instanceID
+        )
+        let request = try ManagedInstallerPurgeRecoveryRequest(execution: execution)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "purge-recovery-test-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerPurgeRecoveryStore(rootDirectory: root)
+        XCTAssertNil(store.load(
+            deploymentID: intent.deploymentID, operationID: intent.operationID
+        ))
+        XCTAssertTrue(store.save(request))
+        XCTAssertEqual(FileManagedInstallerPurgeRecoveryStore(rootDirectory: root).load(
+            deploymentID: intent.deploymentID, operationID: intent.operationID
+        ), request)
+        XCTAssertTrue(store.save(request))
+        XCTAssertNil(store.load(deploymentID: "other-deployment", operationID: intent.operationID))
+        let path = root.appendingPathComponent("purge-recovery/purge-\(intent.deploymentID)-\(intent.operationID).json")
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: path.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: root.path)[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+        XCTAssertEqual(chmod(path.path, 0o644), 0)
+        XCTAssertNil(store.load(deploymentID: intent.deploymentID, operationID: intent.operationID))
+        XCTAssertFalse(store.save(request))
     }
 
     func testReleasedRuntimePurgeRecoveryRejectsDriftAndForeignReceipt() async throws {
@@ -404,6 +435,32 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(registryCalls, ["deployment-one"])
         let inventoryReads = await route.readCount()
         XCTAssertEqual(inventoryReads, 4)
+
+        let blockedExecution = LifecycleExecutionTransportSpy(reply: receipt.canonicalJSONData())
+        let blockedCoordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(releaseRecord)),
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            managedDeploymentRouteCoordinator: LifecycleInventoryRouteSpy(
+                inventories: [before, before]
+            ),
+            preservedLifecycleReviewTransport:
+                LifecycleReviewTransportSpy(reply: proposal.canonicalJSONData()),
+            preservedLifecycleTransport: blockedExecution,
+            purgeRecoveryStore: nil,
+            preservedRegistryReadTransport: LifecycleRegistryReadSpy(record:
+                try purgeRegistryRecord(includeEP: false, after: false)
+            )
+        )
+        _ = await blockedCoordinator.recheckInstallerBeforeMutation(
+            currentVersion: identity.version
+        )
+        let blocked = await blockedCoordinator.executeReviewedPreservedLifecycle(
+            session, confirmedInstanceID: "forge-one"
+        )
+        let blockedCalls = await blockedExecution.calls()
+        XCTAssertEqual(blocked, .failure(.unavailable))
+        XCTAssertTrue(blockedCalls.isEmpty)
     }
 
     func testReleasedRuntimePurgeComponentRetainsExactSiblingReceipt() async throws {
@@ -1916,6 +1973,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             (any ManagedInstallerPreserveRecoveryTransporting)? = nil,
         purgeRecoveryTransport:
             (any ManagedInstallerPurgeRecoveryTransporting)? = nil,
+        purgeRecoveryStore:
+            (any ManagedInstallerPurgeRecoveryStoring)? = AcceptingPurgeRecoveryStore(),
         preservedRegistryReadTransport:
             (any ManagedInstallerPreservedRegistryReading)? = nil
     ) -> VerifiedInstallerSelfUpdateCoordinator {
@@ -1936,6 +1995,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             preservedLifecycleTransport: preservedLifecycleTransport,
             preserveRecoveryTransport: preserveRecoveryTransport,
             purgeRecoveryTransport: purgeRecoveryTransport,
+            purgeRecoveryStore: purgeRecoveryStore,
             preservedRegistryReadTransport: preservedRegistryReadTransport
         )
     }
@@ -2266,6 +2326,21 @@ private actor LifecyclePurgeRecoveryTransportSpy: ManagedInstallerPurgeRecoveryT
         return .success(reply)
     }
     func calls() -> [Data] { requests }
+}
+
+private struct AcceptingPurgeRecoveryStore: ManagedInstallerPurgeRecoveryStoring {
+    func save(_ request: ManagedInstallerPurgeRecoveryRequest) -> Bool {
+        _ = request
+        return true
+    }
+
+    func load(
+        deploymentID: String, operationID: String
+    ) -> ManagedInstallerPurgeRecoveryRequest? {
+        _ = deploymentID
+        _ = operationID
+        return nil
+    }
 }
 
 private actor ManagedRouteCoordinatorSpy: ManagedDeploymentRouteCoordinating {

@@ -285,6 +285,9 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 preservedLifecycleTransport: productTransport,
                 preserveRecoveryTransport: productTransport,
                 purgeRecoveryTransport: productTransport,
+                purgeRecoveryStore: FileManagedInstallerPurgeRecoveryStore(
+                    rootDirectory: stateRoot
+                ),
                 preservedRegistryReadTransport:
                     MacOSManagedInstallerReleasedRouteXPCTransport(
                         helperIdentity: helperIdentity
