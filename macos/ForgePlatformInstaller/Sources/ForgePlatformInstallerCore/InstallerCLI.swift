@@ -23,19 +23,22 @@ public struct InstallerCLIOptions: Equatable, Sendable {
     public let assumeYes: Bool
     public let acceptInstallerUpdate: Bool
     public let reviewFingerprint: String?
+    public let pairingTarget: ManagedInstallerReviewedPairingTarget?
 
     public init(
         json: Bool = false,
         nonInteractive: Bool = false,
         assumeYes: Bool = false,
         acceptInstallerUpdate: Bool = false,
-        reviewFingerprint: String? = nil
+        reviewFingerprint: String? = nil,
+        pairingTarget: ManagedInstallerReviewedPairingTarget? = nil
     ) {
         self.json = json
         self.nonInteractive = nonInteractive
         self.assumeYes = assumeYes
         self.acceptInstallerUpdate = acceptInstallerUpdate
         self.reviewFingerprint = reviewFingerprint
+        self.pairingTarget = pairingTarget
     }
 }
 
@@ -107,8 +110,8 @@ public enum InstallerCLIParser {
       forge-platform-installer self-update check [--json]
       forge-platform-installer self-update apply [--yes] [--json]
       forge-platform-installer deployment list [--json]
-      forge-platform-installer deployment plan --deployment <id|new> [--non-interactive] [--json]
-      forge-platform-installer deployment apply --deployment <id|new> [--yes] [--non-interactive] [--accept-installer-update] [--json]
+      forge-platform-installer deployment plan --deployment <id|new> [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--non-interactive] [--json]
+      forge-platform-installer deployment apply --deployment <id|new> [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--yes] [--non-interactive] [--accept-installer-update] [--json]
       forge-platform-installer deployment remove --deployment <id> --operation-id <id> [--component forge-runtime] [--review-fingerprint <sha256> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment remove plan --deployment <id> --operation-id <id> [--component forge-runtime] [--json]
       forge-platform-installer deployment lifecycle plan <preserve|restore|purge> --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--json]
@@ -129,6 +132,9 @@ public enum InstallerCLIParser {
         var operationID: String?
         var component: String?
         var reviewFingerprint: String?
+        var pairingProject: String?
+        var pairingRepository: String?
+        var pairingRepositoryIdentity: String?
         var positional: [String] = []
 
         var index = 0
@@ -175,6 +181,20 @@ public enum InstallerCLIParser {
                 if isOperation { operationID = value }
                 else if isFingerprint { reviewFingerprint = value }
                 else { component = value }
+            case "--pairing-project", "--pairing-repository", "--pairing-repository-identity":
+                let existing = argument == "--pairing-project" ? pairingProject
+                    : argument == "--pairing-repository" ? pairingRepository
+                    : pairingRepositoryIdentity
+                guard existing == nil else { throw InstallerCLIParseError.invalidArguments }
+                index += 1
+                guard index < arguments.count else { throw InstallerCLIParseError.invalidArguments }
+                let value = arguments[index]
+                guard !value.isEmpty, !value.hasPrefix("-") else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                if argument == "--pairing-project" { pairingProject = value }
+                else if argument == "--pairing-repository" { pairingRepository = value }
+                else { pairingRepositoryIdentity = value }
             default:
                 guard !argument.hasPrefix("-") else {
                     throw InstallerCLIParseError.invalidArguments
@@ -289,6 +309,28 @@ public enum InstallerCLIParser {
                 throw InstallerCLIParseError.invalidArguments
             }
         }
+        let pairingTarget: ManagedInstallerReviewedPairingTarget?
+        if pairingProject != nil || pairingRepository != nil || pairingRepositoryIdentity != nil {
+            switch command {
+            case .deploymentPlan, .deploymentApply: break
+            default: throw InstallerCLIParseError.invalidArguments
+            }
+            guard let pairingProject, let pairingRepository,
+                  let pairingRepositoryIdentity else {
+                throw InstallerCLIParseError.invalidArguments
+            }
+            do {
+                pairingTarget = try ManagedInstallerReviewedPairingTarget(
+                    projectID: pairingProject,
+                    repositoryID: pairingRepository,
+                    repositoryIdentity: pairingRepositoryIdentity
+                )
+            } catch {
+                throw InstallerCLIParseError.invalidArguments
+            }
+        } else {
+            pairingTarget = nil
+        }
 
         return InstallerCLIInvocation(
             command: command,
@@ -297,7 +339,8 @@ public enum InstallerCLIParser {
                 nonInteractive: nonInteractive,
                 assumeYes: assumeYes,
                 acceptInstallerUpdate: acceptInstallerUpdate,
-                reviewFingerprint: reviewFingerprint
+                reviewFingerprint: reviewFingerprint,
+                pairingTarget: pairingTarget
             )
         )
     }
@@ -744,6 +787,9 @@ public struct InstallerCLIWorkflow: Sendable {
               case .compatible = state.composition.status else {
             return Self.blocked("Het gekwalificeerde wijzigingsplan is niet beschikbaar of niet compatibel.")
         }
+        guard Self.bindPairingTarget(options.pairingTarget, to: &state) else {
+            return Self.blocked("Een Forge+EP-plan vereist een expliciet project, repository en repository-identiteit; een enkel product accepteert geen pairingdoel.")
+        }
 
         return InstallerCLIResult(
             exitCode: .success,
@@ -756,6 +802,9 @@ public struct InstallerCLIWorkflow: Sendable {
                 "component_count": String(state.composition.components.count),
                 "provider_targets": state.enabledProviders.map(\.id.rawValue)
                     .sorted().joined(separator: ","),
+                "pairing_project": state.pairingTarget?.projectID ?? "",
+                "pairing_repository": state.pairingTarget?.repositoryID ?? "",
+                "pairing_repository_identity": state.pairingTarget?.repositoryIdentity ?? "",
             ],
             records: Self.reviewRecords(state.composition)
         )
@@ -819,6 +868,9 @@ public struct InstallerCLIWorkflow: Sendable {
         guard case .compatible = state.composition.status else {
             return Self.blocked("Het gekwalificeerde wijzigingsplan is niet compatibel.")
         }
+        guard Self.bindPairingTarget(options.pairingTarget, to: &state) else {
+            return Self.blocked("Een Forge+EP-plan vereist een expliciet project, repository en repository-identiteit; een enkel product accepteert geen pairingdoel.")
+        }
 
         if !options.assumeYes {
             if options.nonInteractive {
@@ -835,7 +887,8 @@ public struct InstallerCLIWorkflow: Sendable {
             }
             guard await confirm(Self.reviewPrompt(
                 state.composition,
-                providers: state.enabledProviders
+                providers: state.enabledProviders,
+                pairingTarget: state.pairingTarget
             )) else {
                 return InstallerCLIResult(
                     exitCode: .confirmationRequired,
@@ -1089,7 +1142,8 @@ public struct InstallerCLIWorkflow: Sendable {
 
     private static func reviewPrompt(
         _ review: CompositionReview,
-        providers: [ProviderProgress]
+        providers: [ProviderProgress],
+        pairingTarget: ManagedInstallerReviewedPairingTarget?
     ) -> String {
         let records = reviewRecords(review)
         var lines = [
@@ -1111,6 +1165,9 @@ public struct InstallerCLIWorkflow: Sendable {
         for provider in providers.sorted(by: { $0.id.rawValue < $1.id.rawValue }) {
             lines.append("- provider target=\(provider.id.rawValue) scope=\(provider.requirement.credentialScope.rawValue)")
         }
+        if let pairingTarget {
+            lines.append("- pairing project=\(pairingTarget.projectID) repository=\(pairingTarget.repositoryID) identity=\(pairingTarget.repositoryIdentity)")
+        }
         lines.append("Voer deze \(records.count) beoordeelde componentwijziging(en) uit?")
         return lines.joined(separator: "\n")
     }
@@ -1129,6 +1186,17 @@ public struct InstallerCLIWorkflow: Sendable {
                 "detail": component.detail,
             ]
         }
+    }
+
+    private static func bindPairingTarget(
+        _ target: ManagedInstallerReviewedPairingTarget?,
+        to state: inout InstallerWizardState
+    ) -> Bool {
+        if state.requiresPairingTarget {
+            guard let target else { return false }
+            return state.setReviewedPairingTarget(target)
+        }
+        return target == nil
     }
 
     private static func blocked(_ message: String) -> InstallerCLIResult {

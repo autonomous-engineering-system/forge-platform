@@ -113,6 +113,8 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
                 review: compatibleReview(for: session)
             )
         )))
+        XCTAssertFalse(state.beginPreMutationCurrencyCheck())
+        XCTAssertTrue(state.setReviewedPairingTarget(try pairingTarget()))
         XCTAssertTrue(state.setCompositionAcknowledged(true))
         XCTAssertTrue(state.beginPreMutationCurrencyCheck())
         XCTAssertNil(state.beginManagedDeploymentExecution())
@@ -147,6 +149,34 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
             return XCTFail("newer installer must become mandatory")
         }
         XCTAssertEqual(required, newer)
+    }
+
+    func testPairedReviewRequiresExplicitScopeAndChangingItInvalidatesAuthority() throws {
+        var state = try makeReviewState()
+        let session = try XCTUnwrap(state.acceptedSessionPlan)
+        XCTAssertTrue(state.recordCompositionReviewPreparation(.prepared(
+            PreparedCompositionReview(sessionID: session.sessionID,
+                                      deploymentID: "deployment-new",
+                                      review: compatibleReview(for: session))
+        )))
+        XCTAssertTrue(state.requiresPairingTarget)
+        XCTAssertFalse(state.pairingTargetIsReady)
+        XCTAssertTrue(state.setCompositionAcknowledged(true))
+        XCTAssertFalse(state.beginPreMutationCurrencyCheck())
+        XCTAssertTrue(state.setReviewedPairingTarget(try pairingTarget()))
+        XCTAssertFalse(state.composition.isAcknowledged)
+        XCTAssertTrue(state.setCompositionAcknowledged(true))
+        XCTAssertTrue(state.beginPreMutationCurrencyCheck())
+        XCTAssertTrue(state.recordPreMutationCurrencyCheck(.current(try makeRelease("1.2.3"))))
+        let oldScope = try XCTUnwrap(state.pairingTarget)
+        XCTAssertTrue(state.setReviewedPairingTarget(try ManagedInstallerReviewedPairingTarget(
+            projectID: "other-project", repositoryID: "repo-one",
+            repositoryIdentity: "owner.repo-one"
+        )))
+        XCTAssertNotEqual(state.pairingTarget, oldScope)
+        XCTAssertFalse(state.composition.isAcknowledged)
+        XCTAssertFalse(state.preMutationCurrency.isCurrent)
+        XCTAssertNil(state.beginManagedDeploymentExecution())
     }
 
     func testExecutionFailurePreservesProvidedBoundedStagesAndRejectsMismatchedOperation() throws {
@@ -241,6 +271,7 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
                 review: compatibleReview(for: session)
             )
         )))
+        XCTAssertTrue(state.setReviewedPairingTarget(try pairingTarget()))
         XCTAssertTrue(state.setCompositionAcknowledged(true))
         XCTAssertTrue(state.beginPreMutationCurrencyCheck())
         XCTAssertTrue(state.recordPreMutationCurrencyCheck(
@@ -248,6 +279,13 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
         ))
         XCTAssertTrue(state.canAdvance)
         return state
+    }
+
+    private func pairingTarget() throws -> ManagedInstallerReviewedPairingTarget {
+        try ManagedInstallerReviewedPairingTarget(
+            projectID: "project-one", repositoryID: "repo-one",
+            repositoryIdentity: "owner.repo-one"
+        )
     }
 
     private func passedPreflight() -> HostPreflight {

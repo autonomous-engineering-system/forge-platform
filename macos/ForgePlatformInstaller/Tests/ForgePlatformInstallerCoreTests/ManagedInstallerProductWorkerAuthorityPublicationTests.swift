@@ -624,6 +624,26 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
         }
     }
 
+    func testPairingAuthorityRequiresEPCanonicalConsumerAndProjectScope() throws {
+        func binding(_ consumer: String, _ project: String) throws
+            -> ManagedInstallerProductWorkerPairingAuthority {
+            try ManagedInstallerProductWorkerPairingAuthority(
+                bindingID: "binding", consumerID: consumer, hostID: "host",
+                projectID: project, repositoryID: "repository",
+                repositoryIdentity: "owner:repository",
+                credentialReference: "keychain://forge.ep/consumer",
+                operatorID: "operator"
+            )
+        }
+        XCTAssertEqual(try binding("forge-consumer-1", "project-1").projectID,
+                       "project-1")
+        for invalid in ["Forge", "project_name", "1project", "project.name",
+                        "project:name", "project/other", String(repeating: "a", count: 129)] {
+            XCTAssertThrowsError(try binding(invalid, "project"), invalid)
+            XCTAssertThrowsError(try binding("consumer", invalid), invalid)
+        }
+    }
+
     private func preparedPublisher() throws -> (
         URL, URL, FileManagedInstallerProductWorkerAuthorityPublisher
     ) {

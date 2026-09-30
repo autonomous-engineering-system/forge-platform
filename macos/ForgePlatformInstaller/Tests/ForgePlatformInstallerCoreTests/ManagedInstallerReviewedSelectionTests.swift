@@ -3,6 +3,92 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReviewedSelectionTests: XCTestCase {
+    func testReviewedPairingTargetIsCanonicalAndChangesDurablePlanIdentity() throws {
+        let fixture = try ReleasedRouteFixture()
+        let original = try ManagedInstallerHelperReviewedPlanAdmission().prepare(
+            candidate: fixture.operation, helperSnapshot: fixture.snapshot,
+            helperCurrentRelease: fixture.release
+        )
+        let target = try ManagedInstallerReviewedPairingTarget(
+            projectID: "project-one", repositoryID: "repository-one",
+            repositoryIdentity: "owner:repository"
+        )
+        XCTAssertEqual(try ManagedInstallerReviewedPairingTarget.decode(
+            target.canonicalValue()), target)
+        let reviewed = ReviewedManagedDeploymentOperation(
+            sessionID: fixture.operation.sessionID,
+            compositionIdentity: fixture.operation.compositionIdentity,
+            manifestSHA256: fixture.operation.manifestSHA256,
+            deploymentID: fixture.operation.deploymentID,
+            deploymentExists: fixture.operation.deploymentExists,
+            inventoryEvidenceReference: fixture.operation.inventoryEvidenceReference,
+            currentInstallerRelease: fixture.release,
+            components: fixture.operation.components,
+            pairingTarget: target
+        )
+        let scoped = try ManagedInstallerHelperReviewedPlanAdmission().prepare(
+            candidate: reviewed, helperSnapshot: fixture.snapshot,
+            helperCurrentRelease: fixture.release
+        )
+        XCTAssertNotEqual(scoped.fingerprint, original.fingerprint)
+        let selection = try ManagedInstallerReviewedSelection(stablePlan: scoped)
+        let bytes = selection.canonicalJSONData()
+        let text = String(decoding: bytes, as: UTF8.self)
+        XCTAssertTrue(text.contains(ManagedInstallerReviewedSelection.pairedSchema))
+        XCTAssertFalse(text.contains("credential"))
+        XCTAssertFalse(text.contains("keychain"))
+        XCTAssertEqual(try ManagedInstallerReviewedSelection.decodeJSON(bytes), selection)
+        XCTAssertEqual(try ManagedInstallerHelperReviewedPlanAdmission().prepare(
+            selection: selection, helperSnapshot: fixture.snapshot,
+            helperCurrentRelease: fixture.release
+        ), scoped)
+        let changed = text.replacingOccurrences(
+            of: "\"project_id\":\"project-one\"",
+            with: "\"project_id\":\"project-two\""
+        )
+        let drift = try ManagedInstallerReviewedSelection.decodeJSON(
+            Data(changed.utf8)
+        )
+        XCTAssertThrowsError(try ManagedInstallerHelperReviewedPlanAdmission().prepare(
+            selection: drift, helperSnapshot: fixture.snapshot,
+            helperCurrentRelease: fixture.release
+        ))
+        let oldSchema = text.replacingOccurrences(
+            of: ManagedInstallerReviewedSelection.pairedSchema,
+            with: ManagedInstallerReviewedSelection.schema
+        )
+        XCTAssertThrowsError(try ManagedInstallerReviewedSelection.decodeJSON(
+            Data(oldSchema.utf8)
+        ))
+    }
+
+    func testReviewedPairingTargetRejectsPathsAndNonEPProjectIdentifiers() throws {
+        for project in ["Project", "1project", "project_name", "project.name",
+                        "project/other", String(repeating: "a", count: 129)] {
+            XCTAssertThrowsError(try ManagedInstallerReviewedPairingTarget(
+                projectID: project, repositoryID: "repository",
+                repositoryIdentity: "owner:repository"
+            ), project)
+            XCTAssertThrowsError(try ManagedInstallerReviewedPairingTarget(
+                projectID: "project", repositoryID: project,
+                repositoryIdentity: "owner:repository"
+            ), project)
+        }
+        for identity in ["", "/tmp/repository", "owner/repository",
+                         "owner repository", String(repeating: "a", count: 257)] {
+            XCTAssertThrowsError(try ManagedInstallerReviewedPairingTarget(
+                projectID: "project", repositoryID: "repository",
+                repositoryIdentity: identity
+            ), identity)
+        }
+        XCTAssertThrowsError(try ManagedInstallerReviewedPairingTarget.decode(.object([
+            "project_id": .string("project"),
+            "repository_id": .string("repository"),
+            "repository_identity": .string("owner:repository"),
+            "credential": .string("forbidden"),
+        ])))
+    }
+
     func testCanonicalSelectionReconstructsOnlyHelperOwnedPlan() throws {
         let fixture = try ReleasedRouteFixture()
         let plan = try ManagedInstallerHelperReviewedPlanAdmission().prepare(
