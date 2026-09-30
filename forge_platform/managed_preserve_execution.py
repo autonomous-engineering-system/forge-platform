@@ -1,8 +1,8 @@
-"""Durable, exact-instance PRESERVE continuation inside the privileged worker.
+"""Durable, exact-instance PRESERVE and PURGE inside the privileged worker.
 
-The owning product preserves data. Forge Platform controls only its own Forge
-LaunchDaemon and commits the product-proven inventory transition. A journal
-binds retries to the original reviewed operation without storing product data.
+The owning product controls data. Forge Platform controls only its own Forge
+LaunchDaemon and commits product-proven inventory transitions. A journal binds
+retries to the original reviewed operation without storing product data.
 """
 
 from __future__ import annotations
@@ -29,12 +29,12 @@ from .managed_preserved_product_adapters import (
     EPPreservedProductAdapter, ForgePreservedProductAdapter,
     ProductPreservedLifecycleInvocation,
 )
-from .product_preserved_lifecycle import EP_COMPONENT, FORGE_COMPONENT
+from .product_preserved_lifecycle import EP_COMPONENT, FORGE_COMPONENT, frozen_preserved_release
 from .universal_installer import CompositionManifest
 
 
 _MAX_JOURNAL_BYTES = 4096
-_STATES = ("PREPARED", "PRODUCT_TERMINAL", "SERVICE_REMOVED", "COMPLETE")
+_STATES = ("PREPARED", "PRODUCT_TERMINAL", "SERVICE_REMOVED", "COMMITTING", "COMPLETE")
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
@@ -403,3 +403,172 @@ class ManagedPreserveExecutionCoordinator:
         record = replace(record, state="COMPLETE", registry_revision=committed.revision)
         _write(path, record)
         return record
+
+
+class ManagedPurgeExecutionCoordinator(ManagedPreserveExecutionCoordinator):
+    """Resume one exact product-owned PURGE without deleting product data here."""
+
+    def purge(
+        self, review: ManagedPreservedLifecycleReview, *,
+        installed_manifest: CompositionManifest, adapter: PreservedProductAdapter,
+    ) -> ManagedPreserveExecutionRecord:
+        if (
+            not isinstance(review, ManagedPreservedLifecycleReview)
+            or review.operation != "PURGE"
+            or review.destructive_confirmation_required is not True
+            or not isinstance(review.operation_id, str)
+            or _ID.fullmatch(review.operation_id) is None
+            or not isinstance(review.deployment_id, str)
+            or _ID.fullmatch(review.deployment_id) is None
+            or review.component not in {FORGE_COMPONENT, EP_COMPONENT}
+            or not isinstance(installed_manifest, CompositionManifest)
+            or (installed_manifest.composition_id, installed_manifest.manifest_digest)
+                != (review.composition_id, review.composition_digest)
+            or not frozen_preserved_release(review.component, review.artifact)
+            or [item.artifact for item in installed_manifest.components
+                if item.identity == review.component] != [review.artifact]
+            or getattr(getattr(adapter, "target", None), "instance_id", None) != review.instance_id
+            or review.component == FORGE_COMPONENT and (
+                self.forge_supervisor is None
+                or not isinstance(adapter, ForgePreservedProductAdapter)
+                or not isinstance(adapter.target, ForgeServerTarget)
+            )
+            or review.component == EP_COMPONENT and not isinstance(adapter, EPPreservedProductAdapter)
+        ):
+            raise ManagedPreserveExecutionError("purge product target is not sealed")
+        root = self.operations_root
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = os.lstat(root)
+        if (
+            not stat.S_ISDIR(info.st_mode) or info.st_uid != self.expected_owner_uid
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            raise ManagedPreserveExecutionError("purge journal root is unsafe")
+        path = root / f"{review.operation_id}.json"
+        lock_path = root / f".{review.deployment_id}.lock"
+        lock = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            info = os.fstat(lock)
+            if (
+                not stat.S_ISREG(info.st_mode) or info.st_uid != self.expected_owner_uid
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                raise ManagedPreserveExecutionError("purge lock is unsafe")
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return self._locked_purge(path, review, installed_manifest, adapter)
+        finally:
+            os.close(lock)
+
+    def _locked_purge(
+        self, path: Path, review: ManagedPreservedLifecycleReview,
+        manifest: CompositionManifest, adapter: PreservedProductAdapter,
+    ) -> ManagedPreserveExecutionRecord:
+        intended = ManagedPreserveExecutionRecord(
+            review.operation_id, review.deployment_id, review.review_fingerprint,
+            review.component, review.instance_id, "PREPARED", None, None,
+        )
+        existing = _read(path, self.expected_owner_uid)
+        if existing is not None and replace(
+            existing, state="PREPARED", receipt_digest=None, registry_revision=None,
+        ) != intended:
+            raise ManagedPreserveExecutionError("purge operation identity changed")
+        current = self.registry.load(review.deployment_id)
+        if current is None or review.component not in (
+            set(current.active_by_component) | set(current.preserved_by_component)
+        ):
+            if (
+                review.historical_peer_reference is not None
+                or existing is None or existing.state not in {"COMMITTING", "COMPLETE"}
+                or existing.receipt_digest is None
+                or existing.registry_revision != review.registry_revision + 1
+                or current is not None and (
+                    current.revision != existing.registry_revision
+                    or current.composition_binding is None
+                    or (current.composition_binding.composition_id,
+                        current.composition_binding.manifest_digest)
+                        != (review.composition_id, review.composition_digest)
+                    or current.peer_binding is not None
+                    or getattr(current, "historical_peer_binding", None) is not None
+                )
+                or any(
+                    binding.component == review.component
+                    and binding.instance_id == review.instance_id
+                    for deployment in self.registry.inventory()
+                    for binding in deployment.components
+                        + getattr(deployment, "preserved_components", ())
+                )
+                or review.component == FORGE_COMPONENT
+                    and self.forge_supervisor.loaded(adapter.target)
+            ):
+                raise ManagedPreserveExecutionError("purge replay lacks exact terminal inventory")
+            complete = replace(existing, state="COMPLETE")
+            _write(path, complete)
+            return complete
+        if current.peer_binding is not None or getattr(current, "historical_peer_binding", None) is not None:
+            raise ManagedPreserveExecutionError("paired purge requires product-owned consumer revocation")
+        if existing is not None and existing.state == "COMPLETE":
+            raise ManagedPreserveExecutionError("completed purge regained its inventory")
+        self._current(review, manifest)
+        if existing is None:
+            _write(path, intended)
+        if review.component == FORGE_COMPONENT:
+            self._purge_currency(review)
+            self._current(review, manifest)
+            self.forge_supervisor.stop(adapter.target)
+            if self.forge_supervisor.loaded(adapter.target):
+                raise ManagedPreserveExecutionError("Forge service remains loaded during purge")
+        self._purge_currency(review)
+        self._current(review, manifest)
+        evidence = adapter.invoke(review, registry=self.registry, installed_manifest=manifest)
+        if (
+            evidence.terminal.component != review.component
+            or evidence.terminal.operation != "PURGE"
+            or evidence.terminal.operation_id != review.operation_id
+            or evidence.terminal.instance_id != review.instance_id
+            or evidence.terminal.lifecycle_state != "PURGED"
+            or existing is not None and existing.receipt_digest is not None
+                and existing.receipt_digest != evidence.terminal.receipt_digest
+        ):
+            raise ManagedPreserveExecutionError("owning purge evidence changed")
+        record = replace(
+            intended, state="PRODUCT_TERMINAL",
+            receipt_digest=evidence.terminal.receipt_digest,
+        )
+        _write(path, record)
+        if review.component == FORGE_COMPONENT:
+            self._purge_currency(review)
+            self._current(review, manifest)
+            if self.forge_supervisor.loaded(adapter.target):
+                raise ManagedPreserveExecutionError("Forge service restarted during purge")
+            self.forge_supervisor.remove(adapter.target)
+            if self.forge_supervisor.loaded(adapter.target):
+                raise ManagedPreserveExecutionError("Forge service remains after purge")
+        record = replace(record, state="SERVICE_REMOVED")
+        _write(path, record)
+        self._purge_currency(review)
+        self._current(review, manifest)
+        committing = replace(
+            record, state="COMMITTING", registry_revision=review.registry_revision + 1,
+        )
+        _write(path, committing)
+        committed = self.registry.commit_purged(
+            deployment_id=review.deployment_id,
+            expected_revision=review.registry_revision,
+            component=review.component, instance_id=review.instance_id,
+            operation_id=review.operation_id, artifact=review.artifact,
+            installed_manifest=manifest,
+            request_digest=evidence.receipt["request_digest"],
+            receipt=evidence.receipt, status=evidence.status,
+        )
+        if committed is not None and committed.revision != committing.registry_revision:
+            raise ManagedPreserveExecutionError("purge registry revision changed")
+        complete = replace(committing, state="COMPLETE")
+        _write(path, complete)
+        return complete
+
+    def _purge_currency(self, review: ManagedPreservedLifecycleReview) -> None:
+        self.currency_guard.require_current(
+            deployment_id=review.deployment_id, mutation="PURGE",
+            component=review.component, instance_id=review.instance_id,
+            operation_id=review.operation_id,
+        )
