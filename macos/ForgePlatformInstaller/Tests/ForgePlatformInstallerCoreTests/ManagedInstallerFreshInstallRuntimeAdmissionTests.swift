@@ -460,6 +460,73 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         ))
     }
 
+    func testHumanProviderAuthenticationAdmissionRequiresFreshExactTargetReadback()
+        async throws {
+        let requirement = try stagedProviderRequirement()
+        let fixture = try FreshRuntimeFixture(providers: [requirement])
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: fixture.plan)
+        let target = try ManagedInstallerReviewedProviderReadback.Target(
+            id: requirement.id, state: .authenticationRequired,
+            evidenceReference: "receipt:provider-physical-test"
+        )
+        let status = try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint, targets: [target]
+        )
+        let reader = ProviderAuthStatusReader(status: status)
+        let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.plan), reader: reader
+        )
+        let canonical = intent.canonicalJSONData()
+        let accepted = await admission.admit(
+            canonicalIntent: canonical, providerTargetID: requirement.id
+        )
+        XCTAssertEqual(accepted?.stablePlan, fixture.plan)
+        XCTAssertEqual(accepted?.requirement, requirement)
+        XCTAssertEqual(accepted?.priorEvidenceReference,
+                       "receipt:provider-physical-test")
+
+        let malformed = await admission.admit(
+            canonicalIntent: Data("{}".utf8), providerTargetID: requirement.id
+        )
+        XCTAssertNil(malformed)
+        let wrongTarget = await admission.admit(
+            canonicalIntent: canonical,
+            providerTargetID: ProviderTargetID(rawValue: "codex:forge-runtime:other")!
+        )
+        XCTAssertNil(wrongTarget)
+        let alreadyVerified = try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: [try .init(id: requirement.id, state: .verified,
+                                evidenceReference: "receipt:provider-verified")]
+        )
+        let duplicate = await ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.plan),
+            reader: ProviderAuthStatusReader(status: alreadyVerified)
+        ).admit(canonicalIntent: canonical, providerTargetID: requirement.id)
+        XCTAssertNil(duplicate)
+        let wrongOperation = try ManagedInstallerReviewedProviderReadback(
+            operationID: "other-operation", stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: [target]
+        )
+        let mismatched = await ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.plan),
+            reader: ProviderAuthStatusReader(status: wrongOperation)
+        ).admit(canonicalIntent: canonical, providerTargetID: requirement.id)
+        XCTAssertNil(mismatched)
+        let stale = await ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderAuthDriftingLoader(plan: fixture.plan), reader: reader
+        ).admit(canonicalIntent: canonical, providerTargetID: requirement.id)
+        XCTAssertNil(stale)
+        XCTAssertNil(ManagedInstallerReviewedProviderAuthenticationAdmission.whenReady(
+            loader: nil, reader: reader
+        ))
+        XCTAssertNil(ManagedInstallerReviewedProviderAuthenticationAdmission.whenReady(
+            loader: ProviderStagePlanLoader(plan: fixture.plan), reader: nil
+        ))
+    }
+
     func testFailedPreproviderOrProviderStopsNextBoundary() async throws {
         let fixture = try FreshRuntimeFixture()
         let events = FreshRuntimeEvents()
@@ -1320,6 +1387,30 @@ private struct ProviderStagePlanLoader: ManagedInstallerHelperOwnedStablePlanLoa
     func loadStablePlan(for intent: ManagedInstallerReviewedExecutionIntent) async throws
         -> ManagedInstallerStablePlan {
         _ = intent
+        return plan
+    }
+}
+
+private struct ProviderAuthStatusReader: ManagedInstallerStablePlanProviderReading {
+    let status: ManagedInstallerReviewedProviderReadback
+    func read(stablePlan: ManagedInstallerStablePlan) async
+        -> ManagedInstallerReviewedProviderReadback? {
+        _ = stablePlan
+        return status
+    }
+}
+
+private actor ProviderAuthDriftingLoader: ManagedInstallerHelperOwnedStablePlanLoading {
+    let plan: ManagedInstallerStablePlan
+    private var reads = 0
+
+    init(plan: ManagedInstallerStablePlan) { self.plan = plan }
+
+    func loadStablePlan(for intent: ManagedInstallerReviewedExecutionIntent) async throws
+        -> ManagedInstallerStablePlan {
+        _ = intent
+        reads += 1
+        if reads == 3 { throw ManagedInstallerReleasedRouteXPCFailure.rejected }
         return plan
     }
 }
