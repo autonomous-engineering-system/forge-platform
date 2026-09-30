@@ -110,6 +110,19 @@ final class ManagedInstallerManagedDeploymentCreateCandidateStoreTests: XCTestCa
         XCTAssertEqual(candidateStore.loadCreateCandidateID(), third)
     }
 
+    func testInventoryRecoversCandidateAfterTerminalCommitAndHelperRestart() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let consumed = try XCTUnwrap(store(root).loadCreateCandidateID())
+        let registry = try terminalRegistry(consumed)
+        let inventory = try ManagedInstallerManagedDeploymentInventoryProducer(
+            registry: registry, candidate: store(root)
+        ).produce().get()
+        XCTAssertEqual(inventory.existing.map(\.id), [consumed])
+        XCTAssertNotEqual(inventory.createCandidate.id, consumed)
+        XCTAssertEqual(store(root).loadCreateCandidateID(), inventory.createCandidate.id)
+    }
+
     func testRotationRequiresExactTerminalRegistryRecord() throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
@@ -177,7 +190,9 @@ final class ManagedInstallerManagedDeploymentCreateCandidateStoreTests: XCTestCa
             fields["composition_binding"] = .object([
                 "composition_id": .string("forge-qualified"),
                 "manifest_digest": .string("sha256:" + String(repeating: "a", count: 64)),
-                "receipt_reference": .string("receipt:composition-one"),
+                "receipt_reference": .string(
+                    "receipt:composition-" + String(repeating: "c", count: 64)
+                ),
             ])
         }
         let record = try ManagedInstallerManagedDeploymentRegistryRecord.decode(

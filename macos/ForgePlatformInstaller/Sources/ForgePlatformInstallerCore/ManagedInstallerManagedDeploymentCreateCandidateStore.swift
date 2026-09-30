@@ -90,10 +90,9 @@ public struct FileManagedInstallerManagedDeploymentCreateCandidateStore:
     }
 
     /// Rotate only after the exact consumed deployment appears in the
-    /// Python-owned registry with a terminal v2 composition receipt. The
-    /// caller must separately qualify product terminal evidence before using
-    /// this helper-local method; it is not exposed over XPC. Repeating the
-    /// same request returns the already rotated candidate without mutation.
+    /// Python-owned registry with the terminal composition receipt written
+    /// after product readiness. This helper-local method is not exposed over
+    /// XPC. Repeating the same request returns the new candidate unchanged.
     public func rotateAfterTerminalCreate(
         consumedDeploymentID: String,
         registry: any ManagedInstallerManagedDeploymentRegistrySnapshotLoading
@@ -116,7 +115,9 @@ public struct FileManagedInstallerManagedDeploymentCreateCandidateStore:
               let consumed = first.records.first(where: {
                   $0.target.id == consumedDeploymentID
               }),
-              consumed.compositionReceiptReference != nil else {
+              Self.terminalCompositionReceipt(
+                  consumed.compositionReceiptReference
+              ) else {
             return .failure(.terminalEvidenceMissing)
         }
         guard case .success(let second) = registry.read(), first == second else {
@@ -172,6 +173,12 @@ public struct FileManagedInstallerManagedDeploymentCreateCandidateStore:
             return .failure(.staleState)
         }
         return .success(next)
+    }
+
+    private static func terminalCompositionReceipt(_ value: String?) -> Bool {
+        guard let value, value.hasPrefix("receipt:composition-") else { return false }
+        let digest = String(value.dropFirst("receipt:composition-".count))
+        return CompositionCatalogValidation.isTaggedSHA256("sha256:" + digest)
     }
 
     private func acquireRotationLock(in root: Int32) -> Int32? {
