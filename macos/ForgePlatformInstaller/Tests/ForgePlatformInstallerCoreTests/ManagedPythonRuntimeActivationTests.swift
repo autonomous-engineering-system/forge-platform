@@ -575,6 +575,66 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         XCTAssertEqual(missing, .failure(.rejected))
     }
 
+    func testActiveRuntimeCanCreateVenvsForDistinctDeployment() async throws {
+        let host = try InitialActivationHostFixture()
+        defer { host.cleanup() }
+        let first = try ActivationFixture()
+        let original = try first.request(initial: host.bootstrap.readOrBootstrap().get())
+        let firstVenvs = InitialActivationVenvStub()
+        let firstMutation = MacOSManagedPythonInitialRuntimeActivator(
+            venvs: firstVenvs,
+            runtime: InitialActivationSlotStub(
+                expectedEvidence: original.preparationReceipt.slotEvidenceReference
+            ),
+            hostState: host.bootstrap,
+            persister: FileManagedInstallerManagedPythonHostStateStore(rootDirectory: host.root)
+        )
+        _ = try activationSuccess(await ManagedPythonRuntimeActivationCoordinator(
+            mutation: firstMutation, operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
+        ).activate(original))
+        let active = try host.bootstrap.observe().get()
+        let second = try ActivationFixture(
+            overrideSession: first.session,
+            overrideDeployment: ManagedDeploymentTarget(
+                id: "second-deployment", exists: false
+            )
+        )
+        let request = try second.request(initial: active)
+        XCTAssertEqual(request.action, .noChange)
+        let secondVenvs = InitialActivationVenvStub()
+        let mutation = MacOSManagedPythonInitialRuntimeActivator(
+            venvs: secondVenvs,
+            runtime: InitialActivationSlotStub(
+                expectedEvidence: request.preparationReceipt.slotEvidenceReference
+            ),
+            hostState: host.bootstrap,
+            persister: FileManagedInstallerManagedPythonHostStateStore(rootDirectory: host.root)
+        )
+        let initialReadback = await mutation.readInitialRuntime(request)
+        let absentVenvReadback = await mutation.readActiveRuntime(request)
+        XCTAssertEqual(initialReadback, .success(active))
+        XCTAssertEqual(absentVenvReadback, .failure(.rejected))
+        let receipt = try activationSuccess(await ManagedPythonRuntimeActivationCoordinator(
+            mutation: mutation, operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
+        ).activate(request))
+        XCTAssertEqual(receipt.deploymentID, "second-deployment")
+        XCTAssertEqual(receipt.productVenvEvidenceReferences.count,
+                       request.productVirtualEnvironments.count)
+        let finalReadback = await mutation.readActiveRuntime(request)
+        let originalEnsureCount = await firstVenvs.recordedEnsureCount()
+        XCTAssertEqual(finalReadback, .success(active))
+        XCTAssertEqual(originalEnsureCount,
+                       original.productVirtualEnvironments.count)
+        XCTAssertEqual(try host.bootstrap.observe().get(), active)
+
+        let stale = try second.activeReadback(evidence: "receipt:stale-second-deployment")
+        let staleRequest = try second.request(initial: stale)
+        let staleReadback = await mutation.readInitialRuntime(staleRequest)
+        XCTAssertEqual(staleReadback, .failure(.rejected))
+    }
+
     private func activationSuccess(
         _ result: Result<ManagedPythonRuntimeActivationReceipt, ManagedPythonRuntimeActivationFailure>
     ) throws -> ManagedPythonRuntimeActivationReceipt {

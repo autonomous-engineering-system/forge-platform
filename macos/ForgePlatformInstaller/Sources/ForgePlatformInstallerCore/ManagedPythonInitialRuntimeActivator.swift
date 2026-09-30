@@ -33,6 +33,27 @@ struct MacOSManagedPythonInitialRuntimeActivator: ManagedPythonRuntimeActivating
         await venvs.ensureProductVenv(request)
     }
 
+    func readInitialRuntime(
+        _ request: ManagedPythonRuntimeActivationRequest
+    ) async -> Result<ManagedPythonRuntimeInstalledReadback, ManagedPythonRuntimeActivationFailure> {
+        guard request.action == .noChange else {
+            return await readActiveRuntime(request)
+        }
+        guard request.rollbackRuntimeIdentitySHA256 == nil,
+              request.initialReadback.activeRuntimeIdentitySHA256
+                == request.runtimeIdentitySHA256,
+              request.initialReadback.activeRuntimeSlotIdentity
+                == request.runtimeSlotIdentity else { return .failure(.rejected) }
+        switch hostState.observe() {
+        case .success(let state) where state == request.initialReadback:
+            return .success(state)
+        case .success:
+            return .failure(.rejected)
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
     func readActiveRuntime(
         _ request: ManagedPythonRuntimeActivationRequest
     ) async -> Result<ManagedPythonRuntimeInstalledReadback, ManagedPythonRuntimeActivationFailure> {
