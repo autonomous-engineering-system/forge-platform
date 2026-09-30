@@ -555,6 +555,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         (any ManagedInstallerPreserveRecoveryTransporting)?
     private let purgeRecoveryTransport:
         (any ManagedInstallerPurgeRecoveryTransporting)?
+    private let purgeRecoveryStore:
+        (any ManagedInstallerPurgeRecoveryStoring)?
     private let preservedRegistryReadTransport:
         (any ManagedInstallerPreservedRegistryReading)?
     private var productMutationInFlight = false
@@ -602,6 +604,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             (any ManagedInstallerPreserveRecoveryTransporting)? = nil,
         purgeRecoveryTransport:
             (any ManagedInstallerPurgeRecoveryTransporting)? = nil,
+        purgeRecoveryStore:
+            (any ManagedInstallerPurgeRecoveryStoring)? = nil,
         preservedRegistryReadTransport:
             (any ManagedInstallerPreservedRegistryReading)? = nil
     ) {
@@ -621,6 +625,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.preservedLifecycleTransport = preservedLifecycleTransport
         self.preserveRecoveryTransport = preserveRecoveryTransport
         self.purgeRecoveryTransport = purgeRecoveryTransport
+        self.purgeRecoveryStore = purgeRecoveryStore
         self.preservedRegistryReadTransport = preservedRegistryReadTransport
     }
 
@@ -884,6 +889,13 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                   immediatelyBefore == session.inventory else {
                 return .failure(.rejected)
             }
+            if session.intent.operation == "PURGE" {
+                guard let recovery = try? ManagedInstallerPurgeRecoveryRequest(
+                    execution: request
+                ), self.purgeRecoveryStore?.save(recovery) == true else {
+                    return .failure(.unavailable)
+                }
+            }
             let receiptBytes: Data
             switch await preservedLifecycleTransport.executePreservedLifecycle(
                 request.canonicalJSONData()
@@ -1120,6 +1132,19 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                 request: request, receipt: receipt
             ))
         }
+    }
+
+    public func readTerminalPurgeRecovery(
+        deploymentID: String, operationID: String,
+        installerRelease: VerifiedInstallerRelease
+    ) async -> Result<
+        ManagedInstallerPurgeRecoveryCompletion,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard let request = purgeRecoveryStore?.load(
+            deploymentID: deploymentID, operationID: operationID
+        ) else { return .failure(.rejected) }
+        return await readTerminalPurgeRecovery(request, installerRelease: installerRelease)
     }
 
     public func executeReviewedProductRemoval(
