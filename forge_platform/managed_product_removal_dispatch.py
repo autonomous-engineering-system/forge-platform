@@ -17,6 +17,9 @@ from .managed_deployments import ManagedDeploymentPlanner
 from .managed_forge_removal import ManagedForgeOnlyRemovalCoordinator
 from .managed_install_flow import EP_COMPONENT, FORGE_COMPONENT, ManagedForgeEPInstallationCoordinator
 from .managed_pairing_revocation import ManagedPairingRevocationCoordinator
+from .managed_pairing_detach import ManagedPairingDetachCoordinator
+from .forge_ep_pairing_executor import ForgeEPProductPairingBinding
+from .forge_server_adapter import ForgeServerProductAdapter
 from .managed_installer import ManagedDeploymentOperationCoordinator
 from .managed_paired_deployment_removal import ManagedPairedDeploymentRemovalCoordinator
 from .managed_paired_forge_removal import ManagedPairedForgeComponentRemovalCoordinator
@@ -85,6 +88,12 @@ class ManagedProductRemovalDispatcher:
             registry=coordinator.registry,
             currency_guard=coordinator.currency_guard,
             scope_claims=scopes,
+            expected_owner_uid=expected_owner_uid,
+        ) if scopes else None
+        self.detachment = ManagedPairingDetachCoordinator(
+            operations_root=coordinator.operations_root / "removal" / "forge-peer-detach",
+            registry=coordinator.registry,
+            currency_guard=coordinator.currency_guard,
             expected_owner_uid=expected_owner_uid,
         ) if scopes else None
         self.review_journal = ManagedProductRemovalReviewJournal(
@@ -194,6 +203,11 @@ class ManagedProductRemovalDispatcher:
             route.forge_instance_id != request.forge_instance_id
             or getattr(getattr(forge, "target", None), "instance_id", None) != request.forge_instance_id
             or getattr(forge, "installed_artifact", None) != artifacts[FORGE_COMPONENT]
+            or (
+                artifacts[FORGE_COMPONENT].version == "2.7.39"
+                and request.engineering_platform_instance_id is not None
+                and not isinstance(forge, ForgeServerProductAdapter)
+            )
             or not callable(getattr(forge, "removal_support", None))
             or forge.removal_support() != "SUPPORTED"
         ):
@@ -201,6 +215,7 @@ class ManagedProductRemovalDispatcher:
         if request.engineering_platform_instance_id is not None:
             revoker = route.ep_consumer_revoker
             peer = current.peer_binding
+            pairing_binding = getattr(route.pairing_executor, "binding", None)
             if (
                 route.engineering_platform_instance_id != request.engineering_platform_instance_id
                 or getattr(getattr(ep, "target", None), "instance_id", None)
@@ -211,10 +226,14 @@ class ManagedProductRemovalDispatcher:
                 or self.revocation.scope_claims.get(request.deployment_id) != revoker.scope
                 or peer.forge_instance_id != request.forge_instance_id
                 or peer.ep_instance_id != request.engineering_platform_instance_id
+                or not isinstance(pairing_binding, ForgeEPProductPairingBinding)
+                or pairing_binding.expected_ep_instance_id != peer.ep_instance_id
+                or pairing_binding.consumer_id != revoker.scope.consumer_id
             ):
                 raise ManagedProductRemovalDispatchError("paired EP removal route changed")
         else:
             revoker = None
+            pairing_binding = None
         forge_request = ComponentOperationRequest(
             _child_id(request.operation_id, FORGE_COMPONENT, "remove"),
             FORGE_COMPONENT, "remove", artifacts[FORGE_COMPONENT],
@@ -240,6 +259,7 @@ class ManagedProductRemovalDispatcher:
         if request.action == "REMOVE_COMPONENT":
             return ManagedPairedForgeComponentRemovalCoordinator(
                 **common, revocation=self.revocation,
+                detachment=self.detachment, pairing_binding=pairing_binding,
             ).remove(
                 request.operation_id, fresh.plan, reviewed_current=current,
                 forge_request=forge_request, forge_adapter=forge,
@@ -248,6 +268,7 @@ class ManagedProductRemovalDispatcher:
             )
         return ManagedPairedDeploymentRemovalCoordinator(
             **common, revocation=self.revocation,
+            detachment=self.detachment, pairing_binding=pairing_binding,
         ).remove(
             request.operation_id, fresh.plan, reviewed_current=current,
             forge_request=forge_request, forge_adapter=forge,

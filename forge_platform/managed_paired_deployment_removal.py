@@ -1,7 +1,7 @@
 """Exact full Forge+EP deployment removal over product-owned lifecycle routes.
 
-The EP consumer scope is revoked first. EP and Forge then own their respective
-instance removals. EP's terminal product receipt remains verifiable after its
+The EP consumer scope is revoked first; Forge 2.7.39 then owns exact peer detach.
+EP and Forge own their respective instance removals. EP's receipt remains verifiable after its
 instance data root is gone, so a crash between EP and Forge can resume without
 reopening a missing EP consumer database or broadening target authority.
 """
@@ -17,6 +17,7 @@ from .component_operations import (
     ProductOperationAdapter, ProductOperationReceipt,
 )
 from .durable_component_operations import DurableComponentOperationCoordinator
+from .forge_ep_pairing_executor import ForgeEPProductPairingBinding
 from .managed_deployments import (
     ManagedDeployment, ManagedDeploymentPlan, ManagedDeploymentPlanner,
     ManagedDeploymentRegistry,
@@ -29,7 +30,8 @@ from .managed_install_flow import (
 from .managed_installer import (
     ManagedDeploymentExecutionRecord, ManagedDeploymentOperationCoordinator,
 )
-from .managed_paired_forge_removal import _require_terminal_forge
+from .managed_paired_forge_removal import _require_detachment, _require_terminal_forge
+from .managed_pairing_detach import ManagedPairingDetachCoordinator
 from .managed_pairing_revocation import (
     EPConsumerRevoker, ManagedPairingRevocationCoordinator,
     _digest as paired_digest, _read as read_pairing_revocation,
@@ -123,6 +125,8 @@ class _FullRemovalRegistry:
         registry: ManagedDeploymentRegistry, reviewed: ManagedDeployment,
         operation_id: str, plan: ManagedDeploymentPlan,
         revocation: ManagedPairingRevocationCoordinator,
+        detachment: ManagedPairingDetachCoordinator | None,
+        pairing_binding: ForgeEPProductPairingBinding | None,
         forge_request: ComponentOperationRequest, forge_adapter: ProductOperationAdapter,
         ep_request: ComponentOperationRequest, ep_adapter: ProductOperationAdapter,
         component_store: DurableComponentOperationCoordinator,
@@ -133,6 +137,8 @@ class _FullRemovalRegistry:
         self.operation_id = operation_id
         self.plan = plan
         self.revocation = revocation
+        self.detachment = detachment
+        self.pairing_binding = pairing_binding
         self.forge_request = forge_request
         self.forge_adapter = forge_adapter
         self.ep_request = ep_request
@@ -155,6 +161,10 @@ class _FullRemovalRegistry:
             raise ManagedPairedDeploymentRemovalError("paired removal registry target changed")
         _require_terminal_ep(self.ep_request, self.ep_adapter, self.component_store)
         _require_revocation_record(self.revocation, self.operation_id, self.plan, self.reviewed)
+        _require_detachment(
+            self.detachment, self.pairing_binding, self.operation_id,
+            self.plan, self.reviewed, self.forge_request.artifact,
+        )
         _require_terminal_forge(self.forge_request, self.forge_adapter, self.component_store)
         return self.delegate.remove(deployment_id, expected_revision=expected_revision)
 
@@ -167,6 +177,8 @@ class ManagedPairedDeploymentRemovalCoordinator:
         registry: ManagedDeploymentRegistry,
         currency_guard: InstallerMutationCurrencyGuard,
         revocation: ManagedPairingRevocationCoordinator,
+        detachment: ManagedPairingDetachCoordinator | None = None,
+        pairing_binding: ForgeEPProductPairingBinding | None = None,
     ) -> None:
         if not operations_root.is_absolute() or not component_operations_root.is_absolute():
             raise ValueError("paired removal operation roots must be absolute")
@@ -175,6 +187,8 @@ class ManagedPairedDeploymentRemovalCoordinator:
         self.registry = registry
         self.currency_guard = currency_guard
         self.revocation = revocation
+        self.detachment = detachment
+        self.pairing_binding = pairing_binding
 
     def remove(
         self, operation_id: str, plan: ManagedDeploymentPlan, *,
@@ -244,6 +258,25 @@ class ManagedPairedDeploymentRemovalCoordinator:
                     operation_id, plan, reviewed_current=reviewed_current,
                     revoker=revoker,
                 )
+            if forge_request.artifact.version == "2.7.39":
+                if not isinstance(self.detachment, ManagedPairingDetachCoordinator) or not isinstance(
+                    self.pairing_binding, ForgeEPProductPairingBinding
+                ):
+                    raise ManagedPairedDeploymentRemovalError("Forge peer detach authority is unavailable")
+                forge_record = coordinator.component_coordinator._read(
+                    coordinator.component_coordinator._operation_directory(forge_request.operation_id)
+                    / "record.json", forge_request.operation_id,
+                )
+                if forge_record is None:
+                    self.detachment.detach(
+                        operation_id, plan, reviewed_current=reviewed_current,
+                        adapter=forge_adapter, binding=self.pairing_binding,
+                    )
+                else:
+                    _require_detachment(
+                        self.detachment, self.pairing_binding, operation_id,
+                        plan, reviewed_current, forge_request.artifact,
+                    )
             currency = _CurrencyEvidence(self.currency_guard)
             guarded_adapters = {
                 EP_COMPONENT: _ExactRemovalAdapter(
@@ -258,6 +291,7 @@ class ManagedPairedDeploymentRemovalCoordinator:
                 delegate=guarded_registry, registry=self.registry,
                 reviewed=reviewed_current, operation_id=operation_id,
                 plan=plan, revocation=self.revocation,
+                detachment=self.detachment, pairing_binding=self.pairing_binding,
                 forge_request=forge_request, forge_adapter=forge_adapter,
                 ep_request=ep_request, ep_adapter=ep_adapter,
                 component_store=coordinator.component_coordinator,
@@ -271,6 +305,10 @@ class ManagedPairedDeploymentRemovalCoordinator:
                 or prior.plan_fingerprint != coordinator._plan_fingerprint(plan)
             ):
                 raise ManagedPairedDeploymentRemovalError("paired removal lacks exact prior completion")
+            _require_detachment(
+                self.detachment, self.pairing_binding, operation_id,
+                plan, reviewed_current, forge_request.artifact,
+            )
             guarded_adapters = {EP_COMPONENT: ep_adapter, FORGE_COMPONENT: forge_adapter}
         result = coordinator.execute(
             operation_id, plan,
@@ -278,6 +316,10 @@ class ManagedPairedDeploymentRemovalCoordinator:
             adapters=guarded_adapters,
         )
         if result.state == "COMPLETE":
+            _require_detachment(
+                self.detachment, self.pairing_binding, operation_id,
+                plan, reviewed_current, forge_request.artifact,
+            )
             _require_terminal_ep(ep_request, ep_adapter, coordinator.component_coordinator)
             _require_revocation_record(self.revocation, operation_id, plan, reviewed_current)
             _require_terminal_forge(forge_request, forge_adapter, coordinator.component_coordinator)
