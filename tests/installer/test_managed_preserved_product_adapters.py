@@ -38,14 +38,21 @@ from tests.installer.test_product_preserved_lifecycle import (
 
 
 class FakeRunner:
-    def __init__(self, result_type, results):
+    def __init__(self, result_type, results, *, repeat_terminal_status=False):
         self.result_type = result_type
         self.results = list(results)
         self.calls = []
+        self.repeat_terminal_status = repeat_terminal_status
+        self.terminal_status = self.results[-1] if repeat_terminal_status else None
 
     def run(self, argv):
         self.calls.append(tuple(argv))
-        code, payload = self.results.pop(0)
+        if self.results:
+            code, payload = self.results.pop(0)
+        elif self.repeat_terminal_status and "lifecycle-status" in argv:
+            code, payload = self.terminal_status
+        else:
+            raise AssertionError("unexpected product command")
         return self.result_type(code, payload, "")
 
 

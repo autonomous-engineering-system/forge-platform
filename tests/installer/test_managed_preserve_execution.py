@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 import os
 from pathlib import Path
 import sys
@@ -25,6 +26,7 @@ from forge_platform.managed_preserve_execution import (
 from forge_platform.managed_preserved_lifecycle_plan import prepare_preserved_lifecycle_review
 from forge_platform.managed_preserved_product_adapters import (
     EPPreservedProductAdapter, ForgePreservedProductAdapter,
+    ManagedPreservedProductAdapterError,
 )
 from forge_platform.product_preserved_lifecycle import EP_COMPONENT, EP_CONTRACT, FORGE_COMPONENT
 from tests.installer.test_managed_preserved_lifecycle_plan import _fixture
@@ -132,7 +134,7 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
             "PRESERVE", "preserve-a", "forge-a", "Install-A",
             _forge_product_digest(request),
         )
-        runner = FakeRunner(ForgeCommandResult, ((0, _wire(receipt)), (0, _wire(status))))
+        runner = FakeRunner(ForgeCommandResult, ((0, _wire(receipt)), (0, _wire(status))), repeat_terminal_status=True)
         adapter = ForgePreservedProductAdapter(
             lifecycle_executable=root / "forge", target=target,
             installation_id="Install-A", artifact=artifact, runner=runner,
@@ -143,7 +145,7 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
     def _ep_adapter(root):
         receipt, status = _ep_evidence("PRESERVE", "preserve-a", "ep-a")
         outer = {"contract": EP_CONTRACT, "result": "COMPLETE", "instance_id": "ep-a", "receipt": receipt}
-        runner = FakeRunner(ProductCommandResult, ((0, _wire(outer)), (0, _wire(status))))
+        runner = FakeRunner(ProductCommandResult, ((0, _wire(outer)), (0, _wire(status))), repeat_terminal_status=True)
         adapter = EPPreservedProductAdapter(
             provisioner_executable=root / "ep", product_root=root / "ep-root",
             target=EPSystemInstanceTarget("ep-a", "EP A", "_ep", 8766),
@@ -195,7 +197,7 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
             "PURGE", "purge-a", "forge-a", "Install-A",
             _forge_product_digest(request),
         )
-        runner = FakeRunner(ForgeCommandResult, ((0, _wire(receipt)), (0, _wire(status))))
+        runner = FakeRunner(ForgeCommandResult, ((0, _wire(receipt)), (0, _wire(status))), repeat_terminal_status=True)
         adapter = ForgePreservedProductAdapter(
             lifecycle_executable=root / "forge", target=target,
             installation_id="Install-A", artifact=artifact, runner=runner,
@@ -207,7 +209,7 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
         receipt, status = _ep_evidence("PURGE", "purge-ep", "ep-a")
         outer = {"contract": EP_CONTRACT, "result": "COMPLETE",
                  "instance_id": "ep-a", "receipt": receipt}
-        runner = FakeRunner(ProductCommandResult, ((0, _wire(outer)), (0, _wire(status))))
+        runner = FakeRunner(ProductCommandResult, ((0, _wire(outer)), (0, _wire(status))), repeat_terminal_status=True)
         adapter = EPPreservedProductAdapter(
             provisioner_executable=root / "ep", product_root=root / "ep-root",
             target=EPSystemInstanceTarget("ep-a", "EP A", "_ep", 8766),
@@ -215,6 +217,68 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
             launch_daemons_directory=root / "daemons", runner=runner,
         )
         return adapter, runner
+
+    def test_completed_replay_fails_closed_on_changed_product_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, _, coordinator = self._state(root)
+            adapter, runner, _ = self._forge_adapter(root)
+            completed = coordinator.preserve(
+                review, installed_manifest=manifest, adapter=adapter,
+            )
+            preserved = registry.load(active.deployment_id)
+            code, raw = runner.terminal_status
+            changed = json.loads(raw)
+            runner.terminal_status = (code, _wire(
+                changed | {"receipt_digest": "sha256:" + "0" * 64}
+            ))
+            with self.assertRaises(ManagedPreservedProductAdapterError):
+                coordinator.preserve(
+                    review, installed_manifest=manifest, adapter=adapter,
+                )
+            self.assertEqual(registry.load(active.deployment_id), preserved)
+            self.assertEqual(sum(call[3:5] == ("server", "preserve") for call in runner.calls), 1)
+            self.assertEqual(completed.state, "COMPLETE")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, _, coordinator = self._state(
+                root, component=EP_COMPONENT,
+            )
+            adapter, runner, _ = self._ep_adapter(root)
+            coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            preserved = registry.load(active.deployment_id)
+            code, raw = runner.terminal_status
+            changed = json.loads(raw)
+            runner.terminal_status = (code, _wire(
+                changed | {"receipt_sha256": "sha256:" + "0" * 64}
+            ))
+            with self.assertRaises(ManagedPreservedProductAdapterError):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(registry.load(active.deployment_id), preserved)
+            self.assertEqual(sum(call[1] == "preserve" for call in runner.calls), 1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, _, coordinator = self._purge_state(
+                root, forge_only=True,
+            )
+            adapter, runner, _ = self._forge_purge_adapter(root)
+            completed = coordinator.purge(
+                review, installed_manifest=manifest, adapter=adapter,
+            )
+            code, raw = runner.terminal_status
+            changed = json.loads(raw)
+            runner.terminal_status = (code, _wire(
+                changed | {"lifecycle_state": "UNINSTALLED_DATA_PRESERVED"}
+            ))
+            with self.assertRaises(ManagedPreservedProductAdapterError):
+                coordinator.purge(
+                    review, installed_manifest=manifest, adapter=adapter,
+                )
+            self.assertIsNone(registry.load(active.deployment_id))
+            self.assertEqual(sum(call[3:5] == ("server", "purge") for call in runner.calls), 1)
+            self.assertEqual(completed.state, "COMPLETE")
 
     def test_purge_exact_forge_only_deployment_and_replay(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -240,7 +304,8 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
             self.assertEqual(coordinator.purge(
                 review, installed_manifest=manifest, adapter=adapter,
             ), result)
-            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(len(runner.calls), 3)
+            self.assertEqual(runner.calls[-1][1:3], ("server", "lifecycle-status"))
             journal = (root / "operations" / "purge-a.json").read_text()
             self.assertNotIn("data_root", journal)
             self.assertNotIn("Install-A", journal)
@@ -277,7 +342,7 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
                 )
             with self.assertRaisesRegex(ManagedPreserveExecutionError, "terminal inventory"):
                 coordinator.purge(review, installed_manifest=manifest, adapter=adapter)
-            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(len(runner.calls), 3)
 
     def test_purge_of_one_unpaired_component_retains_ep(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -418,7 +483,7 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
             self.assertIn("COMMITTING", (root / "operations" / "purge-a.json").read_text())
             completed = coordinator.purge(review, installed_manifest=manifest, adapter=resumed)
             self.assertEqual(completed.state, "COMPLETE")
-            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(len(runner.calls), 3)
 
     def test_purge_stale_wrong_target_pairing_and_currency_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -541,7 +606,8 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
             self.assertEqual(coordinator.preserve(
                 review, installed_manifest=manifest, adapter=adapter,
             ), result)
-            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(len(runner.calls), 3)
+            self.assertEqual(runner.calls[-1][1:3], ("server", "lifecycle-status"))
             self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
             self.assertNotIn("Install-A", (root / "operations" / "preserve-a.json").read_text())
             self.assertNotIn("data_root", (root / "operations" / "preserve-a.json").read_text())

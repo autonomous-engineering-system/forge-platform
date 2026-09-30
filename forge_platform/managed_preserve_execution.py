@@ -55,6 +55,14 @@ class PreservedProductAdapter(Protocol):
         registry: ManagedDeploymentRegistry, installed_manifest: CompositionManifest,
     ) -> ProductPreservedLifecycleInvocation: ...
 
+    def require_terminal_preserve_status(
+        self, *, operation_id: str, receipt_digest: str,
+    ) -> None: ...
+
+    def require_terminal_purge_status(
+        self, review: ManagedPreservedLifecycleReview, *, receipt_digest: str,
+    ) -> None: ...
+
 
 @dataclass(frozen=True)
 class ManagedPreserveExecutionRecord:
@@ -498,6 +506,10 @@ class ManagedPreserveExecutionCoordinator:
             ):
                 raise ManagedPreserveExecutionError("preserve replay has no exact terminal state")
             complete = replace(existing, state="COMPLETE", registry_revision=current.revision)
+            adapter.require_terminal_preserve_status(
+                operation_id=review.operation_id,
+                receipt_digest=existing.receipt_digest,
+            )
             _write(path, complete)
             return complete
         if existing is not None and existing.state == "COMPLETE":
@@ -715,6 +727,9 @@ class ManagedPurgeExecutionCoordinator(ManagedPreserveExecutionCoordinator):
             ):
                 raise ManagedPreserveExecutionError("purge replay lacks exact terminal inventory")
             complete = replace(existing, state="COMPLETE")
+            adapter.require_terminal_purge_status(
+                review, receipt_digest=existing.receipt_digest,
+            )
             _write(path, complete)
             return complete
         if existing is not None and existing.state == "COMPLETE":
