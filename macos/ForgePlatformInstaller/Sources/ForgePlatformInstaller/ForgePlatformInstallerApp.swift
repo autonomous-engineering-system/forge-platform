@@ -54,9 +54,17 @@ final class InstallerWizardViewModel: ObservableObject {
         case blocked(String)
     }
 
+    enum PurgeRecoveryState {
+        case idle
+        case loading
+        case recovered(ManagedInstallerPurgeRecoveryCompletion)
+        case blocked(String)
+    }
+
     @Published private(set) var state: InstallerWizardState
     @Published private(set) var removalReview: RemovalReviewState = .idle
     @Published private(set) var lifecycleReview: LifecycleReviewState = .idle
+    @Published private(set) var purgeRecovery: PurgeRecoveryState = .idle
     @Published private(set) var providerStage: ProviderStageState = .idle
 
     var isProviderStageInFlight: Bool {
@@ -73,6 +81,7 @@ final class InstallerWizardViewModel: ObservableObject {
     @Published private(set) var isRemovalExecutionInFlight = false
     @Published private(set) var isLifecycleReviewRequestInFlight = false
     @Published private(set) var isLifecycleExecutionInFlight = false
+    @Published private(set) var isPurgeRecoveryInFlight = false
     private var removalOperationKey: String?
     private var removalOperationID: String?
 
@@ -111,6 +120,7 @@ final class InstallerWizardViewModel: ObservableObject {
         }
         resetRemovalReview()
         resetLifecycleReview()
+        purgeRecovery = .idle
         let coordinator = coordinator
         Task { @MainActor [weak self] in
             let result = await coordinator.prepareManagedDeploymentInventory()
@@ -123,6 +133,7 @@ final class InstallerWizardViewModel: ObservableObject {
         if state.selectManagedDeployment(deploymentID) {
             resetRemovalReview()
             resetLifecycleReview()
+            purgeRecovery = .idle
         }
     }
 
@@ -341,6 +352,62 @@ final class InstallerWizardViewModel: ObservableObject {
                 self.lifecycleReview = .blocked(
                     "Exact terminal PRESERVE-bewijs is niet beschikbaar."
                 )
+            }
+        }
+    }
+
+    func recoverTerminalPurge(deploymentID: String, operationID: String) {
+        guard state.step == .deployment,
+              case .current(let release) = state.selfUpdate,
+              ManagedInstallerPreservedLifecycleReviewIntent.isID(deploymentID),
+              ManagedInstallerPreservedLifecycleReviewIntent.isID(operationID),
+              !isPurgeRecoveryInFlight,
+              !isLifecycleReviewRequestInFlight,
+              !isLifecycleExecutionInFlight,
+              !isRemovalReviewRequestInFlight,
+              !isRemovalExecutionInFlight else { return }
+        isPurgeRecoveryInFlight = true
+        purgeRecovery = .loading
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.readTerminalPurgeRecovery(
+                deploymentID: deploymentID, operationID: operationID,
+                installerRelease: release
+            )
+            guard let self else { return }
+            self.isPurgeRecoveryInFlight = false
+            guard self.state.step == .deployment,
+                  case .current(let currentRelease) = self.state.selfUpdate,
+                  currentRelease == release else {
+                self.purgeRecovery = .blocked(
+                    "De installer-release is gewijzigd. Lees het herstelbewijs opnieuw."
+                )
+                return
+            }
+            switch result {
+            case .failure:
+                self.purgeRecovery = .blocked(
+                    "Exact terminal PURGE-bewijs is niet beschikbaar."
+                )
+            case .success(let completion):
+                let request = completion.request
+                let intent = request.execution.intent
+                guard intent.deploymentID == deploymentID,
+                      intent.operationID == operationID,
+                      intent.operation == "PURGE",
+                      intent.installerRelease == release,
+                      (try? ManagedInstallerPurgeRecoveryRequest.decodeJSON(
+                        request.canonicalJSONData()
+                      )) == request,
+                      (try? ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+                        completion.receipt.canonicalJSONData(), request: request
+                      )) == completion.receipt else {
+                    self.purgeRecovery = .blocked(
+                        "Het PURGE-herstelbewijs hoort niet bij dit doel."
+                    )
+                    return
+                }
+                self.purgeRecovery = .recovered(completion)
             }
         }
     }
@@ -880,6 +947,8 @@ private struct ManagedDeploymentSelectionScreen: View {
     @State private var purgeExpectedInstanceID = ""
     @State private var purgeConfirmedInstanceID = ""
     @State private var purgeSummary = ""
+    @State private var recoveryDeploymentID = ""
+    @State private var recoveryOperationID = ""
 
     var body: some View {
         ScreenHeader(
@@ -962,8 +1031,54 @@ private struct ManagedDeploymentSelectionScreen: View {
                     viewModel.prepareManagedDeploymentInventory()
                 }
             }
+            purgeRecoveryPanel
         }
         .padding(.top, 12)
+    }
+
+    private var purgeRecoveryPanel: some View {
+        GroupBox("Definitief wissen verifiëren") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Ook na verwijdering van de deployment kun je het oorspronkelijke terminale bewijs alleen lezen.")
+                    .foregroundStyle(.secondary)
+                TextField("Oorspronkelijk deployment-ID", text: $recoveryDeploymentID)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Oorspronkelijk operation-ID", text: $recoveryOperationID)
+                    .textFieldStyle(.roundedBorder)
+                Button("Verifieer definitief wissen") {
+                    viewModel.recoverTerminalPurge(
+                        deploymentID: recoveryDeploymentID,
+                        operationID: recoveryOperationID
+                    )
+                }
+                .disabled(!ManagedInstallerPreservedLifecycleReviewIntent.isID(recoveryDeploymentID)
+                    || !ManagedInstallerPreservedLifecycleReviewIntent.isID(recoveryOperationID)
+                    || viewModel.isPurgeRecoveryInFlight
+                    || viewModel.isLifecycleExecutionInFlight
+                    || viewModel.isRemovalExecutionInFlight)
+                switch viewModel.purgeRecovery {
+                case .idle: EmptyView()
+                case .loading: ProgressView("Exact helperbewijs wordt gelezen…")
+                case .blocked(let reason): FailureCallout(reason: reason)
+                case .recovered(let completion):
+                    Label("PURGE terminaal bevestigd.", systemImage: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                    Text("Deployment: \(completion.request.execution.intent.deploymentID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Component: \(completion.request.execution.intent.component)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Instance: \(completion.request.execution.intent.instanceID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Operation ID: \(completion.request.execution.intent.operationID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Registerrevisie: \(completion.receipt.registryRevision)")
+                        .font(.caption.monospaced())
+                    Text("Receipt-digest: \(completion.receipt.receiptDigest)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     @ViewBuilder
