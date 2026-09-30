@@ -19,7 +19,8 @@ from typing import Protocol
 
 from .forge_server_adapter import ForgeServiceSupervisor, ForgeServerTarget
 from .managed_deployments import (
-    MANAGED_DEPLOYMENT_SCHEMA_V3, ManagedDeployment, ManagedDeploymentRegistry,
+    MANAGED_DEPLOYMENT_SCHEMA_V2, MANAGED_DEPLOYMENT_SCHEMA_V3,
+    ManagedDeployment, ManagedDeploymentRegistry,
 )
 from .managed_install_flow import InstallerMutationCurrencyGuard
 from .managed_preserved_lifecycle_plan import (
@@ -218,6 +219,118 @@ def read_terminal_preserve_evidence(
             or preserved.preserve_receipt_digest != record.receipt_digest
         ):
             raise ManagedPreserveExecutionError("terminal preserve registry receipt changed")
+        return record
+    finally:
+        os.close(lock)
+
+
+def read_terminal_purge_evidence(
+    *, operations_root: Path, registry: ManagedDeploymentRegistry,
+    deployment_id: str, operation_id: str, component: str, instance_id: str,
+    review_fingerprint: str, expected_registry_revision: int,
+    composition_id: str, manifest_digest: str, expected_owner_uid: int = 0,
+) -> ManagedPreserveExecutionRecord:
+    """Observe one exact committed PURGE even when its deployment is gone.
+
+    The caller must already hold the original reviewed identity. This read-only
+    check never grants mutation authority or reconstructs a missing review.
+    """
+    if (
+        not isinstance(operations_root, Path) or not operations_root.is_absolute()
+        or not isinstance(registry, ManagedDeploymentRegistry)
+        or any(not isinstance(value, str) or _ID.fullmatch(value) is None for value in (
+            deployment_id, operation_id, instance_id, composition_id,
+        ))
+        or component not in {FORGE_COMPONENT, EP_COMPONENT}
+        or not isinstance(review_fingerprint, str)
+        or _DIGEST.fullmatch(review_fingerprint) is None
+        or isinstance(expected_registry_revision, bool)
+        or not isinstance(expected_registry_revision, int)
+        or expected_registry_revision < 1
+        or not isinstance(manifest_digest, str)
+        or _DIGEST.fullmatch(manifest_digest) is None
+        or isinstance(expected_owner_uid, bool)
+        or not isinstance(expected_owner_uid, int) or expected_owner_uid < 0
+    ):
+        raise ManagedPreserveExecutionError("terminal purge selector is invalid")
+    try:
+        root_info = os.lstat(operations_root)
+        if (
+            not stat.S_ISDIR(root_info.st_mode)
+            or root_info.st_uid != expected_owner_uid
+            or stat.S_IMODE(root_info.st_mode) != 0o700
+        ):
+            raise ManagedPreserveExecutionError("purge journal root is unsafe")
+        lock = os.open(
+            operations_root / f".{deployment_id}.lock", os.O_RDWR | os.O_NOFOLLOW,
+        )
+    except (FileNotFoundError, OSError) as error:
+        raise ManagedPreserveExecutionError("terminal purge evidence is unavailable") from error
+    try:
+        lock_info = os.fstat(lock)
+        if (
+            not stat.S_ISREG(lock_info.st_mode)
+            or lock_info.st_uid != expected_owner_uid
+            or lock_info.st_nlink != 1
+            or stat.S_IMODE(lock_info.st_mode) != 0o600
+        ):
+            raise ManagedPreserveExecutionError("purge lock is unsafe")
+        fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        record = _read(operations_root / f"{operation_id}.json", expected_owner_uid)
+        registry_info = os.lstat(registry.root)
+        if (
+            not stat.S_ISDIR(registry_info.st_mode)
+            or registry_info.st_uid != expected_owner_uid
+            or stat.S_IMODE(registry_info.st_mode) != 0o700
+        ):
+            raise ManagedPreserveExecutionError("purge registry root is unsafe")
+        registry_lock = os.open(
+            registry.root / ".registry.lock", os.O_RDWR | os.O_NOFOLLOW,
+        )
+        try:
+            registry_lock_info = os.fstat(registry_lock)
+            if (
+                not stat.S_ISREG(registry_lock_info.st_mode)
+                or registry_lock_info.st_uid != expected_owner_uid
+                or registry_lock_info.st_nlink != 1
+                or stat.S_IMODE(registry_lock_info.st_mode) != 0o600
+            ):
+                raise ManagedPreserveExecutionError("purge registry lock is unsafe")
+            fcntl.flock(registry_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            current = registry.load(deployment_id)
+            inventory = registry.inventory()
+        finally:
+            os.close(registry_lock)
+        if (
+            record is None or record.state != "COMPLETE"
+            or record.operation_id != operation_id
+            or record.deployment_id != deployment_id
+            or record.component != component
+            or record.instance_id != instance_id
+            or record.review_fingerprint != review_fingerprint
+            or record.receipt_digest is None
+            or record.registry_revision != expected_registry_revision
+            or current is not None and (
+                current.schema not in {
+                    MANAGED_DEPLOYMENT_SCHEMA_V2, MANAGED_DEPLOYMENT_SCHEMA_V3,
+                }
+                or current.revision != expected_registry_revision
+                or current.composition_binding is None
+                or current.composition_binding.composition_id != composition_id
+                or current.composition_binding.manifest_digest != manifest_digest
+                or current.peer_binding is not None
+                or getattr(current, "historical_peer_binding", None) is not None
+                or current.active_by_component.get(component) is not None
+                or current.preserved_by_component.get(component) is not None
+            )
+            or any(
+                binding.instance_id == instance_id
+                for deployment in inventory
+                for binding in deployment.components
+                    + getattr(deployment, "preserved_components", ())
+            )
+        ):
+            raise ManagedPreserveExecutionError("terminal purge evidence is stale")
         return record
     finally:
         os.close(lock)

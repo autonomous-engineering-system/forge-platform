@@ -1698,6 +1698,13 @@ public protocol InstallerWizardCoordinator: Sendable {
         ManagedInstallerPreservedLifecycleReceipt,
         ManagedInstallerProductOperationBridgeFailure
     >
+    func executeReviewedPreservedLifecycle(
+        _ session: ManagedInstallerPreservedLifecycleReviewSession,
+        confirmedInstanceID: String?
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    >
     /// Read-only terminal recovery of the same exact PRESERVE operation after
     /// the reviewed execution response was lost. It grants no mutation right.
     func readTerminalPreserveRecovery(
@@ -1809,6 +1816,18 @@ public extension InstallerWizardCoordinator {
         ManagedInstallerProductOperationBridgeFailure
     > {
         _ = session
+        return .failure(.rejected)
+    }
+
+    func executeReviewedPreservedLifecycle(
+        _ session: ManagedInstallerPreservedLifecycleReviewSession,
+        confirmedInstanceID: String?
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = session
+        _ = confirmedInstanceID
         return .failure(.rejected)
     }
 

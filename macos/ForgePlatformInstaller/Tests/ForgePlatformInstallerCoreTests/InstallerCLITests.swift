@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import ForgePlatformInstallerCore
 
@@ -112,6 +113,17 @@ final class InstallerCLITests: XCTestCase {
             ]).command,
             .deploymentLifecycleRecover("production", component: "forge-runtime")
         )
+        let purge = try InstallerCLIParser.parse([
+            "deployment", "lifecycle", "purge", "--deployment", "production",
+            "--operation-id", "purge-one", "--component", "forge-runtime",
+            "--confirm-instance-id", "forge-prod",
+            "--review-fingerprint", "sha256:" + String(repeating: "a", count: 64),
+            "--yes", "--non-interactive",
+        ])
+        XCTAssertEqual(purge.command, .deploymentLifecyclePurge(
+            "production", operationID: "purge-one", component: "forge-runtime"
+        ))
+        XCTAssertEqual(purge.options.confirmedInstanceID, "forge-prod")
         XCTAssertThrowsError(try InstallerCLIParser.parse(["deployment", "apply"]))
         XCTAssertThrowsError(try InstallerCLIParser.parse([
             "deployment", "apply", "--deployment", "a", "--deployment", "b",
@@ -162,6 +174,18 @@ final class InstallerCLITests: XCTestCase {
             "--operation-id", "restore-one", "--component", "forge-runtime",
         ]))
         for forbidden in [
+            ["deployment", "lifecycle", "purge", "--deployment", "production",
+             "--operation-id", "purge-one", "--component", "forge-runtime"],
+            ["deployment", "lifecycle", "preserve", "--deployment", "production",
+             "--operation-id", "preserve-one", "--component", "forge-runtime",
+             "--confirm-instance-id", "forge-prod"],
+            ["deployment", "lifecycle", "purge", "--deployment", "production",
+             "--operation-id", "purge-one", "--component", "forge-runtime",
+             "--confirm-instance-id", "bad/path"],
+        ] {
+            XCTAssertThrowsError(try InstallerCLIParser.parse(forbidden))
+        }
+        for forbidden in [
             ["--operation-id", "caller-one"], ["--yes"],
             ["--review-fingerprint", "sha256:" + String(repeating: "a", count: 64)],
         ] {
@@ -170,6 +194,63 @@ final class InstallerCLITests: XCTestCase {
                 "--component", "forge-runtime",
             ] + forbidden))
         }
+    }
+
+    func testPurgeCLIRequiresExactTargetAndCurrentReviewDespiteYes() async throws {
+        let coordinator = CLIWizardCoordinator(
+            session: try session(), removalInventory: true, lifecycleEnabled: true
+        )
+        let workflow = InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        )
+        let missingReview = await workflow.purgeComponent(
+            deploymentID: "production", operationID: "purge-one",
+            component: "forge-runtime",
+            options: InstallerCLIOptions(
+                nonInteractive: true, assumeYes: true,
+                confirmedInstanceID: "forge-prod"
+            ),
+            confirm: { _ in XCTFail("automation must not prompt"); return true }
+        )
+        XCTAssertEqual(missingReview.exitCode, .confirmationRequired)
+        let fingerprint = try XCTUnwrap(missingReview.details["review_fingerprint"])
+        let wrongTarget = await workflow.purgeComponent(
+            deploymentID: "production", operationID: "purge-one",
+            component: "forge-runtime",
+            options: InstallerCLIOptions(
+                nonInteractive: true, assumeYes: true,
+                reviewFingerprint: fingerprint, confirmedInstanceID: "forge-other"
+            ),
+            confirm: { _ in XCTFail("automation must not prompt"); return true }
+        )
+        XCTAssertEqual(wrongTarget.status, "lifecycle-target-mismatch")
+        let wrongReview = await workflow.purgeComponent(
+            deploymentID: "production", operationID: "purge-one",
+            component: "forge-runtime",
+            options: InstallerCLIOptions(
+                nonInteractive: true, assumeYes: true,
+                reviewFingerprint: "sha256:" + String(repeating: "f", count: 64),
+                confirmedInstanceID: "forge-prod"
+            ),
+            confirm: { _ in XCTFail("automation must not prompt"); return true }
+        )
+        XCTAssertEqual(wrongReview.status, "lifecycle-review-drift")
+        let before = await coordinator.lifecycleExecutionCallCount()
+        XCTAssertEqual(before, 0)
+
+        let complete = await workflow.purgeComponent(
+            deploymentID: "production", operationID: "purge-one",
+            component: "forge-runtime",
+            options: InstallerCLIOptions(
+                nonInteractive: true, assumeYes: true,
+                reviewFingerprint: fingerprint, confirmedInstanceID: "forge-prod"
+            ),
+            confirm: { _ in XCTFail("automation must not prompt"); return false }
+        )
+        XCTAssertEqual(complete.status, "lifecycle-purge-complete")
+        XCTAssertEqual(complete.details["instance_id"], "forge-prod")
+        let after = await coordinator.lifecycleExecutionCallCount()
+        XCTAssertEqual(after, 1)
     }
 
     func testCLIRecoveryReportsOnlyExactHelperTerminalEvidence() async throws {
@@ -711,6 +792,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private let preservedInventory: Bool
     private let removalState: String
     private let recovery: ManagedInstallerPreserveRecoveryCompletion?
+    private let lifecycleEnabled: Bool
     private var recordedCalls: [String] = []
     private var recordedProviderActions: [ProviderAction] = []
     private var executions = 0
@@ -719,6 +801,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private var removals = 0
     private var stages = 0
     private var providerReads = 0
+    private var lifecycleExecutions = 0
 
     init(
         session: VerifiedCompositionSessionPlan,
@@ -729,7 +812,8 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         removalInventory: Bool = false,
         preservedInventory: Bool = false,
         removalState: String = "COMPLETE",
-        recovery: ManagedInstallerPreserveRecoveryCompletion? = nil
+        recovery: ManagedInstallerPreserveRecoveryCompletion? = nil,
+        lifecycleEnabled: Bool = false
     ) {
         selectedSession = session
         self.providerAuthenticationRequired = providerAuthenticationRequired
@@ -739,6 +823,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         self.preservedInventory = preservedInventory
         self.removalState = removalState
         self.recovery = recovery
+        self.lifecycleEnabled = lifecycleEnabled
         self.execution = execution ?? .completed(
             stages: [
                 ExecutionStage(id: "forge", title: "Forge", detail: "ready", state: .passed),
@@ -906,6 +991,86 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         ) else { return .failure(.rejected) }
         return .success(receipt)
     }
+
+    func preparePreservedLifecycleReview(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        recordedCalls.append("lifecycle-review")
+        guard lifecycleEnabled, intent.operation == "PURGE",
+              intent.deploymentID == "production",
+              intent.instanceID == "forge-prod" else { return .failure(.rejected) }
+        var review: [String: StrictJSONResourceValue] = [
+            "deployment_id": .string(intent.deploymentID),
+            "registry_revision": .integer("3"),
+            "registry_fingerprint": .string("sha256:" + String(repeating: "b", count: 64)),
+            "composition_id": .string(intent.installedCompositionIdentity),
+            "composition_digest": .string(intent.installedManifestSHA256),
+            "operation": .string(intent.operation),
+            "operation_id": .string(intent.operationID),
+            "component": .string(intent.component),
+            "instance_id": .string(intent.instanceID),
+            "artifact": .object([
+                "version": .string("2.7.38"),
+                "source_revision": .string(String(repeating: "e", count: 40)),
+                "source": .string("https://example.invalid/forge.whl"),
+                "digest": .string("sha256:" + String(repeating: "c", count: 64)),
+                "qualification": .string("https://example.invalid/receipt"),
+            ]),
+            "previous_receipt_reference": .string("receipt:forge-prod"),
+            "preserve_operation_id": .null,
+            "preserve_receipt_digest": .null,
+            "historical_peer_reference": .null,
+            "destructive_confirmation_required": .boolean(true),
+        ]
+        let digest = SHA256.hash(data: StrictSignedJSON.canonicalPayload(from: .object(review)))
+            .map { String(format: "%02x", $0) }.joined()
+        review["review_fingerprint"] = .string("sha256:" + digest)
+        let data = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPreservedLifecycleReviewProposal.schema),
+            "intent_fingerprint": .string(intent.intentFingerprint),
+            "review": .object(review),
+        ]))
+        guard let proposal = try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+            data, intent: intent
+        ) else { return .failure(.rejected) }
+        return .success(proposal)
+    }
+
+    func executeReviewedPreservedLifecycle(
+        _ session: ManagedInstallerPreservedLifecycleReviewSession,
+        confirmedInstanceID: String?
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        lifecycleExecutions += 1
+        recordedCalls.append("lifecycle-purge-execute")
+        guard lifecycleEnabled,
+              let request = try? ManagedInstallerPreservedLifecycleRequest(
+                intent: session.intent, proposal: session.proposal,
+                confirmedInstanceID: confirmedInstanceID
+              ) else { return .failure(.rejected) }
+        let data = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPreservedLifecycleReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "operation_id": .string(request.intent.operationID),
+            "deployment_id": .string(request.intent.deploymentID),
+            "component": .string(request.intent.component),
+            "instance_id": .string(request.intent.instanceID),
+            "state": .string("COMPLETE"),
+            "receipt_digest": .string("sha256:" + String(repeating: "d", count: 64)),
+            "registry_revision": .integer("4"),
+        ]))
+        guard let receipt = try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+            data, request: request
+        ) else { return .failure(.rejected) }
+        return .success(receipt)
+    }
+
+    func lifecycleExecutionCallCount() -> Int { lifecycleExecutions }
 
     func readTerminalPreserveRecovery(
         deploymentID: String, component: String,

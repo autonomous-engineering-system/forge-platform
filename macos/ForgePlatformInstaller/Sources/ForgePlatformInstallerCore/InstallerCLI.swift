@@ -14,6 +14,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentRemovePlan(String, operationID: String, component: String?)
     case deploymentLifecyclePlan(String, operationID: String, operation: String, component: String)
     case deploymentLifecyclePreserve(String, operationID: String, component: String)
+    case deploymentLifecyclePurge(String, operationID: String, component: String)
     case deploymentLifecycleRecover(String, component: String)
 }
 
@@ -23,6 +24,7 @@ public struct InstallerCLIOptions: Equatable, Sendable {
     public let assumeYes: Bool
     public let acceptInstallerUpdate: Bool
     public let reviewFingerprint: String?
+    public let confirmedInstanceID: String?
     public let pairingTarget: ManagedInstallerReviewedPairingTarget?
 
     public init(
@@ -31,6 +33,7 @@ public struct InstallerCLIOptions: Equatable, Sendable {
         assumeYes: Bool = false,
         acceptInstallerUpdate: Bool = false,
         reviewFingerprint: String? = nil,
+        confirmedInstanceID: String? = nil,
         pairingTarget: ManagedInstallerReviewedPairingTarget? = nil
     ) {
         self.json = json
@@ -38,6 +41,7 @@ public struct InstallerCLIOptions: Equatable, Sendable {
         self.assumeYes = assumeYes
         self.acceptInstallerUpdate = acceptInstallerUpdate
         self.reviewFingerprint = reviewFingerprint
+        self.confirmedInstanceID = confirmedInstanceID
         self.pairingTarget = pairingTarget
     }
 }
@@ -116,6 +120,7 @@ public enum InstallerCLIParser {
       forge-platform-installer deployment remove plan --deployment <id> --operation-id <id> [--component forge-runtime] [--json]
       forge-platform-installer deployment lifecycle plan <preserve|restore|purge> --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--json]
       forge-platform-installer deployment lifecycle preserve --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--review-fingerprint <sha256:...> --yes] [--non-interactive] [--json]
+      forge-platform-installer deployment lifecycle purge --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> --confirm-instance-id <id> [--review-fingerprint <sha256:...> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment lifecycle recover --deployment <id> --component <forge-runtime|engineering-platform-server> [--json]
 
     Security:
@@ -132,6 +137,7 @@ public enum InstallerCLIParser {
         var operationID: String?
         var component: String?
         var reviewFingerprint: String?
+        var confirmedInstanceID: String?
         var pairingProject: String?
         var pairingRepository: String?
         var pairingRepositoryIdentity: String?
@@ -181,6 +187,19 @@ public enum InstallerCLIParser {
                 if isOperation { operationID = value }
                 else if isFingerprint { reviewFingerprint = value }
                 else { component = value }
+            case "--confirm-instance-id":
+                guard confirmedInstanceID == nil else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                index += 1
+                guard index < arguments.count else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                let value = arguments[index]
+                guard ManagedInstallerPreservedLifecycleReviewIntent.isID(value) else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                confirmedInstanceID = value
             case "--pairing-project", "--pairing-repository", "--pairing-repository-identity":
                 let existing = argument == "--pairing-project" ? pairingProject
                     : argument == "--pairing-repository" ? pairingRepository
@@ -246,7 +265,8 @@ public enum InstallerCLIParser {
                   let operationID,
                   ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
                   component == nil || component == "forge-runtime",
-                  !assumeYes, reviewFingerprint == nil else {
+                  !assumeYes, reviewFingerprint == nil,
+                  confirmedInstanceID == nil else {
                 throw InstallerCLIParseError.invalidArguments
             }
             command = .deploymentRemovePlan(
@@ -261,7 +281,8 @@ public enum InstallerCLIParser {
                   let component,
                   ["forge-runtime", "engineering-platform-server"].contains(component),
                   ["preserve", "restore", "purge"].contains(operation),
-                  !assumeYes, reviewFingerprint == nil else {
+                  !assumeYes, reviewFingerprint == nil,
+                  confirmedInstanceID == nil else {
                 throw InstallerCLIParseError.invalidArguments
             }
             command = .deploymentLifecyclePlan(
@@ -274,15 +295,31 @@ public enum InstallerCLIParser {
                   ManagedInstallerPreservedLifecycleReviewIntent.isID(operationID),
                   let component,
                   ["forge-runtime", "engineering-platform-server"].contains(component),
-                  reviewFingerprint.map(CompositionCatalogValidation.isTaggedSHA256) ?? true else {
+                  reviewFingerprint.map(CompositionCatalogValidation.isTaggedSHA256) ?? true,
+                  confirmedInstanceID == nil else {
                 throw InstallerCLIParseError.invalidArguments
             }
             command = .deploymentLifecyclePreserve(
                 deployment, operationID: operationID, component: component
             )
+        case ["deployment", "lifecycle", "purge"]:
+            guard let deployment, deployment != "new",
+                  let operationID,
+                  ManagedInstallerPreservedLifecycleReviewIntent.isID(operationID),
+                  let component,
+                  ["forge-runtime", "engineering-platform-server"].contains(component),
+                  let confirmedInstanceID,
+                  ManagedInstallerPreservedLifecycleReviewIntent.isID(confirmedInstanceID),
+                  reviewFingerprint.map(CompositionCatalogValidation.isTaggedSHA256) ?? true else {
+                throw InstallerCLIParseError.invalidArguments
+            }
+            command = .deploymentLifecyclePurge(
+                deployment, operationID: operationID, component: component
+            )
         case ["deployment", "lifecycle", "recover"]:
             guard let deployment, deployment != "new",
                   operationID == nil, reviewFingerprint == nil, !assumeYes,
+                  confirmedInstanceID == nil,
                   let component,
                   ["forge-runtime", "engineering-platform-server"].contains(component)
             else { throw InstallerCLIParseError.invalidArguments }
@@ -295,7 +332,8 @@ public enum InstallerCLIParser {
             switch command {
             case .deploymentPlan, .deploymentApply, .deploymentRemove,
                  .deploymentRemovePlan, .deploymentLifecyclePlan,
-                 .deploymentLifecyclePreserve, .deploymentLifecycleRecover:
+                 .deploymentLifecyclePreserve, .deploymentLifecyclePurge,
+                 .deploymentLifecycleRecover:
                 break
             default:
                 throw InstallerCLIParseError.invalidArguments
@@ -304,8 +342,14 @@ public enum InstallerCLIParser {
         if operationID != nil || component != nil || reviewFingerprint != nil {
             switch command {
             case .deploymentRemovePlan, .deploymentRemove, .deploymentLifecyclePlan,
-                 .deploymentLifecyclePreserve, .deploymentLifecycleRecover: break
+                 .deploymentLifecyclePreserve, .deploymentLifecyclePurge,
+                 .deploymentLifecycleRecover: break
             default:
+                throw InstallerCLIParseError.invalidArguments
+            }
+        }
+        if confirmedInstanceID != nil {
+            guard case .deploymentLifecyclePurge = command else {
                 throw InstallerCLIParseError.invalidArguments
             }
         }
@@ -340,6 +384,7 @@ public enum InstallerCLIParser {
                 assumeYes: assumeYes,
                 acceptInstallerUpdate: acceptInstallerUpdate,
                 reviewFingerprint: reviewFingerprint,
+                confirmedInstanceID: confirmedInstanceID,
                 pairingTarget: pairingTarget
             )
         )
@@ -508,6 +553,91 @@ public struct InstallerCLIWorkflow: Sendable {
         }
     }
 
+    public func purgeComponent(
+        deploymentID: String,
+        operationID: String,
+        component: String,
+        options: InstallerCLIOptions,
+        confirm: Confirmation
+    ) async -> InstallerCLIResult {
+        let workflow = ManagedInstallerPreservedLifecycleReviewWorkflow(
+            coordinator: coordinator, currentRelease: currentRelease
+        )
+        let session: ManagedInstallerPreservedLifecycleReviewSession
+        switch await workflow.prepare(
+            operationID: operationID, deploymentID: deploymentID,
+            operation: "PURGE", component: component
+        ) {
+        case .failure(let failure):
+            return InstallerCLIResult(
+                exitCode: .blocked, status: "lifecycle-review-blocked",
+                message: "Het exacte PURGE-voorstel is niet beschikbaar.",
+                details: ["reason": String(describing: failure)]
+            )
+        case .success(let reviewed): session = reviewed
+        }
+        guard options.confirmedInstanceID == session.intent.instanceID else {
+            return InstallerCLIResult(
+                exitCode: .blocked, status: "lifecycle-target-mismatch",
+                message: "Het bevestigde instance-ID hoort niet bij het actuele doel.",
+                details: ["operation_id": operationID,
+                          "instance_id": session.intent.instanceID]
+            )
+        }
+        if let supplied = options.reviewFingerprint,
+           supplied != session.reviewFingerprint {
+            return InstallerCLIResult(
+                exitCode: .blocked, status: "lifecycle-review-drift",
+                message: "De opgegeven review-fingerprint wijkt af van het actuele helpervoorstel."
+            )
+        }
+        if options.nonInteractive || options.assumeYes {
+            guard options.assumeYes,
+                  options.reviewFingerprint == session.reviewFingerprint else {
+                return lifecycleConfirmationRequired(session)
+            }
+        } else {
+            let prompt = "Bevestig definitief wissen voor deployment \(deploymentID), component \(component), instance \(session.intent.instanceID), registerrevisie \(session.proposal.registryRevision), operation \(operationID), fingerprint \(session.reviewFingerprint)?"
+            guard await confirm(prompt) else {
+                return lifecycleConfirmationRequired(session)
+            }
+        }
+        switch await coordinator.executeReviewedPreservedLifecycle(
+            session, confirmedInstanceID: session.intent.instanceID
+        ) {
+        case .failure(let failure):
+            return InstallerCLIResult(
+                exitCode: .executionFailed, status: "lifecycle-execution-failed",
+                message: "De helper heeft PURGE niet terminaal bevestigd; hervat dezelfde operation ID na verse review.",
+                details: ["reason": String(describing: failure),
+                          "operation_id": operationID]
+            )
+        case .success(let receipt):
+            guard let request = try? ManagedInstallerPreservedLifecycleRequest(
+                intent: session.intent, proposal: session.proposal,
+                confirmedInstanceID: session.intent.instanceID
+            ),
+                  (try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+                    receipt.canonicalJSONData(), request: request
+                  )) == receipt else {
+                return Self.blocked("Het PURGE-receipt hoort niet bij het beoordeelde doel.")
+            }
+            return InstallerCLIResult(
+                exitCode: .success, status: "lifecycle-purge-complete",
+                message: "Product-PURGE en exact registry-readback zijn terminaal bevestigd.",
+                details: [
+                    "operation_id": operationID,
+                    "deployment_id": deploymentID,
+                    "component": component,
+                    "instance_id": session.intent.instanceID,
+                    "review_fingerprint": session.reviewFingerprint,
+                    "registry_revision": String(receipt.registryRevision),
+                    "receipt_digest": receipt.receiptDigest,
+                ]
+            )
+        }
+    }
+
     public func recoverPreservedComponent(
         deploymentID: String, component: String
     ) async -> InstallerCLIResult {
@@ -554,7 +684,9 @@ public struct InstallerCLIWorkflow: Sendable {
     ) -> InstallerCLIResult {
         InstallerCLIResult(
             exitCode: .confirmationRequired, status: "lifecycle-confirmation-required",
-            message: "Bevestig interactief of herhaal met --yes en exact --review-fingerprint uit de actuele review.",
+            message: session.intent.operation == "PURGE"
+                ? "Bevestig interactief of herhaal met --yes, exact --review-fingerprint en --confirm-instance-id uit de actuele review."
+                : "Bevestig interactief of herhaal met --yes en exact --review-fingerprint uit de actuele review.",
             details: [
                 "operation_id": session.operationID,
                 "deployment_id": session.intent.deploymentID,
