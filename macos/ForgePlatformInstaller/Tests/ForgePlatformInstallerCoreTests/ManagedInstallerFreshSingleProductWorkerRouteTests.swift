@@ -165,7 +165,7 @@ final class ManagedInstallerFreshSingleProductWorkerRouteTests: XCTestCase {
             hostID: "host-pair", projectID: "project-pair",
             repositoryID: "repository-pair",
             repositoryIdentity: "repository-identity-pair",
-            credentialReference: "keychain://pairing-pair",
+            credentialReference: "keychain://forge.ep/pairing-pair",
             operatorID: "operator-pair"
         )
         let builder = ManagedInstallerFreshPairedProductWorkerRouteBuilder(

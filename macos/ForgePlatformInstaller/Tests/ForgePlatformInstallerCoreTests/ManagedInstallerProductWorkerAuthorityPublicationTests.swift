@@ -594,6 +594,36 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
         XCTAssertFalse(expected.isEmpty)
     }
 
+    func testPairingAuthorityRequiresForgeCanonicalKeychainReference() throws {
+        func binding(_ reference: String) throws -> ManagedInstallerProductWorkerPairingAuthority {
+            try ManagedInstallerProductWorkerPairingAuthority(
+                bindingID: "binding", consumerID: "consumer", hostID: "host",
+                projectID: "project", repositoryID: "repository",
+                repositoryIdentity: "owner:repository",
+                credentialReference: reference, operatorID: "operator"
+            )
+        }
+        for reference in [
+            "keychain://forge.ep/consumer",
+            "keychain://forge.ep/consumer?namespace=system",
+            "keychain://forge.ep/consumer?version=one",
+            "keychain://forge.ep/consumer?namespace=system&version=one",
+        ] {
+            XCTAssertEqual(try binding(reference).credentialReference, reference)
+        }
+        for reference in [
+            "keychain://consumer", "keychain://forge.ep/", "keychain:///consumer",
+            "keychain://forge.ep/consumer/other", "keychain://forge.ep/consumer?",
+            "keychain://forge.ep/consumer?namespace=",
+            "keychain://forge.ep/consumer?namespace=x&namespace=y",
+            "keychain://forge.ep/consumer?version=one&namespace=system",
+            "keychain://forge.ep/consumer?unknown=x",
+            "keychain://forge.ep/consumer%2Fother", "keychain://forge.ep/consumer#x",
+        ] {
+            XCTAssertThrowsError(try binding(reference), reference)
+        }
+    }
+
     private func preparedPublisher() throws -> (
         URL, URL, FileManagedInstallerProductWorkerAuthorityPublisher
     ) {
