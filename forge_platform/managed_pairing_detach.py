@@ -147,6 +147,63 @@ class ManagedPairingDetachCoordinator:
         self.currency_guard = currency_guard
         self.expected_owner_uid = expected_owner_uid
 
+    def read_terminal(
+        self, operation_id: str, plan: ManagedDeploymentPlan, *,
+        reviewed_current: ManagedDeployment,
+        binding: ForgeEPProductPairingBinding,
+    ) -> PairingDetachRecord:
+        """Read the same validated detach after Forge's data root is uninstalled."""
+        if (
+            not isinstance(operation_id, str) or _ID.fullmatch(operation_id) is None
+            or not isinstance(plan, ManagedDeploymentPlan)
+            or not isinstance(reviewed_current, ManagedDeployment)
+            or not isinstance(binding, ForgeEPProductPairingBinding)
+            or reviewed_current.peer_binding is None
+        ):
+            raise ManagedPairingDetachError("terminal Forge peer detach selector is invalid")
+        try:
+            root = os.lstat(self.operations_root)
+            if (
+                not stat.S_ISDIR(root.st_mode) or root.st_uid != self.expected_owner_uid
+                or stat.S_IMODE(root.st_mode) != 0o700
+            ):
+                raise ValueError("unsafe root")
+            descriptor = os.open(
+                self.operations_root / f".{operation_id}.lock", os.O_RDONLY | os.O_NOFOLLOW,
+            )
+        except (OSError, ValueError) as error:
+            raise ManagedPairingDetachError("terminal Forge peer detach is unavailable") from error
+        try:
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode) or info.st_uid != self.expected_owner_uid
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                raise ManagedPairingDetachError("terminal Forge peer detach lock is unsafe")
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            record = _read(
+                self.operations_root / f"{operation_id}.json",
+                owner_uid=self.expected_owner_uid,
+            )
+            peer = reviewed_current.peer_binding
+            if (
+                record is None or record.state != "COMPLETE"
+                or record.operation_id != operation_id
+                or record.product_operation_id != "peer-detach-" + sha256(operation_id.encode()).hexdigest()[:40]
+                or record.deployment_id != plan.deployment_id
+                or record.plan_fingerprint != _digest(asdict(plan))
+                or record.reviewed_fingerprint != _digest(asdict(reviewed_current))
+                or record.forge_instance_id != peer.forge_instance_id
+                or record.ep_instance_id != peer.ep_instance_id
+                or record.binding_id != binding.binding_id
+                or record.consumer_id != binding.consumer_id
+                or record.operator_id != binding.operator_id
+            ):
+                raise ManagedPairingDetachError("terminal Forge peer detach identity changed")
+            return record
+        finally:
+            os.close(descriptor)
+
     def detach(
         self, operation_id: str, plan: ManagedDeploymentPlan, *,
         reviewed_current: ManagedDeployment,

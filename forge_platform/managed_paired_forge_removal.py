@@ -1,8 +1,8 @@
 """Remove Forge from one paired deployment while retaining a ready EP instance.
 
-EP's product-owned consumer revocation is durably committed first. The existing
-component/deployment saga owns Forge uninstall and registry CAS; this wrapper
-adds exact terminal product and retained-EP checks before that CAS.
+EP's product-owned consumer revocation is durably committed first. Forge 2.7.39
+also requires its own exact peer detach before uninstall. The existing saga owns
+Forge uninstall and registry CAS; this wrapper checks terminal product evidence.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from .component_operations import (
     ComponentOperationRequest, ProductInstallationReadback, ProductOperationAdapter,
 )
 from .durable_component_operations import DurableComponentOperationCoordinator
+from .forge_ep_pairing_executor import ForgeEPProductPairingBinding
 from .managed_deployments import (
     ManagedDeployment, ManagedDeploymentPlan, ManagedDeploymentPlanner,
     ManagedDeploymentRegistry,
@@ -32,6 +33,7 @@ from .managed_pairing_revocation import (
     _digest as paired_digest,
     _read as read_pairing_revocation,
 )
+from .managed_pairing_detach import ManagedPairingDetachCoordinator
 from .qualified_ep_lifecycle import qualified_ep_lifecycle_artifact
 from .qualified_forge_lifecycle import qualified_forge_lifecycle_artifact
 
@@ -103,6 +105,8 @@ class _PairedRegistry:
         desired: ManagedDeployment, plan: ManagedDeploymentPlan, operation_id: str,
         revocation: ManagedPairingRevocationCoordinator,
         revoker: EPConsumerRevoker,
+        detachment: ManagedPairingDetachCoordinator | None,
+        pairing_binding: ForgeEPProductPairingBinding | None,
         forge_request: ComponentOperationRequest, forge_adapter: ProductOperationAdapter,
         ep_request: ComponentOperationRequest, ep_adapter: ProductOperationAdapter,
         component_store: DurableComponentOperationCoordinator,
@@ -115,6 +119,8 @@ class _PairedRegistry:
         self.operation_id = operation_id
         self.revocation = revocation
         self.revoker = revoker
+        self.detachment = detachment
+        self.pairing_binding = pairing_binding
         self.forge_request = forge_request
         self.forge_adapter = forge_adapter
         self.ep_request = ep_request
@@ -146,6 +152,10 @@ class _PairedRegistry:
             raise ManagedPairedForgeRemovalError("paired registry target changed before commit")
         _require_revocation(
             self.revocation, self.operation_id, self.plan, self.reviewed, self.revoker,
+        )
+        _require_detachment(
+            self.detachment, self.pairing_binding, self.operation_id,
+            self.plan, self.reviewed, self.forge_request.artifact,
         )
         _require_terminal_forge(self.forge_request, self.forge_adapter, self.component_store)
         _require_retained_ep(self.ep_request, self.ep_adapter)
@@ -189,6 +199,23 @@ def _require_revocation(
         raise ManagedPairedForgeRemovalError("paired consumer revocation readback changed")
 
 
+def _require_detachment(
+    detachment: ManagedPairingDetachCoordinator | None,
+    binding: ForgeEPProductPairingBinding | None,
+    operation_id: str, plan: ManagedDeploymentPlan,
+    reviewed: ManagedDeployment, artifact,
+) -> None:
+    if artifact.version != "2.7.39":
+        return
+    if not isinstance(detachment, ManagedPairingDetachCoordinator) or not isinstance(
+        binding, ForgeEPProductPairingBinding
+    ):
+        raise ManagedPairedForgeRemovalError("Forge peer detach authority is unavailable")
+    detachment.read_terminal(
+        operation_id, plan, reviewed_current=reviewed, binding=binding,
+    )
+
+
 class ManagedPairedForgeComponentRemovalCoordinator:
     """Run one Forge REMOVE_COMPONENT after exact EP consumer revocation."""
 
@@ -197,6 +224,8 @@ class ManagedPairedForgeComponentRemovalCoordinator:
         registry: ManagedDeploymentRegistry,
         currency_guard: InstallerMutationCurrencyGuard,
         revocation: ManagedPairingRevocationCoordinator,
+        detachment: ManagedPairingDetachCoordinator | None = None,
+        pairing_binding: ForgeEPProductPairingBinding | None = None,
     ) -> None:
         if not operations_root.is_absolute() or not component_operations_root.is_absolute():
             raise ValueError("paired removal operation roots must be absolute")
@@ -205,6 +234,8 @@ class ManagedPairedForgeComponentRemovalCoordinator:
         self.registry = registry
         self.currency_guard = currency_guard
         self.revocation = revocation
+        self.detachment = detachment
+        self.pairing_binding = pairing_binding
 
     def remove(
         self, operation_id: str, plan: ManagedDeploymentPlan, *,
@@ -257,6 +288,25 @@ class ManagedPairedForgeComponentRemovalCoordinator:
                 operation_id, plan, reviewed_current=reviewed_current,
                 revoker=revoker,
             )
+            if forge_request.artifact.version == "2.7.39":
+                if not isinstance(self.detachment, ManagedPairingDetachCoordinator) or not isinstance(
+                    self.pairing_binding, ForgeEPProductPairingBinding
+                ):
+                    raise ManagedPairedForgeRemovalError("Forge peer detach authority is unavailable")
+                component_prior = coordinator.component_coordinator._read(
+                    coordinator.component_coordinator._operation_directory(forge_request.operation_id)
+                    / "record.json", forge_request.operation_id,
+                )
+                if component_prior is None:
+                    self.detachment.detach(
+                        operation_id, plan, reviewed_current=reviewed_current,
+                        adapter=forge_adapter, binding=self.pairing_binding,
+                    )
+                else:
+                    _require_detachment(
+                        self.detachment, self.pairing_binding, operation_id,
+                        plan, reviewed_current, forge_request.artifact,
+                    )
             currency = _CurrencyEvidence(self.currency_guard)
             guarded_forge = _ExactRemovalAdapter(
                 forge_adapter, currency, self.registry, reviewed_current,
@@ -271,6 +321,8 @@ class ManagedPairedForgeComponentRemovalCoordinator:
                 operation_id=operation_id,
                 revocation=self.revocation,
                 revoker=revoker,
+                detachment=self.detachment,
+                pairing_binding=self.pairing_binding,
                 forge_request=forge_request,
                 forge_adapter=forge_adapter,
                 ep_request=ep_readback_request,
@@ -293,6 +345,10 @@ class ManagedPairedForgeComponentRemovalCoordinator:
                 or current.composition_binding != plan.desired.composition_binding
             ):
                 raise ManagedPairedForgeRemovalError("paired removal lacks exact prior completion")
+            _require_detachment(
+                self.detachment, self.pairing_binding, operation_id,
+                plan, reviewed_current, forge_request.artifact,
+            )
             guarded_forge = forge_adapter
         result = coordinator.execute(
             operation_id, plan,
@@ -300,6 +356,10 @@ class ManagedPairedForgeComponentRemovalCoordinator:
             adapters={FORGE_COMPONENT: guarded_forge},
         )
         if result.state == "COMPLETE":
+            _require_detachment(
+                self.detachment, self.pairing_binding, operation_id,
+                plan, reviewed_current, forge_request.artifact,
+            )
             _require_revocation(
                 self.revocation, operation_id, plan, reviewed_current, revoker,
             )

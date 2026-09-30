@@ -106,6 +106,10 @@ class ManagedPairingDetachTests(unittest.TestCase):
             self.assertEqual(first.configuration_revision, 2)
             self.assertEqual(first.configuration_digest, self.generation[1])
             self.assertEqual(self.detach(), first)
+            self.assertEqual(self.coordinator.read_terminal(
+                "remove-a", self.plan, reviewed_current=self.current,
+                binding=self.binding,
+            ), first)
             self.assertEqual(generation.call_count, 1)
             self.assertEqual(product.call_count, 2)
             self.assertEqual(product.call_args.kwargs["binding_id"], "binding-a")
@@ -130,8 +134,18 @@ class ManagedPairingDetachTests(unittest.TestCase):
                 self.detach()
             prepared = _read(self.root / "operations/remove-a.json", owner_uid=os.getuid())
             self.assertEqual(prepared.state, "PREPARED")
+            with self.assertRaisesRegex(ManagedPairingDetachError, "terminal .* identity"):
+                self.coordinator.read_terminal(
+                    "remove-a", self.plan, reviewed_current=self.current,
+                    binding=self.binding,
+                )
             complete = self.detach()
             self.assertEqual(complete.state, "COMPLETE")
+            with self.assertRaisesRegex(ManagedPairingDetachError, "terminal .* identity"):
+                self.coordinator.read_terminal(
+                    "remove-a", self.plan, reviewed_current=self.current,
+                    binding=replace(self.binding, consumer_id="consumer-other"),
+                )
             self.assertEqual(generation.call_count, 1)
             self.assertEqual(product.call_args.kwargs["operation_id"], prepared.product_operation_id)
             with patch.object(

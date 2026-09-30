@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import os
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from forge_platform.component_operations import (
     ComponentOperationRequest, ProductInstallationReadback, ProductOperationReceipt,
     QualifiedArtifact,
 )
 from forge_platform.ep_consumer_revocation import EPConsumerScope
+from forge_platform.forge_ep_pairing_executor import ForgeEPProductPairingBinding
 from forge_platform.managed_deployments import (
     ManagedComponentBinding, ManagedCompositionBinding, ManagedDeployment, ManagedDeploymentPlanner,
     ManagedDeploymentRegistry, ManagedPeerBinding,
@@ -22,11 +25,20 @@ from forge_platform.managed_paired_forge_removal import (
 from forge_platform.managed_pairing_revocation import (
     ManagedPairingRevocationCoordinator, ManagedPairingRevocationError,
 )
+from forge_platform.managed_pairing_detach import (
+    ManagedPairingDetachCoordinator, ManagedPairingDetachError,
+)
 
 
 FORGE_ARTIFACT = QualifiedArtifact(
     "2.7.37", "a78523603d6ea081d07875ea6b557e73b5d4fe63", "https://example.invalid/forge.whl",
     "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938", "https://example.invalid/forge-evidence",
+)
+FORGE_239_ARTIFACT = QualifiedArtifact(
+    "2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
+    "https://example.invalid/forge-2.7.39.whl",
+    "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+    "https://example.invalid/forge-evidence",
 )
 EP_ARTIFACT = QualifiedArtifact(
     "2.3.106", "7b99b578153ae5d72372a09db194306b49ec9f9c", "https://example.invalid/ep.whl",
@@ -130,6 +142,22 @@ class Revoker:
 
 
 class ManagedPairedForgeRemovalTests(unittest.TestCase):
+    def enable_239_detachment(self):
+        root = Path(self.temporary.name).resolve()
+        self.forge_request = replace(self.forge_request, artifact=FORGE_239_ARTIFACT)
+        binding = ForgeEPProductPairingBinding(
+            "binding-a", "http://127.0.0.1:9001", "ep-a", "consumer-a",
+            "host-a", "project-a", "repo-a", "owner:repo",
+            "keychain://forge/ep-a", "operator-a", True,
+        )
+        detachment = ManagedPairingDetachCoordinator(
+            operations_root=root / "detach", registry=self.registry,
+            currency_guard=self.guard, expected_owner_uid=os.getuid(),
+        )
+        self.coordinator.detachment = detachment
+        self.coordinator.pairing_binding = binding
+        return detachment
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -207,6 +235,46 @@ class ManagedPairedForgeRemovalTests(unittest.TestCase):
         self.assertEqual(self.remove(), first)
         self.assertEqual(self.forge.calls, 1)
         self.assertEqual(self.revoker.mutations, 1)
+
+    def test_239_detach_precedes_uninstall_and_terminal_journal_survives_resume(self):
+        detachment = self.enable_239_detachment()
+        self.forge.pending_once = True
+        def before_uninstall(*_args, **_kwargs):
+            self.assertEqual(self.forge.calls, 0)
+            self.assertTrue(self.ep.ready)
+            return object()
+
+        with patch.object(detachment, "detach", side_effect=before_uninstall) as detach, patch.object(
+            detachment, "read_terminal", return_value=object(),
+        ) as terminal:
+            self.assertEqual(self.remove().state, "RECOVERY_PENDING")
+            self.assertEqual(detach.call_count, 1)
+            self.assertEqual(self.forge.calls, 1)
+            self.assertEqual(self.remove().state, "COMPLETE")
+            self.assertEqual(detach.call_count, 1)
+            self.assertGreaterEqual(terminal.call_count, 2)
+            self.assertEqual(self.remove().state, "COMPLETE")
+            self.assertEqual(detach.call_count, 1)
+        self.assertEqual(self.registry.load("deployment-a").by_component.keys(), {"engineering-platform-server"})
+        self.assertEqual(self.registry.load("deployment-b"), self.other)
+
+    def test_239_missing_detach_authority_blocks_forge_uninstall(self):
+        self.forge_request = replace(self.forge_request, artifact=FORGE_239_ARTIFACT)
+        with self.assertRaisesRegex(ManagedPairedForgeRemovalError, "detach authority"):
+            self.remove()
+        self.assertEqual(self.forge.calls, 0)
+        self.assertEqual(self.registry.load("deployment-a"), self.current)
+
+    def test_239_missing_terminal_detach_blocks_registry_commit(self):
+        detachment = self.enable_239_detachment()
+        with patch.object(detachment, "detach", return_value=object()), patch.object(
+            detachment, "read_terminal",
+            side_effect=ManagedPairingDetachError("terminal receipt lost"),
+        ):
+            with self.assertRaisesRegex(ManagedPairingDetachError, "terminal receipt"):
+                self.remove()
+        self.assertEqual(self.forge.calls, 1)
+        self.assertEqual(self.registry.load("deployment-a"), self.current)
 
     def test_interrupted_forge_uninstall_resumes_exact_target(self):
         self.forge.pending_once = True

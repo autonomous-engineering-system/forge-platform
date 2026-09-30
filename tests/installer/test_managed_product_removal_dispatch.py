@@ -87,6 +87,9 @@ class ManagedProductRemovalDispatchTests(unittest.TestCase):
             coordinator.return_value.remove.return_value = "terminal"
             self.assertEqual(dispatcher.dispatch(admitted), "terminal")
         arguments = coordinator.return_value.remove.call_args
+        constructor = coordinator.call_args.kwargs
+        self.assertIs(constructor["detachment"], dispatcher.detachment)
+        self.assertIs(constructor["pairing_binding"], route.pairing_executor.binding)
         self.assertEqual(arguments.args[0], "remove-a")
         self.assertEqual(arguments.args[1], admitted.plan)
         self.assertIs(arguments.kwargs["forge_adapter"], route.adapters["forge-runtime"])
@@ -109,6 +112,12 @@ class ManagedProductRemovalDispatchTests(unittest.TestCase):
         ) as coordinator:
             dispatcher.dispatch(admitted)
         arguments = coordinator.return_value.remove.call_args
+        constructor = coordinator.call_args.kwargs
+        self.assertIs(constructor["detachment"], dispatcher.detachment)
+        self.assertIs(
+            constructor["pairing_binding"],
+            dispatcher.routes["deployment-a"].pairing_executor.binding,
+        )
         self.assertEqual(arguments.kwargs["ep_request"].kind, "remove")
         self.assertEqual(arguments.kwargs["forge_request"].kind, "remove")
         self.assertIs(arguments.kwargs["revoker"], dispatcher.routes["deployment-a"].ep_consumer_revoker)
