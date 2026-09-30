@@ -728,32 +728,93 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
             decoded = decode_native_purge_recovery_request(recovery)
             with self.assertRaises(ManagedProductOperationServiceError):
                 service.read_terminal_purge_recovery(recovery)
-            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)[1]
+            _, runner, product_receipt = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)
             with (
                 patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
                 patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=preserve_helpers.Supervisor()),
             ):
                 service.execute_preserved_lifecycle(execution)
             self.assertIsNone(registry.load("reviewed-pair"))
-            output = io.BytesIO()
-            self.assertEqual(run(
-                io.BytesIO(recovery), output, service_loader=lambda: service,
-            ), 0)
-            terminal = decode_native_purge_recovery_receipt(
-                output.getvalue(), request=decoded,
+            _, status = _forge_evidence(
+                "PURGE", "purge-a", "forge-a", "Install-A",
+                product_receipt["request_digest"],
             )
-            self.assertEqual(terminal.review_fingerprint,
-                             decoded.execution.review.review_fingerprint)
-            self.assertEqual(terminal.registry_revision, 2)
-            self.assertEqual(read_terminal_purge_recovery_request(
-                recovery, service_loader=lambda: service,
-            ), output.getvalue())
-            self.assertEqual(len(runner.calls), 2)
+            runner.results.extend([(0, json.dumps(status)), (0, json.dumps(status))])
+            with patch(
+                "forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner",
+                return_value=runner,
+            ):
+                output = io.BytesIO()
+                self.assertEqual(run(
+                    io.BytesIO(recovery), output, service_loader=lambda: service,
+                ), 0)
+                terminal = decode_native_purge_recovery_receipt(
+                    output.getvalue(), request=decoded,
+                )
+                self.assertEqual(terminal.review_fingerprint,
+                                 decoded.execution.review.review_fingerprint)
+                self.assertEqual(terminal.registry_revision, 2)
+                self.assertEqual(read_terminal_purge_recovery_request(
+                    recovery, service_loader=lambda: service,
+                ), output.getvalue())
+                runner.results.append((0, json.dumps({
+                    **status, "receipt_digest": "sha256:" + "0" * 64,
+                })))
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.read_terminal_purge_recovery(recovery)
+            self.assertEqual(len(runner.calls), 5)
+            self.assertEqual(
+                sum(call[3:5] == ("server", "purge") for call in runner.calls), 1,
+            )
             with patch.object(service, "read_terminal_purge_recovery", return_value=b"{}"):
                 with self.assertRaises(InstallerProductWorkerUnavailable):
                     read_terminal_purge_recovery_request(
                         recovery, service_loader=lambda: service,
                     )
+
+    def test_ep_only_purge_recovery_requires_fresh_product_tombstone(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, _, service = self._service(root)
+            current = registry.load("reviewed-pair")
+            registry.remove("reviewed-pair", expected_revision=current.revision)
+            registry.create(replace(
+                current, components=(current.active_by_component["engineering-platform-server"],),
+            ))
+            execution = _wire(_request(
+                manifest, registry, "PURGE", "ep-a",
+                component="engineering-platform-server", instance_id="ep-a",
+            ))
+            recovery = self._purge_recovery_request(execution)
+            receipt, status = _ep_evidence("PURGE", "purge-a", "ep-a")
+            outer = {
+                "contract": EP_CONTRACT, "result": "COMPLETE",
+                "instance_id": "ep-a", "receipt": receipt,
+            }
+            runner = FakeRunner(ProductCommandResult, (
+                (0, json.dumps(outer)), (0, json.dumps(status)),
+            ))
+            with patch(
+                "forge_platform.managed_preserved_product_adapters.SubprocessProductCommandRunner",
+                return_value=runner,
+            ):
+                service.execute_preserved_lifecycle(execution)
+                self.assertIsNone(registry.load("reviewed-pair"))
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.read_terminal_purge_recovery(recovery)
+                runner.results.append((0, json.dumps(status)))
+                terminal = decode_native_purge_recovery_receipt(
+                    service.read_terminal_purge_recovery(recovery),
+                    request=decode_native_purge_recovery_request(recovery),
+                )
+                self.assertEqual(terminal.state, "COMPLETE")
+                runner.results.append((0, json.dumps({
+                    **status, "receipt_sha256": "sha256:" + "0" * 64,
+                })))
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.read_terminal_purge_recovery(recovery)
+            self.assertEqual(len(runner.calls), 5)
+            self.assertEqual(sum(call[1] == "purge" for call in runner.calls), 1)
 
     def test_purge_recovery_rejects_foreign_target_and_nonterminal_receipt(self):
         with tempfile.TemporaryDirectory() as directory:

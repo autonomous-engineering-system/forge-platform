@@ -281,6 +281,41 @@ class EPPreservedProductAdapter:
         self.launch_daemons_directory = launch_daemons_directory
         self.runner = runner or SubprocessProductCommandRunner()
 
+    def require_terminal_purge_status(
+        self, review: ManagedPreservedLifecycleReview, *, receipt_digest: str,
+    ) -> None:
+        """Read EP's exact purge tombstone without repeating its remove command."""
+        if (
+            not isinstance(review, ManagedPreservedLifecycleReview)
+            or review.operation != "PURGE"
+            or review.component != EP_COMPONENT
+            or review.instance_id != self.target.instance_id
+            or review.artifact.correlation != self.artifact.correlation
+            or not isinstance(receipt_digest, str)
+            or _DIGEST.fullmatch(receipt_digest) is None
+        ):
+            raise ManagedPreservedProductAdapterError("EP purge readback selector changed")
+        observed = self.runner.run((
+            str(self.provisioner_executable), "lifecycle-status",
+            "--product-root", str(self.product_root),
+            "--launch-daemons-dir", str(self.launch_daemons_directory),
+            "--instance-id", self.target.instance_id,
+            "--operation-id", review.operation_id,
+        ))
+        status = _product_json(observed.returncode, observed.stdout)
+        if (
+            status.get("contract") != EP_CONTRACT
+            or status.get("operation") != "PURGE"
+            or status.get("operation_id") != review.operation_id
+            or status.get("instance_id") != self.target.instance_id
+            or status.get("phase") != "COMPLETE"
+            or status.get("state") != "COMPLETE"
+            or status.get("lifecycle_state") != "PURGED"
+            or status.get("restorable") is not False
+            or status.get("receipt_sha256") != receipt_digest
+        ):
+            raise ManagedPreservedProductAdapterError("EP purge terminal status changed")
+
     def invoke(
         self, review: ManagedPreservedLifecycleReview, *,
         registry: ManagedDeploymentRegistry, installed_manifest: CompositionManifest,

@@ -239,6 +239,74 @@ class ManagedPreservedLifecycleDispatcher:
             artifact=review.artifact,
         ).require_terminal_purge_status(review, receipt_digest=receipt_digest)
 
+    def require_terminal_purge(
+        self, review: ManagedPreservedLifecycleReview, *,
+        installed_manifest: CompositionManifest, receipt_digest: str,
+    ) -> None:
+        """Read the sealed owning product tombstone for every PURGE recovery."""
+        if (
+            not isinstance(review, ManagedPreservedLifecycleReview)
+            or review.operation != "PURGE"
+            or review.component not in {FORGE_COMPONENT, EP_COMPONENT}
+            or not isinstance(installed_manifest, CompositionManifest)
+            or (review.composition_id, review.composition_digest) !=
+                (installed_manifest.composition_id, installed_manifest.manifest_digest)
+            or [item.artifact for item in installed_manifest.components
+                if item.identity == review.component] != [review.artifact]
+        ):
+            raise ManagedPreservedLifecycleDispatchError("purge recovery release changed")
+        if review.historical_peer_reference is not None:
+            self.require_terminal_paired_purge(
+                review, installed_manifest=installed_manifest,
+                receipt_digest=receipt_digest,
+            )
+            return
+        config = self.configurations.get(review.deployment_id)
+        if config is None:
+            raise ManagedPreservedLifecycleDispatchError("purge recovery route is unavailable")
+        if isinstance(config, ReleasedManagedSingleProductRouteConfiguration):
+            if (
+                config.component_identity != review.component
+                or config.installed_artifact != review.artifact
+            ):
+                raise ManagedPreservedLifecycleDispatchError("single purge release changed")
+            target = config.target
+            executable = (config.forge_lifecycle_executable
+                          if review.component == FORGE_COMPONENT else config.executable)
+        else:
+            target = (config.forge_target if review.component == FORGE_COMPONENT
+                      else config.engineering_platform_target)
+            artifact = (config.forge_installed_artifact if review.component == FORGE_COMPONENT
+                        else config.engineering_platform_installed_artifact)
+            if artifact != review.artifact:
+                raise ManagedPreservedLifecycleDispatchError("paired-route purge release changed")
+            executable = (config.forge_lifecycle_executable
+                          if review.component == FORGE_COMPONENT
+                          else config.engineering_platform_provisioner)
+        if target.instance_id != review.instance_id or executable is None:
+            raise ManagedPreservedLifecycleDispatchError("purge recovery instance changed")
+        if review.component == FORGE_COMPONENT:
+            binding = config.forge_uninstall_binding
+            if (
+                not isinstance(target, ForgeServerTarget)
+                or binding is None or binding.runtime_id != review.instance_id
+            ):
+                raise ManagedPreservedLifecycleDispatchError("Forge purge route changed")
+            ForgePreservedProductAdapter(
+                lifecycle_executable=executable, target=target,
+                installation_id=binding.installation_id, artifact=review.artifact,
+            ).require_terminal_purge_status(review, receipt_digest=receipt_digest)
+        else:
+            wheel = config.staged_artifacts.get(review.artifact.digest)
+            if wheel is None or config.engineering_platform_product_root is None:
+                raise ManagedPreservedLifecycleDispatchError("EP purge route changed")
+            EPPreservedProductAdapter(
+                provisioner_executable=executable,
+                product_root=config.engineering_platform_product_root,
+                target=target, artifact=review.artifact, staged_wheel=wheel,
+                launch_daemons_directory=config.launch_daemons_directory,
+            ).require_terminal_purge_status(review, receipt_digest=receipt_digest)
+
     def dispatch(
         self, request: NativePreservedLifecycleRequest, *,
         installed_manifest: CompositionManifest,
