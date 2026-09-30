@@ -17,6 +17,7 @@ python3 tests/component_operations/test_durable_component_operations.py
 python3 tests/component_operations/test_ep_oi3_readback_decoder.py
 python3 tests/component_operations/test_ep_system_provisioner_adapter.py
 python3 -m unittest tests.component_operations.test_ep_consumer_registration
+python3 -m unittest tests.component_operations.test_ep_credential_recovery
 python3 tests/component_operations/test_forge_server_adapter.py
 python3 tests/installer/test_universal_installer.py
 python3 tests/installer/test_managed_deployments.py
