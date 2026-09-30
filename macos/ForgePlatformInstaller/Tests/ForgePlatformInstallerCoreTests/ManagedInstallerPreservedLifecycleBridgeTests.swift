@@ -27,7 +27,7 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
 
     private func fixture(
         _ intent: ManagedInstallerPreservedLifecycleReviewIntent,
-        preservedTarget: Bool? = nil
+        preservedTarget: Bool? = nil, historicalPeer: Bool = true
     ) throws
         -> ManagedInstallerPreservedLifecycleReviewProposal {
         let hasPreserveEvidence = preservedTarget ?? (intent.operation == "RESTORE")
@@ -52,7 +52,7 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
             "preserve_operation_id": hasPreserveEvidence ? .string("preserve-old") : .null,
             "preserve_receipt_digest": hasPreserveEvidence
                 ? .string("sha256:" + String(repeating: "f", count: 64)) : .null,
-            "historical_peer_reference": .string("receipt:pair-a"),
+            "historical_peer_reference": historicalPeer ? .string("receipt:pair-a") : .null,
             "destructive_confirmation_required": .boolean(intent.operation == "PURGE"),
         ]
         let unsigned = StrictSignedJSON.canonicalPayload(from: .object(review))
@@ -100,6 +100,24 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         ]))
     }
 
+    private func purgeRecoveryReceipt(_ request: ManagedInstallerPurgeRecoveryRequest) -> Data {
+        StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPurgeRecoveryReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "execution_request_fingerprint": .string(request.execution.requestFingerprint),
+            "record": .object([
+                "operation_id": .string(request.execution.intent.operationID),
+                "deployment_id": .string(request.execution.intent.deploymentID),
+                "review_fingerprint": .string(request.execution.proposal.reviewFingerprint),
+                "component": .string(request.execution.intent.component),
+                "instance_id": .string(request.execution.intent.instanceID),
+                "state": .string("COMPLETE"),
+                "receipt_digest": .string("sha256:" + String(repeating: "b", count: 64)),
+                "registry_revision": .integer("2"),
+            ]),
+        ]))
+    }
+
     func testNativePreserveRecoveryCodecBindsExactPublicTargetAndTerminalRecord() throws {
         let request = try ManagedInstallerPreserveRecoveryRequest(intent: intent())
         XCTAssertEqual(try ManagedInstallerPreserveRecoveryRequest.decodeJSON(
@@ -135,6 +153,91 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         XCTAssertThrowsError(try ManagedInstallerPreserveRecoveryRequest(
             intent: intent("RESTORE")
         ))
+    }
+
+    func testNativePurgeRecoveryCodecBindsConfirmedReviewAndTerminalRecord() throws {
+        let selected = try intent("PURGE")
+        let proposal = try fixture(selected, historicalPeer: false)
+        let execution = try ManagedInstallerPreservedLifecycleRequest(
+            intent: selected, proposal: proposal, confirmedInstanceID: "forge-a"
+        )
+        let request = try ManagedInstallerPurgeRecoveryRequest(execution: execution)
+        XCTAssertEqual(try ManagedInstallerPurgeRecoveryRequest.decodeJSON(
+            request.canonicalJSONData()
+        ), request)
+        let receipt = try ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+            purgeRecoveryReceipt(request), request: request
+        )
+        XCTAssertEqual(receipt.registryRevision, 2)
+        XCTAssertEqual(receipt.receiptDigest, "sha256:" + String(repeating: "b", count: 64))
+        XCTAssertThrowsError(try ManagedInstallerPurgeRecoveryRequest.decodeJSON(
+            request.canonicalJSONData() + Data(" ".utf8)
+        ))
+        XCTAssertThrowsError(try ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+            purgeRecoveryReceipt(request) + Data(" ".utf8), request: request
+        ))
+        let paired = try ManagedInstallerPreservedLifecycleRequest(
+            intent: selected, proposal: fixture(selected), confirmedInstanceID: "forge-a"
+        )
+        XCTAssertThrowsError(try ManagedInstallerPurgeRecoveryRequest(execution: paired))
+        let foreignIntent = try ManagedInstallerPreservedLifecycleReviewIntent(
+            operationID: "purge-b", deploymentID: "reviewed-pair", operation: "PURGE",
+            component: "forge-runtime", instanceID: "forge-b",
+            installedCompositionIdentity: "composition-a",
+            installedManifestSHA256: "sha256:" + String(repeating: "d", count: 64),
+            installerRelease: release()
+        )
+        let foreign = try ManagedInstallerPurgeRecoveryRequest(execution:
+            ManagedInstallerPreservedLifecycleRequest(
+                intent: foreignIntent,
+                proposal: fixture(foreignIntent, historicalPeer: false),
+                confirmedInstanceID: "forge-b"
+            )
+        )
+        XCTAssertThrowsError(try ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+            purgeRecoveryReceipt(request), request: foreign
+        ))
+    }
+
+    func testNativePurgeRecoveryLocalAndXPCHandlerUseOneExactReceipt() async throws {
+        let selected = try intent("PURGE")
+        let proposal = try fixture(selected, historicalPeer: false)
+        let execution = try ManagedInstallerPreservedLifecycleRequest(
+            intent: selected, proposal: proposal, confirmedInstanceID: "forge-a"
+        )
+        let recovery = try ManagedInstallerPurgeRecoveryRequest(execution: execution)
+        let terminal = try ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+            purgeRecoveryReceipt(recovery), request: recovery
+        )
+        let executor = LifecycleFixtureExecutor(
+            proposal: proposal,
+            receipt: try ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+                receipt(execution), request: execution
+            ), purgeRecoveryReceipt: terminal
+        )
+        let handler = ManagedInstallerProductOperationXPCServiceHandler(executor: executor)
+        let returned: Data? = await withCheckedContinuation { continuation in
+            handler.readTerminalPurgeRecovery(recovery.canonicalJSONData()) {
+                continuation.resume(returning: $0)
+            }
+        }
+        XCTAssertEqual(returned, purgeRecoveryReceipt(recovery))
+        let malformed: Data? = await withCheckedContinuation { continuation in
+            handler.readTerminalPurgeRecovery(
+                recovery.canonicalJSONData() + Data(" ".utf8)
+            ) { continuation.resume(returning: $0) }
+        }
+        XCTAssertNil(malformed)
+        let transport = ManagedInstallerHelperLocalProductOperationTransport(executor: executor)
+        let local = try await transport.readTerminalPurgeRecovery(
+            recovery.canonicalJSONData()
+        ).get()
+        XCTAssertEqual(local, purgeRecoveryReceipt(recovery))
+        let rejected = await transport.readTerminalPurgeRecovery(Data("{}".utf8))
+        guard case .failure(.invalidRequest) = rejected else {
+            XCTFail("unreviewed recovery was admitted")
+            return
+        }
     }
 
     func testExactIntentProposalRequestAndReceiptRoundTrip() throws {
@@ -876,15 +979,18 @@ private actor LifecycleFixtureExecutor: ManagedInstallerProductOperationHelperEx
     let proposal: ManagedInstallerPreservedLifecycleReviewProposal
     let receipt: ManagedInstallerPreservedLifecycleReceipt
     let recoveryReceipt: ManagedInstallerPreserveRecoveryReceipt?
+    let purgeRecoveryReceipt: ManagedInstallerPurgeRecoveryReceipt?
 
     init(
         proposal: ManagedInstallerPreservedLifecycleReviewProposal,
         receipt: ManagedInstallerPreservedLifecycleReceipt,
-        recoveryReceipt: ManagedInstallerPreserveRecoveryReceipt? = nil
+        recoveryReceipt: ManagedInstallerPreserveRecoveryReceipt? = nil,
+        purgeRecoveryReceipt: ManagedInstallerPurgeRecoveryReceipt? = nil
     ) {
         self.proposal = proposal
         self.receipt = receipt
         self.recoveryReceipt = recoveryReceipt
+        self.purgeRecoveryReceipt = purgeRecoveryReceipt
     }
 
     func executeProductOperation(
@@ -926,6 +1032,19 @@ private actor LifecycleFixtureExecutor: ManagedInstallerProductOperationHelperEx
                 recoveryReceipt.canonicalJSONData(), request: request
               )) == recoveryReceipt else { return .failure(.rejected) }
         return .success(recoveryReceipt)
+    }
+
+    func readTerminalPurgeRecovery(
+        _ request: ManagedInstallerPurgeRecoveryRequest
+    ) async -> Result<
+        ManagedInstallerPurgeRecoveryReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard let purgeRecoveryReceipt,
+              (try? ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+                purgeRecoveryReceipt.canonicalJSONData(), request: request
+              )) == purgeRecoveryReceipt else { return .failure(.rejected) }
+        return .success(purgeRecoveryReceipt)
     }
 }
 

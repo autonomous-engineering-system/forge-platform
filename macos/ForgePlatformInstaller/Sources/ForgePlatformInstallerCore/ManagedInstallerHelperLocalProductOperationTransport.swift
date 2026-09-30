@@ -123,6 +123,24 @@ public struct ManagedInstallerHelperLocalProductOperationTransport:
         )
     }
 
+    public func readTerminalPurgeRecovery(_ canonicalRequest: Data) async
+        -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        guard let request = try? ManagedInstallerPurgeRecoveryRequest.decodeJSON(
+            canonicalRequest
+        ) else { return .failure(.invalidRequest) }
+        return await call(
+            canonicalRequest, isCanonical: request.canonicalJSONData() == canonicalRequest,
+            maximumResponseBytes: ManagedInstallerPurgeRecoveryReceipt.maximumBytes,
+            send: service.readTerminalPurgeRecovery,
+            validResponse: { bytes in
+                guard let receipt = try? ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+                    bytes, request: request
+                ) else { return false }
+                return receipt.canonicalJSONData() == bytes
+            }
+        )
+    }
+
     private func call(
         _ canonicalRequest: Data,
         isCanonical: Bool,
