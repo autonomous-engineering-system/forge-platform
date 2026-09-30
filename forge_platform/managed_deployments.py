@@ -538,6 +538,101 @@ class ManagedDeploymentRegistry:
             self._write(candidate)
             return candidate
 
+    def commit_purged(
+        self, *, deployment_id: str, expected_revision: int,
+        component: str, instance_id: str, operation_id: str,
+        artifact: QualifiedArtifact, installed_manifest: CompositionManifest,
+        request_digest: str, receipt: Mapping[str, object],
+        status: Mapping[str, object],
+    ) -> ManagedDeployment | None:
+        """Release only one product-proven instance claim after exact PURGE.
+
+        A final component leaves no active deployment record. The owning
+        product keeps the irreversible tombstone; the installer operation
+        journal must retain the receipt for retry and terminal readback.
+        """
+        _safe_id(deployment_id, "purged deployment_id")
+        if component not in SERVER_COMPONENTS:
+            raise ManagedDeploymentError("purged component is unsupported")
+        if not isinstance(installed_manifest, CompositionManifest):
+            raise ManagedDeploymentError("installed composition authority is unavailable")
+        try:
+            validate_terminal_preserved_lifecycle(
+                component=component, operation="PURGE", operation_id=operation_id,
+                instance_id=instance_id, artifact=artifact,
+                request_digest=request_digest, receipt=receipt, status=status,
+            )
+        except ProductPreservedLifecycleError as error:
+            raise ManagedDeploymentError("owning purge evidence is invalid") from error
+        artifacts = {
+            item.identity: item.artifact for item in installed_manifest.components
+        }
+        selected = artifacts.get(component)
+        if selected is None or selected.correlation != artifact.correlation:
+            raise ManagedDeploymentError("purged artifact is outside installed composition")
+        with self._lock():
+            current = self.load(deployment_id)
+            if current is None or current.revision != expected_revision:
+                raise ManagedDeploymentError("reviewed purge revision changed")
+            if (
+                current.schema not in {MANAGED_DEPLOYMENT_SCHEMA_V2, MANAGED_DEPLOYMENT_SCHEMA_V3}
+                or current.composition_binding is None
+                or (current.composition_binding.composition_id,
+                    current.composition_binding.manifest_digest)
+                    != (installed_manifest.composition_id, installed_manifest.manifest_digest)
+                or current.peer_binding is not None
+                or getattr(current, "historical_peer_binding", None) is not None
+            ):
+                raise ManagedDeploymentError("purge provenance or pairing changed")
+            active = current.active_by_component.get(component)
+            preserved = current.preserved_by_component.get(component)
+            target = active or preserved
+            if target is None or target.instance_id != instance_id:
+                raise ManagedDeploymentError("purge targets another product instance")
+            if preserved is not None and (
+                preserved.version, preserved.source_revision,
+                preserved.artifact_digest,
+            ) != (artifact.version, artifact.source_revision, artifact.digest):
+                raise ManagedDeploymentError("preserved purge release changed")
+            remaining_active = tuple(
+                item for item in current.components if item.component != component
+            )
+            remaining_preserved = tuple(
+                item for item in getattr(current, "preserved_components", ())
+                if item.component != component
+            )
+            if remaining_preserved:
+                candidate: ManagedDeployment | None = ManagedPreservedDeployment(
+                    deployment_id=current.deployment_id,
+                    revision=current.revision + 1, label=current.label,
+                    components=remaining_active, peer_binding=None,
+                    composition_binding=current.composition_binding,
+                    preserved_components=remaining_preserved,
+                    historical_peer_binding=None,
+                )
+            elif remaining_active:
+                candidate = ManagedDeployment(
+                    deployment_id=current.deployment_id,
+                    revision=current.revision + 1, label=current.label,
+                    components=remaining_active, peer_binding=None,
+                    schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
+                    composition_binding=current.composition_binding,
+                )
+            else:
+                candidate = None
+            if candidate is None:
+                path = self._path(deployment_id)
+                path.unlink()
+                directory = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            else:
+                self._assert_instances_unclaimed(candidate, excluding=deployment_id)
+                self._write(candidate)
+            return candidate
+
     def remove(self, deployment_id: str, *, expected_revision: int) -> ManagedDeployment:
         with self._lock():
             current = self.load(deployment_id)
