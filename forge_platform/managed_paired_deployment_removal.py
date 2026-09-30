@@ -34,6 +34,7 @@ from .managed_pairing_revocation import (
     EPConsumerRevoker, ManagedPairingRevocationCoordinator,
     _digest as paired_digest, _read as read_pairing_revocation,
 )
+from .qualified_ep_lifecycle import qualified_ep_lifecycle_artifact
 from .qualified_forge_lifecycle import qualified_forge_lifecycle_artifact
 
 
@@ -203,11 +204,7 @@ class ManagedPairedDeploymentRemovalCoordinator:
             or ep_request.kind != "remove"
             or ep_request.installation_identity != reviewed_current.peer_binding.ep_instance_id
             or ep_request.product_request
-            or ep_request.artifact.version != "2.3.104"
-            or ep_request.artifact.source_revision
-            != "cfce69892278ee2b6c14412c171f5f33596acb0e"
-            or ep_request.artifact.digest
-            != "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb"
+            or not qualified_ep_lifecycle_artifact(ep_request.artifact)
         ):
             raise ManagedPairedDeploymentRemovalError("reviewed paired deployment removal changed")
         support = getattr(forge_adapter, "removal_support", None)

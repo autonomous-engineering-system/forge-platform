@@ -2,13 +2,16 @@
 
 **Assignment:** `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923`  
 **Owning repository:** `autonomous-engineering-system/forge-platform`
-**Producer qualification (2026-09-28):** Forge 2.7.38
+**Producer qualification (2026-09-29):** Forge 2.7.38
 (`0a3d6e35b01da93bb5a674ae7795558655c16c7d`) and Engineering Platform
-2.3.104 (`cfce69892278ee2b6c14412c171f5f33596acb0e`) have exact
-`RELEASE_COMPLETE` receipts and released-wheel lifecycle conformance in
-[forge#142 revision 25](https://github.com/pcvantol/forge/issues/142#issuecomment-5877275912).
+2.3.106 (`7b99b578153ae5d72372a09db194306b49ec9f9c`) have exact
+`RELEASE_COMPLETE` receipts and released-wheel lifecycle evidence in
+[forge#142 revision 26](https://github.com/pcvantol/forge/issues/142#issuecomment-5887942490)
+and [terminal revision 27](https://github.com/pcvantol/forge/issues/142#issuecomment-5892374672).
 Existing exact Forge 2.7.37 managed instances retain lifecycle admission.
-Forge 2.7.36 and EP 2.3.103 remain historical `GAP_PROVEN` artifacts. Producer
+Forge 2.7.36 and EP 2.3.103/2.3.104 remain historical `GAP_PROVEN` artifacts.
+EP 2.3.105 retains its own qualified evidence and inherited-cwd defect; it is
+not the current consumer mutation baseline. Producer
 qualification alone does not approve a production composition or live installer
 claim; those remain held under [forge#141](https://github.com/pcvantol/forge/issues/141).
 **Status:** source implementation under protected qualification; public
@@ -123,9 +126,14 @@ runtime paths.
 
 ## Engineering Platform adapter
 
-The EP adapter consumes the frozen 2.3.104
+The EP adapter consumes the exact released 2.3.106
 `engineering-platform.system-provisioner/v1` command boundary and its additive
 `engineering-platform.system-instance-lifecycle/v1` extension.
+The registry can still decode exact historical 2.3.104 and 2.3.105 preserved
+identities for inventory. That read-only recognition does not authorize
+restore, purge or removal on those bytes. An old preserved instance needs an
+independently qualified EP-owned compatible recovery route before this
+installer can mutate it; it must remain blocked until then.
 
 It delegates exact-target:
 
@@ -558,7 +566,7 @@ Source qualification must include Python, Swift and hosted macOS validation for:
 - v2 manifest/session projection;
 - exact credential-free managed-Python asset transport, private staging,
   no-follow readback and digest rejection;
-- EP 2.3.104 provisioner and instance-lifecycle command correlation;
+- EP 2.3.106 provisioner and instance-lifecycle command correlation;
 - Forge product-init identity binding;
 - Forge system-service target isolation;
 - Forge product-owned read-only update assessment, exact-target update

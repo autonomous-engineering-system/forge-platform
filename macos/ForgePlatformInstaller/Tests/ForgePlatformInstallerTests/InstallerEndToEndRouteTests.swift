@@ -44,6 +44,10 @@ final class InstallerEndToEndRouteTests: XCTestCase {
         guard case .compatible = model.state.composition.status else {
             return XCTFail("review must be compatible")
         }
+        model.setReviewedPairingTarget(
+            projectID: "project-one", repositoryID: "repo-one",
+            repositoryIdentity: "owner.repo-one"
+        )
         model.setCompositionAcknowledged(true)
         model.advance()
 
@@ -132,6 +136,10 @@ final class InstallerEndToEndRouteTests: XCTestCase {
                 deploymentID: "deployment-new",
                 review: compatibleReview()
             )
+        )))
+        XCTAssertTrue(state.setReviewedPairingTarget(try ManagedInstallerReviewedPairingTarget(
+            projectID: "project-one", repositoryID: "repo-one",
+            repositoryIdentity: "owner.repo-one"
         )))
         XCTAssertTrue(state.setCompositionAcknowledged(true))
         return state

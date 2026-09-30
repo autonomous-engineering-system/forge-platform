@@ -15,6 +15,39 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertTrue(invocation.options.acceptInstallerUpdate)
     }
 
+    func testParserAcceptsOnlyCompleteCanonicalNonSecretPairingScope() throws {
+        let invocation = try InstallerCLIParser.parse([
+            "deployment", "apply", "--deployment", "new",
+            "--pairing-project", "project-one",
+            "--pairing-repository", "repo-one",
+            "--pairing-repository-identity", "owner.repo-one",
+            "--yes", "--non-interactive",
+        ])
+        XCTAssertEqual(invocation.options.pairingTarget?.projectID, "project-one")
+        XCTAssertEqual(invocation.options.pairingTarget?.repositoryID, "repo-one")
+        XCTAssertEqual(invocation.options.pairingTarget?.repositoryIdentity, "owner.repo-one")
+        for arguments in [
+            ["deployment", "apply", "--deployment", "new",
+             "--pairing-project", "project-one"],
+            ["deployment", "apply", "--deployment", "new",
+             "--pairing-project", "Project-One",
+             "--pairing-repository", "repo-one",
+             "--pairing-repository-identity", "owner.repo-one"],
+            ["deployment", "remove", "--deployment", "existing",
+             "--operation-id", "remove-one",
+             "--pairing-project", "project-one",
+             "--pairing-repository", "repo-one",
+             "--pairing-repository-identity", "owner.repo-one"],
+            ["deployment", "apply", "--deployment", "new",
+             "--pairing-project", "project-one",
+             "--pairing-project", "project-two",
+             "--pairing-repository", "repo-one",
+             "--pairing-repository-identity", "owner.repo-one"],
+        ] {
+            XCTAssertThrowsError(try InstallerCLIParser.parse(arguments))
+        }
+    }
+
     func testParserCoversPublicCommandSurfaceAndRejectsUnsafeShapes() throws {
         XCTAssertEqual(try InstallerCLIParser.parse([]).command, .help)
         XCTAssertEqual(try InstallerCLIParser.parse(["version"]).command, .version)
@@ -334,11 +367,12 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).planDeployment(
             "new",
-            options: InstallerCLIOptions()
+            options: pairedOptions()
         )
 
         XCTAssertEqual(result.exitCode, .success)
         XCTAssertEqual(result.status, "planned")
+        XCTAssertEqual(result.details["provider_targets"], "")
         XCTAssertEqual(result.records.count, 2)
         XCTAssertEqual(
             result.records[0]["artifact_digest"],
@@ -352,6 +386,37 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(handoffCalls, 0)
     }
 
+    func testPairedCLIPlanFailsClosedWithoutExplicitReviewedScopeEvenWithYes() async throws {
+        let coordinator = CLIWizardCoordinator(session: try session())
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        ).applyDeployment(
+            "new", options: InstallerCLIOptions(nonInteractive: true, assumeYes: true),
+            confirm: { _ in XCTFail("Missing pairing scope must block before confirmation"); return true }
+        )
+        XCTAssertEqual(result.exitCode, .blocked)
+        let executionCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(executionCalls, 0)
+    }
+
+    func testProviderBoundDeploymentPlanDoesNotInstallOrAuthenticateBeforeReview() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let coordinator = CLIWizardCoordinator(session: try session(providers: [provider]))
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        ).planDeployment("new", options: pairedOptions(nonInteractive: true))
+
+        XCTAssertEqual(result.exitCode, .success)
+        XCTAssertEqual(result.status, "planned")
+        XCTAssertEqual(result.details["provider_targets"], provider.id.rawValue)
+        let calls = await coordinator.calls()
+        let providerActions = await coordinator.providerActions()
+        let executionCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(calls, ["inventory", "session", "preflight", "review"])
+        XCTAssertEqual(providerActions, [])
+        XCTAssertEqual(executionCalls, 0)
+    }
+
     func testProviderFreeApplyRunsSameGatesAndProducesTerminalSummary() async throws {
         let coordinator = CLIWizardCoordinator(session: try session())
         let workflow = InstallerCLIWorkflow(
@@ -360,7 +425,7 @@ final class InstallerCLITests: XCTestCase {
         )
         let result = await workflow.applyDeployment(
             "new",
-            options: InstallerCLIOptions(),
+            options: pairedOptions(),
             confirm: { prompt in
                 XCTAssertTrue(prompt.contains("componentwijziging"))
                 XCTAssertTrue(prompt.contains("forge-runtime"))
@@ -388,7 +453,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(nonInteractive: true),
+            options: pairedOptions(nonInteractive: true),
             confirm: { _ in XCTFail("non-interactive must not prompt"); return true }
         )
         XCTAssertEqual(result.exitCode, .confirmationRequired)
@@ -414,18 +479,25 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(nonInteractive: true, assumeYes: true),
+            options: pairedOptions(nonInteractive: true, assumeYes: true),
             confirm: { _ in XCTFail("non-interactive must not prompt"); return true }
         )
         XCTAssertEqual(result.exitCode, .interactionRequired)
         XCTAssertEqual(result.status, "provider-authentication-required")
         let providerActions1 = await coordinator.providerActions()
-        XCTAssertEqual(providerActions1, [.install])
+        XCTAssertTrue(providerActions1.isEmpty)
+        let stageCalls1 = await coordinator.stageCallCount()
+        let readCalls1 = await coordinator.providerReadCount()
+        XCTAssertEqual(stageCalls1, 1)
+        XCTAssertEqual(readCalls1, 1)
+        let noninteractiveCalls = await coordinator.calls()
+        XCTAssertFalse(noninteractiveCalls.contains("provider-authentication"))
+        XCTAssertEqual(result.details["provider_targets"], provider.id.rawValue)
         let executionCalls3 = await coordinator.executionCallCount()
         XCTAssertEqual(executionCalls3, 0)
     }
 
-    func testInteractiveProviderCeremonyMustEndVerifiedBeforeReview() async throws {
+    func testInteractiveProviderStageStillRequiresHumanAuthentication() async throws {
         let provider = ProviderRequirement(provider: .codex, isRequired: true)
         let coordinator = CLIWizardCoordinator(
             session: try session(providers: [provider]),
@@ -436,12 +508,43 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(assumeYes: true),
-            confirm: { _ in true }
+            options: pairedOptions(),
+            confirm: { prompt in
+                XCTAssertTrue(prompt.contains("provider target=\(provider.id.rawValue)"))
+                return true
+            }
+        )
+        XCTAssertEqual(result.exitCode, .interactionRequired)
+        XCTAssertEqual(result.status, "provider-authentication-required")
+        let providerActions2 = await coordinator.providerActions()
+        XCTAssertTrue(providerActions2.isEmpty)
+        let stageCalls2 = await coordinator.stageCallCount()
+        let executionCalls2 = await coordinator.executionCallCount()
+        XCTAssertEqual(stageCalls2, 1)
+        XCTAssertEqual(executionCalls2, 0)
+        let interactiveCalls = await coordinator.calls()
+        XCTAssertTrue(interactiveCalls.contains("provider-authentication"))
+    }
+
+    func testVerifiedProviderReadbackNeedsFreshCurrencyBeforeProductExecution() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let coordinator = CLIWizardCoordinator(
+            session: try session(providers: [provider])
+        )
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        ).applyDeployment(
+            "new", options: pairedOptions(nonInteractive: true, assumeYes: true),
+            confirm: { _ in XCTFail("Automation authority must not prompt"); return false }
         )
         XCTAssertEqual(result.exitCode, .success)
-        let providerActions2 = await coordinator.providerActions()
-        XCTAssertEqual(providerActions2, [.install, .authenticate])
+        let calls = await coordinator.calls()
+        XCTAssertEqual(calls, [
+            "inventory", "session", "preflight", "review", "currency",
+            "provider-stage", "provider-readback", "currency", "execute",
+        ])
+        let providerActions = await coordinator.providerActions()
+        XCTAssertTrue(providerActions.isEmpty)
     }
 
     func testNewInstallerAfterReviewNeverExecutesOldSessionAndCanHandoffWhenAuthorized() async throws {
@@ -455,7 +558,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(
+            options: pairedOptions(
                 nonInteractive: true,
                 assumeYes: true,
                 acceptInstallerUpdate: true
@@ -481,7 +584,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(nonInteractive: true, assumeYes: true),
+            options: pairedOptions(nonInteractive: true, assumeYes: true),
             confirm: { _ in false }
         )
         XCTAssertEqual(result.exitCode, .installerUpdateRequired)
@@ -500,7 +603,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: failedCoordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(assumeYes: true),
+            options: pairedOptions(assumeYes: true),
             confirm: { _ in true }
         )
         XCTAssertEqual(failed.exitCode, .executionFailed)
@@ -515,7 +618,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: readinessCoordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(assumeYes: true),
+            options: pairedOptions(assumeYes: true),
             confirm: { _ in true }
         )
         XCTAssertEqual(readiness.exitCode, .executionFailed)
@@ -541,6 +644,22 @@ final class InstallerCLITests: XCTestCase {
         )
         XCTAssertEqual(remove.exitCode, .blocked)
         XCTAssertEqual(remove.status, "removal-review-blocked")
+    }
+
+    private func pairedOptions(
+        nonInteractive: Bool = false,
+        assumeYes: Bool = false,
+        acceptInstallerUpdate: Bool = false
+    ) -> InstallerCLIOptions {
+        InstallerCLIOptions(
+            nonInteractive: nonInteractive,
+            assumeYes: assumeYes,
+            acceptInstallerUpdate: acceptInstallerUpdate,
+            pairingTarget: try! ManagedInstallerReviewedPairingTarget(
+                projectID: "project-one", repositoryID: "repo-one",
+                repositoryIdentity: "owner.repo-one"
+            )
+        )
     }
 
     private func release(_ version: String) throws -> VerifiedInstallerRelease {
@@ -598,6 +717,8 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private var handoffs = 0
     private var inventories = 0
     private var removals = 0
+    private var stages = 0
+    private var providerReads = 0
 
     init(
         session: VerifiedCompositionSessionPlan,
@@ -882,6 +1003,52 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         return execution
     }
 
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        recordedCalls.append("provider-stage")
+        stages += 1
+        guard let receipt = try? ManagedInstallerReviewedProviderStageReceipt(
+            operationID: "cli-provider-stage",
+            stablePlanFingerprint: String(repeating: "a", count: 64),
+            providerTargetIDs: operation.enabledProviderRequirements.map(\.id)
+                .sorted { $0.rawValue < $1.rawValue }
+        ) else { return .unavailable(.executionFailed) }
+        return .prepared(receipt)
+    }
+
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
+        recordedCalls.append("provider-readback")
+        providerReads += 1
+        let targets = try? operation.enabledProviderRequirements.map {
+            try ManagedInstallerReviewedProviderReadback.Target(
+                id: $0.id,
+                state: providerAuthenticationRequired
+                    ? .authenticationRequired : .verified,
+                evidenceReference: "receipt:cli-provider-readback"
+            )
+        }.sorted { $0.id.rawValue < $1.id.rawValue }
+        guard let targets, let receipt = try? ManagedInstallerReviewedProviderReadback(
+            operationID: "cli-provider-stage",
+            stablePlanFingerprint: String(repeating: "a", count: 64),
+            targets: targets
+        ) else { return .unavailable(.executionFailed) }
+        return .observed(receipt)
+    }
+
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        guard operation.enabledProviderRequirements.contains(where: {
+            $0.id == providerTargetID
+        }) else { return nil }
+        recordedCalls.append("provider-authentication")
+        return nil
+    }
+
     func performProviderAction(
         _ action: ProviderAction,
         for provider: ProviderID
@@ -910,4 +1077,6 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     func handoffCallCount() -> Int { handoffs }
     func inventoryCallCount() -> Int { inventories }
     func removalCallCount() -> Int { removals }
+    func stageCallCount() -> Int { stages }
+    func providerReadCount() -> Int { providerReads }
 }

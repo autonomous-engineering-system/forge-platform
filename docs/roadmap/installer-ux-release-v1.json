@@ -10,7 +10,7 @@
   "first_canary_prerequisite": false,
   "source_pins": {
     "forge": "0a3d6e35b01da93bb5a674ae7795558655c16c7d",
-    "engineering-platform": "cfce69892278ee2b6c14412c171f5f33596acb0e",
+    "engineering-platform": "7b99b578153ae5d72372a09db194306b49ec9f9c",
     "workspace": "36d294836cb653361fda3972de38acce3d2970f8",
     "forge-platform": "e92f4e4151080f7c2a9d4fdeba1541b1407d7907"
   },
@@ -30,10 +30,10 @@
       "status": "QUALIFIED"
     },
     "engineering-platform": {
-      "version": "2.3.104",
-      "source_revision": "cfce69892278ee2b6c14412c171f5f33596acb0e",
-      "release": "engineering-platform-v2.3.104",
-      "wheel_sha256": "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb",
+      "version": "2.3.106",
+      "source_revision": "7b99b578153ae5d72372a09db194306b49ec9f9c",
+      "release": "engineering-platform-v2.3.106",
+      "wheel_sha256": "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694",
       "contract": "engineering-platform.system-instance-lifecycle/v1",
       "release_state": "RELEASE_COMPLETE",
       "status": "QUALIFIED"
@@ -134,7 +134,7 @@
       "depends_on": [],
       "status": "QUALIFIED",
       "qualification_evidence": [
-        "https://github.com/pcvantol/forge/issues/142#issuecomment-5873771111"
+        "https://github.com/pcvantol/forge/issues/142#issuecomment-5887942490"
       ]
     },
     {
@@ -153,7 +153,7 @@
       "depends_on": [],
       "status": "QUALIFIED",
       "qualification_evidence": [
-        "https://github.com/pcvantol/forge/issues/142#issuecomment-5873771111"
+        "https://github.com/pcvantol/forge/issues/142#issuecomment-5892374672"
       ]
     },
     {
@@ -163,8 +163,9 @@
       ],
       "status": "QUALIFIED",
       "qualification_evidence": [
-        "https://github.com/pcvantol/engineering-platform/releases/tag/engineering-platform-v2.3.104",
-        "sha256:872e5937ae857288d4ff48d577d339263c1beefcb080dd1e54c11a51f76ebd85"
+        "https://github.com/pcvantol/engineering-platform/releases/tag/engineering-platform-v2.3.106",
+        "sha256:8ac24fcc41fbf41d8e30efbba1578a95599f50f1cd665d72fc96fe402d260d05",
+        "https://github.com/pcvantol/forge/issues/142#issuecomment-5892374672"
       ]
     },
     {
@@ -173,8 +174,12 @@
         "IUR-LC-FORGE-RELEASE",
         "IUR-LC-EP-RELEASE"
       ],
-      "status": "DESIGNED",
-      "qualification_evidence": []
+      "status": "QUALIFIED",
+      "qualification_evidence": [
+        "https://github.com/autonomous-engineering-system/forge-platform/pull/403",
+        "https://github.com/pcvantol/forge/issues/141#issuecomment-5893027195",
+        "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694"
+      ]
     },
     {
       "id": "IUR-LC-PRESERVED-INVENTORY",

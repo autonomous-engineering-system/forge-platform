@@ -594,6 +594,72 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
         XCTAssertFalse(expected.isEmpty)
     }
 
+    func testPairingAuthorityRequiresForgeCanonicalKeychainReference() throws {
+        func binding(_ reference: String) throws -> ManagedInstallerProductWorkerPairingAuthority {
+            try ManagedInstallerProductWorkerPairingAuthority(
+                bindingID: "binding", consumerID: "consumer", hostID: "host",
+                projectID: "project", repositoryID: "repository",
+                repositoryIdentity: "owner:repository",
+                credentialReference: reference, operatorID: "operator"
+            )
+        }
+        for reference in [
+            "keychain://forge.ep/consumer",
+            "keychain://forge.ep/consumer?namespace=system",
+            "keychain://forge.ep/consumer?version=one",
+            "keychain://forge.ep/consumer?namespace=system&version=one",
+        ] {
+            XCTAssertEqual(try binding(reference).credentialReference, reference)
+        }
+        for reference in [
+            "keychain://consumer", "keychain://forge.ep/", "keychain:///consumer",
+            "keychain://forge.ep/consumer/other", "keychain://forge.ep/consumer?",
+            "keychain://forge.ep/consumer?namespace=",
+            "keychain://forge.ep/consumer?namespace=x&namespace=y",
+            "keychain://forge.ep/consumer?version=one&namespace=system",
+            "keychain://forge.ep/consumer?unknown=x",
+            "keychain://forge.ep/consumer%2Fother", "keychain://forge.ep/consumer#x",
+        ] {
+            XCTAssertThrowsError(try binding(reference), reference)
+        }
+    }
+
+    func testPairingAuthorityRequiresEPCanonicalConsumerAndProjectScope() throws {
+        func binding(_ consumer: String, _ project: String) throws
+            -> ManagedInstallerProductWorkerPairingAuthority {
+            try ManagedInstallerProductWorkerPairingAuthority(
+                bindingID: "binding", consumerID: consumer, hostID: "host",
+                projectID: project, repositoryID: "repository",
+                repositoryIdentity: "owner:repository",
+                credentialReference: "keychain://forge.ep/consumer",
+                operatorID: "operator"
+            )
+        }
+        XCTAssertEqual(try binding("forge-consumer-1", "project-1").projectID,
+                       "project-1")
+        for invalid in ["Forge", "project_name", "1project", "project.name",
+                        "project:name", "project/other", String(repeating: "a", count: 129)] {
+            XCTAssertThrowsError(try binding(invalid, "project"), invalid)
+            XCTAssertThrowsError(try binding("consumer", invalid), invalid)
+        }
+        XCTAssertNoThrow(try ManagedInstallerProductWorkerPairingAuthority(
+            bindingID: "binding", consumerID: "consumer", hostID: "host",
+            projectID: "project", repositoryID: "1repo_name.test",
+            repositoryIdentity: "owner:repository",
+            credentialReference: "keychain://forge.ep/consumer",
+            operatorID: "operator"
+        ))
+        for invalid in ["ab", "Repository", "repo/path"] {
+            XCTAssertThrowsError(try ManagedInstallerProductWorkerPairingAuthority(
+                bindingID: "binding", consumerID: "consumer", hostID: "host",
+                projectID: "project", repositoryID: invalid,
+                repositoryIdentity: "owner:repository",
+                credentialReference: "keychain://forge.ep/consumer",
+                operatorID: "operator"
+            ), invalid)
+        }
+    }
+
     private func preparedPublisher() throws -> (
         URL, URL, FileManagedInstallerProductWorkerAuthorityPublisher
     ) {

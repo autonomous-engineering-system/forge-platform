@@ -60,25 +60,29 @@ asset digests, registry readback and exact PyPI wheel/sdist identities. It does
 not create a branch, PR, manifest, signing authorization or release.
 
 `composition-producer-sources.json` is the reviewed binding from product roles
-to their public producer repositories and release contracts. Forge 2.7.37 and
-Engineering Platform 2.3.104 are the required qualified producer baselines for
-the first functional installer release. Forge 2.7.36 and Engineering Platform
-2.3.103 remain historical ownership-gap artifacts; earlier releases are
-historical evidence only. Workspace is an optional observation: it has no public
+to their public producer repositories and release contracts. Forge 2.7.38 and
+Engineering Platform 2.3.106 are the required qualified producer baselines for
+the first functional installer release. The separately corrected external Forge
+2.7.38 update controller is bound by its own protected source and digest.
+Forge 2.7.36 and Engineering Platform 2.3.103 remain historical ownership-gap
+artifacts; Engineering Platform 2.3.104 and 2.3.105 are historical preservation
+or release evidence, not the active clean-install baseline. Workspace is an optional observation: it has no public
 production release and its current release contract would publish only a source
 bundle, so its absence or `OBSERVED_NOT_INSTALLABLE` status does not block a
-Forge plus Engineering Platform composition. Managed Git and managed Python
-inputs remain `UNCONFIGURED`; those required platform inputs keep
-`manifest_generation` at `BLOCKED`.
+Forge plus Engineering Platform composition. Managed Git, managed Python and
+the pinned Codex/GitHub CLI provider runtime archives have public,
+digest-bound distribution evidence. Their external-input observations may
+report `READY` after a fresh direct public-byte readback.
 
 A Forge or Engineering Platform release is not automatically a safe
-composition. Promotion also needs immutable managed Git and managed Python
-runtime artifacts, their provenance, product build/test evidence, compatibility
-approval, service contracts, provider runtime identities and an explicit
-upgrade route. The current Forge and EP release receipts prove their wheel and
-source identities; the required platform-owned runtime artifact set is not
-published. A future Workspace release remains outside this composition until it
-has an installable, explicitly reviewed contract.
+composition. Promotion still needs an explicitly reviewed immutable composition
+with product build/test evidence, compatibility approval, service contracts,
+exact provider runtime and target identities, and an explicit upgrade route.
+The current Forge and EP release receipts prove their wheel and source
+identities; a public platform artifact alone does not prove its component-owned
+installation, authentication or readiness. A future Workspace release remains
+outside this composition until it has an installable, explicitly reviewed
+contract.
 
 Therefore no sequence-1 production manifest is committed and no stable catalog
 asset is claimed live. A later producer increment may poll peer releases and

@@ -399,7 +399,7 @@ class ManagedProductOperationHelperService:
             ) from error
 
     def execute_preserved_lifecycle(self, canonical_request: bytes) -> bytes:
-        """Execute only a reviewed PRESERVE against helper-pinned product routes."""
+        """Execute an exact reviewed lifecycle against helper-pinned product routes."""
         try:
             if (
                 not isinstance(self.authority_resolver, PinnedManagedProductOperationAuthorityResolver)
@@ -423,7 +423,7 @@ class ManagedProductOperationHelperService:
                 or record.receipt_digest is None
                 or record.registry_revision is None
             ):
-                raise ValueError("preserve execution record changed")
+                raise ValueError("lifecycle execution record changed")
             return encode_native_preserved_lifecycle_receipt(
                 request, receipt_digest=record.receipt_digest,
                 registry_revision=record.registry_revision,

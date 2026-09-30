@@ -4,8 +4,11 @@ import Foundation
 
 /// Establishes an observed ABSENT state only on a truly empty private helper
 /// runtime/venv root. A missing state record beside any prior slot is ambiguous
-/// and remains blocked. The caller holds the host-wide Python mutation lease.
+/// and remains blocked. Bootstrap requires the host-wide Python mutation lease;
+/// observation only reads private root identities for review.
 protocol ManagedPythonInitialHostStateReading: Sendable {
+    func observe() -> Result<ManagedPythonRuntimeInstalledReadback,
+        ManagedPythonRuntimeActivationFailure>
     func readOrBootstrap() -> Result<ManagedPythonRuntimeInstalledReadback,
         ManagedPythonRuntimeActivationFailure>
 }
@@ -19,7 +22,19 @@ struct MacOSManagedPythonInitialHostState: ManagedPythonInitialHostStateReading,
         self.expectedOwner = expectedOwner
     }
 
+    /// Read-only first-install observation. Its absent evidence is derived from
+    /// the same private root identities later used by the locked bootstrap.
+    func observe() -> Result<ManagedPythonRuntimeInstalledReadback,
+        ManagedPythonRuntimeActivationFailure> {
+        inspect(bootstrap: false)
+    }
+
     func readOrBootstrap() -> Result<ManagedPythonRuntimeInstalledReadback,
+        ManagedPythonRuntimeActivationFailure> {
+        inspect(bootstrap: true)
+    }
+
+    private func inspect(bootstrap: Bool) -> Result<ManagedPythonRuntimeInstalledReadback,
         ManagedPythonRuntimeActivationFailure> {
         guard Darwin.geteuid() == expectedOwner,
               helperRoot.isFileURL, helperRoot.baseURL == nil,
@@ -66,6 +81,7 @@ struct MacOSManagedPythonInitialHostState: ManagedPythonInitialHostStateReading,
                 retainedRuntimeIdentitySHA256s: [],
                 evidenceReference: evidence
             )
+            if !bootstrap { return .success(absent) }
             guard case .success = FileManagedInstallerManagedPythonHostStateStore(
                 rootDirectory: helperRoot
             ).persistManagedPythonHostState(absent),

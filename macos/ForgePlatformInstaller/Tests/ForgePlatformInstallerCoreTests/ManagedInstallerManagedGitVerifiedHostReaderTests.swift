@@ -83,9 +83,9 @@ final class ManagedInstallerManagedGitVerifiedHostReaderTests: XCTestCase {
         )
         let absent = try await reader.readManagedTool(fixture.requirement).get()
         XCTAssertEqual(absent.state, .absent)
-        XCTAssertEqual(absent.evidenceReference,
-                       FileManagedInstallerManagedGitHostReader
-                        .missingStateEvidenceReference)
+        XCTAssertTrue(absent.evidenceReference.hasPrefix("receipt:managed-git-absent-"))
+        let repeated = try await reader.readManagedTool(fixture.requirement).get()
+        XCTAssertEqual(repeated, absent)
 
         let unknown = try ManagedToolInstalledReadback(
             identity: .git, state: .unknown, version: nil,
@@ -105,6 +105,30 @@ final class ManagedInstallerManagedGitVerifiedHostReaderTests: XCTestCase {
         try store.persistManagedGitHostState(active).get()
         let unbacked = await reader.readManagedTool(fixture.requirement)
         XCTAssertEqual(unbacked.failureValue, .rejected)
+    }
+
+    func testMissingGitStateBesideOrphanedSlotFailsClosed() async throws {
+        let fixture = try GitArchiveFixture()
+        let roots = try privateRoots()
+        defer { try? FileManager.default.removeItem(at: roots.parent) }
+        let reader = MacOSManagedInstallerManagedGitVerifiedHostReader(
+            stateRoot: roots.state, slotsRoot: roots.slots,
+            expectedOwner: geteuid()
+        )
+        let orphan = roots.slots.appendingPathComponent("orphaned-slot")
+        try Data("partial".utf8).write(to: orphan)
+        let rejected = await reader.readManagedTool(fixture.requirement)
+        XCTAssertEqual(rejected.failureValue, .rejected)
+        try FileManager.default.removeItem(at: orphan)
+        let absent = try await reader.readManagedTool(fixture.requirement).get()
+        XCTAssertEqual(absent.state, .absent)
+        try FileManager.default.removeItem(at: roots.slots)
+        try FileManager.default.createDirectory(
+            at: roots.slots, withIntermediateDirectories: false
+        )
+        XCTAssertEqual(chmod(roots.slots.path, mode_t(0o700)), 0)
+        let changed = try await reader.readManagedTool(fixture.requirement).get()
+        XCTAssertNotEqual(changed.evidenceReference, absent.evidenceReference)
     }
 
     func testWrongTreeEvidenceAndMissingCacheRejectActiveState() async throws {

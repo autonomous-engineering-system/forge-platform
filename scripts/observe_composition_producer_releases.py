@@ -19,18 +19,20 @@ import sys
 from typing import Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 
 SCHEMA = "forge-platform.composition-producer-observation/v1"
 CONFIG_SCHEMA = "forge-platform.composition-producer-sources/v1"
 MAXIMUM_DOCUMENT_BYTES = 1024 * 1024
+MAXIMUM_EXTERNAL_ASSET_BYTES = 100 * 1024 * 1024
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 Fetcher = Callable[[str], bytes]
+DigestFetcher = Callable[[str], str]
 
 
 class ObservationError(ValueError):
@@ -101,6 +103,35 @@ def _network_fetch(url: str) -> bytes:
     if len(raw) > MAXIMUM_DOCUMENT_BYTES:
         raise ObservationError("public evidence exceeds the document boundary")
     return raw
+
+
+class _NoExternalRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        raise ObservationError("external input redirected")
+
+
+def _network_external_digest(url: str) -> str:
+    """Hash a bounded direct HTTPS artifact without treating it as a JSON document."""
+    _require_https(url, "external input artifact URL")
+    opener = build_opener(_NoExternalRedirect())
+    total = 0
+    hasher = sha256()
+    try:
+        with opener.open(Request(url, headers={"User-Agent": "forge-platform-observer/1"}), timeout=30) as response:
+            if response.geturl() != url or response.status != 200:
+                raise ObservationError("external input URL or HTTP status drifted")
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                if total > MAXIMUM_EXTERNAL_ASSET_BYTES:
+                    raise ObservationError("external input exceeds the asset boundary")
+                hasher.update(chunk)
+    except HTTPError as error:
+        raise ObservationError(f"HTTP {error.code} while reading external input") from error
+    except (URLError, TimeoutError) as error:
+        raise ObservationError("external input transport failed") from error
+    if total == 0:
+        raise ObservationError("external input is empty")
+    return "sha256:" + hasher.hexdigest()
 
 
 def _require_https(value: object, label: str) -> str:
@@ -403,7 +434,10 @@ def _observe_producer(producer: Mapping[str, object], fetch: Fetcher) -> Mapping
     }
 
 
-def _observe_external(value: Mapping[str, object], fetch: Fetcher) -> Mapping[str, object]:
+def _observe_external(
+    value: Mapping[str, object], fetch: Fetcher,
+    digest_fetch: DigestFetcher | None = None,
+) -> Mapping[str, object]:
     if value["status"] == "UNCONFIGURED":
         return {"identity": value["identity"], "status": "UNCONFIGURED"}
     evidence = value["evidence"]
@@ -412,8 +446,9 @@ def _observe_external(value: Mapping[str, object], fetch: Fetcher) -> Mapping[st
     assert isinstance(artifacts, list)
     for artifact in artifacts:
         assert isinstance(artifact, Mapping)
-        raw = fetch(str(artifact["url"]))
-        if _digest(raw) != artifact["digest"]:
+        url = str(artifact["url"])
+        actual_digest = digest_fetch(url) if digest_fetch else _digest(fetch(url))
+        if actual_digest != artifact["digest"]:
             raise ObservationError(f'external input {value["identity"]} artifact digest drifted')
     return {
         "identity": value["identity"],
@@ -423,7 +458,10 @@ def _observe_external(value: Mapping[str, object], fetch: Fetcher) -> Mapping[st
     }
 
 
-def observe(*, config_path: Path, observed_at: str, fetch: Fetcher = _network_fetch) -> Mapping[str, object]:
+def observe(
+    *, config_path: Path, observed_at: str, fetch: Fetcher = _network_fetch,
+    external_digest_fetch: DigestFetcher | None = None,
+) -> Mapping[str, object]:
     observed_at = _require_timestamp(observed_at)
     config_raw, producers, external = _load_config(config_path)
     observations: list[Mapping[str, object]] = []
@@ -441,7 +479,10 @@ def observe(*, config_path: Path, observed_at: str, fetch: Fetcher = _network_fe
         observations.append(observation)
         if producer["composition_eligible"] and observation["status"] != "READY":
             blockers.append(f'{producer["identity"]}:{observation["status"]}')
-    external_observations = [_observe_external(item, fetch) for item in external]
+    digest_fetch = external_digest_fetch
+    if digest_fetch is None and fetch is _network_fetch:
+        digest_fetch = _network_external_digest
+    external_observations = [_observe_external(item, fetch, digest_fetch) for item in external]
     for item in external_observations:
         if item["status"] != "READY":
             blockers.append(f'{item["identity"]}:{item["status"]}')

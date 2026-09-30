@@ -23,19 +23,22 @@ public struct InstallerCLIOptions: Equatable, Sendable {
     public let assumeYes: Bool
     public let acceptInstallerUpdate: Bool
     public let reviewFingerprint: String?
+    public let pairingTarget: ManagedInstallerReviewedPairingTarget?
 
     public init(
         json: Bool = false,
         nonInteractive: Bool = false,
         assumeYes: Bool = false,
         acceptInstallerUpdate: Bool = false,
-        reviewFingerprint: String? = nil
+        reviewFingerprint: String? = nil,
+        pairingTarget: ManagedInstallerReviewedPairingTarget? = nil
     ) {
         self.json = json
         self.nonInteractive = nonInteractive
         self.assumeYes = assumeYes
         self.acceptInstallerUpdate = acceptInstallerUpdate
         self.reviewFingerprint = reviewFingerprint
+        self.pairingTarget = pairingTarget
     }
 }
 
@@ -65,25 +68,34 @@ public enum InstallerCLIExitCode: Int32, Equatable, Sendable {
     case executionFailed = 60
 }
 
-public struct InstallerCLIResult: Equatable, Sendable {
+public struct InstallerCLIResult: Equatable, Sendable,
+    CustomStringConvertible, CustomDebugStringConvertible {
     public let exitCode: InstallerCLIExitCode
     public let status: String
     public let message: String
     public let details: [String: String]
     public let records: [[String: String]]
+    public let authenticationChallenge:
+        ManagedInstallerProviderAuthenticationChallengeResponse?
+
+    public var description: String { "<installer CLI result: \(status)>" }
+    public var debugDescription: String { description }
 
     public init(
         exitCode: InstallerCLIExitCode,
         status: String,
         message: String,
         details: [String: String] = [:],
-        records: [[String: String]] = []
+        records: [[String: String]] = [],
+        authenticationChallenge:
+            ManagedInstallerProviderAuthenticationChallengeResponse? = nil
     ) {
         self.exitCode = exitCode
         self.status = status
         self.message = message
         self.details = details
         self.records = records
+        self.authenticationChallenge = authenticationChallenge
     }
 }
 
@@ -98,8 +110,8 @@ public enum InstallerCLIParser {
       forge-platform-installer self-update check [--json]
       forge-platform-installer self-update apply [--yes] [--json]
       forge-platform-installer deployment list [--json]
-      forge-platform-installer deployment plan --deployment <id|new> [--non-interactive] [--json]
-      forge-platform-installer deployment apply --deployment <id|new> [--yes] [--non-interactive] [--accept-installer-update] [--json]
+      forge-platform-installer deployment plan --deployment <id|new> [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--non-interactive] [--json]
+      forge-platform-installer deployment apply --deployment <id|new> [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--yes] [--non-interactive] [--accept-installer-update] [--json]
       forge-platform-installer deployment remove --deployment <id> --operation-id <id> [--component forge-runtime] [--review-fingerprint <sha256> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment remove plan --deployment <id> --operation-id <id> [--component forge-runtime] [--json]
       forge-platform-installer deployment lifecycle plan <preserve|restore|purge> --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--json]
@@ -120,6 +132,9 @@ public enum InstallerCLIParser {
         var operationID: String?
         var component: String?
         var reviewFingerprint: String?
+        var pairingProject: String?
+        var pairingRepository: String?
+        var pairingRepositoryIdentity: String?
         var positional: [String] = []
 
         var index = 0
@@ -166,6 +181,20 @@ public enum InstallerCLIParser {
                 if isOperation { operationID = value }
                 else if isFingerprint { reviewFingerprint = value }
                 else { component = value }
+            case "--pairing-project", "--pairing-repository", "--pairing-repository-identity":
+                let existing = argument == "--pairing-project" ? pairingProject
+                    : argument == "--pairing-repository" ? pairingRepository
+                    : pairingRepositoryIdentity
+                guard existing == nil else { throw InstallerCLIParseError.invalidArguments }
+                index += 1
+                guard index < arguments.count else { throw InstallerCLIParseError.invalidArguments }
+                let value = arguments[index]
+                guard !value.isEmpty, !value.hasPrefix("-") else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                if argument == "--pairing-project" { pairingProject = value }
+                else if argument == "--pairing-repository" { pairingRepository = value }
+                else { pairingRepositoryIdentity = value }
             default:
                 guard !argument.hasPrefix("-") else {
                     throw InstallerCLIParseError.invalidArguments
@@ -280,6 +309,28 @@ public enum InstallerCLIParser {
                 throw InstallerCLIParseError.invalidArguments
             }
         }
+        let pairingTarget: ManagedInstallerReviewedPairingTarget?
+        if pairingProject != nil || pairingRepository != nil || pairingRepositoryIdentity != nil {
+            switch command {
+            case .deploymentPlan, .deploymentApply: break
+            default: throw InstallerCLIParseError.invalidArguments
+            }
+            guard let pairingProject, let pairingRepository,
+                  let pairingRepositoryIdentity else {
+                throw InstallerCLIParseError.invalidArguments
+            }
+            do {
+                pairingTarget = try ManagedInstallerReviewedPairingTarget(
+                    projectID: pairingProject,
+                    repositoryID: pairingRepository,
+                    repositoryIdentity: pairingRepositoryIdentity
+                )
+            } catch {
+                throw InstallerCLIParseError.invalidArguments
+            }
+        } else {
+            pairingTarget = nil
+        }
 
         return InstallerCLIInvocation(
             command: command,
@@ -288,7 +339,8 @@ public enum InstallerCLIParser {
                 nonInteractive: nonInteractive,
                 assumeYes: assumeYes,
                 acceptInstallerUpdate: acceptInstallerUpdate,
-                reviewFingerprint: reviewFingerprint
+                reviewFingerprint: reviewFingerprint,
+                pairingTarget: pairingTarget
             )
         )
     }
@@ -723,15 +775,8 @@ public struct InstallerCLIWorkflow: Sendable {
             return Self.blocked("De sessiespecifieke host- en toolcontrole is niet geslaagd.")
         }
 
-        let providerResult = await verifyProviders(
-            state: &state,
-            options: options
-        )
-        if let providerResult {
-            return providerResult
-        }
         guard state.advance() else {
-            return Self.blocked("Niet alle vereiste providertargets zijn geverifieerd.")
+            return Self.blocked("De providertargets konden niet uit de geverifieerde sessie worden afgeleid.")
         }
 
         let reviewResult = await coordinator.prepareCompositionReview(
@@ -741,6 +786,9 @@ public struct InstallerCLIWorkflow: Sendable {
         guard state.recordCompositionReviewPreparation(reviewResult),
               case .compatible = state.composition.status else {
             return Self.blocked("Het gekwalificeerde wijzigingsplan is niet beschikbaar of niet compatibel.")
+        }
+        guard Self.bindPairingTarget(options.pairingTarget, to: &state) else {
+            return Self.blocked("Een Forge+EP-plan vereist een expliciet project, repository en repository-identiteit; een enkel product accepteert geen pairingdoel.")
         }
 
         return InstallerCLIResult(
@@ -752,6 +800,11 @@ public struct InstallerCLIWorkflow: Sendable {
                 "composition": session.compositionIdentity,
                 "manifest_sha256": session.manifestSHA256,
                 "component_count": String(state.composition.components.count),
+                "provider_targets": state.enabledProviders.map(\.id.rawValue)
+                    .sorted().joined(separator: ","),
+                "pairing_project": state.pairingTarget?.projectID ?? "",
+                "pairing_repository": state.pairingTarget?.repositoryID ?? "",
+                "pairing_repository_identity": state.pairingTarget?.repositoryIdentity ?? "",
             ],
             records: Self.reviewRecords(state.composition)
         )
@@ -801,15 +854,8 @@ public struct InstallerCLIWorkflow: Sendable {
             return Self.blocked("De sessiespecifieke host- en toolcontrole is niet geslaagd.")
         }
 
-        let providerResult = await verifyProviders(
-            state: &state,
-            options: options
-        )
-        if let providerResult {
-            return providerResult
-        }
         guard state.advance() else {
-            return Self.blocked("Niet alle vereiste providertargets zijn geverifieerd.")
+            return Self.blocked("De providertargets konden niet uit de geverifieerde sessie worden afgeleid.")
         }
 
         let reviewResult = await coordinator.prepareCompositionReview(
@@ -821,6 +867,9 @@ public struct InstallerCLIWorkflow: Sendable {
         }
         guard case .compatible = state.composition.status else {
             return Self.blocked("Het gekwalificeerde wijzigingsplan is niet compatibel.")
+        }
+        guard Self.bindPairingTarget(options.pairingTarget, to: &state) else {
+            return Self.blocked("Een Forge+EP-plan vereist een expliciet project, repository en repository-identiteit; een enkel product accepteert geen pairingdoel.")
         }
 
         if !options.assumeYes {
@@ -836,7 +885,11 @@ public struct InstallerCLIWorkflow: Sendable {
                     records: Self.reviewRecords(state.composition)
                 )
             }
-            guard await confirm(Self.reviewPrompt(state.composition)) else {
+            guard await confirm(Self.reviewPrompt(
+                state.composition,
+                providers: state.enabledProviders,
+                pairingTarget: state.pairingTarget
+            )) else {
                 return InstallerCLIResult(
                     exitCode: .confirmationRequired,
                     status: "cancelled",
@@ -859,8 +912,94 @@ public struct InstallerCLIWorkflow: Sendable {
         )
         switch currency {
         case .current:
-            guard state.recordPreMutationCurrencyCheck(currency),
-                  let operation = state.beginManagedDeploymentExecution() else {
+            guard state.recordPreMutationCurrencyCheck(currency) else {
+                return Self.blocked("De pre-mutation installercontrole kon geen uitvoeringsautoriteit vormen.")
+            }
+            if !state.enabledProvidersVerified {
+                guard let operation = state.reviewedProviderStageOperation() else {
+                    return Self.blocked("De beoordeelde providerfase is gewijzigd.")
+                }
+                switch await coordinator.stageReviewedProviders(operation) {
+                case .prepared(let receipt):
+                    let expected = state.enabledProviders.map(\.id)
+                        .sorted { $0.rawValue < $1.rawValue }
+                    guard receipt.providerTargetIDs == expected else {
+                        return Self.blocked("De providerfase gaf andere doelinstanties terug.")
+                    }
+                    guard case .observed(let readback) = await coordinator
+                        .readReviewedProviders(operation),
+                          state.recordReviewedProviderReadback(
+                              readback, after: receipt, for: operation
+                          ) else {
+                        return Self.blocked("De helper kon de exacte providerstatus niet onafhankelijk teruglezen.")
+                    }
+                    if !readback.allVerified {
+                        let challenge: ManagedInstallerProviderAuthenticationChallengeResponse?
+                        if !options.nonInteractive, !options.json,
+                           let target = readback.targets.first(where: {
+                               $0.state == .authenticationRequired
+                           }) {
+                            guard state.beginPreMutationCurrencyCheck() else {
+                                return Self.blocked("De installercontrole kon niet opnieuw starten.")
+                            }
+                            let current = await coordinator.recheckInstallerBeforeMutation(
+                                currentVersion: state.currentInstallerVersion
+                            )
+                            guard state.recordPreMutationCurrencyCheck(current),
+                                  state.reviewedProviderStageOperation() == operation else {
+                                return Self.blocked(
+                                    "De installer of het beoordeelde providertarget is gewijzigd."
+                                )
+                            }
+                            challenge = await coordinator.beginReviewedProviderAuthentication(
+                                operation, providerTargetID: target.id
+                            )
+                        } else {
+                            challenge = nil
+                        }
+                        return InstallerCLIResult(
+                            exitCode: .interactionRequired,
+                            status: "provider-authentication-required",
+                            message: "De gekozen provideromgevingen zijn voorbereid. Menselijke aanmelding en onafhankelijke verificatie per doelinstantie zijn vereist vóór productuitvoering.",
+                            details: [
+                                "deployment_id": deploymentID,
+                                "operation_id": receipt.operationID,
+                                "stable_plan_fingerprint": receipt.stablePlanFingerprint,
+                                "provider_targets": expected.map(\.rawValue).joined(separator: ","),
+                            ],
+                            records: readback.targets.map { [
+                                "provider_target": $0.id.rawValue,
+                                "state": $0.state.rawValue,
+                                "evidence_reference": $0.evidenceReference,
+                            ] },
+                            authenticationChallenge: challenge
+                        )
+                    }
+                    guard state.beginPreMutationCurrencyCheck() else {
+                        return Self.blocked("De providercontrole kon geen nieuwe installercontrole starten.")
+                    }
+                    let afterProviders = await coordinator.recheckInstallerBeforeMutation(
+                        currentVersion: state.currentInstallerVersion
+                    )
+                    switch afterProviders {
+                    case .current:
+                        guard state.recordPreMutationCurrencyCheck(afterProviders) else {
+                            return Self.blocked("Installer-release wijzigde na providerverificatie.")
+                        }
+                    case .updateRequired(let release):
+                        _ = state.recordPreMutationCurrencyCheck(afterProviders)
+                        return await handleRequiredUpdate(
+                            release, options: options, confirm: confirm
+                        )
+                    case .failed:
+                        _ = state.recordPreMutationCurrencyCheck(afterProviders)
+                        return Self.blocked("Installer-release kon na providerverificatie niet opnieuw worden gecontroleerd.")
+                    }
+                case .unavailable:
+                    return Self.blocked("De bevoorrechte helper kon de beoordeelde providerfase niet veilig voorbereiden.")
+                }
+            }
+            guard let operation = state.beginManagedDeploymentExecution() else {
                 return Self.blocked("De pre-mutation installercontrole kon geen uitvoeringsautoriteit vormen.")
             }
             let execution = await coordinator.executeReviewedManagedDeployment(operation)
@@ -919,72 +1058,6 @@ public struct InstallerCLIWorkflow: Sendable {
             _ = state.recordPreMutationCurrencyCheck(currency)
             return Self.blocked("De installer kon vlak vóór mutatie niet opnieuw worden geverifieerd.")
         }
-    }
-
-    private func verifyProviders(
-        state: inout InstallerWizardState,
-        options: InstallerCLIOptions
-    ) async -> InstallerCLIResult? {
-        for targetID in state.enabledProviders.map(\.id) {
-            guard let progress = state.providers.first(where: { $0.id == targetID }) else {
-                return Self.blocked("Een providertarget verdween uit de geverifieerde sessie.")
-            }
-            guard state.requestProviderTargetAction(.install, for: targetID) else {
-                return Self.blocked("Providerinstallatie kon niet veilig worden gestart.")
-            }
-            let install = await coordinator.performProviderAction(
-                .install,
-                for: progress.requirement
-            )
-            state.applyProviderTargetActionResult(
-                install,
-                for: targetID,
-                action: .install
-            )
-            guard let installed = state.providers.first(where: { $0.id == targetID }) else {
-                return Self.blocked("Providerstatus ontbreekt na installatie.")
-            }
-            if installed.state.isVerified {
-                continue
-            }
-            guard case .authenticationRequired = installed.state else {
-                return InstallerCLIResult(
-                    exitCode: .executionFailed,
-                    status: "provider-failed",
-                    message: "Providerinstallatie of -verificatie is mislukt.",
-                    details: ["provider_target": targetID.rawValue]
-                )
-            }
-            if options.nonInteractive {
-                return InstallerCLIResult(
-                    exitCode: .interactionRequired,
-                    status: "provider-authentication-required",
-                    message: "Providerauthenticatie vereist een human login ceremony.",
-                    details: ["provider_target": targetID.rawValue]
-                )
-            }
-            guard state.requestProviderTargetAction(.authenticate, for: targetID) else {
-                return Self.blocked("Providerauthenticatie kon niet veilig worden gestart.")
-            }
-            let auth = await coordinator.performProviderAction(
-                .authenticate,
-                for: progress.requirement
-            )
-            state.applyProviderTargetActionResult(
-                auth,
-                for: targetID,
-                action: .authenticate
-            )
-            guard state.providers.first(where: { $0.id == targetID })?.isVerified == true else {
-                return InstallerCLIResult(
-                    exitCode: .executionFailed,
-                    status: "provider-verification-failed",
-                    message: "Provideraanmelding is niet als VERIFIED teruggelezen.",
-                    details: ["provider_target": targetID.rawValue]
-                )
-            }
-        }
-        return nil
     }
 
     private func handleRequiredUpdate(
@@ -1067,7 +1140,11 @@ public struct InstallerCLIWorkflow: Sendable {
         }
     }
 
-    private static func reviewPrompt(_ review: CompositionReview) -> String {
+    private static func reviewPrompt(
+        _ review: CompositionReview,
+        providers: [ProviderProgress],
+        pairingTarget: ManagedInstallerReviewedPairingTarget?
+    ) -> String {
         let records = reviewRecords(review)
         var lines = [
             "Gekwalificeerd wijzigingsplan: \(review.manifestIdentity)",
@@ -1084,6 +1161,12 @@ public struct InstallerCLIWorkflow: Sendable {
                 line += " digest=\(digest)"
             }
             lines.append(line)
+        }
+        for provider in providers.sorted(by: { $0.id.rawValue < $1.id.rawValue }) {
+            lines.append("- provider target=\(provider.id.rawValue) scope=\(provider.requirement.credentialScope.rawValue)")
+        }
+        if let pairingTarget {
+            lines.append("- pairing project=\(pairingTarget.projectID) repository=\(pairingTarget.repositoryID) identity=\(pairingTarget.repositoryIdentity)")
         }
         lines.append("Voer deze \(records.count) beoordeelde componentwijziging(en) uit?")
         return lines.joined(separator: "\n")
@@ -1103,6 +1186,17 @@ public struct InstallerCLIWorkflow: Sendable {
                 "detail": component.detail,
             ]
         }
+    }
+
+    private static func bindPairingTarget(
+        _ target: ManagedInstallerReviewedPairingTarget?,
+        to state: inout InstallerWizardState
+    ) -> Bool {
+        if state.requiresPairingTarget {
+            guard let target else { return false }
+            return state.setReviewedPairingTarget(target)
+        }
+        return target == nil
     }
 
     private static func blocked(_ message: String) -> InstallerCLIResult {

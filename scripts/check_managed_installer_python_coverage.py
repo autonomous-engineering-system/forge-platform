@@ -54,6 +54,7 @@ TARGETS = (
     "forge_platform/product_worker_authority.py",
     "forge_platform/product_preserved_lifecycle.py",
     "forge_platform/qualified_forge_lifecycle.py",
+    "forge_platform/qualified_ep_lifecycle.py",
     "forge_platform/provider_fanout.py",
     "forge_platform/engineering_platform_system_adapter.py",
     "forge_platform/engineering_platform_provider_target.py",
@@ -72,9 +73,17 @@ TARGETS = (
     "scripts/package_macos_installer_app.py",
     "scripts/build_installer_product_worker.py",
     "scripts/package_macos_installer_archive.py",
+    "scripts/prepare_managed_tool_pages.py",
+    "scripts/verify_managed_tool_pages.py",
+    "scripts/prepare_provider_runtime_pages.py",
+    "scripts/build_provider_runtime_archives.py",
 )
 
 TESTS = (
+    "tests/installer/test_managed_tool_pages.py",
+    "tests/installer/test_verify_managed_tool_pages.py",
+    "tests/installer/test_provider_runtime_pages.py",
+    "tests/installer/test_build_provider_runtime_archives.py",
     "tests/component_operations/test_component_operations.py",
     "tests/component_operations/test_durable_component_operations.py",
     "tests/component_operations/test_ep_system_provisioner_adapter.py",

@@ -41,7 +41,8 @@ public struct ManagedInstallerHelperReviewedPlanAdmission: Sendable {
             inventoryEvidenceReference: helperSnapshot.inventory.evidenceReference,
             currentInstallerRelease: helperCurrentRelease,
             enabledProviderRequirements: providers,
-            components: helperSnapshot.review.components
+            components: helperSnapshot.review.components,
+            pairingTarget: selection.pairingTarget
         )
         return try prepare(
             intent: selection.intent,

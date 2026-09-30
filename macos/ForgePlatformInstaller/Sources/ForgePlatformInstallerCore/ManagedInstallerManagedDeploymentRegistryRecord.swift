@@ -284,9 +284,15 @@ public struct ManagedInstallerManagedDeploymentRegistryRecord:
                 && source == "0a3d6e35b01da93bb5a674ae7795558655c16c7d"
                 && digest == "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8")
         case "engineering-platform-server":
-            return version == "2.3.104"
+            return (version == "2.3.104"
                 && source == "cfce69892278ee2b6c14412c171f5f33596acb0e"
-                && digest == "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb"
+                && digest == "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb")
+                || (version == "2.3.105"
+                && source == "ad44263f6ec87ea018cda11f053fa12521ae9d79"
+                && digest == "sha256:22dd1e49c263b55dc9eee396810a09fc43509984fe685f3c00d26289d55e8adc")
+                || (version == "2.3.106"
+                && source == "7b99b578153ae5d72372a09db194306b49ec9f9c"
+                && digest == "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694")
         default: return false
         }
     }

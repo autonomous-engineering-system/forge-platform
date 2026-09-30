@@ -79,13 +79,236 @@ final class ManagedInstallerPrepublicationWheelHelperAssemblyTests:
         ))
     }
 
+    func testPriorRouterReadsExactDeploymentWithoutInstallingIt() async throws {
+        let fresh = AssemblyWheelSpy(evidence: "sha256:"
+            + String(repeating: "a", count: 64))
+        let old = AssemblyWheelSpy(evidence: "sha256:"
+            + String(repeating: "b", count: 64))
+        let current = try request(component: "forge-runtime")
+        let previous = try request(component: "forge-runtime",
+                                   deployment: "prior-deployment")
+        let receipt = try ManagedPythonProductVenvReceipt(
+            operationID: previous.operationID,
+            deploymentID: previous.deploymentID,
+            componentIdentity: previous.componentIdentity,
+            venvIdentity: previous.venvIdentity,
+            runtimeIdentitySHA256: previous.runtimeIdentitySHA256,
+            runtimeSlotIdentity: previous.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: previous.runtimeSlotEvidenceReference,
+            state: .ready, evidenceReference: "receipt:prior-ready"
+        )
+        let evidence = ManagedInstallerProductWorkerVenvPublicationEvidence(
+            request: previous, activationReceipt: receipt,
+            wheelBindingEvidence: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let key = try XCTUnwrap(ManagedInstallerPriorProductWheelRouteKey(
+            deploymentID: previous.deploymentID,
+            componentIdentity: previous.componentIdentity
+        ))
+        let router = try XCTUnwrap(ManagedInstallerFreshPriorProductWheelRouter(
+            freshDeploymentID: current.deploymentID,
+            freshComponentIdentity: current.componentIdentity,
+            fresh: fresh, priorEvidence: [evidence], prior: [key: old]
+        ))
+        let path = URL(fileURLWithPath: "/private/tmp/route-test")
+        let freshResult = try await router.readPublished(
+            path, request: current
+        ).get()
+        let oldResult = try await router.readPublished(
+            path, request: previous
+        ).get()
+        XCTAssertNotEqual(freshResult, oldResult)
+        let installResult = try await router.installIntoPending(
+            path, published: path, request: current
+        ).get()
+        XCTAssertEqual(installResult, "sha256:" + String(repeating: "a", count: 64))
+        guard case .failure(.rejected) = await router.installIntoPending(
+            path, published: path, request: previous
+        ) else { return XCTFail("prior mutation was routed") }
+        let foreign = try request(component: "forge-runtime",
+                                  deployment: "foreign-deployment")
+        guard case .failure(.rejected) = await router.readPublished(
+            path, request: foreign
+        ) else { return XCTFail("foreign read was routed") }
+        let freshCount = await fresh.count()
+        let oldCount = await old.count()
+        XCTAssertEqual(freshCount, 2)
+        XCTAssertEqual(oldCount, 1)
+        XCTAssertNil(ManagedInstallerFreshPriorProductWheelRouter(
+            freshDeploymentID: current.deploymentID,
+            freshComponentIdentity: current.componentIdentity,
+            fresh: fresh, priorEvidence: [evidence], prior: [:]
+        ))
+        XCTAssertNil(ManagedInstallerPriorProductWheelRouteKey(
+            deploymentID: "../unsafe", componentIdentity: "forge-runtime"
+        ))
+    }
+
+    func testPriorRouterAdmitsBothFreshComponentsButNoPriorMutation() async throws {
+        let fresh = AssemblyWheelSpy(evidence: "sha256:"
+            + String(repeating: "a", count: 64))
+        let prior = AssemblyWheelSpy(evidence: "sha256:"
+            + String(repeating: "b", count: 64))
+        let forge = try request(component: "forge-runtime")
+        let ep = try request(component: "engineering-platform-server")
+        let previous = try request(component: "forge-runtime",
+                                   deployment: "prior-deployment")
+        let receipt = try ManagedPythonProductVenvReceipt(
+            operationID: previous.operationID,
+            deploymentID: previous.deploymentID,
+            componentIdentity: previous.componentIdentity,
+            venvIdentity: previous.venvIdentity,
+            runtimeIdentitySHA256: previous.runtimeIdentitySHA256,
+            runtimeSlotIdentity: previous.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: previous.runtimeSlotEvidenceReference,
+            state: .ready, evidenceReference: "receipt:prior-ready"
+        )
+        let evidence = ManagedInstallerProductWorkerVenvPublicationEvidence(
+            request: previous, activationReceipt: receipt,
+            wheelBindingEvidence: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let key = try XCTUnwrap(ManagedInstallerPriorProductWheelRouteKey(
+            deploymentID: previous.deploymentID,
+            componentIdentity: previous.componentIdentity
+        ))
+        let router = try XCTUnwrap(ManagedInstallerFreshPriorProductWheelRouter(
+            freshDeploymentID: forge.deploymentID,
+            freshComponentIdentities: ["forge-runtime", "engineering-platform-server"],
+            fresh: fresh, priorEvidence: [evidence], prior: [key: prior]
+        ))
+        let path = URL(fileURLWithPath: "/private/tmp/paired-route-test")
+        for target in [forge, ep] {
+            _ = try await router.installIntoPending(
+                path, published: path, request: target
+            ).get()
+            _ = try await router.readPublished(path, request: target).get()
+        }
+        _ = try await router.readPublished(path, request: previous).get()
+        guard case .failure(.rejected) = await router.installIntoPending(
+            path, published: path, request: previous
+        ) else { return XCTFail("prior route received fresh mutation") }
+        let freshCount = await fresh.count()
+        let priorCount = await prior.count()
+        XCTAssertEqual(freshCount, 4)
+        XCTAssertEqual(priorCount, 1)
+        XCTAssertNil(ManagedInstallerFreshPriorProductWheelRouter(
+            freshDeploymentID: forge.deploymentID,
+            freshComponentIdentities: ["forge-runtime", "workspace-server"],
+            fresh: fresh, priorEvidence: [], prior: [:]
+        ))
+    }
+
+    func testPriorAssemblyRequiresExactPublishedWheelAndRuntime() async throws {
+        let runtime = managedPythonTestRuntime
+        let environment = try XCTUnwrap(managedPythonTestVenvs.first {
+            $0.componentIdentity == "forge-runtime"
+        })
+        let request = ManagedPythonProductVenvMutationRequest(
+            operationID: "prior-operation", deploymentID: "prior-deployment",
+            environment: environment,
+            runtimeSlotIdentity: ManagedPythonRuntimeSlotMutationRequest
+                .runtimeSlotIdentity(for: runtime.identitySHA256),
+            runtimeSlotEvidenceReference: "receipt:prior-runtime"
+        )
+        let receipt = try ManagedPythonProductVenvReceipt(
+            operationID: request.operationID,
+            deploymentID: request.deploymentID,
+            componentIdentity: request.componentIdentity,
+            venvIdentity: request.venvIdentity,
+            runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+            runtimeSlotIdentity: request.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: request.runtimeSlotEvidenceReference,
+            state: .ready, evidenceReference: "receipt:prior-venv"
+        )
+        let evidence = ManagedInstallerProductWorkerVenvPublicationEvidence(
+            request: request, activationReceipt: receipt,
+            wheelBindingEvidence: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let artifact = "sha256:" + String(repeating: "a", count: 64)
+        let authority = "sha256:" + String(repeating: "c", count: 64)
+        let route = try ManagedInstallerProductWorkerSingleRouteAuthority(
+            deploymentID: request.deploymentID,
+            componentIdentity: request.componentIdentity,
+            instanceID: "forge-prior", serviceAccount: "_fpi_prior",
+            bindPort: 31_001, artifactSHA256: artifact,
+            forgeInstallationID: "forge-prior",
+            venvSlotName: MacOSManagedPythonProductVenvSlotLayout.slotName(for: request)
+        )
+        let binding = ManagedInstallerProductWheelBinding(
+            deploymentID: route.deploymentID,
+            componentIdentity: route.componentIdentity,
+            instanceID: route.instanceID,
+            serviceAccount: route.serviceAccount,
+            venvSlotName: try XCTUnwrap(route.venvSlotName),
+            version: "2.7.38",
+            sourceRevision: String(repeating: "d", count: 40),
+            sourceURL: "https://example.test/forge.whl",
+            qualificationURL: "https://example.test/qualification.json",
+            artifactSHA256: artifact, authoritySHA256: authority
+        )
+        let staged = ManagedInstallerProductWheelStagingReceipt(
+            binding: binding, fileName: String(artifact.dropFirst(7)) + ".artifact",
+            byteCount: 1024
+        )
+        let release = VerifiedInstallerRelease(
+            version: try InstallerVersion("0.2.4"),
+            releasePage: "https://example.test/installer",
+            assetName: "installer.zip",
+            sha256: "sha256:" + String(repeating: "f", count: 64),
+            signingKeyID: "forge-platform-installer-release-v1"
+        )
+        func make(
+            _ staged: ManagedInstallerProductWheelStagingReceipt?,
+            _ candidate: ManagedInstallerProductWorkerVenvPublicationEvidence = evidence
+        ) async -> (any ManagedPythonProductVenvWheelInstalling)? {
+            await ManagedInstallerPrepublicationWheelHelperAssembly.makePrior(
+                release: release, runtime: runtime,
+                priorAuthoritySHA256: authority,
+                route: route, evidence: candidate,
+                acquisition: PriorAssemblyAcquisition(staged: staged),
+                helperRoot: URL(fileURLWithPath: "/private/tmp/prior-assembly"),
+                runtimeVerifier: AssemblyUnavailableRuntime(),
+                resource: AssemblyUnavailableWorker(),
+                runner: MacOSManagedInstallerProductWorkerRunner(),
+                expectedOwner: geteuid(), authorityCheck: { binding }
+            )
+        }
+        let exact = await make(staged)
+        XCTAssertNotNil(exact)
+        let missing = await make(nil)
+        XCTAssertNil(missing)
+        let stale = ManagedInstallerProductWheelStagingReceipt(
+            binding: .init(
+                deploymentID: binding.deploymentID,
+                componentIdentity: binding.componentIdentity,
+                instanceID: binding.instanceID,
+                serviceAccount: binding.serviceAccount,
+                venvSlotName: binding.venvSlotName,
+                version: binding.version,
+                sourceRevision: binding.sourceRevision,
+                sourceURL: binding.sourceURL,
+                qualificationURL: binding.qualificationURL,
+                artifactSHA256: binding.artifactSHA256,
+                authoritySHA256: "sha256:" + String(repeating: "d", count: 64)
+            ), fileName: staged.fileName, byteCount: staged.byteCount
+        )
+        let foreign = await make(stale)
+        XCTAssertNil(foreign)
+        let wrongEvidence = ManagedInstallerProductWorkerVenvPublicationEvidence(
+            request: request, activationReceipt: receipt,
+            wheelBindingEvidence: "not-a-digest"
+        )
+        let invalid = await make(staged, wrongEvidence)
+        XCTAssertNil(invalid)
+    }
+
     private func request(
-        component: String
+        component: String, deployment: String = "deployment-a"
     ) throws -> ManagedPythonProductVenvMutationRequest {
         let runtime = managedPythonTestRuntime.identitySHA256
         return ManagedPythonProductVenvMutationRequest(
             operationID: "operation-001",
-            deploymentID: "deployment-a",
+            deploymentID: deployment,
             environment: try ManagedProductVirtualEnvironmentIdentity(
                 componentIdentity: component,
                 venvIdentity: "test-venv",
@@ -95,6 +318,19 @@ final class ManagedInstallerPrepublicationWheelHelperAssemblyTests:
                 .runtimeSlotIdentity(for: runtime),
             runtimeSlotEvidenceReference: "receipt:runtime-slot"
         )
+    }
+}
+
+private struct PriorAssemblyAcquisition: ManagedInstallerPriorProductWheelAcquiring {
+    let staged: ManagedInstallerProductWheelStagingReceipt?
+
+    func acquire(
+        expectedInstallerRelease: VerifiedInstallerRelease,
+        deploymentID: String, componentIdentity: String, instanceID: String
+    ) async -> Result<ManagedInstallerProductWheelStagingReceipt,
+                      ManagedInstallerProductWheelAcquisitionFailure> {
+        guard let staged else { return .failure(.unavailable) }
+        return .success(staged)
     }
 }
 

@@ -101,14 +101,17 @@ extension ManagedPythonRuntimeSlotMutationCoordinator: ManagedPythonRuntimeSlotE
 /// mutation. Staged bytes are discarded before that record is cleared after
 /// every terminal result. Cleanup or record-clear failure takes precedence
 /// because restart recovery must retain authority to retry exact cleanup. One
-/// injected host-wide lease covers recovery, staging, inspection, mutation and
-/// terminal cleanup; a busy or unavailable lease fails before state access.
+/// injected host-wide lease covers recovery, initial host-state bootstrap,
+/// staging, inspection, mutation and terminal cleanup; a busy or unavailable
+/// lease fails before state access.
 public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
     private let staging: any ManagedPythonRuntimeAssetStaging
     private let inspector: any ManagedPythonRuntimeArchiveInspecting
     private let slotCoordinator: any ManagedPythonRuntimeSlotEnsuring
     private let recoveryStore: any ManagedPythonRuntimeRecoveryStoring
     private let operationLock: any ManagedPythonRuntimeOperationLocking
+    private let initialHostState: (any ManagedPythonInitialHostStateReading)?
+    private let reviewedInitialReadback: ManagedPythonRuntimeInstalledReadback?
 
     public init(
         staging: any ManagedPythonRuntimeAssetStaging,
@@ -122,6 +125,26 @@ public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
         self.slotCoordinator = slotCoordinator
         self.recoveryStore = recoveryStore
         self.operationLock = operationLock
+        self.initialHostState = nil
+        self.reviewedInitialReadback = nil
+    }
+
+    init(
+        staging: any ManagedPythonRuntimeAssetStaging,
+        inspector: any ManagedPythonRuntimeArchiveInspecting,
+        slotCoordinator: any ManagedPythonRuntimeSlotEnsuring,
+        recoveryStore: any ManagedPythonRuntimeRecoveryStoring,
+        operationLock: any ManagedPythonRuntimeOperationLocking,
+        initialHostState: any ManagedPythonInitialHostStateReading,
+        reviewedInitialReadback: ManagedPythonRuntimeInstalledReadback
+    ) {
+        self.staging = staging
+        self.inspector = inspector
+        self.slotCoordinator = slotCoordinator
+        self.recoveryStore = recoveryStore
+        self.operationLock = operationLock
+        self.initialHostState = initialHostState
+        self.reviewedInitialReadback = reviewedInitialReadback
     }
 
     /// Cleanup-only restart entry point. It never inspects an archive or calls
@@ -205,6 +228,11 @@ public struct ManagedPythonRuntimePreparationCoordinator: Sendable {
     ) async -> Result<ManagedPythonRuntimePreparationReceipt, ManagedPythonRuntimePreparationFailure> {
         guard case .success = await recoverInterruptedPreparationWithLeaseHeld() else {
             return .failure(.cleanupPending)
+        }
+
+        if let initialHostState, let reviewedInitialReadback {
+            guard case .success(let durable) = initialHostState.readOrBootstrap(),
+                  durable == reviewedInitialReadback else { return .failure(.rejected) }
         }
 
         let stagedAssets: ManagedPythonStagedAssetSet

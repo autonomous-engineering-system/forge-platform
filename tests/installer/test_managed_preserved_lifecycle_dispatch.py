@@ -46,6 +46,7 @@ from forge_platform.managed_product_operation_service import (
 from forge_platform.released_product_routes import ReleasedManagedProductRouteConfiguration
 from tests.installer import test_managed_preserve_execution as preserve_helpers
 from tests.installer.test_managed_preserved_lifecycle_plan import _fixture
+from tests.installer import test_managed_deployments as deployment_helpers
 from tests.installer.test_managed_preserved_lifecycle_request import _request
 from tests.installer.test_managed_preserved_lifecycle_proposal import _wire
 from tests.installer.test_managed_preserved_product_adapters import FakeRunner, _ep_evidence
@@ -55,6 +56,7 @@ from forge_platform.product_preserved_lifecycle import EP_CONTRACT
 from hashlib import sha256
 import json
 from tests.installer.test_managed_product_operation_admission import installer_release
+from tests.installer.test_product_preserved_lifecycle import FORGE_COMPONENT, _REQUEST
 
 
 class Resolver:
@@ -283,6 +285,109 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
                     execute_preserved_lifecycle_request(
                         request_bytes, service_loader=lambda: service,
                     )
+
+    def test_confirmed_purge_uses_same_worker_and_replays_exact_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, currency, _, service = self._service(root)
+            request_bytes = _wire(_request(manifest, registry, "PURGE", "forge-a"))
+            request = decode_native_preserved_lifecycle_request(request_bytes)
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)[1]
+            supervisor = preserve_helpers.Supervisor()
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+            ):
+                output = io.BytesIO()
+                self.assertEqual(run(
+                    io.BytesIO(request_bytes), output, service_loader=lambda: service,
+                ), 0)
+                receipt = decode_native_preserved_lifecycle_receipt(
+                    output.getvalue(), request=request,
+                )
+                self.assertEqual(receipt["state"], "COMPLETE")
+                self.assertEqual(receipt["instance_id"], "forge-a")
+                self.assertEqual(execute_preserved_lifecycle_request(
+                    request_bytes, service_loader=lambda: service,
+                ), output.getvalue())
+            current = registry.load("reviewed-pair")
+            self.assertEqual(set(current.active_by_component), {"engineering-platform-server"})
+            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
+            self.assertTrue(all(call["mutation"] == "PURGE" for call in currency.calls))
+
+    def test_paired_purge_is_rejected_before_product_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, currency, _, service = self._service(root, paired=True)
+            request_bytes = _wire(_request(manifest, registry, "PURGE", "forge-a"))
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)[1]
+            supervisor = preserve_helpers.Supervisor()
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+                self.assertRaises(ManagedProductOperationServiceError),
+            ):
+                service.execute_preserved_lifecycle(request_bytes)
+            self.assertEqual(runner.calls, [])
+            self.assertEqual(supervisor.calls, [])
+            self.assertEqual(currency.calls, [])
+
+    def test_final_component_purge_worker_receipt_replays_after_registry_removal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, _, service = self._service(root)
+            current = registry.load("reviewed-pair")
+            registry.remove("reviewed-pair", expected_revision=current.revision)
+            registry.create(replace(
+                current,
+                components=(current.active_by_component["forge-runtime"],),
+            ))
+            request_bytes = _wire(_request(manifest, registry, "PURGE", "forge-a"))
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)[1]
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=preserve_helpers.Supervisor()),
+            ):
+                receipt = execute_preserved_lifecycle_request(
+                    request_bytes, service_loader=lambda: service,
+                )
+                self.assertIsNone(registry.load("reviewed-pair"))
+                self.assertEqual(execute_preserved_lifecycle_request(
+                    request_bytes, service_loader=lambda: service,
+                ), receipt)
+            self.assertEqual(len(runner.calls), 2)
+
+    def test_preserved_forge_installation_id_must_match_sealed_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, _, service = self._service(root)
+            receipt, status = deployment_helpers.ManagedDeploymentTests._preserve_evidence(
+                FORGE_COMPONENT, "forge-a", "preserve-a"
+            )
+            artifact = next(
+                item.artifact for item in manifest.components
+                if item.identity == FORGE_COMPONENT
+            )
+            registry.commit_preserved(
+                deployment_id="reviewed-pair", expected_revision=1,
+                component=FORGE_COMPONENT, instance_id="forge-a",
+                operation_id="preserve-a", artifact=artifact,
+                installed_manifest=manifest, request_digest=_REQUEST,
+                receipt=receipt, status=status,
+            )
+            request_bytes = _wire(_request(manifest, registry, "PURGE", "forge-a"))
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)[1]
+            supervisor = preserve_helpers.Supervisor()
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+                self.assertRaises(ManagedProductOperationServiceError) as failure,
+            ):
+                service.execute_preserved_lifecycle(request_bytes)
+            self.assertIsInstance(failure.exception.__cause__, ManagedPreservedLifecycleDispatchError)
+            self.assertEqual(runner.calls, [])
+            self.assertEqual(supervisor.calls, [])
 
     def test_foreign_route_and_stale_composition_fail_before_service_or_product(self):
         with tempfile.TemporaryDirectory() as directory:

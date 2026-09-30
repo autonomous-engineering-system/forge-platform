@@ -90,6 +90,20 @@ final class ManagedInstallerProductServiceAccountDirectoryMutationTests: XCTestC
         )
         let rejected = await mutation.readAccount(foreign)
         XCTAssertEqual(rejected.failure, .invalidRequest)
+        let reusedDeploymentID = ManagedInstallerProductServiceAccountClaim(
+            stablePlanFingerprint: claim.stablePlanFingerprint,
+            operationID: claim.operationID, deploymentID: claim.deploymentID,
+            componentIdentity: claim.componentIdentity,
+            instanceID: claim.deploymentID,
+            productArtifactSHA256: claim.productArtifactSHA256,
+            accountName: ManagedInstallerProductServiceAccountPlanner.name(
+                deploymentID: claim.deploymentID,
+                componentIdentity: claim.componentIdentity,
+                instanceID: claim.deploymentID
+            )
+        )
+        let reused = await mutation.createAccount(reusedDeploymentID)
+        XCTAssertEqual(reused.failure, .invalidRequest)
         let wrongUID = MacOSManagedInstallerProductServiceAccountDirectoryMutation(
             directory: directory, requiredEffectiveUID: geteuid() + 1
         )
@@ -101,15 +115,18 @@ final class ManagedInstallerProductServiceAccountDirectoryMutationTests: XCTestC
     private func exactClaim() -> ManagedInstallerProductServiceAccountClaim {
         let deployment = "deployment-a"
         let component = ProviderOwnerComponent.forgeRuntime.rawValue
+        let instance = ManagedInstallerProductServiceAccountPlanner.instanceID(
+            deploymentID: deployment, componentIdentity: component
+        )
         return ManagedInstallerProductServiceAccountClaim(
             stablePlanFingerprint: String(repeating: "a", count: 64),
             operationID: "service-account-operation",
             deploymentID: deployment, componentIdentity: component,
-            instanceID: deployment,
+            instanceID: instance,
             productArtifactSHA256: "sha256:" + String(repeating: "b", count: 64),
             accountName: ManagedInstallerProductServiceAccountPlanner.name(
                 deploymentID: deployment, componentIdentity: component,
-                instanceID: deployment
+                instanceID: instance
             )
         )
     }

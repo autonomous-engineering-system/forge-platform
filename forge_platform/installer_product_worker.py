@@ -27,6 +27,7 @@ from .managed_preserved_lifecycle_proposal import (
     decode_native_preserved_lifecycle_review_proposal,
 )
 from .managed_preserved_lifecycle_request import (
+    NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
     MAXIMUM_NATIVE_PRESERVED_LIFECYCLE_RECEIPT_BYTES,
     NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
     decode_native_preserved_lifecycle_receipt,
@@ -256,7 +257,7 @@ def execute_preserved_lifecycle_request(
     canonical_request: bytes, *,
     service_loader: ServiceLoader = load_released_product_service,
 ) -> bytes:
-    """Bind an executed PRESERVE receipt to the exact reviewed native request."""
+    """Bind an executed lifecycle receipt to the exact reviewed native request."""
     request = decode_native_preserved_lifecycle_request(canonical_request)
     service = service_loader()
     if not isinstance(service, ManagedProductOperationHelperService):
@@ -320,7 +321,10 @@ def run(
             response = execute_preserved_lifecycle_review_intent(
                 request, service_loader=service_loader,
             )
-        elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA:
+        elif isinstance(envelope, dict) and envelope.get("schema") in {
+            NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
+            NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
+        }:
             response = execute_preserved_lifecycle_request(
                 request, service_loader=service_loader,
             )

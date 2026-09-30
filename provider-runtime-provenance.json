@@ -1,0 +1,37 @@
+{
+  "schema": "forge-platform.provider-runtime-provenance/v1",
+  "assets": [
+    {
+      "provider": "codex",
+      "version": "0.157.1",
+      "upstream_repository": "openai/codex",
+      "upstream_tag": "rust-v0.157.1",
+      "upstream_source_sha": "36650394c5b38c2990ccf2a3457165ca3e9d9726",
+      "upstream_asset": "codex-aarch64-apple-darwin.tar.gz",
+      "upstream_archive_sha256": "sha256:3c45b162b7a76f51325015b1d0a8112c73219b7a9b59cd5762c37c9ba55894fa",
+      "developer_id_team": "2DC432GLL2",
+      "executable_path": "bin/codex",
+      "executable_sha256": "sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d",
+      "license_sha256": "sha256:d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc",
+      "normalized_asset": "forge-platform-provider-codex-0.157.1-arm64.tar.gz",
+      "normalized_sha256": "sha256:a096caeec7ca0f29c6fe0e3389d34d5c0f8be01cd9291f983a54439a2a63d7ee",
+      "normalized_size": 94726370
+    },
+    {
+      "provider": "github-cli",
+      "version": "2.101.0",
+      "upstream_repository": "cli/cli",
+      "upstream_tag": "v2.101.0",
+      "upstream_source_sha": "0cf1092493af067646fc5f3db9421c6a6ec9c938",
+      "upstream_asset": "gh_2.101.0_macOS_arm64.zip",
+      "upstream_archive_sha256": "sha256:e4303e39d8f07141c4bad4b99b01079f05029c59b27076e8fbc825c985ecdd8b",
+      "developer_id_team": "VEKTX9H2N7",
+      "executable_path": "bin/gh",
+      "executable_sha256": "sha256:aa97dfb4a82f7c56063cdcbfaa39a738b923c1bdca29bd5a041b8e959ca38e04",
+      "license_sha256": "sha256:6da4adc42392c8485e40b4251c7e332fc3352df1947c9ffade71dd60b14a7a4f",
+      "normalized_asset": "forge-platform-provider-gh-2.101.0-arm64.tar.gz",
+      "normalized_sha256": "sha256:493e6fa64f918810ee057fcab446a0006989a92dd3edbf2802ab13d3da9e1cc0",
+      "normalized_size": 13759850
+    }
+  ]
+}

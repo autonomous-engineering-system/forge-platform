@@ -1,0 +1,341 @@
+name: Forge Platform provider-runtime Pages publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact protected main commit containing the reviewed provider candidate
+        required: true
+        type: string
+      release_tag:
+        description: Exact provider backing release tag
+        required: true
+        type: string
+      release_id:
+        description: Exact private provider backing release ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-platform-provider-runtime-pages
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: >-
+      ${{ github.repository == 'autonomous-engineering-system/forge-platform' &&
+          github.ref == 'refs/heads/main' && github.ref_protected &&
+          github.sha == inputs.source_sha && github.workflow_sha == inputs.source_sha }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # A private draft release requires push-authorized read access.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Review exact main, draft and existing public site
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
+          if git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" >/dev/null; then
+            git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+            TAG_SHA="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          else
+            test "$?" -eq 2
+            TAG_SHA=absent
+          fi
+          export TAG_SHA
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$RUNNER_TEMP/provider-release.json"
+          python3 - "$RUNNER_TEMP/provider-release.json" <<'PY'
+          import json, os, re, sys
+          from pathlib import Path
+          from scripts.prepare_managed_tool_pages import (
+              load_config as load_tools, validate_backing_release,
+              validate_release_tag_binding, PublicationError,
+          )
+          from scripts.prepare_provider_runtime_pages import load_config
+          candidate = load_config(Path('provider-runtime-pages.json'))
+          old = load_tools(Path('managed-tool-pages.json'))
+          if (candidate['release_tag'] != os.environ['RELEASE_TAG']
+              or candidate['preserved_managed_tool_tag'] != old['release_tag']
+              or re.fullmatch(r'[0-9a-f]{40}', os.environ['SOURCE_SHA']) is None):
+              raise PublicationError('provider release or preserved tool binding differs')
+          draft = validate_backing_release(
+              candidate, json.loads(Path(sys.argv[1]).read_text()),
+              os.environ['SOURCE_SHA'], int(os.environ['RELEASE_ID']))
+          validate_release_tag_binding(draft, None if os.environ['TAG_SHA'] == 'absent'
+                                       else os.environ['TAG_SHA'], os.environ['SOURCE_SHA'])
+          if not draft:
+              raise PublicationError('provider backing release was already published')
+          PY
+          python3 scripts/verify_managed_tool_pages.py --config managed-tool-pages.json
+          python3 - <<'PY'
+          from pathlib import Path
+          import tempfile
+          import urllib.error
+          import urllib.request
+          from scripts.prepare_provider_runtime_pages import (
+              load_config, fetch_exact, PREFIX, NoRedirect, PublicationError,
+          )
+          from scripts.prepare_managed_tool_pages import SITE_PREFIX
+          config = load_config(Path('provider-runtime-pages.json'))
+          with tempfile.TemporaryDirectory() as directory:
+              fetch_exact(SITE_PREFIX + 'publication.json',
+                          config['preserved_managed_tool_marker_size'],
+                          config['preserved_managed_tool_marker_sha256'],
+                          Path(directory) / 'old-marker.json')
+          opener = urllib.request.build_opener(NoRedirect())
+          for url in [PREFIX + 'publication.json', *(a['url'] for a in config['assets'])]:
+              try:
+                  opener.open(urllib.request.Request(url, method='HEAD'), timeout=30)
+              except urllib.error.HTTPError as error:
+                  if error.code == 404:
+                      continue
+                  raise
+              raise PublicationError('provider public path already exists')
+          PY
+
+  publish:
+    needs: review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Stage current tools and exact private provider bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          mkdir "$RUNNER_TEMP/provider-assets"
+          while IFS= read -r name; do
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --dir "$RUNNER_TEMP/provider-assets" --pattern "$name"
+          done < <(python3 - <<'PY'
+          from pathlib import Path
+          from scripts.prepare_provider_runtime_pages import load_config
+          for asset in load_config(Path('provider-runtime-pages.json'))['assets']:
+              print(asset['asset_name'])
+          PY
+          )
+          python3 scripts/prepare_provider_runtime_pages.py \
+            --config provider-runtime-pages.json \
+            --tool-config managed-tool-pages.json \
+            --provider-assets "$RUNNER_TEMP/provider-assets" \
+            --output "$RUNNER_TEMP/provider-site" \
+            --source-sha "$SOURCE_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: ${{ runner.temp }}/provider-site
+      - name: Recheck exact main, draft, bytes and public paths before release transition
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$RUNNER_TEMP/provider-before.json"
+          mkdir "$RUNNER_TEMP/provider-fresh"
+          while IFS= read -r name; do
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --dir "$RUNNER_TEMP/provider-fresh" --pattern "$name"
+          done < <(python3 - <<'PY'
+          from pathlib import Path
+          from scripts.prepare_provider_runtime_pages import load_config
+          for asset in load_config(Path('provider-runtime-pages.json'))['assets']:
+              print(asset['asset_name'])
+          PY
+          )
+          python3 - "$RUNNER_TEMP/provider-before.json" "$RUNNER_TEMP/provider-fresh" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          from scripts.prepare_managed_tool_pages import (
+              _digest, validate_backing_release, validate_release_tag_binding,
+              PublicationError,
+          )
+          from scripts.prepare_provider_runtime_pages import load_config
+          config = load_config(Path('provider-runtime-pages.json'))
+          release = json.loads(Path(sys.argv[1]).read_text())
+          if not validate_backing_release(config, release, os.environ['SOURCE_SHA'],
+                                          int(os.environ['RELEASE_ID'])):
+              raise PublicationError('provider draft visibility changed')
+          validate_release_tag_binding(True, None, os.environ['SOURCE_SHA'])
+          for asset in config['assets']:
+              if _digest(Path(sys.argv[2]) / asset['asset_name'], asset['size']) != asset['sha256']:
+                  raise PublicationError('fresh provider release bytes differ')
+          if (Path(sys.argv[2]) / 'provider-runtime-provenance.json').read_bytes() != \
+                  Path('provider-runtime-provenance.json').read_bytes():
+              raise PublicationError('provider provenance differs from reviewed source')
+          PY
+          python3 - "$RUNNER_TEMP/provider-site" <<'PY'
+          import sys
+          from pathlib import Path
+          from scripts.prepare_managed_tool_pages import _digest, load_config as load_tools, PublicationError
+          from scripts.prepare_provider_runtime_pages import load_config
+          site = Path(sys.argv[1])
+          old = load_tools(Path('managed-tool-pages.json'))
+          new = load_config(Path('provider-runtime-pages.json'))
+          for asset in old['assets']:
+              if _digest(site / 'managed-tools/v1' / asset['relative_path'],
+                         asset['size']) != asset['sha256']:
+                  raise PublicationError('staged managed-tool byte changed')
+          if _digest(site / 'managed-tools/v1/publication.json',
+                     new['preserved_managed_tool_marker_size']) != new['preserved_managed_tool_marker_sha256']:
+              raise PublicationError('staged managed-tool marker changed')
+          for asset in new['assets']:
+              if _digest(site / 'provider-runtimes/v1' / asset['relative_path'],
+                         asset['size']) != asset['sha256']:
+                  raise PublicationError('staged provider byte changed')
+          PY
+          python3 scripts/verify_managed_tool_pages.py --config managed-tool-pages.json
+          python3 - <<'PY'
+          from pathlib import Path
+          import tempfile
+          import urllib.error
+          import urllib.request
+          from scripts.prepare_provider_runtime_pages import (
+              load_config, fetch_exact, PREFIX, NoRedirect, PublicationError,
+          )
+          from scripts.prepare_managed_tool_pages import SITE_PREFIX
+          config = load_config(Path('provider-runtime-pages.json'))
+          with tempfile.TemporaryDirectory() as directory:
+              fetch_exact(SITE_PREFIX + 'publication.json',
+                          config['preserved_managed_tool_marker_size'],
+                          config['preserved_managed_tool_marker_sha256'],
+                          Path(directory) / 'old-marker.json')
+          opener = urllib.request.build_opener(NoRedirect())
+          for url in [PREFIX + 'publication.json', *(a['url'] for a in config['assets'])]:
+              try:
+                  opener.open(urllib.request.Request(url, method='HEAD'), timeout=30)
+              except urllib.error.HTTPError as error:
+                  if error.code == 404:
+                      continue
+                  raise
+              raise PublicationError('provider public path appeared before publication')
+          PY
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          if git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" >/dev/null; then
+            git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+            TAG_SHA="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          else
+            test "$?" -eq 2
+            TAG_SHA=absent
+          fi
+          export TAG_SHA
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$RUNNER_TEMP/provider-immediate.json"
+          python3 - "$RUNNER_TEMP/provider-before.json" "$RUNNER_TEMP/provider-immediate.json" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          from scripts.prepare_managed_tool_pages import (
+              validate_backing_release, validate_release_tag_binding, PublicationError,
+          )
+          from scripts.prepare_provider_runtime_pages import load_config
+          before, current = (json.loads(Path(path).read_text()) for path in sys.argv[1:3])
+          config = load_config(Path('provider-runtime-pages.json'))
+          if not validate_backing_release(config, current, os.environ['SOURCE_SHA'],
+                                          int(os.environ['RELEASE_ID'])):
+              raise PublicationError('provider draft changed')
+          validate_release_tag_binding(True, None if os.environ['TAG_SHA'] == 'absent'
+                                       else os.environ['TAG_SHA'], os.environ['SOURCE_SHA'])
+          identity = lambda value: sorted((a['id'], a['name'], a['size'], a['digest'], a['state'])
+                                          for a in value['assets'])
+          if identity(before) != identity(current):
+              raise PublicationError('provider release assets changed during readback')
+          PY
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false > "$RUNNER_TEMP/provider-publish-response.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$RUNNER_TEMP/provider-public.json"
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          TAG_SHA="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          export TAG_SHA
+          python3 - "$RUNNER_TEMP/provider-public.json" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          from scripts.prepare_managed_tool_pages import (
+              validate_backing_release, validate_release_tag_binding, PublicationError,
+          )
+          from scripts.prepare_provider_runtime_pages import load_config
+          config = load_config(Path('provider-runtime-pages.json'))
+          release = json.loads(Path(sys.argv[1]).read_text())
+          if validate_backing_release(config, release, os.environ['SOURCE_SHA'],
+                                      int(os.environ['RELEASE_ID'])):
+              raise PublicationError('provider backing release remains draft')
+          validate_release_tag_binding(False, os.environ['TAG_SHA'], os.environ['SOURCE_SHA'])
+          PY
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Independently read preserved and new public bytes
+        run: |
+          set -euo pipefail
+          git_root="$(python3 - <<'PY'
+          from pathlib import Path
+          from scripts.prepare_managed_tool_pages import load_config
+          config = load_config(Path('managed-tool-pages.json'))
+          git = next(asset for asset in config['assets']
+                     if asset['kind'] == 'managed-git-runtime')
+          print(git['relative_path'].split('/')[0])
+          PY
+          )"
+          for attempt in $(seq 1 24); do
+            if python3 scripts/verify_managed_tool_pages.py --config managed-tool-pages.json \
+                --marker "$RUNNER_TEMP/provider-site/managed-tools/v1/publication.json" \
+                --index "$RUNNER_TEMP/provider-site/managed-tools/v1/$git_root/index.html" && \
+              python3 - "$RUNNER_TEMP/provider-site/provider-runtimes/v1/publication.json" <<'PY'
+          from pathlib import Path
+          import hashlib
+          import sys
+          import tempfile
+          from scripts.prepare_provider_runtime_pages import load_config, fetch_exact, PREFIX
+          config = load_config(Path('provider-runtime-pages.json'))
+          marker = Path(sys.argv[1]).read_bytes()
+          with tempfile.TemporaryDirectory() as directory:
+              root = Path(directory)
+              fetch_exact(PREFIX + 'publication.json', len(marker),
+                          'sha256:' + hashlib.sha256(marker).hexdigest(), root / 'marker')
+              for asset in config['assets']:
+                  fetch_exact(asset['url'], asset['size'], asset['sha256'],
+                              root / asset['asset_name'])
+          PY
+            then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1

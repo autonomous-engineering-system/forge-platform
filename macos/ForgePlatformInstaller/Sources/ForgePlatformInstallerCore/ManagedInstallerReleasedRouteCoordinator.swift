@@ -238,4 +238,79 @@ public actor ManagedInstallerReleasedRouteCoordinator:
             return .failed(.staleSession, stages: [])
         }
     }
+
+    public func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        guard !operation.deploymentExists,
+              !operation.enabledProviderRequirements.isEmpty,
+              let sender = loader as? any ManagedInstallerReviewedProviderStageIntentSending,
+              let registrar = loader as? any ManagedInstallerReviewedSelectionRegistering
+        else { return .unavailable(.coordinatorUnavailable) }
+        switch await prepareStablePlan(for: operation) {
+        case .prepared(let plan) where plan.reviewedOperation == operation:
+            do {
+                let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+                try await registrar.registerReviewedSelection(
+                    ManagedInstallerReviewedSelection(stablePlan: plan)
+                )
+                let receipt = try await sender.stageReviewedProviders(intent)
+                guard receipt.matches(plan) else { return .unavailable(.staleSession) }
+                return .prepared(receipt)
+            } catch {
+                return .unavailable(.coordinatorUnavailable)
+            }
+        case .prepared, .unavailable:
+            return .unavailable(.staleSession)
+        }
+    }
+
+    public func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
+        guard !operation.deploymentExists,
+              !operation.enabledProviderRequirements.isEmpty,
+              let sender = loader as? any ManagedInstallerReviewedProviderReadbackIntentSending
+        else { return .unavailable(.coordinatorUnavailable) }
+        switch await prepareStablePlan(for: operation) {
+        case .prepared(let plan) where plan.reviewedOperation == operation:
+            do {
+                let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+                let receipt = try await sender.readReviewedProviders(intent)
+                guard receipt.matches(plan) else { return .unavailable(.staleSession) }
+                return .observed(receipt)
+            } catch {
+                return .unavailable(.coordinatorUnavailable)
+            }
+        case .prepared, .unavailable:
+            return .unavailable(.staleSession)
+        }
+    }
+
+    public func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        guard let reviewed = reviewedPlan,
+              reviewed.reviewedOperation == operation,
+              reviewed.enabledProviderRequirements.contains(where: {
+                  $0.id == providerTargetID && $0.credentialScope == .component
+              }),
+              let sender = loader as?
+                any ManagedInstallerReviewedProviderAuthenticationIntentSending
+        else { return nil }
+        switch await prepareStablePlan(for: operation) {
+        case .prepared(let refreshed) where refreshed == reviewed
+            && reviewedPlan == reviewed:
+            guard let intent = try? ManagedInstallerReviewedExecutionIntent(
+                stablePlan: reviewed
+            ), let response = try? await sender.beginReviewedProviderAuthentication(
+                intent, providerTargetID: providerTargetID
+            ), response.operationID == intent.operationID,
+              response.stablePlanFingerprint == intent.stablePlanFingerprint,
+              response.providerTargetID == providerTargetID.rawValue else { return nil }
+            return response
+        case .prepared, .unavailable: return nil
+        }
+    }
 }

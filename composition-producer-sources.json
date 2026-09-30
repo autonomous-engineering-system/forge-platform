@@ -1,14 +1,76 @@
 {
   "external_inputs": [
     {
-      "evidence": null,
+      "evidence": {
+        "identity_digest": "sha256:e862168c8153db469ae4e0ab3dccd7af31bd281e2b9b9dd45e1e5c7d069ad5ac",
+        "artifacts": [
+          {
+            "kind": "archive",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/git-2.56.0-arm64/forge-platform-managed-git.tar.gz",
+            "digest": "sha256:e862168c8153db469ae4e0ab3dccd7af31bd281e2b9b9dd45e1e5c7d069ad5ac"
+          },
+          {
+            "kind": "corresponding-source",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/git-2.56.0-arm64/git-corresponding-source.tar.gz",
+            "digest": "sha256:6397b470678f589c248c4275be91f47c74d476171a7e6ae451eb93bc47a84355"
+          }
+        ]
+      },
       "identity": "managed-git",
-      "status": "UNCONFIGURED"
+      "status": "READY"
     },
     {
-      "evidence": null,
+      "evidence": {
+        "identity_digest": "sha256:519d7975f16e78f808403188b3a8417bab10af000208ef1ec82c42bccfa94ceb",
+        "artifacts": [
+          {
+            "kind": "build-provenance",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/python-3.14.7-arm64/build-provenance.json",
+            "digest": "sha256:84245721dc4989a595074eb6202d4d2b30d414921ced48908d3ec926389515fa"
+          },
+          {
+            "kind": "runtime-archive",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/python-3.14.7-arm64/forge-platform-managed-python-runtime.tar.gz",
+            "digest": "sha256:4490ab17e58008a4c6c52fc36590ae5f88b2800f1db25236ef2288dc591832f6"
+          },
+          {
+            "kind": "source-archive",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/python-3.14.7-arm64/cpython-3.14.7-source.tar.gz",
+            "digest": "sha256:62859805f6fdf25e2bcbf3fa3217801e1996887ca33e6a2af80674bdfa2dbe07"
+          },
+          {
+            "kind": "source-provenance",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/managed-tools/v1/python-3.14.7-arm64/source-provenance.json",
+            "digest": "sha256:9b5a3fffb6fb926687370b00c3e0d0788f0eefb27c8a4413255e3d2c489aabfc"
+          }
+        ]
+      },
       "identity": "managed-python-runtime",
-      "status": "UNCONFIGURED"
+      "status": "READY"
+    },
+    {
+      "evidence": {
+        "identity_digest": "sha256:760e1874e2b7cd62e3c86fba5420cd2c7216d3d62995a3aaad5caa0e21943152",
+        "artifacts": [
+          {
+            "kind": "codex-cli-runtime",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/provider-runtimes/v1/codex-0.157.1-arm64/forge-platform-provider-codex-0.157.1-arm64.tar.gz",
+            "digest": "sha256:a096caeec7ca0f29c6fe0e3389d34d5c0f8be01cd9291f983a54439a2a63d7ee"
+          },
+          {
+            "kind": "github-cli-runtime",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/provider-runtimes/v1/github-cli-2.101.0-arm64/forge-platform-provider-gh-2.101.0-arm64.tar.gz",
+            "digest": "sha256:493e6fa64f918810ee057fcab446a0006989a92dd3edbf2802ab13d3da9e1cc0"
+          },
+          {
+            "kind": "producer-provenance",
+            "url": "https://autonomous-engineering-system.github.io/forge-platform/provider-runtimes/v1/provider-runtime-provenance.json",
+            "digest": "sha256:760e1874e2b7cd62e3c86fba5420cd2c7216d3d62995a3aaad5caa0e21943152"
+          }
+        ]
+      },
+      "identity": "provider-runtimes",
+      "status": "READY"
     }
   ],
   "producers": [

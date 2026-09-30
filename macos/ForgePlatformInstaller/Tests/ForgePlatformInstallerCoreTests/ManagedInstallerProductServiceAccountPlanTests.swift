@@ -4,6 +4,338 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
+    func testFreshWorkerAuthorityRequiresExactReviewedInstancesAndActivation()
+        async throws {
+        let fixture = try accountPlanFixture(
+            includeProductVenvs: true,
+            pairingTarget: ManagedInstallerReviewedPairingTarget(
+                projectID: "project-1", repositoryID: "repository-1",
+                repositoryIdentity: "owner:repository"
+            )
+        )
+        let plan = fixture.plan
+        let claims = try ManagedInstallerProductServiceAccountPlanner().plan(
+            stablePlan: plan, material: fixture.material
+        ).get()
+        let accounts = claims.enumerated().map { index, claim in
+            ManagedInstallerProductServiceAccountReadback(
+                claim: claim, uid: UInt32(600 + index), gid: UInt32(600 + index),
+                evidenceReference: "receipt:account-\(index)"
+            )
+        }
+        let slotReference = "receipt:runtime-slot"
+        let evidence = try plan.session.productVirtualEnvironments.map { environment in
+            let request = ManagedPythonProductVenvMutationRequest(
+                operationID: plan.activationPlan.operationID,
+                deploymentID: plan.deployment.id, environment: environment,
+                runtimeSlotIdentity: plan.activationPlan.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: slotReference
+            )
+            let receipt = try ManagedPythonProductVenvReceipt(
+                operationID: request.operationID, deploymentID: request.deploymentID,
+                componentIdentity: request.componentIdentity,
+                venvIdentity: request.venvIdentity,
+                runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+                runtimeSlotIdentity: request.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: request.runtimeSlotEvidenceReference,
+                state: .ready,
+                evidenceReference: "receipt:venv-\(request.componentIdentity)"
+            )
+            return ManagedInstallerProductWorkerVenvPublicationEvidence(
+                request: request, activationReceipt: receipt,
+                wheelBindingEvidence: "sha256:" + String(repeating: "a", count: 64)
+            )
+        }
+        let activation = try ManagedPythonRuntimeActivationReceipt(
+            operationID: plan.activationPlan.operationID,
+            sessionID: plan.session.sessionID,
+            deploymentID: plan.deployment.id,
+            runtimeIdentitySHA256: plan.activationPlan.runtimeIdentitySHA256,
+            runtimeSlotIdentity: plan.activationPlan.runtimeSlotIdentity,
+            rollbackRuntimeIdentitySHA256: plan.activationPlan.rollbackRuntimeIdentitySHA256,
+            assetEvidenceReferences: ManagedPythonRuntimeAssetKind.allCases.map {
+                _ in "receipt:runtime-asset"
+            },
+            preparationEvidenceReferences: ["receipt:runtime-preparation", slotReference],
+            productVenvEvidenceReferences: Dictionary(uniqueKeysWithValues:
+                evidence.map { ($0.request.componentIdentity,
+                                $0.activationReceipt.evidenceReference) }),
+            activationEvidenceReference: "receipt:activation",
+            finalReadbackEvidenceReference: "receipt:active-runtime", state: .ready
+        )
+        let forge = try XCTUnwrap(claims.first { $0.componentIdentity == "forge-runtime" })
+        let ep = try XCTUnwrap(claims.first {
+            $0.componentIdentity == "engineering-platform-server"
+        })
+        let forgeVenv = try XCTUnwrap(evidence.first {
+            $0.request.componentIdentity == "forge-runtime"
+        })
+        let epVenv = try XCTUnwrap(evidence.first {
+            $0.request.componentIdentity == "engineering-platform-server"
+        })
+        let pairing = try ManagedInstallerProductWorkerPairingAuthority(
+            bindingID: "binding-1", consumerID: "consumer-1", hostID: "host-1",
+            projectID: "project-1", repositoryID: "repository-1",
+            repositoryIdentity: "owner:repository",
+            credentialReference: "keychain://test/pairing", operatorID: "operator-1"
+        )
+        func snapshot(forgeInstance: String, forgeAccount: String)
+            throws -> ManagedInstallerProductWorkerAuthoritySnapshot {
+            let route = try ManagedInstallerProductWorkerRouteAuthority(
+                deploymentID: plan.deployment.id,
+                forgeInstanceID: forgeInstance,
+                forgeInstallationID: forge.instanceID,
+                forgeServiceAccount: forgeAccount, forgeBindPort: 18875,
+                forgeArtifactSHA256: forge.productArtifactSHA256,
+                engineeringPlatformArtifactSHA256: ep.productArtifactSHA256,
+                engineeringPlatformInstanceID: ep.instanceID,
+                engineeringPlatformDisplayLabel: "EP",
+                engineeringPlatformServiceAccount: ep.accountName,
+                engineeringPlatformBindPort: 18876, pairing: pairing,
+                forgeVenvSlotName: MacOSManagedPythonProductVenvSlotLayout.slotName(
+                    for: forgeVenv.request
+                ),
+                engineeringPlatformVenvSlotName:
+                    MacOSManagedPythonProductVenvSlotLayout.slotName(
+                        for: epVenv.request
+                    )
+            )
+            let manifest = try ManagedInstallerProductWorkerManifestAuthority(
+                digest: plan.session.manifestSHA256,
+                canonicalPayload: fixture.material.manifestBytes
+            )
+            return try ManagedInstallerProductWorkerAuthoritySnapshot(
+                installerRelease: try XCTUnwrap(
+                    ManagedInstallerProductWorkerReleaseBinding.workerRelease(
+                        for: plan.reviewedOperation.currentInstallerRelease
+                    )
+                ),
+                candidateManifests: [manifest], routes: [route]
+            )
+        }
+        let exact = try snapshot(forgeInstance: forge.instanceID,
+                                 forgeAccount: forge.accountName)
+        XCTAssertTrue(ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
+            plan: plan, material: fixture.material, snapshot: exact,
+            accounts: accounts, activation: activation, venvEvidence: evidence
+        ))
+        let foreignInstance = try snapshot(forgeInstance: "foreign-instance",
+                                           forgeAccount: forge.accountName)
+        XCTAssertFalse(ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
+            plan: plan, material: fixture.material, snapshot: foreignInstance,
+            accounts: accounts, activation: activation, venvEvidence: evidence
+        ))
+        let foreignAccount = try snapshot(forgeInstance: forge.instanceID,
+                                          forgeAccount: "_foreign_account")
+        XCTAssertFalse(ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
+            plan: plan, material: fixture.material, snapshot: foreignAccount,
+            accounts: accounts, activation: activation, venvEvidence: evidence
+        ))
+        XCTAssertFalse(ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
+            plan: plan, material: fixture.material, snapshot: exact,
+            accounts: Array(accounts.dropLast()), activation: activation,
+            venvEvidence: evidence
+        ))
+        XCTAssertFalse(ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
+            plan: plan, material: fixture.material, snapshot: exact,
+            accounts: accounts, activation: activation,
+            venvEvidence: Array(evidence.dropLast())
+        ))
+        let originalRoute = try XCTUnwrap(exact.routes.first)
+        let foreignPairing = try ManagedInstallerProductWorkerPairingAuthority(
+            bindingID: "binding-foreign", consumerID: "consumer-foreign",
+            hostID: "host-foreign", projectID: "project-foreign",
+            repositoryID: "repository-foreign",
+            repositoryIdentity: "owner:foreign",
+            credentialReference: "keychain://test/foreign",
+            operatorID: "operator-foreign"
+        )
+        let foreignEvidence = try plan.session.productVirtualEnvironments.map {
+            environment in
+            let request = ManagedPythonProductVenvMutationRequest(
+                operationID: plan.activationPlan.operationID,
+                deploymentID: "foreign-deployment", environment: environment,
+                runtimeSlotIdentity: plan.activationPlan.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: slotReference
+            )
+            let receipt = try ManagedPythonProductVenvReceipt(
+                operationID: request.operationID,
+                deploymentID: request.deploymentID,
+                componentIdentity: request.componentIdentity,
+                venvIdentity: request.venvIdentity,
+                runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+                runtimeSlotIdentity: request.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: request.runtimeSlotEvidenceReference,
+                state: .ready,
+                evidenceReference: "receipt:foreign-venv-\(request.componentIdentity)"
+            )
+            return ManagedInstallerProductWorkerVenvPublicationEvidence(
+                request: request, activationReceipt: receipt,
+                wheelBindingEvidence: "sha256:" + String(repeating: "a", count: 64)
+            )
+        }
+        let foreignForge = try XCTUnwrap(foreignEvidence.first {
+            $0.request.componentIdentity == "forge-runtime"
+        })
+        let foreignEP = try XCTUnwrap(foreignEvidence.first {
+            $0.request.componentIdentity == "engineering-platform-server"
+        })
+        func foreignRoute(port: Int) throws
+            -> ManagedInstallerProductWorkerRouteAuthority {
+            try ManagedInstallerProductWorkerRouteAuthority(
+                deploymentID: "foreign-deployment",
+                forgeInstanceID: "foreign-forge",
+                forgeInstallationID: "foreign-installation",
+                forgeServiceAccount: "_foreign_forge", forgeBindPort: port,
+                forgeArtifactSHA256: forge.productArtifactSHA256,
+                engineeringPlatformArtifactSHA256: ep.productArtifactSHA256,
+                engineeringPlatformInstanceID: "foreign-ep",
+                engineeringPlatformDisplayLabel: "Foreign EP",
+                engineeringPlatformServiceAccount: "_foreign_ep",
+                engineeringPlatformBindPort: port + 1,
+                pairing: foreignPairing,
+                forgeVenvSlotName: MacOSManagedPythonProductVenvSlotLayout.slotName(
+                    for: foreignForge.request
+                ),
+                engineeringPlatformVenvSlotName:
+                    MacOSManagedPythonProductVenvSlotLayout.slotName(
+                        for: foreignEP.request
+                    )
+            )
+        }
+        let oldRoute = try foreignRoute(port: 18877)
+        let oldAuthority = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: exact.installerRelease,
+            candidateManifests: exact.candidateManifests,
+            routes: [oldRoute]
+        )
+        let augmented = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: exact.installerRelease,
+            candidateManifests: exact.candidateManifests,
+            routes: [oldRoute, originalRoute]
+        )
+        XCTAssertTrue(ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
+            plan: plan, material: fixture.material, snapshot: augmented,
+            priorAuthority: oldAuthority, accounts: accounts,
+            activation: activation, venvEvidence: evidence
+        ))
+        XCTAssertFalse(ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
+            plan: plan, material: fixture.material, snapshot: exact,
+            priorAuthority: oldAuthority, accounts: accounts,
+            activation: activation, venvEvidence: evidence
+        ))
+        let changedOldRoute = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: exact.installerRelease,
+            candidateManifests: exact.candidateManifests,
+            routes: [foreignRoute(port: 18879), originalRoute]
+        )
+        XCTAssertFalse(ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
+            plan: plan, material: fixture.material, snapshot: changedOldRoute,
+            priorAuthority: oldAuthority, accounts: accounts,
+            activation: activation, venvEvidence: evidence
+        ))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "fresh-worker-authority-" + UUID().uuidString, isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        let publisher = FileManagedInstallerProductWorkerAuthorityPublisher(
+            rootDirectory: root, expectedOwner: geteuid()
+        )
+        let accountReader = AccountPlanFreshAccountReader(accounts: accounts)
+        let reader = AccountPlanVenvReader(receipts: evidence.map(\.activationReceipt))
+        let wheel = ManagedPythonProductWheelTestDouble(
+            evidence: evidence[0].wheelBindingEvidence
+        )
+        let refused = await publisher.publishVerifiedFreshInstallProductWorkerAuthority(
+            plan: plan, material: fixture.material, snapshot: foreignInstance,
+            accounts: accounts, accountReader: accountReader,
+            activation: activation, venvEvidence: evidence,
+            reader: reader, wheel: wheel
+        )
+        XCTAssertEqual(refused, .failure(.invalidAuthority))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("product-worker-authority.json").path
+        ))
+        let missingAccount = await publisher.publishVerifiedFreshInstallProductWorkerAuthority(
+            plan: plan, material: fixture.material, snapshot: exact,
+            accounts: accounts, accountReader: AccountPlanFreshAccountReader(accounts: []),
+            activation: activation, venvEvidence: evidence,
+            reader: reader, wheel: wheel
+        )
+        XCTAssertEqual(missingAccount, .failure(.invalidAuthority))
+        let receipt = try await publisher.publishVerifiedFreshInstallProductWorkerAuthority(
+            plan: plan, material: fixture.material, snapshot: exact,
+            accounts: accounts, accountReader: accountReader,
+            activation: activation, venvEvidence: evidence,
+            reader: reader, wheel: wheel
+        ).get()
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(receipt.fileName)),
+                       exact.canonicalJSONData())
+        let anotherRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "another-worker-authority-" + UUID().uuidString, isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: anotherRoot, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: anotherRoot) }
+        XCTAssertEqual(chmod(anotherRoot.path, 0o700), 0)
+        let secondPublisher = FileManagedInstallerProductWorkerAuthorityPublisher(
+            rootDirectory: anotherRoot, expectedOwner: geteuid()
+        )
+        let combinedReader = AccountPlanVenvReader(
+            receipts: (foreignEvidence + evidence).map(\.activationReceipt)
+        )
+        _ = try await secondPublisher.publishVerifiedProductWorkerAuthority(
+            oldAuthority, evidence: foreignEvidence, reader: combinedReader,
+            wheel: wheel
+        ).get()
+        let missingPriorEvidence = await secondPublisher
+            .publishVerifiedFreshInstallProductWorkerAuthority(
+                plan: plan, material: fixture.material, snapshot: augmented,
+                accounts: accounts, accountReader: accountReader,
+                activation: activation, venvEvidence: evidence,
+                reader: combinedReader, wheel: wheel
+            )
+        XCTAssertEqual(missingPriorEvidence, .failure(.invalidAuthority))
+        let augmentedReceipt = try await secondPublisher
+            .publishVerifiedFreshInstallProductWorkerAuthority(
+                plan: plan, material: fixture.material, snapshot: augmented,
+                accounts: accounts, accountReader: accountReader,
+                activation: activation, venvEvidence: evidence,
+                priorVenvEvidence: foreignEvidence,
+                reader: combinedReader, wheel: wheel
+            ).get()
+        XCTAssertEqual(
+            try Data(contentsOf: anotherRoot.appendingPathComponent(
+                augmentedReceipt.fileName
+            )), augmented.canonicalJSONData()
+        )
+        let replay = try await publisher.publishVerifiedFreshInstallProductWorkerAuthority(
+            plan: plan, material: fixture.material, snapshot: exact,
+            accounts: accounts, accountReader: accountReader,
+            activation: activation, venvEvidence: evidence,
+            reader: reader, wheel: wheel
+        ).get()
+        XCTAssertEqual(replay, receipt)
+        let droppingCurrent = await publisher
+            .publishVerifiedFreshInstallProductWorkerAuthority(
+                plan: plan, material: fixture.material,
+                snapshot: oldAuthority,
+                accounts: accounts, accountReader: accountReader,
+                activation: activation, venvEvidence: evidence,
+                reader: reader, wheel: wheel
+            )
+        XCTAssertEqual(droppingCurrent, .failure(.invalidAuthority))
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(receipt.fileName)),
+                       exact.canonicalJSONData())
+    }
+
     func testFreshForgeAndEPAccountsAreDistinctStableAndPlanBound() throws {
         let fixture = try accountPlanFixture()
         let first = try ManagedInstallerProductServiceAccountPlanner().plan(
@@ -16,15 +348,26 @@ final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
         XCTAssertEqual(first.map(\.componentIdentity),
                        ["engineering-platform-server", "forge-runtime"])
         XCTAssertEqual(Set(first.map(\.accountName)).count, 2)
+        XCTAssertEqual(Set(first.map(\.instanceID)).count, 2)
         for claim in first {
             XCTAssertEqual(claim.stablePlanFingerprint, fixture.plan.fingerprint)
             XCTAssertEqual(claim.operationID, fixture.plan.activationPlan.operationID)
-            XCTAssertEqual(claim.instanceID, fixture.plan.deployment.id)
+            XCTAssertEqual(claim.instanceID,
+                ManagedInstallerProductServiceAccountPlanner.instanceID(
+                    deploymentID: fixture.plan.deployment.id,
+                    componentIdentity: claim.componentIdentity
+                ))
+            XCTAssertNotEqual(claim.instanceID, fixture.plan.deployment.id)
             XCTAssertEqual(claim.deploymentID, fixture.plan.deployment.id)
             XCTAssertTrue(claim.accountName.hasPrefix("_fpi_"))
             XCTAssertTrue(ManagedInstallerProductWorkerRouteAuthority
                 .isServiceAccount(claim.accountName))
         }
+        XCTAssertNotEqual(first[0].instanceID,
+            ManagedInstallerProductServiceAccountPlanner.instanceID(
+                deploymentID: "another-deployment",
+                componentIdentity: first[0].componentIdentity
+            ))
     }
 
     func testRejectsStaleMaterialAndNonInstallBeforeAccountProjection() throws {
@@ -287,10 +630,15 @@ final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
     private func accountPlanFixture(
         forgeChange: ComponentChange = .install,
         forgeArtifactDigest: String? = nil,
-        providers: [ProviderRequirement] = []
+        providers: [ProviderRequirement] = [],
+        includeProductVenvs: Bool = false,
+        pairingTarget: ManagedInstallerReviewedPairingTarget? = nil
     ) throws -> (plan: ManagedInstallerStablePlan,
                  material: ManagedVerifiedCompositionMaterial) {
-        let fixture = try PrepublicationWheelFixture(providerRequirements: providers)
+        let fixture = try PrepublicationWheelFixture(
+            providerRequirements: providers,
+            includeProductVenvs: includeProductVenvs
+        )
         let activation = try ManagedPythonRuntimeActivationPlan(
             session: fixture.material.session, deployment: fixture.deployment,
             initialReadback: ManagedPythonRuntimeInstalledReadback(
@@ -316,9 +664,29 @@ final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
                     artifactDigest: forgeArtifactDigest ?? fixture.artifactDigest,
                     detail: "Exact Forge install"
                 ),
-            ]
+            ],
+            pairingTarget: pairingTarget
         )
         return (plan, fixture.material)
+    }
+}
+
+private struct AccountPlanFreshAccountReader: ManagedInstallerFreshProductAccountReading {
+    let accounts: [ManagedInstallerProductServiceAccountReadback]
+
+    func readAccountSynchronously(_ claim: ManagedInstallerProductServiceAccountClaim)
+        -> Result<ManagedInstallerProductServiceAccountReadback?,
+                  ManagedInstallerProductServiceAccountPreparationFailure> {
+        .success(accounts.first { $0.claim == claim })
+    }
+}
+
+private struct AccountPlanVenvReader: ManagedInstallerProductWorkerVenvReading {
+    let receipts: [ManagedPythonProductVenvReceipt]
+
+    func readPublished(_ request: ManagedPythonProductVenvMutationRequest)
+        -> Result<ManagedPythonProductVenvReceipt?, ManagedPythonRuntimeActivationFailure> {
+        .success(receipts.first { $0.matches(request) })
     }
 }
 

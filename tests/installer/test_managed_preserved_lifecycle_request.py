@@ -15,6 +15,7 @@ from forge_platform.managed_deployments import ManagedDeploymentRegistry
 from forge_platform.managed_preserved_lifecycle_proposal import prepare_native_preserved_lifecycle_review
 from forge_platform.managed_preserved_lifecycle_request import (
     ManagedPreservedLifecycleRequestError,
+    NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
     NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
     decode_native_preserved_lifecycle_receipt,
     decode_native_preserved_lifecycle_request,
@@ -25,21 +26,52 @@ from tests.installer.test_managed_preserved_lifecycle_proposal import _intent, _
 from tests.installer.test_managed_product_operation_admission import installer_release
 
 
-def _request(manifest, registry, operation="PRESERVE"):
+def _request(manifest, registry, operation="PRESERVE", confirmation=None):
     intent = _intent(manifest, operation=operation)
+    if operation == "PURGE":
+        intent["operation_id"] = "purge-a"
+        intent["intent_fingerprint"] = sha256(_wire({
+            key: item for key, item in intent.items()
+            if key != "intent_fingerprint"
+        })).hexdigest()
     proposal = json.loads(prepare_native_preserved_lifecycle_review(
         _wire(intent), installed_manifest=manifest, registry=registry,
         current_installer_release=installer_release(),
     ))
     request = {
-        "schema": NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
+        "schema": (NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA if operation == "PURGE"
+                   else NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA),
         "intent": intent, "proposal": proposal,
     }
+    if confirmation is not None:
+        request["confirmed_instance_id"] = confirmation
     request["request_fingerprint"] = sha256(_wire(request)).hexdigest()
     return request
 
 
 class ManagedPreservedLifecycleRequestTests(unittest.TestCase):
+    def test_purge_requires_exact_reviewed_instance_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, current, _ = _fixture()
+            registry = ManagedDeploymentRegistry(Path(directory).resolve())
+            registry.create(current)
+            value = _request(manifest, registry, "PURGE", "forge-a")
+            request = decode_native_preserved_lifecycle_request(_wire(value))
+            self.assertEqual(request.intent.operation, "PURGE")
+            self.assertEqual(request.confirmed_instance_id, "forge-a")
+            self.assertTrue(request.review.destructive_confirmation_required)
+            for bad in (
+                _request(manifest, registry, "PURGE"),
+                _request(manifest, registry, "PURGE", "forge-b"),
+                value | {"schema": NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA},
+            ):
+                bad["request_fingerprint"] = sha256(_wire({
+                    key: item for key, item in bad.items()
+                    if key != "request_fingerprint"
+                })).hexdigest()
+                with self.assertRaises(ManagedPreservedLifecycleRequestError):
+                    decode_native_preserved_lifecycle_request(_wire(bad))
+
     def test_exact_proposal_roundtrip_and_terminal_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest, current, _ = _fixture()

@@ -29,8 +29,8 @@ FORGE_ARTIFACT = QualifiedArtifact(
     "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938", "https://example.invalid/forge-evidence",
 )
 EP_ARTIFACT = QualifiedArtifact(
-    "2.3.104", "cfce69892278ee2b6c14412c171f5f33596acb0e", "https://example.invalid/ep.whl",
-    "sha256:3f7822fd081598f81d5c666200787a3b2182d7004c078cc36ec20455269909cb", "https://example.invalid/ep-evidence",
+    "2.3.106", "7b99b578153ae5d72372a09db194306b49ec9f9c", "https://example.invalid/ep.whl",
+    "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694", "https://example.invalid/ep-evidence",
 )
 FORGE_RECEIPT = "forge-uninstall:sha256:" + "d" * 64
 EP_RECEIPT = "ep-consumer-revoke:sha256:" + "e" * 64

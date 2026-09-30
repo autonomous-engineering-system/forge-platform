@@ -3,6 +3,41 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerManagedDeploymentRegistryRecordTests: XCTestCase {
+    func testPreservedEPReadbackRetainsHistoricalAndCurrentExactIdentities() throws {
+        let codec = ManagedInstallerManagedDeploymentRegistryRecord.self
+        var current = v3Record()
+        current["components"] = .array([])
+        current["preserved_components"] = .array([
+            .object(preservedForge()), .object(preservedEP()),
+        ])
+        XCTAssertEqual(try codec.decode(
+            wire(current), expectedDeploymentID: "deployment-one"
+        ).preservedComponents["engineering-platform-server"]?.version, "2.3.104")
+        var entries = try XCTUnwrap(current["preserved_components"]?.arrayValue)
+        var ep = try XCTUnwrap(entries[1].objectValue)
+        for (version, source, digest) in [
+            ("2.3.105", "ad44263f6ec87ea018cda11f053fa12521ae9d79",
+             "sha256:22dd1e49c263b55dc9eee396810a09fc43509984fe685f3c00d26289d55e8adc"),
+            ("2.3.106", "7b99b578153ae5d72372a09db194306b49ec9f9c",
+             "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694"),
+        ] {
+            ep["version"] = .string(version)
+            ep["source_revision"] = .string(source)
+            ep["artifact_digest"] = .string(digest)
+            entries[1] = .object(ep)
+            current["preserved_components"] = .array(entries)
+            XCTAssertEqual(try codec.decode(
+                wire(current), expectedDeploymentID: "deployment-one"
+            ).preservedComponents["engineering-platform-server"]?.version, version)
+        }
+        ep["artifact_digest"] = .string("sha256:" + String(repeating: "0", count: 64))
+        entries[1] = .object(ep)
+        current["preserved_components"] = .array(entries)
+        XCTAssertThrowsError(try codec.decode(
+            wire(current), expectedDeploymentID: "deployment-one"
+        ))
+    }
+
     func testPreservedForgeAcceptsExactQualifiedReleasesOnly() throws {
         let codec = ManagedInstallerManagedDeploymentRegistryRecord.self
         let historical = v3Record()

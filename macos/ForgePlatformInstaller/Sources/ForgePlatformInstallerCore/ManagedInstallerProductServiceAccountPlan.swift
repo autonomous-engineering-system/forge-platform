@@ -57,7 +57,10 @@ struct ManagedInstallerProductServiceAccountPlanner {
                         $0.credentialScope == .component
                             && $0.targetIdentity == stablePlan.deployment.id
                     }) else { return .failure(.rejected) }
-            let identity = stablePlan.deployment.id
+            let identity = Self.instanceID(
+                deploymentID: stablePlan.deployment.id,
+                componentIdentity: component.componentID
+            )
             claims.append(ManagedInstallerProductServiceAccountClaim(
                 stablePlanFingerprint: stablePlan.fingerprint,
                 operationID: stablePlan.activationPlan.operationID,
@@ -72,10 +75,26 @@ struct ManagedInstallerProductServiceAccountPlanner {
                 )
             ))
         }
-        guard Set(claims.map(\.accountName)).count == claims.count else {
+        guard Set(claims.map(\.accountName)).count == claims.count,
+              Set(claims.map(\.instanceID)).count == claims.count else {
             return .failure(.rejected)
         }
         return .success(claims)
+    }
+
+    /// Product instances are distinct from the deployment correlation ID and
+    /// from each other. Their identities remain stable across retry/restart.
+    static func instanceID(deploymentID: String, componentIdentity: String) -> String {
+        let fields = ["forge-platform-product-instance/v1", deploymentID,
+                      componentIdentity]
+        var bytes = Data()
+        for field in fields {
+            var length = UInt64(field.utf8.count).bigEndian
+            withUnsafeBytes(of: &length) { bytes.append(contentsOf: $0) }
+            bytes.append(contentsOf: field.utf8)
+        }
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        return "fpi-" + String(digest.prefix(40))
     }
 
     static func name(

@@ -1099,6 +1099,9 @@ public struct InstallerWizardState: Equatable, Sendable {
     /// provider gate.
     public private(set) var providers: [ProviderProgress]
     public var composition: CompositionReview
+    /// Explicit non-secret project/repository choice for a paired deployment.
+    /// Review acknowledgement and currency are invalidated when it changes.
+    public private(set) var pairingTarget: ManagedInstallerReviewedPairingTarget?
     /// A fresh currency decision is required after the reviewed diff and
     /// immediately before entering execution. It is invalidated with every
     /// session/composition change.
@@ -1117,6 +1120,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         self.providerRequirementsProjection = .pending
         self.providers = []
         self.composition = CompositionReview()
+        self.pairingTarget = nil
         self.preMutationCurrency = .pending
         self.executionStages = []
         self.summaryItems = []
@@ -1158,6 +1162,37 @@ public struct InstallerWizardState: Equatable, Sendable {
         enabledProvidersVerified
     }
 
+    public var requiresPairingTarget: Bool {
+        composition.components.count == 2
+            && Set(composition.components.map(\.componentID))
+                == Set(["forge-runtime", "engineering-platform-server"])
+    }
+
+    public var pairingTargetIsReady: Bool {
+        !requiresPairingTarget || pairingTarget != nil
+    }
+
+    @discardableResult
+    public mutating func setReviewedPairingTarget(
+        _ target: ManagedInstallerReviewedPairingTarget?
+    ) -> Bool {
+        guard step == .review,
+              hasAcceptedSessionPlan,
+              preflight.isPassed,
+              case .compatible = composition.status,
+              requiresPairingTarget else { return false }
+        guard pairingTarget != target else { return true }
+        pairingTarget = target
+        composition.isAcknowledged = false
+        preMutationCurrency = .pending
+        return true
+    }
+
+    mutating func clearReviewedPairingEvidence() {
+        pairingTarget = nil
+        preMutationCurrency = .pending
+    }
+
     public var canAdvance: Bool {
         switch step {
         case .selfUpdate:
@@ -1169,12 +1204,19 @@ public struct InstallerWizardState: Equatable, Sendable {
         case .preflight:
             return hasAcceptedSessionPlan && preflight.isPassed
         case .providers:
-            return hasAcceptedSessionPlan && preflight.isPassed && enabledProvidersVerified
+            // Provider selection belongs in the reviewed diff. A fresh
+            // deployment cannot authenticate its component-owned homes until
+            // the helper has created them after review. This transition is
+            // read-only; execution still requires independent verification.
+            return hasAcceptedSessionPlan && preflight.isPassed
+                && providerRequirementsAreProjected
+                && !enabledProviders.contains { Self.isProviderActionInFlight($0.state) }
         case .review:
             return hasAcceptedSessionPlan
                 && preflight.isPassed
                 && enabledProvidersVerified
                 && composition.isReadyForExecution
+                && pairingTargetIsReady
                 && preMutationCurrency.isCurrent
         case .execution:
             return hasAcceptedSessionPlan
@@ -1368,11 +1410,16 @@ public struct InstallerWizardState: Equatable, Sendable {
               hasAcceptedSessionPlan,
               preflight.isPassed,
               providerRequirementsAreProjected,
+              let plan = acceptedSessionPlan,
               let index = providers.firstIndex(where: { $0.id == targetID }) else {
             return false
         }
         guard !providers[index].requirement.isRequired || isSelected else {
             return false
+        }
+        if providers[index].isSelected != isSelected {
+            composition = CompositionReview(manifestIdentity: plan.compositionIdentity)
+            preMutationCurrency = .pending
         }
         providers[index].isSelected = isSelected
         providers[index].state = isSelected ? .selected : .notSelected
@@ -1395,9 +1442,14 @@ public struct InstallerWizardState: Equatable, Sendable {
               preflight.isPassed,
               providerRequirementsAreProjected,
               let index = providers.firstIndex(where: { $0.id == targetID }),
-              providers[index].isEnabled else {
+              providers[index].isEnabled,
+              providers[index].requirement.credentialScope == .user else {
             return false
         }
+
+        // A component-owned provider home does not exist until the reviewed
+        // helper stage. Its authentication and VERIFIED state must come from
+        // that exact helper route, never from a pre-review coordinator result.
 
         switch (providers[index].state, action) {
         case (.selected, .install), (.failed, .install):
@@ -1429,7 +1481,8 @@ public struct InstallerWizardState: Equatable, Sendable {
               preflight.isPassed,
               providerRequirementsAreProjected,
               let index = providers.firstIndex(where: { $0.id == targetID }),
-              providers[index].isEnabled else {
+              providers[index].isEnabled,
+              providers[index].requirement.credentialScope == .user else {
             return
         }
         guard Self.isAwaitingProviderActionResult(providers[index].state, for: action) else {
@@ -1459,16 +1512,42 @@ public struct InstallerWizardState: Equatable, Sendable {
         applyProviderTargetActionResult(result, for: matches[0].id, action: action)
     }
 
-    /// A review acknowledgement is meaningful only after the accepted
-    /// composition session, host/tool evidence and provider gate have all
-    /// passed. The UI cannot acknowledge a diff while it is still on the
-    /// selection screen.
+    /// UI progress from the helper's independent physical readback. The
+    /// reviewed stage and readback must identify one unchanged operation and
+    /// every exact provider target. Product execution still rechecks currency
+    /// and provider readiness inside the helper.
+    @discardableResult
+    public mutating func recordReviewedProviderReadback(
+        _ readback: ManagedInstallerReviewedProviderReadback,
+        after stage: ManagedInstallerReviewedProviderStageReceipt,
+        for operation: ReviewedManagedDeploymentOperation
+    ) -> Bool {
+        guard reviewedProviderStageOperation() == operation,
+              readback.operationID == stage.operationID,
+              readback.stablePlanFingerprint == stage.stablePlanFingerprint,
+              readback.targets.map(\.id) == stage.providerTargetIDs,
+              stage.providerTargetIDs == enabledProviders.map(\.id)
+                .sorted(by: { $0.rawValue < $1.rawValue }) else { return false }
+        for target in readback.targets {
+            guard let index = providers.firstIndex(where: { $0.id == target.id }) else {
+                return false
+            }
+            providers[index].state = target.state == .verified
+                ? .verified : .authenticationRequired
+        }
+        preMutationCurrency = .pending
+        return true
+    }
+
+    /// Review acknowledgement precedes helper-owned provider preparation for
+    /// a fresh install. It does not grant product execution: that still needs
+    /// independently verified providers and fresh currency.
     @discardableResult
     public mutating func setCompositionAcknowledged(_ acknowledged: Bool) -> Bool {
         guard step == .review,
               hasAcceptedSessionPlan,
               preflight.isPassed,
-              enabledProvidersVerified else {
+              providerRequirementsAreProjected else {
             return false
         }
         composition.isAcknowledged = acknowledged
@@ -1476,14 +1555,16 @@ public struct InstallerWizardState: Equatable, Sendable {
         return true
     }
 
-    /// The operator may request the final currency check only after the exact
-    /// reviewed diff is acknowledged. Nothing mutable happens at this point.
+    /// The operator may request a currency check after acknowledging the exact
+    /// diff, including before helper-owned provider staging. Product execution
+    /// separately requires a fresh current result and verified providers.
     public var canBeginPreMutationCurrencyCheck: Bool {
         step == .review
             && hasAcceptedSessionPlan
             && preflight.isPassed
-            && enabledProvidersVerified
+            && providerRequirementsAreProjected
             && composition.isReadyForExecution
+            && pairingTargetIsReady
             && !preMutationCurrency.isChecking
     }
 
@@ -1557,6 +1638,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         providers = []
         preflight = HostPreflight()
         composition = CompositionReview()
+        pairingTarget = nil
         preMutationCurrency = .pending
         executionStages = []
         summaryItems = []
@@ -1660,6 +1742,18 @@ public protocol InstallerWizardCoordinator: Sendable {
     func executeReviewedManagedDeployment(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedDeploymentExecutionResult
+    /// Stages selected component-owned provider runtimes under the reviewed
+    /// helper plan, without provider authentication or product execution.
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse?
     /// Legacy targetless route retained for composition/v1 coordinators.
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult
     /// Target-aware route used by composition/v2. Existing coordinators inherit
@@ -1672,6 +1766,29 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        _ = operation
+        return .unavailable(.coordinatorUnavailable)
+    }
+
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
+        _ = operation
+        return .unavailable(.coordinatorUnavailable)
+    }
+
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        _ = operation
+        _ = providerTargetID
+        return nil
+    }
+
     func readTerminalPreserveRecovery(
         deploymentID: String, component: String,
         installerRelease: VerifiedInstallerRelease

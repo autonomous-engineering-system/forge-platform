@@ -29,16 +29,19 @@ struct MacOSManagedInstallerProviderHomeProvisioner:
     private let deploymentID: String
     private let requirement: ProviderRequirement
     private let epProductLayout: Bool
+    private let freshEPInstanceID: String?
     private let expectedOwner: uid_t
 
     init(
         root: URL, deploymentID: String, requirement: ProviderRequirement,
-        epProductLayout: Bool = false, expectedOwner: uid_t = 0
+        epProductLayout: Bool = false, freshEPInstanceID: String? = nil,
+        expectedOwner: uid_t = 0
     ) {
         self.root = root
         self.deploymentID = deploymentID
         self.requirement = requirement
         self.epProductLayout = epProductLayout
+        self.freshEPInstanceID = freshEPInstanceID
         self.expectedOwner = expectedOwner
     }
 
@@ -126,6 +129,16 @@ struct MacOSManagedInstallerProviderHomeProvisioner:
             && requirement.ownerComponent != nil
             && requirement.targetIdentity != nil
             && (!epProductLayout || requirement.ownerComponent == .engineeringPlatformServer)
+            && (freshEPInstanceID == nil || (
+                epProductLayout
+                    && requirement.targetIdentity == deploymentID
+                    && freshEPInstanceID ==
+                        ManagedInstallerProductServiceAccountPlanner.instanceID(
+                            deploymentID: deploymentID,
+                            componentIdentity: ProviderOwnerComponent
+                                .engineeringPlatformServer.rawValue
+                        )
+            ))
     }
 
     private func openTargetDirectory() throws -> Int32 {
@@ -136,7 +149,7 @@ struct MacOSManagedInstallerProviderHomeProvisioner:
         var current = descriptor
         let segments: [String]
         if epProductLayout {
-            segments = ["instances", requirement.targetIdentity!, "providers",
+            segments = ["instances", freshEPInstanceID ?? requirement.targetIdentity!, "providers",
                         requirement.provider == .codex ? "codex" : "github"]
         } else {
             segments = ["deployments", deploymentID, "providers",
@@ -175,8 +188,10 @@ struct MacOSManagedInstallerProviderHomeProvisioner:
         _ request: ManagedInstallerProviderRuntimeMutationRequest,
         account: ManagedInstallerProviderLocalServiceAccount
     ) -> ManagedInstallerProviderHomeReadback {
-        let fields = [request.providerHomeIdentity, account.authority.authoritySHA256,
+        var fields = [request.providerHomeIdentity,
+                      account.authority.authoritySHA256,
                       String(account.uid), String(account.gid)]
+        if let freshEPInstanceID { fields.append(freshEPInstanceID) }
         let digest = SHA256.hash(data: Data(fields.joined(separator: "\u{0}").utf8))
             .map { String(format: "%02x", $0) }.joined()
         return ManagedInstallerProviderHomeReadback(

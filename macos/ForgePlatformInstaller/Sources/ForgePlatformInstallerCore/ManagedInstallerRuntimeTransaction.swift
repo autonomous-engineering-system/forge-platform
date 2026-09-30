@@ -32,7 +32,9 @@ public struct ManagedInstallerRuntimeTransactionReceipt: Equatable, Sendable {
                   stablePlan: stablePlan,
                   parentJournalRecord: preparationReceipt.parentJournalRecord,
                   providerRuntimeReceipt: preparationReceipt.providerRuntimeReceipt,
-                  managedPythonReceipt: preparationReceipt.managedPythonReceipt
+                  managedPythonReceipt: preparationReceipt.managedPythonReceipt,
+                  preproviderAccountReceipt:
+                    preparationReceipt.preproviderAccountReceipt
               ),
               expectedPreparation == preparationReceipt,
               managedToolReconciliationReceipt.matches(stablePlan),
@@ -128,7 +130,8 @@ public struct ManagedInstallerRuntimeTransactionCoordinator: Sendable {
                       stablePlan: stablePlan,
                       parentJournalRecord: receipt.parentJournalRecord,
                       providerRuntimeReceipt: receipt.providerRuntimeReceipt,
-                      managedPythonReceipt: receipt.managedPythonReceipt
+                      managedPythonReceipt: receipt.managedPythonReceipt,
+                      preproviderAccountReceipt: receipt.preproviderAccountReceipt
                   ), expected == receipt else {
                 return .failure(.rejected)
             }

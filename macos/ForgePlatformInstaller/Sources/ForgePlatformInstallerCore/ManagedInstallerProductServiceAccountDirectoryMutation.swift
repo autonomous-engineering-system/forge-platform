@@ -132,7 +132,10 @@ struct MacOSManagedInstallerProductServiceAccountDirectoryMutation:
               ),
               ManagedPythonRuntimeStagingValidation.isOperationID(claim.operationID),
               ManagedInstallerProductWorkerRouteAuthority.isSafeIdentity(claim.deploymentID),
-              claim.instanceID == claim.deploymentID,
+              claim.instanceID == ManagedInstallerProductServiceAccountPlanner.instanceID(
+                deploymentID: claim.deploymentID,
+                componentIdentity: claim.componentIdentity
+              ),
               claim.componentIdentity == ProviderOwnerComponent.forgeRuntime.rawValue
                   || claim.componentIdentity
                     == ProviderOwnerComponent.engineeringPlatformServer.rawValue,

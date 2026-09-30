@@ -332,6 +332,77 @@ final class InstallerWizardViewModelTests: XCTestCase {
         XCTAssertEqual(preparationCalls, 1)
     }
 
+    func testGUIStagesExactReviewedProvidersWithoutClaimingExecution() async throws {
+        var state = try compositionSelectionState()
+        let session = try makeSessionPlan(sessionID: "ui-provider-stage")
+        XCTAssertTrue(state.beginSessionPreparation())
+        XCTAssertTrue(state.recordSessionPreparation(.prepared(session)))
+        XCTAssertTrue(state.advance())
+        let preflight = PreparedHostPreflight(
+            sessionID: session.sessionID,
+            deploymentID: "deployment-new",
+            preflight: HostPreflight(checks: [PreflightCheck(
+                id: "host", title: "Host", detail: "qualified", state: .passed
+            )])
+        )
+        XCTAssertTrue(state.recordHostPreflightPreparation(.prepared(preflight)))
+        XCTAssertTrue(state.advance())
+        XCTAssertTrue(state.advance())
+        let review = CompositionReview(
+            manifestIdentity: session.compositionIdentity,
+            status: .compatible,
+            components: [ComponentDiff(
+                componentID: "forge-runtime", title: "Forge",
+                change: .install, candidateVersion: "2.7.38",
+                artifactDigest: "sha256:" + String(repeating: "a", count: 64),
+                detail: "qualified"
+            )]
+        )
+        XCTAssertTrue(state.recordCompositionReviewPreparation(.prepared(
+            PreparedCompositionReview(
+                sessionID: session.sessionID,
+                deploymentID: "deployment-new",
+                review: review
+            )
+        )))
+        let coordinator = ProviderStageGUICoordinator(release: try makeRelease("1.2.3"))
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.setCompositionAcknowledged(true)
+        model.advance()
+        for _ in 0..<400 {
+            switch model.providerStage {
+            case .observed, .blocked, .authenticating, .challenge: break
+            case .idle, .staging, .prepared:
+                try? await Task.sleep(for: .milliseconds(5))
+                continue
+            }
+            break
+        }
+        guard case .observed(let readback) = model.providerStage else {
+            return XCTFail("Provider stage must be followed by physical readback")
+        }
+        XCTAssertEqual(readback.targets.map(\.id), [.codex])
+        XCTAssertFalse(readback.allVerified)
+        XCTAssertEqual(model.state.step, .review)
+        XCTAssertFalse(model.state.enabledProvidersVerified)
+        model.beginReviewedProviderAuthentication(.codex)
+        for _ in 0..<400 {
+            if case .blocked = model.providerStage { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let authenticationStarts = await coordinator.authenticationStartCount()
+        XCTAssertEqual(authenticationStarts, 1)
+        if case .blocked = model.providerStage {
+            // A missing challenge never advances the wizard.
+        } else {
+            XCTFail("missing helper challenge must block")
+        }
+        let stageCalls = await coordinator.stageCalls()
+        let executionCalls = await coordinator.executionCalls()
+        XCTAssertEqual(stageCalls, 1)
+        XCTAssertEqual(executionCalls, 0)
+    }
+
     private func compositionSelectionState() throws -> InstallerWizardState {
         var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
         state.recordSelfUpdateCheck(.verifiedGitHubRelease(try makeRelease("1.2.3")))
@@ -507,6 +578,86 @@ private actor WizardCoordinatorSpy: InstallerWizardCoordinator {
     func preparationCallCount() -> Int {
         preparationCalls
     }
+}
+
+private actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
+    let release: VerifiedInstallerRelease
+    private var staged = 0
+    private var executed = 0
+    private var authenticationStarts = 0
+
+    init(release: VerifiedInstallerRelease) { self.release = release }
+
+    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+        .rejected("not used")
+    }
+
+    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
+        .failed("not used")
+    }
+
+    func performProviderAction(
+        _ action: ProviderAction, for provider: ProviderID
+    ) async -> ProviderActionResult {
+        .failed(.coordinatorUnavailable)
+    }
+
+    func recheckInstallerBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> InstallerCurrencyCheckResult {
+        .current(release)
+    }
+
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        staged += 1
+        guard let receipt = try? ManagedInstallerReviewedProviderStageReceipt(
+            operationID: "gui-provider-stage",
+            stablePlanFingerprint: String(repeating: "a", count: 64),
+            providerTargetIDs: operation.enabledProviderRequirements.map(\.id)
+                .sorted { $0.rawValue < $1.rawValue }
+        ) else { return .unavailable(.executionFailed) }
+        return .prepared(receipt)
+    }
+
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
+        guard let targets = try? operation.enabledProviderRequirements.map({
+            try ManagedInstallerReviewedProviderReadback.Target(
+                id: $0.id, state: .authenticationRequired,
+                evidenceReference: "receipt:gui-provider-readback"
+            )
+        }).sorted(by: { $0.id.rawValue < $1.id.rawValue }),
+              let receipt = try? ManagedInstallerReviewedProviderReadback(
+                operationID: "gui-provider-stage",
+                stablePlanFingerprint: String(repeating: "a", count: 64),
+                targets: targets
+              ) else { return .unavailable(.executionFailed) }
+        return .observed(receipt)
+    }
+
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        if operation.enabledProviderRequirements.contains(where: { $0.id == providerTargetID }) {
+            authenticationStarts += 1
+        }
+        return nil
+    }
+
+    func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult {
+        executed += 1
+        return .failed(.executionFailed, stages: [])
+    }
+
+    func stageCalls() -> Int { staged }
+    func executionCalls() -> Int { executed }
+    func authenticationStartCount() -> Int { authenticationStarts }
 }
 
 private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
