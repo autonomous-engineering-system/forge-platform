@@ -723,6 +723,83 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
 
         return self._run("execution-host", "preflight")
 
+    def detach_ep_peer(
+        self, *, operation_id: str, binding_id: str, revision: int,
+        configuration_digest: str, operator_id: str,
+    ) -> Mapping[str, object]:
+        """Delegate exact durable detach to Forge and verify its independent status."""
+
+        if not (
+            self.installed_artifact.version == "2.7.39"
+            and qualified_forge_lifecycle_artifact(self.installed_artifact)
+            and all(
+                isinstance(value, str) and _FORGE_LIFECYCLE_ID.fullmatch(value)
+                for value in (operation_id, binding_id, operator_id)
+            )
+            and isinstance(revision, int) and not isinstance(revision, bool)
+            and revision >= 1
+            and isinstance(configuration_digest, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", configuration_digest)
+        ):
+            raise ForgeServerAdapterError("Forge peer detach authority is invalid")
+        request = {
+            "contract": "forge-ep-peer-detach/v1",
+            "operation_id": operation_id,
+            "instance_id": self.target.instance_id,
+            "expected_binding_id": binding_id,
+            "expected_revision": revision,
+            "expected_digest": configuration_digest,
+            "operator_reference": sha256(operator_id.encode()).hexdigest()[:16],
+        }
+        request_digest = _digest_json(request)
+        receipt = self._run(
+            "execution-host", "detach",
+            "--operation-id", operation_id,
+            "--instance-id", self.target.instance_id,
+            "--expected-binding-id", binding_id,
+            "--expected-revision", str(revision),
+            "--expected-digest", configuration_digest,
+            "--operator-id", operator_id,
+        )
+        expected_receipt_fields = set(request) | {
+            "request_digest", "state", "local_peer_state",
+            "remote_consumer_revoke", "next_configuration_revision",
+            "completed_at", "receipt_digest",
+        }
+        unsigned = dict(receipt)
+        unsigned.pop("receipt_digest", None)
+        if (
+            set(receipt) != expected_receipt_fields
+            or any(receipt.get(key) != value for key, value in request.items())
+            or receipt.get("request_digest") != request_digest
+            or receipt.get("state") != "COMPLETE"
+            or receipt.get("local_peer_state") != "DETACHED"
+            or receipt.get("remote_consumer_revoke") != "NOT_ASSERTED"
+            or receipt.get("next_configuration_revision") != revision + 1
+            or not isinstance(receipt.get("completed_at"), str)
+            or not receipt["completed_at"]
+            or receipt.get("receipt_digest") != _digest_json(unsigned)
+        ):
+            raise ForgeServerAdapterError("Forge peer detach receipt changed")
+        status = self._run(
+            "execution-host", "detach-status", "--operation-id", operation_id,
+        )
+        if (
+            set(status) != {
+                "contract", "operation_id", "instance_id", "request_digest",
+                "phase", "current_peer_status", "receipt",
+            }
+            or status.get("contract") != request["contract"]
+            or status.get("operation_id") != operation_id
+            or status.get("instance_id") != self.target.instance_id
+            or status.get("request_digest") != request_digest
+            or status.get("phase") != "COMPLETE"
+            or status.get("current_peer_status") != "DETACHED"
+            or status.get("receipt") != receipt
+        ):
+            raise ForgeServerAdapterError("Forge peer detach terminal status changed")
+        return status
+
     def readback(self, request: ComponentOperationRequest) -> ProductInstallationReadback:
         self._validate_request(request)
         if request.kind == "remove" and not self.target.data_root.exists():
