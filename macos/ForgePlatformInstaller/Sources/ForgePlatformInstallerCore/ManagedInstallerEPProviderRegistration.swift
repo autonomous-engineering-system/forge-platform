@@ -172,34 +172,11 @@ public struct ManagedInstallerEPProviderRegistrationReceipt: Equatable, Sendable
     }
 }
 
-/// Both app entrypoints use this gate after physical provider verification.
-/// Only the privileged helper can translate a reviewed target to EP authority.
-public enum ManagedInstallerEPProviderRegistrationGate {
-    public static func registerVerifiedTargets(
-        coordinator: any InstallerWizardCoordinator,
-        operation: ReviewedManagedDeploymentOperation,
-        readback: ManagedInstallerReviewedProviderReadback,
-        requirements: [ProviderRequirement]
-    ) async -> Bool {
-        guard readback.allVerified else { return true }
-        for requirement in requirements where requirement.ownerComponent == .engineeringPlatformServer {
-            guard let observed = readback.targets.first(where: { $0.id == requirement.id }),
-                  observed.state == .verified,
-                  let runtime = requirement.runtime,
-                  let receipt = await coordinator.registerReviewedEPProvider(
-                    operation, providerTargetID: requirement.id
-                  ),
-                  receipt.operationID == readback.operationID,
-                  receipt.stablePlanFingerprint ==
-                    "sha256:" + readback.stablePlanFingerprint,
-                  receipt.provider == requirement.provider,
-                  receipt.deploymentID == operation.deploymentID,
-                  receipt.runtimeDigest == runtime.executableSHA256,
-                  receipt.physicalEvidenceReference == observed.evidenceReference
-            else { return false }
-        }
-        return true
-    }
+/// Only the helper invokes this after publishing the exact product-worker
+/// authority. GUI/CLI can request a reviewed operation but cannot choose a
+/// worker, path, account, credential or authentication reference.
+protocol ManagedInstallerFreshEPProviderRegistering: Sendable {
+    func register(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data?
 }
 
 protocol ManagedInstallerEPProviderRegistrationExecuting: Sendable {
@@ -242,7 +219,8 @@ actor ManagedInstallerEPProviderRegistrationWorker:
 
 /// Fresh helper admission immediately before product mutation. The worker
 /// re-resolves the released authority and EP verifies its own context again.
-actor ManagedInstallerReviewedEPProviderRegistration {
+actor ManagedInstallerReviewedEPProviderRegistration:
+    ManagedInstallerFreshEPProviderRegistering {
     private let loader: any ManagedInstallerHelperOwnedStablePlanLoading
     private let reader: any ManagedInstallerStablePlanProviderReading
     private let worker: any ManagedInstallerEPProviderRegistrationExecuting

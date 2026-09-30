@@ -59,6 +59,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
     private let wheelFactory: WheelFactory
     private let priorWheelFactory: PriorWheelFactory
     private let readerFactory: ReaderFactory
+    private let epProviderRegistration: (any ManagedInstallerFreshEPProviderRegistering)?
     private let downstream: any ManagedInstallerProductOperationsExecuting
 
     init(
@@ -73,6 +74,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         wheelFactory: @escaping WheelFactory,
         priorWheelFactory: @escaping PriorWheelFactory,
         readerFactory: @escaping ReaderFactory,
+        epProviderRegistration: (any ManagedInstallerFreshEPProviderRegistering)? = nil,
         downstream: any ManagedInstallerProductOperationsExecuting
     ) {
         self.material = material
@@ -86,6 +88,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         self.wheelFactory = wheelFactory
         self.priorWheelFactory = priorWheelFactory
         self.readerFactory = readerFactory
+        self.epProviderRegistration = epProviderRegistration
         self.downstream = downstream
     }
 
@@ -126,7 +129,11 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                         slotsRoot: slots, runtime: plan.session.managedPythonRuntime
                     )
                 )
-            }, downstream: downstream
+            },
+            epProviderRegistration: ManagedInstallerReviewedEPProviderRegistration
+                .production(loader: ManagedInstallerHelperReviewedSelectionRegistration
+                    .production()),
+            downstream: downstream
         )
     }
 
@@ -280,6 +287,33 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         ) {
         case .current(let current)
             where current == plan.reviewedOperation.currentInstallerRelease:
+            let epRequirements = plan.enabledProviderRequirements.filter {
+                $0.ownerComponent == .engineeringPlatformServer
+            }
+            if !epRequirements.isEmpty {
+                guard environment.componentIdentity == "engineering-platform-server",
+                      let registration = epProviderRegistration,
+                      let intent = try? ManagedInstallerReviewedExecutionIntent(
+                        stablePlan: plan
+                      ) else { return .failed(.staleSession, stages: []) }
+                for requirement in epRequirements {
+                    guard let runtime = requirement.runtime,
+                          let bytes = await registration.register(
+                            canonicalIntent: intent.canonicalJSONData(),
+                            providerTargetID: requirement.id
+                          ),
+                          let product = ManagedInstallerEPProviderRegistrationReceipt.decode(
+                            bytes, intent: intent, providerTargetID: requirement.id
+                          ), product.runtimeDigest == runtime.executableSHA256
+                    else { return .failed(.executionFailed, stages: []) }
+                }
+                guard case .current(let afterRegistration) = await currency
+                    .recheckInstallerBeforeMutation(
+                        currentVersion: plan.reviewedOperation.currentInstallerRelease.version
+                    ), afterRegistration == current else {
+                    return .failed(.staleSession, stages: [])
+                }
+            }
             return await downstream.executeProductOperations(
                 stablePlan: plan, runtimeTransactionReceipt: receipt
             )
