@@ -20,6 +20,15 @@ struct ManagedInstallerForgeUpdateControllerResourceResolver: Sendable {
     static let releaseDigestKey = "ForgePlatformForgeReleaseCompleteSHA256"
     static let releaseSourceRevision = "0a3d6e35b01da93bb5a674ae7795558655c16c7d"
     static let releaseDigest = "sha256:7f8f4646a369ea565e52f8420df665acb64d032e5004e1b45ef7dc8427548c49"
+    static let forge239ResourceName = "forge-update-controller-2.7.39.py"
+    static let forge239SourceKey = "ForgePlatformForge239UpdateControllerSourceRevision"
+    static let forge239DigestKey = "ForgePlatformForge239UpdateControllerSHA256"
+    static let forge239SourceRevision = "ebc43dc12da27353f85c991a26da9852aa790f05"
+    static let forge239Digest = "sha256:84bac133849c539a2bfae662234be93c3cd6583e841cae34eb27f3b21728fb87"
+    static let forge239ReleaseReceiptName = "forge-release-complete-2.7.39.json"
+    static let forge239ReleaseSourceKey = "ForgePlatformForge239ReleaseSourceRevision"
+    static let forge239ReleaseDigestKey = "ForgePlatformForge239ReleaseCompleteSHA256"
+    static let forge239ReleaseDigest = "sha256:078a9f09f048cbd1fd36c4d5f83a5739dfeb3c3a546ba94bb1148596135ba15f"
 
     private let locator: any ManagedInstallerHelperSignedParentBundleLocating
 
@@ -50,6 +59,35 @@ struct ManagedInstallerForgeUpdateControllerResourceResolver: Sendable {
         return Self.verifyReleaseReceipt(
             in: parent.bundleURL, sourceRevision: Self.releaseSourceRevision,
             digest: Self.releaseDigest
+        )
+    }
+
+    func resolveForge239ReleaseReceipt() async
+        -> Result<URL, ManagedInstallerForgeUpdateControllerResourceFailure> {
+        guard case .success(let parent) = await locator.locate() else {
+            return .failure(.unavailable)
+        }
+        return Self.verifyForge239ReleaseReceipt(
+            in: parent.bundleURL,
+            controllerDigest: Self.forge239Digest,
+            receiptDigest: Self.forge239ReleaseDigest
+        )
+    }
+
+    static func verifyForge239ReleaseReceipt(
+        in bundleURL: URL, controllerDigest: String, receiptDigest: String
+    ) -> Result<URL, ManagedInstallerForgeUpdateControllerResourceFailure> {
+        guard case .success = verifySealedResource(
+            in: bundleURL, name: forge239ResourceName,
+            sourceKey: forge239SourceKey, digestKey: forge239DigestKey,
+            sourceRevision: forge239SourceRevision, digest: controllerDigest,
+            maximum: 512 * 1_024
+        ) else { return .failure(.unavailable) }
+        return verifySealedResource(
+            in: bundleURL, name: forge239ReleaseReceiptName,
+            sourceKey: forge239ReleaseSourceKey, digestKey: forge239ReleaseDigestKey,
+            sourceRevision: forge239SourceRevision, digest: receiptDigest,
+            maximum: 64 * 1_024
         )
     }
 

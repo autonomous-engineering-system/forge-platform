@@ -13,6 +13,74 @@ final class ManagedInstallerForgeUpdateControllerResourceTests: XCTestCase {
             ManagedInstallerForgeUpdateControllerResourceResolver.digest,
             "sha256:6a6bb4ade3db9d1e45ba64a0d928e91013109de3243e8e2dbccfaa04a7a455b4"
         )
+        XCTAssertEqual(
+            ManagedInstallerForgeUpdateControllerResourceResolver.forge239SourceRevision,
+            "ebc43dc12da27353f85c991a26da9852aa790f05"
+        )
+        XCTAssertEqual(
+            ManagedInstallerForgeUpdateControllerResourceResolver.forge239Digest,
+            "sha256:84bac133849c539a2bfae662234be93c3cd6583e841cae34eb27f3b21728fb87"
+        )
+        XCTAssertEqual(
+            ManagedInstallerForgeUpdateControllerResourceResolver.forge239ReleaseDigest,
+            "sha256:078a9f09f048cbd1fd36c4d5f83a5739dfeb3c3a546ba94bb1148596135ba15f"
+        )
+    }
+
+    func testForge239ReceiptRequiresIndependentControllerAndReceiptReadback() throws {
+        let (root, app, _, info) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = ManagedInstallerForgeUpdateControllerResourceResolver.self
+        let resources = app.appendingPathComponent("Contents/Resources", isDirectory: true)
+        let controller = resources.appendingPathComponent(resolver.forge239ResourceName)
+        let receipt = resources.appendingPathComponent(resolver.forge239ReleaseReceiptName)
+        let controllerBytes = Data("new protected controller fixture".utf8)
+        let receiptBytes = Data("new release fixture".utf8)
+        let controllerDigest = "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: controllerBytes)
+        let receiptDigest = "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: receiptBytes)
+        try controllerBytes.write(to: controller)
+        try receiptBytes.write(to: receipt)
+        try PropertyListSerialization.data(fromPropertyList: [
+            resolver.forge239SourceKey: resolver.forge239SourceRevision,
+            resolver.forge239DigestKey: controllerDigest,
+            resolver.forge239ReleaseSourceKey: resolver.forge239SourceRevision,
+            resolver.forge239ReleaseDigestKey: receiptDigest,
+        ], format: .xml, options: 0).write(to: info)
+        func check() -> Result<URL, ManagedInstallerForgeUpdateControllerResourceFailure> {
+            resolver.verifyForge239ReleaseReceipt(
+                in: app, controllerDigest: controllerDigest, receiptDigest: receiptDigest
+            )
+        }
+        XCTAssertEqual(check(), .success(receipt))
+        try Data("tampered controller".utf8).write(to: controller)
+        XCTAssertEqual(check(), .failure(.unavailable))
+        try controllerBytes.write(to: controller)
+        try Data("tampered receipt".utf8).write(to: receipt)
+        XCTAssertEqual(check(), .failure(.unavailable))
+        try receiptBytes.write(to: receipt)
+        try PropertyListSerialization.data(fromPropertyList: [
+            resolver.forge239SourceKey: "wrong-source",
+            resolver.forge239DigestKey: controllerDigest,
+            resolver.forge239ReleaseSourceKey: resolver.forge239SourceRevision,
+            resolver.forge239ReleaseDigestKey: receiptDigest,
+        ], format: .xml, options: 0).write(to: info)
+        XCTAssertEqual(check(), .failure(.unavailable))
+        try PropertyListSerialization.data(fromPropertyList: [
+            resolver.forge239SourceKey: resolver.forge239SourceRevision,
+            resolver.forge239DigestKey: controllerDigest,
+            resolver.forge239ReleaseSourceKey: resolver.forge239SourceRevision,
+            resolver.forge239ReleaseDigestKey: receiptDigest,
+        ], format: .xml, options: 0).write(to: info)
+        try FileManager.default.removeItem(at: controller)
+        XCTAssertEqual(check(), .failure(.unavailable))
+        let foreign = root.appendingPathComponent("foreign-controller.py")
+        try controllerBytes.write(to: foreign)
+        XCTAssertEqual(symlink(foreign.path, controller.path), 0)
+        XCTAssertEqual(check(), .failure(.unavailable))
+        try FileManager.default.removeItem(at: controller)
+        try controllerBytes.write(to: controller)
+        XCTAssertEqual(chmod(controller.path, 0o666), 0)
+        XCTAssertEqual(check(), .failure(.unavailable))
     }
 
     func testReleaseReceiptRequiresControllerAndIndependentExactByteReadback() throws {
