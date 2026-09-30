@@ -179,6 +179,37 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         }
     }
 
+    func testPurgeRequestRequiresExactDestructiveTargetConfirmation() throws {
+        let selected = try intent("PURGE")
+        let proposal = try fixture(selected)
+        XCTAssertThrowsError(try ManagedInstallerPreservedLifecycleRequest(
+            intent: selected, proposal: proposal, confirmedInstanceID: "forge-b"
+        ))
+        let request = try ManagedInstallerPreservedLifecycleRequest(
+            intent: selected, proposal: proposal, confirmedInstanceID: "forge-a"
+        )
+        XCTAssertEqual(request.confirmedInstanceID, "forge-a")
+        XCTAssertEqual(try ManagedInstallerPreservedLifecycleRequest.decodeJSON(
+            request.canonicalJSONData()
+        ), request)
+        var reader = try StrictJSONResourceReader(data: request.canonicalJSONData())
+        var fields = try XCTUnwrap(reader.parseDocument().objectValue)
+        fields["confirmed_instance_id"] = .string("forge-b")
+        fields.removeValue(forKey: "request_fingerprint")
+        fields["request_fingerprint"] = .string(
+            ManagedInstallerPreservedLifecycleReviewIntent.hash(
+                StrictSignedJSON.canonicalPayload(from: .object(fields))
+            )
+        )
+        XCTAssertThrowsError(try ManagedInstallerPreservedLifecycleRequest.decodeJSON(
+            StrictSignedJSON.canonicalPayload(from: .object(fields))
+        ))
+        XCTAssertThrowsError(try ManagedInstallerPreservedLifecycleRequest(
+            intent: try intent("RESTORE"),
+            proposal: try fixture(intent("RESTORE")), confirmedInstanceID: "forge-a"
+        ))
+    }
+
     func testLifecycleReviewRejectsInconsistentPreserveEvidenceEvenWithFreshFingerprint() throws {
         let cases: [(String, Bool, String, StrictJSONResourceValue)] = [
             ("PRESERVE", false, "preserve_operation_id", .string("preserve-old")),
