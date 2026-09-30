@@ -19,7 +19,12 @@ from forge_platform.forge_ep_pairing_executor import ForgeEPProductPairingBindin
 from forge_platform.forge_server_adapter import ForgeServerTarget, ForgeUninstallBinding
 from forge_platform.installer_product_worker import (
     InstallerProductWorkerUnavailable, execute_preserved_lifecycle_request,
-    read_terminal_preserve_recovery_request, run,
+    read_terminal_preserve_recovery_request, read_terminal_purge_recovery_request, run,
+)
+from forge_platform.managed_purge_recovery import (
+    ManagedPurgeRecoveryError, NATIVE_PURGE_RECOVERY_REQUEST_SCHEMA,
+    decode_native_purge_recovery_request, decode_native_purge_recovery_receipt,
+    encode_native_purge_recovery_receipt,
 )
 from forge_platform.managed_preserve_recovery import (
     ManagedPreserveRecoveryError, NATIVE_PRESERVE_RECOVERY_REQUEST_SCHEMA,
@@ -65,6 +70,15 @@ class Resolver:
 
 
 class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
+    @staticmethod
+    def _purge_recovery_request(execution):
+        payload = {
+            "schema": NATIVE_PURGE_RECOVERY_REQUEST_SCHEMA,
+            "execution_request": json.loads(execution),
+        }
+        payload["request_fingerprint"] = sha256(_wire(payload)).hexdigest()
+        return _wire(payload)
+
     @staticmethod
     def _recovery_request(manifest):
         payload = {
@@ -357,6 +371,85 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
                     request_bytes, service_loader=lambda: service,
                 ), receipt)
             self.assertEqual(len(runner.calls), 2)
+
+    def test_final_component_purge_recovery_reads_exact_terminal_without_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, _, service = self._service(root)
+            current = registry.load("reviewed-pair")
+            registry.remove("reviewed-pair", expected_revision=current.revision)
+            registry.create(replace(
+                current, components=(current.active_by_component["forge-runtime"],),
+            ))
+            execution = _wire(_request(manifest, registry, "PURGE", "forge-a"))
+            recovery = self._purge_recovery_request(execution)
+            decoded = decode_native_purge_recovery_request(recovery)
+            with self.assertRaises(ManagedProductOperationServiceError):
+                service.read_terminal_purge_recovery(recovery)
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)[1]
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=preserve_helpers.Supervisor()),
+            ):
+                service.execute_preserved_lifecycle(execution)
+            self.assertIsNone(registry.load("reviewed-pair"))
+            output = io.BytesIO()
+            self.assertEqual(run(
+                io.BytesIO(recovery), output, service_loader=lambda: service,
+            ), 0)
+            terminal = decode_native_purge_recovery_receipt(
+                output.getvalue(), request=decoded,
+            )
+            self.assertEqual(terminal.review_fingerprint,
+                             decoded.execution.review.review_fingerprint)
+            self.assertEqual(terminal.registry_revision, 2)
+            self.assertEqual(read_terminal_purge_recovery_request(
+                recovery, service_loader=lambda: service,
+            ), output.getvalue())
+            self.assertEqual(len(runner.calls), 2)
+            with patch.object(service, "read_terminal_purge_recovery", return_value=b"{}"):
+                with self.assertRaises(InstallerProductWorkerUnavailable):
+                    read_terminal_purge_recovery_request(
+                        recovery, service_loader=lambda: service,
+                    )
+
+    def test_purge_recovery_rejects_foreign_target_and_nonterminal_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, _, _ = self._service(root)
+            execution = _wire(_request(manifest, registry, "PURGE", "forge-a"))
+            recovery = self._purge_recovery_request(execution)
+            decoded = decode_native_purge_recovery_request(recovery)
+            record = ManagedPreserveExecutionRecord(
+                decoded.execution.review.operation_id,
+                decoded.execution.review.deployment_id,
+                decoded.execution.review.review_fingerprint,
+                decoded.execution.review.component,
+                decoded.execution.review.instance_id,
+                "COMPLETE", "sha256:" + "a" * 64, 2,
+            )
+            receipt = encode_native_purge_recovery_receipt(decoded, record)
+            self.assertEqual(decode_native_purge_recovery_receipt(
+                receipt, request=decoded,
+            ), record)
+            for bad in (
+                recovery + b" ",
+                recovery.replace(b'"confirmed_instance_id":"forge-a"',
+                                 b'"confirmed_instance_id":"forge-b"'),
+                _wire({**json.loads(recovery), "request_fingerprint": "0" * 64}),
+            ):
+                with self.assertRaises(ManagedPurgeRecoveryError):
+                    decode_native_purge_recovery_request(bad)
+            with self.assertRaises(ManagedPurgeRecoveryError):
+                encode_native_purge_recovery_receipt(
+                    decoded, replace(record, state="COMMITTING"),
+                )
+            with self.assertRaises(ManagedPurgeRecoveryError):
+                decode_native_purge_recovery_receipt(
+                    _wire({**json.loads(receipt), "record": {
+                        **json.loads(receipt)["record"], "instance_id": "forge-b",
+                    }}), request=decoded,
+                )
 
     def test_preserved_forge_installation_id_must_match_sealed_route(self):
         with tempfile.TemporaryDirectory() as directory:
