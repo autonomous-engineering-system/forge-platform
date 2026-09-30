@@ -16,6 +16,8 @@ import json
 from types import MappingProxyType
 from typing import Iterable, Mapping, Protocol
 
+from .engineering_platform_system_adapter import EngineeringPlatformSystemProvisionerAdapter
+
 from .managed_product_operation_admission import (
     NativeInstallerReleaseBinding,
     NativeProductOperationRequest,
@@ -61,7 +63,7 @@ from .managed_preserved_lifecycle_request import (
     encode_native_preserved_lifecycle_receipt,
 )
 from .managed_installer import ManagedDeploymentExecutionRecord
-from .managed_install_flow import ManagedForgeEPInstallationCoordinator
+from .managed_install_flow import EP_COMPONENT, ManagedForgeEPInstallationCoordinator
 from .released_product_routes import (
     ReleasedManagedProductRouteBuilder,
     ReleasedManagedProductRouteConfiguration,
@@ -159,6 +161,16 @@ class PinnedManagedProductOperationAuthorityResolver:
         self._installed_manifests = MappingProxyType({
             (value.composition_id, value.manifest_digest): value for value in all_values
         })
+
+    def resolve_candidate_provider_manifest(
+        self, composition_id: str, manifest_digest: str,
+    ) -> CompositionManifest:
+        manifest = self._candidate_manifests.get((composition_id, manifest_digest))
+        if manifest is None:
+            raise ManagedProductOperationServiceError(
+                "EP provider candidate composition authority is unavailable"
+            )
+        return manifest
 
     def resolve(
         self, request: NativeProductOperationRequest
@@ -350,6 +362,7 @@ class ManagedProductOperationHelperService:
         dispatcher: ManagedProductOperationDispatcher,
         removal_dispatcher: ManagedProductRemovalDispatcher | None = None,
         preserved_dispatcher: ManagedPreservedLifecycleDispatcher | None = None,
+        provider_routes: Mapping[str, EngineeringPlatformSystemProvisionerAdapter] | None = None,
     ) -> None:
         if not callable(getattr(authority_resolver, "resolve", None)):
             raise TypeError("helper-owned authority resolver is required")
@@ -359,6 +372,29 @@ class ManagedProductOperationHelperService:
         self.dispatcher = dispatcher
         self.removal_dispatcher = removal_dispatcher
         self.preserved_dispatcher = preserved_dispatcher
+        self.provider_routes = MappingProxyType(dict(provider_routes or {}))
+
+    def register_ep_provider(self, canonical_request: bytes) -> bytes:
+        """Consume only helper-origin physical evidence with pinned EP authority."""
+        try:
+            from .managed_ep_provider_registration import (
+                EPProviderRegistrationRequest, register_ep_provider,
+            )
+            if not isinstance(
+                self.authority_resolver,
+                PinnedManagedProductOperationAuthorityResolver,
+            ):
+                raise TypeError("released provider authority is unavailable")
+            request = EPProviderRegistrationRequest.decode(canonical_request)
+            manifest = self.authority_resolver.resolve_candidate_provider_manifest(
+                request.composition_id, request.manifest_digest
+            )
+            adapter = self.provider_routes.get(request.deployment_id)
+            return register_ep_provider(request, manifest=manifest, adapter=adapter)
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "EP provider registration was rejected"
+            ) from error
 
     def execute(self, canonical_request: bytes) -> bytes:
         """Return one bounded canonical receipt or raise a generic failure."""
@@ -781,4 +817,12 @@ class ManagedProductOperationHelperBuilder:
             dispatcher=dispatcher,
             removal_dispatcher=removal_dispatcher,
             preserved_dispatcher=preserved_dispatcher,
+            provider_routes={
+                deployment_id: adapter
+                for deployment_id, route in routes.items()
+                if isinstance(
+                    adapter := route.adapters.get(EP_COMPONENT),
+                    EngineeringPlatformSystemProvisionerAdapter,
+                )
+            },
         )
