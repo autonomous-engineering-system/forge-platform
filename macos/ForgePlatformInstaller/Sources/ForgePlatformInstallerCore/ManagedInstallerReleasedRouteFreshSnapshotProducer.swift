@@ -37,8 +37,8 @@ protocol ManagedInstallerReleasedRouteFreshSnapshotProducing: Sendable {
 /// The released helper produces one fresh clean-install review from its own
 /// registry, sealed release/catalog/manifest, physical host facts and private
 /// tool-root observation. No caller-supplied path, artifact or credential is
-/// accepted. Existing deployments and nonempty initial tool roots require a
-/// separate qualified lifecycle review and remain unavailable here.
+/// accepted. Existing deployments may coexist with the unclaimed create
+/// candidate; their exact registry state is bound by inventory evidence.
 struct ManagedInstallerReleasedRouteFreshSnapshotProducer:
     ManagedInstallerReleasedRouteFreshSnapshotProducing, Sendable {
     private static let supportedSelections = [
@@ -89,7 +89,6 @@ struct ManagedInstallerReleasedRouteFreshSnapshotProducer:
         ManagedInstallerReleasedRouteFreshSnapshotFailure
     > {
         guard case .success(let selectedInventory) = inventory.produce(),
-              selectedInventory.existing.isEmpty,
               selectedInventory.createCandidate == request.deployment,
               !request.deployment.exists,
               selectedInventory.evidenceReference == request.inventoryEvidenceReference

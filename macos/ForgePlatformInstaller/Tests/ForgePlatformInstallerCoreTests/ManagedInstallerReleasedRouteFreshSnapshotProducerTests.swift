@@ -86,6 +86,55 @@ final class ManagedInstallerReleasedRouteFreshSnapshotProducerTests: XCTestCase 
         XCTAssertNil(publisher.snapshot)
     }
 
+    func testAnotherDeploymentAllowsDistinctReviewedCreateCandidate() async throws {
+        let fixture = try FreshSnapshotFixture()
+        let existing = try ManagedDeploymentTarget(
+            id: "previous-deployment", exists: true,
+            forgeInstanceID: "previous-forge-instance",
+            engineeringPlatformInstanceID: "previous-ep-instance"
+        )
+        let inventory = try ManagedDeploymentInventory(
+            existing: [existing], createCandidate: fixture.deployment,
+            evidenceReference: "inventory:second-deployment"
+        )
+        let request = try ManagedInstallerReleasedRouteRequest(
+            session: fixture.session, deployment: fixture.deployment,
+            inventoryEvidenceReference: inventory.evidenceReference
+        )
+        let active = ManagedInstallerReleasedRouteInitialHostObservation(
+            python: try ManagedPythonRuntimeInstalledReadback(
+                activeRuntimeIdentitySHA256:
+                    fixture.session.managedPythonRuntime.identitySHA256,
+                activeRuntimeSlotIdentity:
+                    ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+                        for: fixture.session.managedPythonRuntime.identitySHA256
+                    ),
+                retainedRuntimeIdentitySHA256s: [],
+                evidenceReference: "receipt:previous-python-runtime"
+            ),
+            managedToolActions: [],
+            pythonSlotEvidenceReference: "receipt:verified-previous-runtime-slot"
+        )
+        let publisher = FreshSnapshotPublisher()
+        let result = await fixture.producer(
+            publisher: publisher, inventory: inventory, initial: active
+        ).produceAndPublish(request: request)
+        guard case .success = result else {
+            return XCTFail("Distinct create candidate should remain reviewable")
+        }
+        let snapshot = try XCTUnwrap(publisher.snapshot)
+        XCTAssertEqual(snapshot.inventory.existing, [existing])
+        XCTAssertEqual(snapshot.deployment, fixture.deployment)
+        XCTAssertEqual(snapshot.initialPythonRuntime, active.python)
+
+        let stalePublisher = FreshSnapshotPublisher()
+        let stale = await fixture.producer(
+            publisher: stalePublisher, inventory: inventory, initial: active
+        ).produceAndPublish(request: fixture.request)
+        XCTAssertEqual(stale, .failure(.unavailable))
+        XCTAssertNil(stalePublisher.snapshot)
+    }
+
     func testServiceRequiresFreshPublicationEvenWhenOldRouteFileExists()
         async throws {
         let fixture = try ReleasedRouteFixture()
@@ -206,13 +255,14 @@ private struct FreshSnapshotFixture {
 
     func producer(
         publisher: FreshSnapshotPublisher,
+        inventory: ManagedDeploymentInventory? = nil,
         manifest: Data? = nil,
         facts: ManagedInstallerPostToolPhysicalHostFacts? = nil,
         initial: ManagedInstallerReleasedRouteInitialHostObservation? = nil,
         initialUnavailable: Bool = false
     ) -> ManagedInstallerReleasedRouteFreshSnapshotProducer {
         ManagedInstallerReleasedRouteFreshSnapshotProducer(
-            inventory: FreshSnapshotInventory(inventory: inventory),
+            inventory: FreshSnapshotInventory(inventory: inventory ?? self.inventory),
             material: FreshSnapshotMaterial(
                 deployment: deployment,
                 material: ManagedInstallerHelperSelectionMaterial(
