@@ -77,6 +77,11 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
                     ManagedInstallerHelperStateRootBootstrap.componentOperationsDirectoryName,
                     isDirectory: true
                 ),
+            expected.appendingPathComponent("state", isDirectory: true)
+                .appendingPathComponent(
+                    ManagedInstallerHelperStateRootBootstrap.forgeUpdateIntentsDirectoryName,
+                    isDirectory: true
+                ),
         ] {
             let details = try FileManager.default.attributesOfItem(atPath: directory.path)
             XCTAssertEqual(details[.posixPermissions] as? Int, 0o700)
@@ -271,6 +276,31 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: outside.path)
         try FileManager.default.createSymbolicLink(at: component, withDestinationURL: outside)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    func testRejectsUnsafeForgeUpdateIntentRoot() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let bootstrap = testBootstrap(parent)
+        let root = try bootstrap.prepare()
+        let intents = root.appendingPathComponent("state", isDirectory: true)
+            .appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.forgeUpdateIntentsDirectoryName,
+                isDirectory: true
+            )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: intents.path
+        )
+        XCTAssertThrowsError(try bootstrap.prepare())
+        try FileManager.default.removeItem(at: intents)
+        let outside = parent.appendingPathComponent("outside-intents", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: outside.path
+        )
+        try FileManager.default.createSymbolicLink(at: intents, withDestinationURL: outside)
         XCTAssertThrowsError(try bootstrap.prepare())
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }

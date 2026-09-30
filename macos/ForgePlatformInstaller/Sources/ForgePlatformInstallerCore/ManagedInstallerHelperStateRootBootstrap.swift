@@ -27,6 +27,7 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
     static let deploymentsDirectoryName = "deployments"
     static let productOperationsDirectoryName = "product-operations"
     static let componentOperationsDirectoryName = "component-operations"
+    static let forgeUpdateIntentsDirectoryName = "forge-update-intents"
     static let deploymentSagaDirectoryName = "deployment-saga"
     static let providerContextsDirectoryName = "provider-contexts"
 
@@ -116,6 +117,10 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
             Self.componentOperationsDirectoryName, in: state
         )
         defer { Darwin.close(componentOperations) }
+        let forgeUpdateIntents = try createPrivateChild(
+            Self.forgeUpdateIntentsDirectoryName, in: state
+        )
+        defer { Darwin.close(forgeUpdateIntents) }
         guard Self.isPrivateDirectory(vendor, owner: expectedOwner),
               Self.isPrivateDirectory(installer, owner: expectedOwner),
               Self.isPrivateDirectory(runtimeSlots, owner: expectedOwner),
@@ -130,6 +135,7 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
               Self.isPrivateDirectory(productOperations, owner: expectedOwner),
               Self.isPrivateDirectory(deploymentSaga, owner: expectedOwner),
               Self.isPrivateDirectory(componentOperations, owner: expectedOwner),
+              Self.isPrivateDirectory(forgeUpdateIntents, owner: expectedOwner),
               Self.isSecureParent(parent, owner: expectedOwner) else {
             throw ManagedInstallerHelperStateRootBootstrapFailure.unavailable
         }
