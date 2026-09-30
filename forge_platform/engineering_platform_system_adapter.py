@@ -454,6 +454,13 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
         authentication = result.get("authentication")
         executable = result.get("executable")
         home = result.get("home")
+        # EP's frozen system topology owns these paths. A structurally valid
+        # response from another instance must never qualify this target.
+        context = self.product_root / "instances" / self.target.instance_id / "providers" / provider
+        expected_executable = context / "runtime" / "bin" / (
+            "codex" if provider == "codex" else "gh"
+        )
+        expected_home = context / ("home" if provider == "codex" else "config")
         if (
             set(result) != {
                 "provider", "instance_id", "state", "executable",
@@ -478,6 +485,8 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
                 for value in (executable, home)
             )
             or executable == home
+            or Path(executable) != expected_executable
+            or Path(home) != expected_home
         ):
             raise EngineeringPlatformAdapterError(
                 "EP product-owned provider readback does not match the exact target"
