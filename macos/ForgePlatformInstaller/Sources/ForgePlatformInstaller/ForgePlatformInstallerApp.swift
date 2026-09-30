@@ -1282,7 +1282,11 @@ private struct ProviderRow: View {
                     FailureCallout(reason: failure.userFacingMessage)
                 }
 
-                if let action = nextAction(for: provider) {
+                if provider.requirement.credentialScope == .component {
+                    Text("Na beoordeling bereidt de helper deze componentomgeving voor en leest de aanmeldstatus onafhankelijk terug.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let action = nextAction(for: provider) {
                     Button(label(for: action)) {
                         viewModel.performProviderAction(action, target: provider.id)
                     }

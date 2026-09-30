@@ -246,19 +246,21 @@ final class ProviderDomainGatingTests: XCTestCase {
 
         XCTAssertEqual(Set(state.providers.map(\.id)), Set([forge.id, ep.id]))
         XCTAssertFalse(state.requestProviderAction(.install, for: .codex))
-        XCTAssertTrue(state.requestProviderTargetAction(.install, for: forge.id))
+        XCTAssertFalse(state.requestProviderTargetAction(.install, for: forge.id))
+        XCTAssertFalse(state.requestProviderTargetAction(.verify, for: forge.id))
+        XCTAssertFalse(state.requestProviderTargetAction(.install, for: ep.id))
         state.applyProviderTargetActionResult(
             .authenticationRequired,
             for: forge.id,
             action: .install
         )
-        XCTAssertTrue(state.requestProviderTargetAction(.authenticate, for: forge.id))
+        XCTAssertFalse(state.requestProviderTargetAction(.authenticate, for: forge.id))
         state.applyProviderTargetActionResult(.verified, for: forge.id, action: .authenticate)
 
         XCTAssertFalse(state.enabledProvidersVerified)
         XCTAssertEqual(
             state.providers.first(where: { $0.id == forge.id })?.state,
-            .verified
+            .selected
         )
         XCTAssertNotEqual(
             state.providers.first(where: { $0.id == ep.id })?.state,
