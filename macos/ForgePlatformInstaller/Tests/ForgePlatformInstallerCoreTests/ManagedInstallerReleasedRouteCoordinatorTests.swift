@@ -2,6 +2,56 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
+    func testEPProviderRegistrationRequiresFreshExactReviewedProductReceipt() async throws {
+        let runtime = try ProviderRuntimeRequirement(
+            version: InstallerVersion("2.70.0"), archiveKind: .zip,
+            artifactURL: "https://artifacts.example.test/codex.zip",
+            artifactSHA256: "sha256:" + String(repeating: "a", count: 64),
+            executableRelativePath: "bin/codex",
+            executableSHA256: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let provider = ProviderRequirement(
+            provider: .codex, isRequired: true, credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer,
+            targetIdentity: "released-route-deployment", runtime: runtime
+        )
+        let fixture = try ReleasedRouteFixture(providerRequirements: [provider])
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        let before = await coordinator.registerReviewedEPProvider(
+            fixture.operation, providerTargetID: provider.id
+        )
+        XCTAssertNil(before)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        guard case .prepared(let plan) = await coordinator.prepareStablePlan(
+            for: fixture.operation
+        ) else { return XCTFail("reviewed plan missing") }
+        let receipt = await coordinator.registerReviewedEPProvider(
+            fixture.operation, providerTargetID: provider.id
+        )
+        XCTAssertEqual(receipt?.runtimeDigest, runtime.executableSHA256)
+        XCTAssertEqual(receipt?.operationID, plan.activationPlan.operationID)
+        let wrongTarget = ProviderTargetID(rawValue:
+            "codex:engineering-platform-server:other-deployment")!
+        let crossed = await coordinator.registerReviewedEPProvider(
+            fixture.operation, providerTargetID: wrongTarget
+        )
+        XCTAssertNil(crossed)
+        await loader.setEPRegistrationFailure(true)
+        let unavailable = await coordinator.registerReviewedEPProvider(
+            fixture.operation, providerTargetID: provider.id
+        )
+        XCTAssertNil(unavailable)
+        await loader.setEPRegistrationFailure(false)
+        await loader.setFailure(true)
+        let stale = await coordinator.registerReviewedEPProvider(
+            fixture.operation, providerTargetID: provider.id
+        )
+        XCTAssertNil(stale)
+    }
+
     func testAuthenticationStartUsesFreshExactReviewedProviderTarget() async throws {
         let runtime = try ProviderRuntimeRequirement(
             version: InstallerVersion("2.70.0"), archiveKind: .zip,
@@ -382,10 +432,12 @@ private actor ExecutionRouteLoader:
     ManagedInstallerReviewedExecutionIntentSending,
     ManagedInstallerReviewedProviderReadbackIntentSending,
     ManagedInstallerReviewedProviderAuthenticationIntentSending,
+    ManagedInstallerReviewedEPProviderRegistrationIntentSending,
     ManagedInstallerReviewedSelectionRegistering {
     let snapshot: ManagedInstallerReleasedRouteSnapshot
     private var failing = false
     private var registrationFailure = false
+    private var epRegistrationFailure = false
     private var sent: [ManagedInstallerReviewedExecutionIntent] = []
     private var registered: [ManagedInstallerReviewedSelection] = []
     private var readbackRequests: [ManagedInstallerReviewedExecutionIntent] = []
@@ -394,6 +446,7 @@ private actor ExecutionRouteLoader:
     init(snapshot: ManagedInstallerReleasedRouteSnapshot) { self.snapshot = snapshot }
     func setFailure(_ value: Bool) { failing = value }
     func setRegistrationFailure(_ value: Bool) { registrationFailure = value }
+    func setEPRegistrationFailure(_ value: Bool) { epRegistrationFailure = value }
     func sentIntents() -> [ManagedInstallerReviewedExecutionIntent] { sent }
     func registeredSelections() -> [ManagedInstallerReviewedSelection] { registered }
     func readbackIntents() -> [ManagedInstallerReviewedExecutionIntent] {
@@ -470,6 +523,33 @@ private actor ExecutionRouteLoader:
         _ = intent
         _ = providerTargetID
         throw TestFailure.failed
+    }
+
+    func registerReviewedEPProvider(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerEPProviderRegistrationReceipt {
+        guard !epRegistrationFailure,
+              let requirement = snapshot.session.providerRequirements.first(where: {
+                  $0.id == providerTargetID
+              }), let runtime = requirement.runtime
+        else { throw TestFailure.failed }
+        let instanceID = ManagedInstallerProductServiceAccountPlanner.instanceID(
+            deploymentID: intent.deploymentID,
+            componentIdentity: "engineering-platform-server"
+        )
+        return ManagedInstallerEPProviderRegistrationReceipt(
+            operationID: intent.operationID,
+            stablePlanFingerprint: "sha256:" + intent.stablePlanFingerprint,
+            deploymentID: intent.deploymentID, epInstanceID: instanceID,
+            provider: requirement.provider,
+            providerTarget: "\(requirement.provider.rawValue):engineering-platform-server:\(instanceID)",
+            runtimeDigest: runtime.executableSHA256,
+            productEvidenceReference: "ep-provider-readback:sha256:"
+                + String(repeating: "d", count: 64),
+            physicalEvidenceReference: "receipt:provider-observation-"
+                + String(repeating: "e", count: 64)
+        )
     }
 }
 

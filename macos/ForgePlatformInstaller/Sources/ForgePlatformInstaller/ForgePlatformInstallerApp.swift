@@ -632,6 +632,14 @@ final class InstallerWizardViewModel: ObservableObject {
                         self.providerStage = .prepared(receipt)
                         switch await coordinator.readReviewedProviders(operation) {
                         case .observed(let readback):
+                            guard await ManagedInstallerEPProviderRegistrationGate.registerVerifiedTargets(
+                                coordinator: coordinator, operation: operation,
+                                readback: readback,
+                                requirements: self.state.enabledProviders.map(\.requirement)
+                            ) else {
+                                self.providerStage = .blocked("De EP-providerregistratie kon niet producteigen worden bevestigd.")
+                                return
+                            }
                             self.providerStage = self.state.recordReviewedProviderReadback(
                                 readback, after: receipt, for: operation
                             ) ? .observed(readback)

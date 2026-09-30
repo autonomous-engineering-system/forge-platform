@@ -1113,6 +1113,11 @@ public struct InstallerCLIWorkflow: Sendable {
                     }
                     guard case .observed(let readback) = await coordinator
                         .readReviewedProviders(operation),
+                          await ManagedInstallerEPProviderRegistrationGate.registerVerifiedTargets(
+                            coordinator: coordinator, operation: operation,
+                            readback: readback,
+                            requirements: state.enabledProviders.map(\.requirement)
+                          ),
                           state.recordReviewedProviderReadback(
                               readback, after: receipt, for: operation
                           ) else {

@@ -313,4 +313,38 @@ public actor ManagedInstallerReleasedRouteCoordinator:
         case .prepared, .unavailable: return nil
         }
     }
+
+    public func registerReviewedEPProvider(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerEPProviderRegistrationReceipt? {
+        guard let reviewed = reviewedPlan,
+              reviewed.reviewedOperation == operation,
+              let requirement = reviewed.enabledProviderRequirements.first(where: {
+                  $0.id == providerTargetID
+                  && $0.ownerComponent == .engineeringPlatformServer
+                  && $0.credentialScope == .component
+              }),
+              let runtime = requirement.runtime,
+              let sender = loader as?
+                any ManagedInstallerReviewedEPProviderRegistrationIntentSending
+        else { return nil }
+        switch await prepareStablePlan(for: operation) {
+        case .prepared(let refreshed) where refreshed == reviewed
+            && reviewedPlan == reviewed:
+            guard let intent = try? ManagedInstallerReviewedExecutionIntent(
+                stablePlan: reviewed
+            ), let receipt = try? await sender.registerReviewedEPProvider(
+                intent, providerTargetID: providerTargetID
+            ), receipt.operationID == intent.operationID,
+              receipt.stablePlanFingerprint == "sha256:" + intent.stablePlanFingerprint,
+              receipt.deploymentID == intent.deploymentID,
+              receipt.runtimeDigest == runtime.executableSHA256,
+              receipt.provider == requirement.provider,
+              receipt.providerTarget == "\(requirement.provider.rawValue):engineering-platform-server:\(receipt.epInstanceID)",
+              reviewedPlan == reviewed else { return nil }
+            return receipt
+        case .prepared, .unavailable: return nil
+        }
+    }
 }
