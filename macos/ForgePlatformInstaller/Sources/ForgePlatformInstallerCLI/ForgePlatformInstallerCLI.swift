@@ -243,6 +243,10 @@ enum ForgePlatformInstallerCLIApplication {
                 result = await workflow.recoverPreservedComponent(
                     deploymentID: deployment, component: component
                 )
+            case .deploymentLifecycleRecoverPurge(let deployment, let operationID):
+                result = await workflow.recoverPurgedComponent(
+                    deploymentID: deployment, operationID: operationID
+                )
             case .help, .version, .selfUpdateCheck, .selfUpdateApply:
                 result = InstallerCLIResult(
                     exitCode: .usage,
