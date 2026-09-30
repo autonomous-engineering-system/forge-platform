@@ -170,6 +170,53 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
         XCTAssertEqual(executionResult, .failed(.coordinatorUnavailable, stages: []))
     }
 
+    func testSecondDeploymentReviewKeepsExistingTargetAndBindsNoChangeTools()
+        async throws {
+        let existing = try ManagedDeploymentTarget(
+            id: "already-installed", exists: true,
+            forgeInstanceID: "forge-already-installed",
+            engineeringPlatformInstanceID: "ep-already-installed"
+        )
+        let fixture = try ReleasedRouteFixture(
+            includeManagedGit: true, existingDeployment: existing,
+            reuseActiveRuntime: true, reuseActiveGit: true,
+            qualifiedCurrentCandidates: true
+        )
+        let loader = ReleasedRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        let inventory = await coordinator.prepareManagedDeploymentInventory()
+        XCTAssertEqual(inventory, .available(fixture.inventory))
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        _ = await coordinator.prepareCompositionReview(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        let result = await coordinator.prepareStablePlan(for: fixture.operation)
+        guard case .prepared(let plan) = result else {
+            return XCTFail("Second candidate should produce an exact stable plan")
+        }
+        XCTAssertEqual(plan.deployment, fixture.inventory.createCandidate)
+        XCTAssertEqual(fixture.inventory.existing, [existing])
+        XCTAssertEqual(plan.activationPlan.action, .noChange)
+        XCTAssertEqual(plan.originalManagedToolActions.map(\.action), [.noChange])
+        XCTAssertEqual(plan.activationPlan.initialReadback, fixture.python)
+
+        let changed = try ManagedDeploymentInventory(
+            existing: [existing], createCandidate: fixture.deployment,
+            evidenceReference: "inventory:changed-after-review"
+        )
+        await loader.setSnapshot(try ManagedInstallerReleasedRouteSnapshot(
+            inventory: changed, session: fixture.session,
+            deployment: fixture.deployment, preflight: fixture.preflight,
+            review: fixture.review, initialPythonRuntime: fixture.python,
+            managedToolActions: fixture.managedToolActions,
+            evidenceReference: fixture.snapshot.evidenceReference
+        ))
+        let stale = await coordinator.prepareStablePlan(for: fixture.operation)
+        XCTAssertEqual(stale, .unavailable(.staleSession))
+    }
+
     func testReviewAndPlanRequirePreviouslyAdmittedExactSnapshot() async throws {
         let fixture = try ReleasedRouteFixture()
         let coordinator = ManagedInstallerReleasedRouteCoordinator(
@@ -471,7 +518,14 @@ struct ReleasedRouteFixture {
     let operation: ReviewedManagedDeploymentOperation
 
     init(includeManagedGit: Bool = false, componentIdentity: String? = nil,
-         providerRequirements: [ProviderRequirement] = []) throws {
+         providerRequirements: [ProviderRequirement] = [],
+         existingDeployment: ManagedDeploymentTarget? = nil,
+         reuseActiveRuntime: Bool = false,
+         reuseActiveGit: Bool = false,
+         qualifiedCurrentCandidates: Bool = false) throws {
+        guard !reuseActiveGit || includeManagedGit else {
+            throw ManagedPythonRuntimeActivationFailure.invalidRequest
+        }
         let managedTools: [ManagedToolRequirement]
         if includeManagedGit {
             managedTools = [ManagedToolRequirement(
@@ -517,7 +571,7 @@ struct ReleasedRouteFixture {
             exists: false
         )
         inventory = try ManagedDeploymentInventory(
-            existing: [],
+            existing: existingDeployment.map { [$0] } ?? [],
             createCandidate: deployment,
             evidenceReference: "inventory:released-route"
         )
@@ -537,7 +591,8 @@ struct ReleasedRouteFixture {
                     componentID: "engineering-platform-server",
                     title: "Engineering Platform",
                     change: .install,
-                    candidateVersion: "2.3.102",
+                    candidateVersion: qualifiedCurrentCandidates
+                        ? "2.3.106" : "2.3.102",
                     artifactDigest: "sha256:" + String(repeating: "1", count: 64),
                     detail: "qualified"
                 ),
@@ -545,25 +600,38 @@ struct ReleasedRouteFixture {
                     componentID: "forge-runtime",
                     title: "Forge",
                     change: .install,
-                    candidateVersion: "2.7.34",
+                    candidateVersion: qualifiedCurrentCandidates
+                        ? "2.7.38" : "2.7.34",
                     artifactDigest: "sha256:" + String(repeating: "2", count: 64),
                     detail: "qualified"
                 ),
             ].filter { componentIdentity == nil || $0.componentID == componentIdentity }
         )
         python = try ManagedPythonRuntimeInstalledReadback(
-            activeRuntimeIdentitySHA256: nil,
-            activeRuntimeSlotIdentity: nil,
+            activeRuntimeIdentitySHA256: reuseActiveRuntime
+                ? session.managedPythonRuntime.identitySHA256 : nil,
+            activeRuntimeSlotIdentity: reuseActiveRuntime
+                ? ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+                    for: session.managedPythonRuntime.identitySHA256
+                ) : nil,
             retainedRuntimeIdentitySHA256s: [],
-            evidenceReference: "receipt:python-absent"
+            evidenceReference: reuseActiveRuntime
+                ? "receipt:python-active" : "receipt:python-absent"
         )
         managedToolActions = try managedTools.map {
             ManagedToolOriginalPlanAction(
-                requirement: $0, action: .install,
+                requirement: $0,
+                action: reuseActiveGit ? .noChange : .install,
                 initialReadback: try ManagedToolInstalledReadback(
-                    identity: $0.identity, state: .absent, version: nil,
-                    artifactSHA256: nil, managedRootIdentity: nil,
-                    evidenceReference: "receipt:managed-git-initial-absent"
+                    identity: $0.identity,
+                    state: reuseActiveGit ? .active : .absent,
+                    version: reuseActiveGit ? $0.version : nil,
+                    artifactSHA256: reuseActiveGit ? $0.artifact.sha256 : nil,
+                    managedRootIdentity: reuseActiveGit
+                        ? ManagedToolRequirement.managedRootIdentity : nil,
+                    evidenceReference: reuseActiveGit
+                        ? "receipt:managed-git-active"
+                        : "receipt:managed-git-initial-absent"
                 )
             )
         }
