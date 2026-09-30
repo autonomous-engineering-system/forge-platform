@@ -6,16 +6,34 @@ enum ManagedPythonRuntimeExtractedTreeFailure: Error, Equatable {
     case rejected
 }
 
+enum ManagedArchiveTreeEvidenceDomain: Sendable {
+    case python
+    case git
+
+    var referencePrefix: String {
+        switch self {
+        case .python: "receipt:managed-python-tree-"
+        case .git: "receipt:managed-git-tree-"
+        }
+    }
+}
+
 /// Independently reopens an extracted runtime tree below one helper-selected
 /// private slot. No path from an XPC request is accepted: member names come
 /// only from the exact archive inventory and are checked again before use.
 struct MacOSManagedPythonRuntimeExtractedTreeVerifier {
     private let slotRoot: URL
     private let expectedOwner: uid_t
+    private let evidenceDomain: ManagedArchiveTreeEvidenceDomain
 
-    init(slotRoot: URL, expectedOwner: uid_t = 0) {
+    init(
+        slotRoot: URL,
+        expectedOwner: uid_t = 0,
+        evidenceDomain: ManagedArchiveTreeEvidenceDomain = .python
+    ) {
         self.slotRoot = slotRoot
         self.expectedOwner = expectedOwner
+        self.evidenceDomain = evidenceDomain
     }
 
     func verify(
@@ -67,7 +85,7 @@ struct MacOSManagedPythonRuntimeExtractedTreeVerifier {
         }
         try requireEntries(in: root, equal: children[""] ?? [])
         let digest = binding.finalize().map { String(format: "%02x", $0) }.joined()
-        return "receipt:managed-python-tree-" + digest
+        return evidenceDomain.referencePrefix + digest
     }
 
     private func expectedChildren(

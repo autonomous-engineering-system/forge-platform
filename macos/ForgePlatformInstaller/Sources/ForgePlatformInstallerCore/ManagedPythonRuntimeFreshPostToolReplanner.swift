@@ -70,10 +70,27 @@ public struct ManagedToolOriginalPlanAction: Equatable, Sendable {
 
     public let requirement: ManagedToolRequirement
     public let action: Action
+    public let initialReadback: ManagedToolInstalledReadback?
 
-    public init(requirement: ManagedToolRequirement, action: Action) {
+    public init(
+        requirement: ManagedToolRequirement,
+        action: Action,
+        initialReadback: ManagedToolInstalledReadback? = nil
+    ) {
         self.requirement = requirement
         self.action = action
+        self.initialReadback = initialReadback
+    }
+
+    var hasReviewedInitialState: Bool {
+        guard let initialReadback,
+              initialReadback.identity == requirement.identity else { return false }
+        switch (initialReadback.state, action) {
+        case (.absent, .install): return true
+        case (.active, .upgrade): return !initialReadback.matches(requirement)
+        case (.active, .noChange): return initialReadback.matches(requirement)
+        default: return false
+        }
     }
 }
 

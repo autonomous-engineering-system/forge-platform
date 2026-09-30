@@ -54,6 +54,9 @@ actor ReleasedInstallerCLIStartupAdapter: InstallerCLIStarting {
 
 enum ForgePlatformInstallerCLIApplication {
     typealias Writer = @Sendable (String) -> Void
+    typealias ChallengeWriter = @Sendable (
+        ManagedInstallerProviderAuthenticationChallengeResponse
+    ) -> Bool
     typealias Confirmation = @Sendable (String) async -> Bool
 
     static func run(
@@ -63,6 +66,7 @@ enum ForgePlatformInstallerCLIApplication {
         confirm: Confirmation,
         registerHelper: @escaping InstallerCLIHelperRegistration.Registrar =
             InstallerCLIHelperRegistration.liveRegistrar,
+        challengeWriter: ChallengeWriter = writeChallengeToTTY,
         stdout: Writer,
         stderr: Writer
     ) async -> Int32 {
@@ -216,12 +220,40 @@ enum ForgePlatformInstallerCLIApplication {
                     operationID: operationID,
                     component: component
                 )
+            case .deploymentLifecyclePlan(
+                let deployment, let operationID, let operation, let component
+            ):
+                result = await workflow.planPreservedLifecycle(
+                    deploymentID: deployment, operationID: operationID,
+                    operation: operation, component: component
+                )
+            case .deploymentLifecyclePreserve(let deployment, let operationID, let component):
+                result = await workflow.preserveComponent(
+                    deploymentID: deployment, operationID: operationID,
+                    component: component, options: invocation.options,
+                    confirm: confirm
+                )
+            case .deploymentLifecycleRecover(let deployment, let component):
+                result = await workflow.recoverPreservedComponent(
+                    deploymentID: deployment, component: component
+                )
             case .help, .version, .selfUpdateCheck, .selfUpdateApply:
                 result = InstallerCLIResult(
                     exitCode: .usage,
                     status: "usage-error",
                     message: "CLI command routing is inconsistent."
                 )
+            }
+            if let challenge = result.authenticationChallenge,
+               (invocation.options.json || invocation.options.nonInteractive
+                || !challengeWriter(challenge)) {
+                let blocked = InstallerCLIResult(
+                    exitCode: .blocked, status: "provider-authentication-unavailable",
+                    message: "De eenmalige providercode kon niet veilig op de interactieve terminal worden getoond."
+                )
+                render(blocked, json: invocation.options.json,
+                       stdout: stdout, stderr: stderr)
+                return blocked.exitCode.rawValue
             }
             render(result, json: invocation.options.json, stdout: stdout, stderr: stderr)
             return result.exitCode.rawValue
@@ -268,6 +300,36 @@ enum ForgePlatformInstallerCLIApplication {
             stdout(text)
         } else {
             stderr(text)
+        }
+    }
+
+    private static func writeChallengeToTTY(
+        _ challenge: ManagedInstallerProviderAuthenticationChallengeResponse
+    ) -> Bool {
+        let descriptor = Darwin.open("/dev/tty", O_WRONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else { return false }
+        defer { _ = Darwin.close(descriptor) }
+        return writeChallenge(challenge, to: descriptor)
+    }
+
+    static func writeChallenge(
+        _ challenge: ManagedInstallerProviderAuthenticationChallengeResponse,
+        to descriptor: Int32
+    ) -> Bool {
+        let message = "\nProvider-aanmelding voor \(challenge.providerTargetID)\n"
+            + "Open \(challenge.verificationURL.absoluteString)\n"
+            + "Eenmalige code: \(challenge.userCode)\n\n"
+        let bytes = Array(message.utf8)
+        return bytes.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { return false }
+            var written = 0
+            while written < buffer.count {
+                let count = Darwin.write(descriptor, base.advanced(by: written),
+                                         buffer.count - written)
+                guard count > 0 else { return false }
+                written += count
+            }
+            return true
         }
     }
 

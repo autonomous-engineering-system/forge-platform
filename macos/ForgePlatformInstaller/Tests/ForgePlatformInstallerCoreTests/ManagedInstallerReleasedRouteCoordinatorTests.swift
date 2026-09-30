@@ -2,6 +2,73 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
+    func testAuthenticationStartUsesFreshExactReviewedProviderTarget() async throws {
+        let runtime = try ProviderRuntimeRequirement(
+            version: InstallerVersion("2.70.0"), archiveKind: .zip,
+            artifactURL: "https://artifacts.example.test/codex.zip",
+            artifactSHA256: "sha256:" + String(repeating: "a", count: 64),
+            executableRelativePath: "bin/codex",
+            executableSHA256: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let provider = ProviderRequirement(
+            provider: .codex, isRequired: true, credentialScope: .component,
+            ownerComponent: .forgeRuntime,
+            targetIdentity: "released-route-deployment", runtime: runtime
+        )
+        let fixture = try ReleasedRouteFixture(providerRequirements: [provider])
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        let beforeReview = await coordinator.beginReviewedProviderAuthentication(
+            fixture.operation, providerTargetID: provider.id
+        )
+        XCTAssertNil(beforeReview)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        guard case .prepared(let plan) = await coordinator.prepareStablePlan(
+            for: fixture.operation
+        ) else { return XCTFail("reviewed plan missing") }
+        let challenge = await coordinator.beginReviewedProviderAuthentication(
+            fixture.operation, providerTargetID: provider.id
+        )
+        XCTAssertEqual(challenge?.providerTargetID, provider.id.rawValue)
+        XCTAssertEqual(challenge?.userCode, "ABCD-EF12")
+        let authenticationIntents = await loader.authenticationIntents()
+        XCTAssertEqual(authenticationIntents, [
+            try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+        ])
+        await loader.setFailure(true)
+        let stale = await coordinator.beginReviewedProviderAuthentication(
+            fixture.operation, providerTargetID: provider.id
+        )
+        XCTAssertNil(stale)
+    }
+
+    func testProviderReadbackUsesFreshExactReviewedPlanAndTarget() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let fixture = try ReleasedRouteFixture(providerRequirements: [provider])
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        guard case .prepared(let plan) = await coordinator.prepareStablePlan(
+            for: fixture.operation
+        ) else { return XCTFail("Expected exact provider plan") }
+        let result = await coordinator.readReviewedProviders(fixture.operation)
+        guard case .observed(let readback) = result else {
+            return XCTFail("Helper readback must cross exact reviewed route")
+        }
+        XCTAssertTrue(readback.matches(plan))
+        XCTAssertEqual(readback.targets.map(\.id), [provider.id])
+        let sent = await loader.readbackIntents()
+        XCTAssertEqual(sent, [
+            try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+        ])
+        await loader.setFailure(true)
+        let stale = await coordinator.readReviewedProviders(fixture.operation)
+        XCTAssertEqual(stale, .unavailable(.staleSession))
+    }
     func testReviewedExecutionSendsOnlyExactIntentAfterFreshSnapshot() async throws {
         let fixture = try ReleasedRouteFixture()
         let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
@@ -18,6 +85,8 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
         XCTAssertEqual(result, .failed(.executionFailed, stages: []))
         let sent = await loader.sentIntents()
         XCTAssertEqual(sent, [try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)])
+        let registered = await loader.registeredSelections()
+        XCTAssertEqual(registered, [try ManagedInstallerReviewedSelection(stablePlan: plan)])
     }
 
     func testReviewedExecutionRejectsDriftBeforeSendingIntent() async throws {
@@ -33,6 +102,25 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
         let result = await coordinator.executeReviewedManagedDeployment(fixture.operation)
 
         XCTAssertEqual(result, .failed(.staleSession, stages: []))
+        let sent = await loader.sentIntents()
+        XCTAssertTrue(sent.isEmpty)
+        let registered = await loader.registeredSelections()
+        XCTAssertTrue(registered.isEmpty)
+    }
+
+    func testReviewedExecutionRequiresDurableHelperRegistrationBeforeMutation() async throws {
+        let fixture = try ReleasedRouteFixture()
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        _ = await coordinator.prepareStablePlan(for: fixture.operation)
+        await loader.setRegistrationFailure(true)
+
+        let result = await coordinator.executeReviewedManagedDeployment(fixture.operation)
+
+        XCTAssertEqual(result, .failed(.coordinatorUnavailable, stages: []))
         let sent = await loader.sentIntents()
         XCTAssertTrue(sent.isEmpty)
     }
@@ -244,14 +332,36 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
 
 private actor ExecutionRouteLoader:
     ManagedInstallerReleasedRouteSnapshotLoading,
-    ManagedInstallerReviewedExecutionIntentSending {
+    ManagedInstallerReviewedExecutionIntentSending,
+    ManagedInstallerReviewedProviderReadbackIntentSending,
+    ManagedInstallerReviewedProviderAuthenticationIntentSending,
+    ManagedInstallerReviewedSelectionRegistering {
     let snapshot: ManagedInstallerReleasedRouteSnapshot
     private var failing = false
+    private var registrationFailure = false
     private var sent: [ManagedInstallerReviewedExecutionIntent] = []
+    private var registered: [ManagedInstallerReviewedSelection] = []
+    private var readbackRequests: [ManagedInstallerReviewedExecutionIntent] = []
+    private var authenticationRequests: [ManagedInstallerReviewedExecutionIntent] = []
 
     init(snapshot: ManagedInstallerReleasedRouteSnapshot) { self.snapshot = snapshot }
     func setFailure(_ value: Bool) { failing = value }
+    func setRegistrationFailure(_ value: Bool) { registrationFailure = value }
     func sentIntents() -> [ManagedInstallerReviewedExecutionIntent] { sent }
+    func registeredSelections() -> [ManagedInstallerReviewedSelection] { registered }
+    func readbackIntents() -> [ManagedInstallerReviewedExecutionIntent] {
+        readbackRequests
+    }
+    func authenticationIntents() -> [ManagedInstallerReviewedExecutionIntent] {
+        authenticationRequests
+    }
+
+    func registerReviewedSelection(
+        _ selection: ManagedInstallerReviewedSelection
+    ) async throws {
+        if registrationFailure { throw TestFailure.failed }
+        registered.append(selection)
+    }
 
     func loadManagedDeploymentInventory() async throws -> ManagedDeploymentInventory {
         if failing { throw TestFailure.failed }
@@ -273,6 +383,37 @@ private actor ExecutionRouteLoader:
     ) async throws -> ManagedDeploymentExecutionResult {
         sent.append(intent)
         return .failed(.executionFailed, stages: [])
+    }
+
+    func readReviewedProviders(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedInstallerReviewedProviderReadback {
+        readbackRequests.append(intent)
+        return try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: snapshot.session.providerRequirements.map {
+                try .init(id: $0.id, state: .authenticationRequired,
+                          evidenceReference: "receipt:route-provider-readback")
+            }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
+        )
+    }
+
+    func beginReviewedProviderAuthentication(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerProviderAuthenticationChallengeResponse {
+        authenticationRequests.append(intent)
+        guard snapshot.session.providerRequirements.contains(where: {
+            $0.id == providerTargetID
+        }),
+              let challenge = ManagedInstallerProviderDeviceChallenge.parse(
+                provider: .codex,
+                output: Data("https://auth.openai.com/codex/device\nEnter this one-time code ABCD-EF12".utf8)
+              ) else { throw TestFailure.failed }
+        return ManagedInstallerProviderAuthenticationChallengeResponse(
+            intent: intent, targetID: providerTargetID, challenge: challenge
+        )
     }
 }
 
@@ -329,7 +470,8 @@ struct ReleasedRouteFixture {
     let snapshot: ManagedInstallerReleasedRouteSnapshot
     let operation: ReviewedManagedDeploymentOperation
 
-    init(includeManagedGit: Bool = false, componentIdentity: String? = nil) throws {
+    init(includeManagedGit: Bool = false, componentIdentity: String? = nil,
+         providerRequirements: [ProviderRequirement] = []) throws {
         let managedTools: [ManagedToolRequirement]
         if includeManagedGit {
             managedTools = [ManagedToolRequirement(
@@ -366,7 +508,7 @@ struct ReleasedRouteFixture {
             productVirtualEnvironments: managedPythonTestVenvs.filter {
                 componentIdentity == nil || $0.componentIdentity == componentIdentity
             },
-            providerRequirements: [],
+            providerRequirements: providerRequirements,
             managedTools: managedTools
         )
         deployment = try ManagedDeploymentTarget(
@@ -415,8 +557,15 @@ struct ReleasedRouteFixture {
             retainedRuntimeIdentitySHA256s: [],
             evidenceReference: "receipt:python-absent"
         )
-        managedToolActions = managedTools.map {
-            ManagedToolOriginalPlanAction(requirement: $0, action: .install)
+        managedToolActions = try managedTools.map {
+            ManagedToolOriginalPlanAction(
+                requirement: $0, action: .install,
+                initialReadback: try ManagedToolInstalledReadback(
+                    identity: $0.identity, state: .absent, version: nil,
+                    artifactSHA256: nil, managedRootIdentity: nil,
+                    evidenceReference: "receipt:managed-git-initial-absent"
+                )
+            )
         }
         release = VerifiedInstallerRelease(
             version: try InstallerVersion("0.2.4"),
@@ -443,6 +592,7 @@ struct ReleasedRouteFixture {
             deploymentExists: deployment.exists,
             inventoryEvidenceReference: inventory.evidenceReference,
             currentInstallerRelease: release,
+            enabledProviderRequirements: providerRequirements,
             components: review.components
         )
     }

@@ -11,7 +11,7 @@ public enum ManagedInstallerReleasedRouteXPCFailure: Error, Equatable, Sendable 
 /// Bounded correlation-only request for a helper-owned released route. It
 /// carries no path, command, environment value, URL or credential.
 public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
-    public static let schema = "forge-platform.managed-installer-released-route-request/v1"
+    public static let schema = "forge-platform.managed-installer-released-route-request/v2"
     static let maximumBytes = 8 * 1_024
 
     public let sessionID: String
@@ -57,14 +57,18 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
     }
 
     public func canonicalJSONData() -> Data {
-        StrictSignedJSON.canonicalPayload(from: .object([
+        StrictSignedJSON.canonicalPayload(from: canonicalValue())
+    }
+
+    func canonicalValue() -> StrictJSONResourceValue {
+        .object([
             "schema": .string(Self.schema),
             "session_id": .string(sessionID),
             "composition_identity": .string(compositionIdentity),
             "manifest_sha256": .string(manifestSHA256),
             "deployment": Self.targetValue(deployment),
             "inventory_evidence_reference": .string(inventoryEvidenceReference),
-        ]))
+        ])
     }
 
     public static func decodeJSON(_ data: Data) throws -> Self {
@@ -82,7 +86,8 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
               let compositionIdentity = fields["composition_identity"]?.stringValue,
               let manifestSHA256 = fields["manifest_sha256"]?.stringValue,
               let deploymentValue = fields["deployment"],
-              let evidence = fields["inventory_evidence_reference"]?.stringValue else {
+              let evidence = fields["inventory_evidence_reference"]?.stringValue,
+              StrictSignedJSON.canonicalPayload(from: .object(fields)) == data else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
         }
         return try Self(
@@ -110,6 +115,11 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
             "forge_instance_id": target.forgeInstanceID.map(StrictJSONResourceValue.string) ?? .null,
             "engineering_platform_instance_id": target.engineeringPlatformInstanceID
                 .map(StrictJSONResourceValue.string) ?? .null,
+            "preserved_forge_instance_id": target.preservedForgeInstanceID
+                .map(StrictJSONResourceValue.string) ?? .null,
+            "preserved_engineering_platform_instance_id":
+                target.preservedEngineeringPlatformInstanceID
+                    .map(StrictJSONResourceValue.string) ?? .null,
             "installed_composition_id": target.installedCompositionID
                 .map(StrictJSONResourceValue.string) ?? .null,
             "installed_composition_manifest_sha256":
@@ -118,14 +128,19 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
         ])
     }
 
-    static func decodeTarget(_ value: StrictJSONResourceValue) throws
+    static func decodeTarget(
+        _ value: StrictJSONResourceValue, legacy: Bool = false
+    ) throws
         -> ManagedDeploymentTarget {
         guard let fields = value.objectValue,
               Set(fields.keys) == Set([
                 "id", "label", "exists", "forge_instance_id",
                 "engineering_platform_instance_id", "installed_composition_id",
                 "installed_composition_manifest_sha256",
-              ]),
+              ] + (legacy ? [] : [
+                "preserved_forge_instance_id",
+                "preserved_engineering_platform_instance_id",
+              ])),
               let id = fields["id"]?.stringValue,
               case .boolean(let exists) = fields["exists"] else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
@@ -137,6 +152,10 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
             forgeInstanceID: optionalString(fields["forge_instance_id"]),
             engineeringPlatformInstanceID:
                 optionalString(fields["engineering_platform_instance_id"]),
+            preservedForgeInstanceID: legacy ? nil
+                : optionalString(fields["preserved_forge_instance_id"]),
+            preservedEngineeringPlatformInstanceID: legacy ? nil
+                : optionalString(fields["preserved_engineering_platform_instance_id"]),
             installedCompositionID: optionalString(fields["installed_composition_id"]),
             installedCompositionManifestSHA256:
                 optionalString(fields["installed_composition_manifest_sha256"])
@@ -158,8 +177,10 @@ public struct ManagedInstallerReleasedRouteRequest: Equatable, Sendable {
 }
 
 enum ManagedInstallerReleasedRouteXPCCodec {
-    static let inventorySchema = "forge-platform.managed-deployment-inventory/v1"
-    static let snapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v2"
+    static let inventorySchema = "forge-platform.managed-deployment-inventory/v2"
+    static let legacyInventorySchema = "forge-platform.managed-deployment-inventory/v1"
+    static let snapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v4"
+    static let previousSnapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v3"
     static let legacySnapshotSchema = "forge-platform.managed-installer-released-route-snapshot/v1"
     static let maximumResponseBytes = 128 * 1_024
 
@@ -168,17 +189,30 @@ enum ManagedInstallerReleasedRouteXPCCodec {
     }
 
     static func decodeInventory(_ data: Data) throws -> ManagedDeploymentInventory {
-        let fields = try root(data, schema: inventorySchema, keys: [
+        let keys: Set<String> = [
             "schema", "existing", "create_candidate", "evidence_reference",
-        ])
+        ]
+        let fields: [String: StrictJSONResourceValue]
+        let legacy: Bool
+        if let current = try? root(data, schema: inventorySchema, keys: keys) {
+            fields = current
+            legacy = false
+        } else {
+            fields = try root(data, schema: legacyInventorySchema, keys: keys)
+            legacy = true
+        }
         guard let existingValues = fields["existing"]?.arrayValue,
               let createValue = fields["create_candidate"],
               let evidence = fields["evidence_reference"]?.stringValue else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
         }
         return try ManagedDeploymentInventory(
-            existing: existingValues.map(ManagedInstallerReleasedRouteRequest.decodeTarget),
-            createCandidate: ManagedInstallerReleasedRouteRequest.decodeTarget(createValue),
+            existing: existingValues.map {
+                try ManagedInstallerReleasedRouteRequest.decodeTarget($0, legacy: legacy)
+            },
+            createCandidate: ManagedInstallerReleasedRouteRequest.decodeTarget(
+                createValue, legacy: legacy
+            ),
             evidenceReference: evidence
         )
     }
@@ -202,6 +236,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
             .object([
                 "identity": .string($0.requirement.identity.rawValue),
                 "action": .string($0.action.rawValue),
+                "initial_readback": $0.initialReadback.map(
+                    ManagedInstallerPostToolReadbackSnapshot.toolValue
+                ) ?? .null,
             ])
         }
         let fields: [String: StrictJSONResourceValue] = [
@@ -235,7 +272,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
               fields["composition_identity"]?.stringValue == request.compositionIdentity,
               fields["manifest_sha256"]?.stringValue == request.manifestSHA256,
               let deploymentValue = fields["deployment"],
-              try ManagedInstallerReleasedRouteRequest.decodeTarget(deploymentValue) == deployment,
+              try ManagedInstallerReleasedRouteRequest.decodeTarget(
+                deploymentValue, legacy: fields["schema"]?.stringValue != snapshotSchema
+              ) == deployment,
               let preflightValues = fields["passed_preflight_ids"]?.arrayValue,
               fields["review_status"]?.stringValue == "COMPATIBLE",
               case .boolean(false) = fields["review_acknowledged"],
@@ -270,15 +309,20 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         })
         let actions = try actionValues.map { value -> ManagedToolOriginalPlanAction in
             guard let actionFields = value.objectValue,
-                  Set(actionFields.keys) == Set(["identity", "action"]),
+                  Set(actionFields.keys)
+                    == Set(["identity", "action", "initial_readback"]),
                   let identityValue = actionFields["identity"]?.stringValue,
                   let identity = ManagedToolRequirement.Identity(rawValue: identityValue),
                   let requirement = requirements[identity],
                   let actionValue = actionFields["action"]?.stringValue,
-                  let action = ManagedToolOriginalPlanAction.Action(rawValue: actionValue) else {
+                  let action = ManagedToolOriginalPlanAction.Action(rawValue: actionValue),
+                  let initialValue = actionFields["initial_readback"] else {
                 throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
             }
-            return ManagedToolOriginalPlanAction(requirement: requirement, action: action)
+            let initial = try ManagedInstallerPostToolReadbackSnapshot.decodeTool(initialValue)
+            return ManagedToolOriginalPlanAction(
+                requirement: requirement, action: action, initialReadback: initial
+            )
         }
         return try ManagedInstallerReleasedRouteSnapshot(
             inventory: inventory,
@@ -309,7 +353,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
               fields["composition_identity"]?.stringValue == request.compositionIdentity,
               fields["manifest_sha256"]?.stringValue == request.manifestSHA256,
               let deploymentValue = fields["deployment"],
-              try ManagedInstallerReleasedRouteRequest.decodeTarget(deploymentValue)
+              try ManagedInstallerReleasedRouteRequest.decodeTarget(
+                deploymentValue, legacy: fields["schema"]?.stringValue != snapshotSchema
+              )
                 == request.deployment,
               let inventoryValue = fields["inventory"],
               try decodeInventory(StrictSignedJSON.canonicalPayload(from: inventoryValue))
@@ -351,12 +397,20 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         _ = try ManagedInstallerPostToolReadbackSnapshot.decodePython(pythonValue)
         let identities = try actionValues.map { value -> ManagedToolRequirement.Identity in
             guard let action = value.objectValue,
-                  Set(action.keys) == Set(["identity", "action"]),
+                  Set(action.keys)
+                    == Set(["identity", "action", "initial_readback"]),
                   let identityRaw = action["identity"]?.stringValue,
                   let identity = ManagedToolRequirement.Identity(rawValue: identityRaw),
                   let actionRaw = action["action"]?.stringValue,
-                  ManagedToolOriginalPlanAction.Action(rawValue: actionRaw) != nil else {
+                  let planned = ManagedToolOriginalPlanAction.Action(rawValue: actionRaw),
+                  let initial = action["initial_readback"] else {
                 throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+            }
+            let observed = try ManagedInstallerPostToolReadbackSnapshot.decodeTool(initial)
+            guard observed.identity == identity,
+                  (observed.state == .absent && planned == .install
+                    || observed.state == .active && planned != .install) else {
+                throw ManagedInstallerReleasedRouteXPCFailure.rejected
             }
             return identity
         }
@@ -410,6 +464,9 @@ enum ManagedInstallerReleasedRouteXPCCodec {
         ]
         if let current = try? root(data, schema: snapshotSchema, keys: keys) {
             return (current, false)
+        }
+        if let previous = try? root(data, schema: previousSnapshotSchema, keys: keys) {
+            return (previous, false)
         }
         return (try root(data, schema: legacySnapshotSchema, keys: keys), true)
     }
@@ -478,7 +535,28 @@ enum ManagedInstallerReleasedRouteXPCCodec {
     }
 }
 
-/// Read-only XPC backend over helper-owned route evidence. The app can select
+protocol ManagedInstallerHelperReviewedIntentExecuting: Sendable {
+    func execute(canonicalIntent: Data) async -> ManagedDeploymentExecutionResult
+}
+
+extension ManagedInstallerReviewedExecutionAdmission:
+    ManagedInstallerHelperReviewedIntentExecuting {}
+
+protocol ManagedInstallerHelperReviewedProviderStaging: Sendable {
+    func stage(canonicalIntent: Data) async -> Data?
+}
+
+extension ManagedInstallerReviewedProviderStageAdmission:
+    ManagedInstallerHelperReviewedProviderStaging {}
+
+protocol ManagedInstallerHelperReviewedProviderReading: Sendable {
+    func read(canonicalIntent: Data) async -> Data?
+}
+
+extension ManagedInstallerReviewedProviderReadbackAdmission:
+    ManagedInstallerHelperReviewedProviderReading {}
+
+/// XPC backend over helper-owned route evidence. The app can select
 /// only a correlation request; file names are derived inside the helper and
 /// every document is read through a private root descriptor without following
 /// links. The released helper derives inventory from the Python-owned registry
@@ -496,26 +574,73 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     private let rootDirectory: URL
     private let expectedOwner: uid_t
     private let inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer?
+    private let registryReader: FileManagedInstallerManagedDeploymentRegistryReader?
+    private let registration: ManagedInstallerHelperReviewedSelectionRegistration?
+    private let execution: (any ManagedInstallerHelperReviewedIntentExecuting)?
+    private let providerStaging: (any ManagedInstallerHelperReviewedProviderStaging)?
+    private let providerReadback: (any ManagedInstallerHelperReviewedProviderReading)?
+    private let providerAuthentication:
+        (any ManagedInstallerReviewedProviderAuthenticationStarting)?
+    private let freshSnapshotProducer: (any ManagedInstallerReleasedRouteFreshSnapshotProducing)?
+    private let requiresFreshSnapshotPublication: Bool
 
     public convenience override init() {
+        let registration = ManagedInstallerHelperReviewedSelectionRegistration.production()
         self.init(
             rootDirectory: Self.productionRoot,
             expectedOwner: 0,
             inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer(
                 registry: FileManagedInstallerManagedDeploymentRegistryReader(),
                 candidate: FileManagedInstallerManagedDeploymentCreateCandidateStore()
-            )
+            ),
+            registryReader: FileManagedInstallerManagedDeploymentRegistryReader(),
+            registration: registration,
+            freshSnapshotProducer: ManagedInstallerReleasedRouteFreshSnapshotProducer
+                .production(),
+            requiresFreshSnapshotPublication: true,
+            execution: ManagedInstallerReviewedExecutionAdmission.whenReady(
+                loader: registration,
+                executor: ManagedInstallerHelperFreshInstallPlanExecutor.production()
+            ),
+            providerStaging: ManagedInstallerReviewedProviderStageAdmission.whenReady(
+                loader: registration,
+                stager: ManagedInstallerHelperFreshProviderStager.production()
+            ),
+            providerReadback: ManagedInstallerReviewedProviderReadbackAdmission.whenReady(
+                loader: registration,
+                reader: ManagedInstallerHelperFreshProviderReader.production()
+            ),
+            providerAuthentication: registration.flatMap {
+                ManagedInstallerReviewedProviderAuthenticationStart.production(loader: $0)
+            }
         )
     }
 
     init(
         rootDirectory: URL,
         expectedOwner: uid_t,
-        inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer? = nil
+        inventoryProducer: ManagedInstallerManagedDeploymentInventoryProducer? = nil,
+        registryReader: FileManagedInstallerManagedDeploymentRegistryReader? = nil,
+        registration: ManagedInstallerHelperReviewedSelectionRegistration? = nil,
+        freshSnapshotProducer: (any ManagedInstallerReleasedRouteFreshSnapshotProducing)? = nil,
+        requiresFreshSnapshotPublication: Bool = false,
+        execution: (any ManagedInstallerHelperReviewedIntentExecuting)? = nil,
+        providerStaging: (any ManagedInstallerHelperReviewedProviderStaging)? = nil,
+        providerReadback: (any ManagedInstallerHelperReviewedProviderReading)? = nil,
+        providerAuthentication:
+            (any ManagedInstallerReviewedProviderAuthenticationStarting)? = nil
     ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
         self.inventoryProducer = inventoryProducer
+        self.registryReader = registryReader
+        self.registration = registration
+        self.freshSnapshotProducer = freshSnapshotProducer
+        self.requiresFreshSnapshotPublication = requiresFreshSnapshotPublication
+        self.execution = execution
+        self.providerStaging = providerStaging
+        self.providerReadback = providerReadback
+        self.providerAuthentication = providerAuthentication
         super.init()
     }
 
@@ -523,31 +648,158 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         reply(loadInventory()?.data)
     }
 
+    public func loadManagedDeploymentRegistryRecord(
+        _ deploymentID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        guard ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID),
+              let registryReader,
+              let snapshot = try? registryReader.read().get(),
+              let record = snapshot.records.first(where: { $0.target.id == deploymentID })
+        else { reply(nil); return }
+        reply(record.canonicalJSONData())
+    }
+
     public func loadReleasedRouteSnapshot(
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
         guard let request = try? ManagedInstallerReleasedRouteRequest.decodeJSON(canonicalRequest),
-              request.canonicalJSONData() == canonicalRequest,
-              let loaded = loadInventory(),
+              request.canonicalJSONData() == canonicalRequest else { reply(nil); return }
+        guard requiresFreshSnapshotPublication else {
+            reply(loadStoredRoute(canonicalRequest, request: request))
+            return
+        }
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let freshSnapshotProducer else { gate.complete(nil); return }
+        Task {
+            guard case .success = await freshSnapshotProducer.produceAndPublish(
+                request: request
+            ) else { gate.complete(nil); return }
+            gate.complete(loadStoredRoute(canonicalRequest, request: request))
+        }
+    }
+
+    private func loadStoredRoute(
+        _ canonicalRequest: Data,
+        request: ManagedInstallerReleasedRouteRequest
+    ) -> Data? {
+        guard let loaded = loadInventory(),
               let data = try? readSecureFile(named: Self.routeFileName(for: canonicalRequest)),
               (try? ManagedInstallerReleasedRouteXPCCodec.validateStoredSnapshot(
                   data,
                   request: request,
                   inventory: loaded.inventory
-              )) != nil else {
-            reply(nil)
-            return
-        }
-        reply(data)
+              )) != nil else { return nil }
+        return data
     }
 
     public func executeReviewedIntent(
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
-        _ = canonicalIntent
-        reply(nil)
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let execution,
+              let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
+                canonicalIntent
+              ), intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            let result = await execution.execute(canonicalIntent: canonicalIntent)
+            guard let bytes = ManagedInstallerReviewedExecutionResultCodec.encode(result),
+                  (try? ManagedInstallerReviewedExecutionResultCodec.decode(bytes))
+                    == result else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
+    }
+
+    public func stageReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let providerStaging,
+              let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
+                  canonicalIntent
+              ), intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            guard let bytes = await providerStaging.stage(canonicalIntent: canonicalIntent),
+                  let receipt = try? ManagedInstallerReviewedProviderStageReceipt
+                    .decodeJSON(bytes),
+                  receipt.operationID == intent.operationID,
+                  receipt.stablePlanFingerprint == intent.stablePlanFingerprint
+            else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
+    }
+
+    public func readReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let providerReadback,
+              let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
+                  canonicalIntent
+              ), intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            guard let bytes = await providerReadback.read(canonicalIntent: canonicalIntent),
+                  let receipt = try? ManagedInstallerReviewedProviderReadback.decodeJSON(bytes),
+                  receipt.operationID == intent.operationID,
+                  receipt.stablePlanFingerprint == intent.stablePlanFingerprint
+            else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
+    }
+
+    public func beginReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let providerAuthentication,
+              let targetID = ProviderTargetID(rawValue: providerTargetID),
+              let intent = try? ManagedInstallerReviewedExecutionIntent
+                .decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            guard let bytes = await providerAuthentication.begin(
+                canonicalIntent: canonicalIntent, providerTargetID: targetID
+            ), ManagedInstallerProviderAuthenticationChallengeResponse.decodeJSON(
+                bytes, intent: intent, targetID: targetID
+            ) != nil else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
+    }
+
+    public func registerReviewedSelection(
+        _ canonicalSelection: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let registration,
+              let selection = try? ManagedInstallerReviewedSelection.decodeJSON(
+                canonicalSelection
+              ) else { gate.complete(nil); return }
+        Task {
+            do {
+                try await registration.register(canonicalSelection)
+                gate.complete(selection.intent.canonicalJSONData())
+            } catch {
+                gate.complete(nil)
+            }
+        }
     }
 
     static func routeFileName(for canonicalRequest: Data) -> String {
@@ -664,9 +916,23 @@ public final class FileManagedInstallerReleasedRouteXPCService:
 
 public protocol ManagedInstallerReleasedRouteHelperServing: Sendable {
     func loadManagedDeploymentInventory() async throws -> ManagedDeploymentInventory
+    func loadManagedDeploymentRegistryRecord(deploymentID: String) async throws -> Data
     func loadReleasedRouteSnapshot(
         request: ManagedInstallerReleasedRouteRequest
     ) async throws -> ManagedInstallerReleasedRouteSnapshot
+}
+
+public extension ManagedInstallerReleasedRouteHelperServing {
+    func loadManagedDeploymentRegistryRecord(deploymentID: String) async throws -> Data {
+        _ = deploymentID
+        throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+    }
+}
+
+public protocol ManagedInstallerPreservedRegistryReading: Sendable {
+    func loadManagedDeploymentRegistryRecord(
+        deploymentID: String
+    ) async throws -> ManagedInstallerManagedDeploymentRegistryRecord
 }
 
 /// The caller sends only a reviewed-plan fingerprint and correlation identity.
@@ -677,8 +943,37 @@ public protocol ManagedInstallerReviewedExecutionIntentSending: Sendable {
     ) async throws -> ManagedDeploymentExecutionResult
 }
 
+public protocol ManagedInstallerReviewedProviderStageIntentSending: Sendable {
+    func stageReviewedProviders(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedInstallerReviewedProviderStageReceipt
+}
+
+public protocol ManagedInstallerReviewedProviderReadbackIntentSending: Sendable {
+    func readReviewedProviders(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedInstallerReviewedProviderReadback
+}
+
+public protocol ManagedInstallerReviewedProviderAuthenticationIntentSending: Sendable {
+    func beginReviewedProviderAuthentication(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerProviderAuthenticationChallengeResponse
+}
+
+public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
+    func registerReviewedSelection(
+        _ selection: ManagedInstallerReviewedSelection
+    ) async throws
+}
+
 @objc public protocol ManagedInstallerReleasedRouteXPCService {
     func loadManagedDeploymentInventory(withReply reply: @escaping (Data?) -> Void)
+    func loadManagedDeploymentRegistryRecord(
+        _ deploymentID: String,
+        withReply reply: @escaping (Data?) -> Void
+    )
     func loadReleasedRouteSnapshot(
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
@@ -687,11 +982,32 @@ public protocol ManagedInstallerReviewedExecutionIntentSending: Sendable {
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     )
+    func stageReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
+    func readReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
+    func beginReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    )
+    func registerReviewedSelection(
+        _ canonicalSelection: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
 }
 
 public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     ManagedInstallerReleasedRouteSnapshotLoading,
-    ManagedInstallerReviewedExecutionIntentSending {
+    ManagedInstallerReviewedExecutionIntentSending,
+    ManagedInstallerReviewedProviderStageIntentSending,
+    ManagedInstallerReviewedProviderReadbackIntentSending,
+    ManagedInstallerReviewedProviderAuthenticationIntentSending,
+    ManagedInstallerReviewedSelectionRegistering,
+    ManagedInstallerPreservedRegistryReading {
     public static let machServiceName =
         "com.autonomous-engineering-system.forge-platform-installer.helper.released-route"
 
@@ -721,6 +1037,20 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
             service.loadManagedDeploymentInventory(withReply: reply)
         }
         return try ManagedInstallerReleasedRouteXPCCodec.decodeInventory(data)
+    }
+
+    public func loadManagedDeploymentRegistryRecord(
+        deploymentID: String
+    ) async throws -> ManagedInstallerManagedDeploymentRegistryRecord {
+        guard ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID) else {
+            throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
+        }
+        let data = try await call { service, reply in
+            service.loadManagedDeploymentRegistryRecord(deploymentID, withReply: reply)
+        }
+        return try ManagedInstallerManagedDeploymentRegistryRecord.decode(
+            data, expectedDeploymentID: deploymentID
+        )
     }
 
     public func loadReleasedRouteSnapshot(
@@ -757,6 +1087,64 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
         return try ManagedInstallerReviewedExecutionResultCodec.decode(data)
     }
 
+    public func stageReviewedProviders(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedInstallerReviewedProviderStageReceipt {
+        let data = try await call { service, reply in
+            service.stageReviewedProviders(intent.canonicalJSONData(), withReply: reply)
+        }
+        let receipt = try ManagedInstallerReviewedProviderStageReceipt.decodeJSON(data)
+        guard receipt.operationID == intent.operationID,
+              receipt.stablePlanFingerprint == intent.stablePlanFingerprint else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+        return receipt
+    }
+
+    public func readReviewedProviders(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedInstallerReviewedProviderReadback {
+        let data = try await call { service, reply in
+            service.readReviewedProviders(intent.canonicalJSONData(), withReply: reply)
+        }
+        let receipt = try ManagedInstallerReviewedProviderReadback.decodeJSON(data)
+        guard receipt.operationID == intent.operationID,
+              receipt.stablePlanFingerprint == intent.stablePlanFingerprint else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+        return receipt
+    }
+
+    public func beginReviewedProviderAuthentication(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerProviderAuthenticationChallengeResponse {
+        let data = try await call { service, reply in
+            service.beginReviewedProviderAuthentication(
+                intent.canonicalJSONData(),
+                providerTargetID: providerTargetID.rawValue,
+                withReply: reply
+            )
+        }
+        guard let response = ManagedInstallerProviderAuthenticationChallengeResponse
+            .decodeJSON(data, intent: intent, targetID: providerTargetID) else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+        return response
+    }
+
+    public func registerReviewedSelection(
+        _ selection: ManagedInstallerReviewedSelection
+    ) async throws {
+        let data = try await call { service, reply in
+            service.registerReviewedSelection(selection.canonicalJSONData(), withReply: reply)
+        }
+        guard try ManagedInstallerReviewedExecutionIntent.decodeJSON(data)
+                == selection.intent else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+    }
+
     private func call(
         _ invoke: @escaping (
             ManagedInstallerReleasedRouteXPCService,
@@ -786,6 +1174,9 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
     NSObject, ManagedInstallerReleasedRouteXPCService, @unchecked Sendable {
     private let service: any ManagedInstallerReleasedRouteHelperServing
     private let admission: ManagedInstallerReviewedExecutionAdmission?
+    private let registration: ManagedInstallerHelperReviewedSelectionRegistration?
+    private let providerStaging: ManagedInstallerReviewedProviderStageAdmission?
+    private let providerReadback: ManagedInstallerReviewedProviderReadbackAdmission?
 
     public init(
         service: any ManagedInstallerReleasedRouteHelperServing,
@@ -793,6 +1184,24 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
     ) {
         self.service = service
         self.admission = admission
+        registration = nil
+        providerStaging = nil
+        providerReadback = nil
+        super.init()
+    }
+
+    init(
+        service: any ManagedInstallerReleasedRouteHelperServing,
+        admission: ManagedInstallerReviewedExecutionAdmission?,
+        registration: ManagedInstallerHelperReviewedSelectionRegistration?,
+        providerStaging: ManagedInstallerReviewedProviderStageAdmission? = nil,
+        providerReadback: ManagedInstallerReviewedProviderReadbackAdmission? = nil
+    ) {
+        self.service = service
+        self.admission = admission
+        self.registration = registration
+        self.providerStaging = providerStaging
+        self.providerReadback = providerReadback
         super.init()
     }
 
@@ -805,6 +1214,27 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
                 return
             }
             gate.complete(ManagedInstallerReleasedRouteXPCCodec.encodeInventory(inventory))
+        }
+    }
+
+    public func loadManagedDeploymentRegistryRecord(
+        _ deploymentID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        let service = service
+        Task {
+            guard ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID),
+                  let data = try? await service.loadManagedDeploymentRegistryRecord(
+                    deploymentID: deploymentID
+                  ),
+                  (try? ManagedInstallerManagedDeploymentRegistryRecord.decode(
+                    data, expectedDeploymentID: deploymentID
+                  )) != nil else {
+                gate.complete(nil)
+                return
+            }
+            gate.complete(data)
         }
     }
 
@@ -841,6 +1271,79 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
         Task {
             let result = await admission.execute(canonicalIntent: canonicalIntent)
             gate.complete(ManagedInstallerReviewedExecutionResultCodec.encode(result))
+        }
+    }
+
+    public func stageReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let providerStaging,
+              let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
+                  canonicalIntent
+              ), intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            guard let bytes = await providerStaging.stage(canonicalIntent: canonicalIntent),
+                  let receipt = try? ManagedInstallerReviewedProviderStageReceipt
+                    .decodeJSON(bytes),
+                  receipt.operationID == intent.operationID,
+                  receipt.stablePlanFingerprint == intent.stablePlanFingerprint
+            else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
+    }
+
+    public func readReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let providerReadback,
+              let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
+                  canonicalIntent
+              ), intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            guard let bytes = await providerReadback.read(canonicalIntent: canonicalIntent),
+                  let receipt = try? ManagedInstallerReviewedProviderReadback.decodeJSON(bytes),
+                  receipt.operationID == intent.operationID,
+                  receipt.stablePlanFingerprint == intent.stablePlanFingerprint
+            else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
+    }
+
+    public func beginReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        _ = providerTargetID
+        reply(nil)
+    }
+
+    public func registerReviewedSelection(
+        _ canonicalSelection: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let registration,
+              let selection = try? ManagedInstallerReviewedSelection.decodeJSON(
+                canonicalSelection
+              ) else { gate.complete(nil); return }
+        Task {
+            do {
+                try await registration.register(canonicalSelection)
+                gate.complete(selection.intent.canonicalJSONData())
+            } catch {
+                gate.complete(nil)
+            }
         }
     }
 }

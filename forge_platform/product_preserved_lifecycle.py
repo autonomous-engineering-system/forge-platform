@@ -14,6 +14,8 @@ import re
 from typing import Mapping
 
 from .component_operations import QualifiedArtifact
+from .qualified_ep_lifecycle import qualified_ep_lifecycle_artifact
+from .qualified_forge_lifecycle import qualified_forge_lifecycle_artifact
 
 
 FORGE_COMPONENT = "forge-runtime"
@@ -22,18 +24,6 @@ FORGE_CONTRACT = "forge-server-instance-lifecycle/v1"
 EP_CONTRACT = "engineering-platform.system-instance-lifecycle/v1"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_FROZEN_RELEASES = {
-    FORGE_COMPONENT: (
-        "2.7.36",
-        "ed1e623ef3cedd8c4f720510e0052409b2d5ab1f",
-        "sha256:c10e9584649538f2f1547bb09fd3982cc3495dcf34ef807d66463661fdd5cd68",
-    ),
-    EP_COMPONENT: (
-        "2.3.103",
-        "9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2",
-        "sha256:0199a7aab3b25260b6cd4ad53f0aecc7e59c9403ef9a3bd4639993ab9e56910c",
-    ),
-}
 
 
 class ProductPreservedLifecycleError(RuntimeError):
@@ -56,10 +46,9 @@ def frozen_preserved_release(component: str, artifact: QualifiedArtifact) -> boo
     """Require exact released wheel bytes as well as version and source."""
     if not isinstance(artifact, QualifiedArtifact):
         return False
-    identity = _FROZEN_RELEASES.get(component)
-    return identity is not None and (
-        artifact.version, artifact.source_revision, artifact.digest
-    ) == identity
+    if component == FORGE_COMPONENT:
+        return qualified_forge_lifecycle_artifact(artifact)
+    return component == EP_COMPONENT and qualified_ep_lifecycle_artifact(artifact)
 
 
 def _digest_of(component: str, value: Mapping[str, object]) -> str:

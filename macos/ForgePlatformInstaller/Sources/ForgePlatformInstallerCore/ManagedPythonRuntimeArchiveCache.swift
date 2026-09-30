@@ -1,23 +1,32 @@
 import Darwin
 import Foundation
 
-/// Retains the exact admitted archive outside the extracted slot so recovery
-/// can reconstruct its member inventory after staging is discarded. This
-/// cache is helper-owned and selected only by the frozen artifact digest.
-struct MacOSManagedPythonRuntimeArchiveCache: Sendable {
+/// Retains an exact admitted runtime archive outside its extracted slot so
+/// recovery can reconstruct the member inventory after staging is discarded.
+/// The helper selects the fixed format namespace and frozen artifact digest.
+struct MacOSManagedRuntimeArchiveCache: Sendable {
     private static let maximumBytes: UInt64 = 2 * 1_024 * 1_024 * 1_024
     private let slotsRoot: URL
     private let expectedOwner: uid_t
+    private let fileExtension: String
+    private let pendingPrefix: String
 
-    init(slotsRoot: URL, expectedOwner: uid_t = 0) {
+    init(
+        slotsRoot: URL,
+        expectedOwner: uid_t = 0,
+        fileExtension: String = "tar.gz",
+        pendingPrefix: String = ".managed-python-archive-pending-"
+    ) {
         self.slotsRoot = slotsRoot
         self.expectedOwner = expectedOwner
+        self.fileExtension = fileExtension
+        self.pendingPrefix = pendingPrefix
     }
 
     func read(
         archiveSHA256: String
     ) -> Result<Data?, ManagedPythonRuntimeSlotMutationFailure> {
-        guard let name = Self.fileName(for: archiveSHA256) else {
+        guard let name = fileName(for: archiveSHA256) else {
             return .failure(.invalidRequest)
         }
         do {
@@ -33,7 +42,7 @@ struct MacOSManagedPythonRuntimeArchiveCache: Sendable {
         _ archive: Data,
         archiveSHA256: String
     ) -> Result<Void, ManagedPythonRuntimeSlotMutationFailure> {
-        guard let name = Self.fileName(for: archiveSHA256),
+        guard let name = fileName(for: archiveSHA256),
               !archive.isEmpty, UInt64(archive.count) <= Self.maximumBytes,
               "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: archive)
                 == archiveSHA256 else {
@@ -45,8 +54,7 @@ struct MacOSManagedPythonRuntimeArchiveCache: Sendable {
             if let existing = try readExact(name, digest: archiveSHA256, in: root) {
                 return existing == archive ? .success(()) : .failure(.rejected)
             }
-            let pendingName = ".managed-python-archive-pending-"
-                + UUID().uuidString.lowercased()
+            let pendingName = pendingPrefix + UUID().uuidString.lowercased()
             let pending = pendingName.withCString {
                 Darwin.openat(
                     root, $0,
@@ -89,9 +97,13 @@ struct MacOSManagedPythonRuntimeArchiveCache: Sendable {
         } catch { return .failure(.rejected) }
     }
 
-    private static func fileName(for digest: String) -> String? {
-        guard CompositionCatalogValidation.isTaggedSHA256(digest) else { return nil }
-        return "archive-" + digest.dropFirst("sha256:".count) + ".tar.gz"
+    private func fileName(for digest: String) -> String? {
+        guard CompositionCatalogValidation.isTaggedSHA256(digest),
+              fileExtension == "tar.gz" || fileExtension == "zip",
+              pendingPrefix == ".managed-python-archive-pending-"
+                || pendingPrefix == ".managed-git-archive-pending-"
+                || pendingPrefix == ".provider-archive-pending-" else { return nil }
+        return "archive-" + digest.dropFirst("sha256:".count) + "." + fileExtension
     }
 
     private func openRoot() throws -> Int32 {
@@ -181,3 +193,5 @@ struct MacOSManagedPythonRuntimeArchiveCache: Sendable {
         }
     }
 }
+
+typealias MacOSManagedPythonRuntimeArchiveCache = MacOSManagedRuntimeArchiveCache

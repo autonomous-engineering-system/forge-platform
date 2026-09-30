@@ -38,6 +38,9 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
         guard Set(actions.map(\.requirement.identity)).count == actions.count,
               Set(actions.map(\.requirement.identity)) == Set(requirements.keys),
               actions.allSatisfy({ requirements[$0.requirement.identity] == $0.requirement }),
+              actions.allSatisfy({
+                  $0.initialReadback == nil || $0.hasReviewedInitialState
+              }),
               Set(enabledProviders.map(\.id)).count == enabledProviders.count,
               enabledProviders.allSatisfy({ availableProviders[$0.id] == $0 }),
               requiredProviderIdentities.isSubset(of: Set(enabledProviders.map(\.id))),
@@ -54,7 +57,11 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
               reviewedOperation.deploymentID == deployment.id,
               reviewedOperation.deploymentExists == deployment.exists,
               Set(reviewedOperation.components.map(\.componentID)).count
-                == reviewedOperation.components.count else {
+                == reviewedOperation.components.count,
+              reviewedOperation.pairingTarget == nil
+                || Set(reviewedOperation.components.map(\.componentID))
+                    == Set(["forge-runtime", "engineering-platform-server"])
+                    && reviewedOperation.components.count == 2 else {
             throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
         }
 
@@ -82,8 +89,8 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
         enabledProviders: [ProviderRequirement],
         actions: [ManagedToolOriginalPlanAction]
     ) -> String {
-        let material: StrictJSONResourceValue = .object([
-            "schema": .string("forge-platform.native-stable-plan/v1"),
+        var fields: [String: StrictJSONResourceValue] = [
+            "schema": .string("forge-platform.native-stable-plan/v3"),
             "session": sessionValue(session),
             "deployment": deploymentValue(
                 deployment,
@@ -97,7 +104,12 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
                 reviewedOperation.components.sorted { $0.componentID < $1.componentID }
                     .map(componentValue)
             ),
-        ])
+        ]
+        if let pairing = reviewedOperation.pairingTarget {
+            fields["schema"] = .string("forge-platform.native-stable-plan/v4")
+            fields["pairing_target"] = pairing.canonicalValue()
+        }
+        let material: StrictJSONResourceValue = .object(fields)
         return SHA256.hash(data: StrictSignedJSON.canonicalPayload(from: material))
             .map { String(format: "%02x", $0) }
             .joined()
@@ -158,6 +170,13 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
             "engineering_platform_instance_id": deployment.engineeringPlatformInstanceID.map {
                 .string($0)
             } ?? .null,
+            "preserved_forge_instance_id": deployment.preservedForgeInstanceID.map {
+                .string($0)
+            } ?? .null,
+            "preserved_engineering_platform_instance_id":
+                deployment.preservedEngineeringPlatformInstanceID.map {
+                    .string($0)
+                } ?? .null,
             "installed_composition_id": deployment.installedCompositionID.map {
                 .string($0)
             } ?? .null,
@@ -188,6 +207,9 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
             "artifact_url": .string(planned.requirement.artifact.url),
             "artifact_sha256": .string(planned.requirement.artifact.sha256),
             "action": .string(planned.action.rawValue),
+            "reviewed_initial_readback": planned.initialReadback.map(
+                ManagedInstallerPostToolReadbackSnapshot.toolValue
+            ) ?? .null,
         ])
     }
 

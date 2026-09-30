@@ -72,7 +72,25 @@ struct ManagedInstallerHelperVerifiedMaterialAdmission: Sendable {
         for resources: ManagedInstallerHelperSealedResources
     ) -> ManagedVerifiedCompositionSessionPreparer {
         let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
-        let catalogAdmission = CompositionCatalogAdmissionCoordinator(
+        return ManagedVerifiedCompositionSessionPreparer(
+            catalogAdmission: productionCatalogAdmission(for: resources),
+            documentFetcher: HTTPSCompositionDocumentTransport(),
+            componentAcceptanceReader:
+                CompositionCatalogBackedComponentCombinationAcceptanceReader(
+                    reader: FileCompositionCatalogAcceptanceStore(
+                        rootDirectory: root.appendingPathComponent(
+                            "component-combination-catalog", isDirectory: true
+                        )
+                    )
+                )
+        )
+    }
+
+    static func productionCatalogAdmission(
+        for resources: ManagedInstallerHelperSealedResources
+    ) -> CompositionCatalogAdmissionCoordinator {
+        let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
+        return CompositionCatalogAdmissionCoordinator(
             trustLoader: HelperSealedCompositionTrustLoader(
                 trust: resources.compositionTrust
             ),
@@ -83,18 +101,6 @@ struct ManagedInstallerHelperVerifiedMaterialAdmission: Sendable {
                     "outer-composition-catalog", isDirectory: true
                 )
             )
-        )
-        return ManagedVerifiedCompositionSessionPreparer(
-            catalogAdmission: catalogAdmission,
-            documentFetcher: HTTPSCompositionDocumentTransport(),
-            componentAcceptanceReader:
-                CompositionCatalogBackedComponentCombinationAcceptanceReader(
-                    reader: FileCompositionCatalogAcceptanceStore(
-                        rootDirectory: root.appendingPathComponent(
-                            "component-combination-catalog", isDirectory: true
-                        )
-                    )
-                )
         )
     }
 
@@ -134,5 +140,35 @@ struct ManagedInstallerHelperVerifiedMaterialAdmission: Sendable {
         guard var reader = try? StrictJSONResourceReader(data: bytes),
               let value = try? reader.parseDocument() else { return nil }
         return StrictSignedJSON.canonicalPayload(from: value)
+    }
+}
+
+/// Adapts the helper's sealed release and signed composition admission to the
+/// read-only first-install product-wheel acquisition boundary.
+struct ProductionManagedInstallerPrepublicationMaterialAdmission:
+    ManagedInstallerPrepublicationMaterialAdmitting, Sendable {
+    private let admission: ManagedInstallerHelperVerifiedMaterialAdmission
+
+    init(admission: ManagedInstallerHelperVerifiedMaterialAdmission) {
+        self.admission = admission
+    }
+
+    static func production() -> Self? {
+        guard let admission = ManagedInstallerHelperVerifiedMaterialAdmission.production()
+        else { return nil }
+        return Self(admission: admission)
+    }
+
+    func admit(
+        deployment: ManagedDeploymentTarget,
+        componentIdentities: [String]
+    ) async -> ManagedInstallerPrepublicationMaterialSnapshot? {
+        guard case .success(let verified) = await admission.admit(
+            for: deployment, componentIdentities: componentIdentities
+        ) else { return nil }
+        return .init(
+            material: verified.material,
+            installerRelease: verified.currentRelease.record.release
+        )
     }
 }

@@ -7,18 +7,20 @@ import Foundation
 /// helper; no caller path, interpreter, command or environment is accepted.
 public enum ManagedPythonInitialRuntimeHelperAssembly {
     public static func makeProduction(
-        runtime: ManagedPythonRuntimeIdentity
+        runtime: ManagedPythonRuntimeIdentity,
+        wheel: any ManagedPythonProductVenvWheelInstalling
     ) -> any ManagedPythonRuntimeActivating {
         make(
             helperRoot: FileManagedInstallerReleasedRouteXPCService.productionRoot,
-            runtime: runtime, expectedOwner: 0
+            runtime: runtime, expectedOwner: 0, wheel: wheel
         )
     }
 
     static func make(
         helperRoot: URL,
         runtime: ManagedPythonRuntimeIdentity,
-        expectedOwner: uid_t
+        expectedOwner: uid_t,
+        wheel: any ManagedPythonProductVenvWheelInstalling
     ) -> any ManagedPythonRuntimeActivating {
         let slotsRoot = helperRoot.appendingPathComponent(
             FileManagedInstallerProductWorkerInvocationResolver.runtimeSlotsDirectoryName,
@@ -38,7 +40,8 @@ public enum ManagedPythonInitialRuntimeHelperAssembly {
             layout: layout, runtimeVerifier: verifier, expectedOwner: expectedOwner
         )
         let creator = MacOSManagedPythonProductVenvCreator(
-            layout: layout, runtimeVerifier: verifier, readback: readback
+            layout: layout, runtimeVerifier: verifier, readback: readback,
+            wheel: wheel
         )
         return MacOSManagedPythonInitialRuntimeActivator(
             venvs: creator,

@@ -56,6 +56,59 @@ final class ManagedPythonProductVenvCreationTests: XCTestCase {
         XCTAssertEqual(names.count, 1)
         XCTAssertTrue(names[0].hasPrefix("pending-"))
     }
+
+    func testWheelInstallFailureNeverPublishesInterpreterOnlyVenv() async throws {
+        let fixture = try VenvCreationFixture(
+            wheel: ManagedPythonProductWheelTestDouble(failInstallation: true)
+        )
+        defer { fixture.cleanup() }
+        let request = try fixture.request()
+        let failed = await fixture.creator.ensureProductVenv(request)
+        XCTAssertEqual(failed, .failure(.rejected))
+        let unpublished = try await fixture.creator.readProductVenv(request).get()
+        XCTAssertNil(unpublished)
+        let names = try FileManager.default.contentsOfDirectory(atPath: fixture.venvRoot.path)
+        XCTAssertEqual(names.count, 1)
+        XCTAssertTrue(names[0].hasPrefix("pending-"))
+    }
+
+    func testWheelReadbackFailureBlocksPublishedVenvAdoption() async throws {
+        let fixture = try VenvCreationFixture(
+            wheel: ManagedPythonProductWheelTestDouble(failReadback: true)
+        )
+        defer { fixture.cleanup() }
+        let request = try fixture.request()
+        let failed = await fixture.creator.ensureProductVenv(request)
+        XCTAssertEqual(failed, .failure(.rejected))
+        let readback = await fixture.creator.readProductVenv(request)
+        XCTAssertEqual(readback, .failure(.rejected))
+        let names = try FileManager.default.contentsOfDirectory(atPath: fixture.venvRoot.path)
+        XCTAssertEqual(names.count, 1)
+        XCTAssertTrue(names[0].hasPrefix("venv-"))
+    }
+
+    func testMalformedWheelEvidenceNeverPublishes() async throws {
+        let fixture = try VenvCreationFixture(
+            wheel: ManagedPythonProductWheelTestDouble(evidence: "not-a-digest")
+        )
+        defer { fixture.cleanup() }
+        let failed = await fixture.creator.ensureProductVenv(try fixture.request())
+        XCTAssertEqual(failed, .failure(.rejected))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(
+            atPath: fixture.venvRoot.path
+        ).allSatisfy { $0.hasPrefix("pending-") })
+    }
+
+    func testPostPublishWheelEvidenceDriftFailsClosed() async throws {
+        let fixture = try VenvCreationFixture(
+            wheel: ManagedPythonProductWheelTestDouble(
+                readbackEvidence: "sha256:" + String(repeating: "b", count: 64)
+            )
+        )
+        defer { fixture.cleanup() }
+        let failed = await fixture.creator.ensureProductVenv(try fixture.request())
+        XCTAssertEqual(failed, .failure(.rejected))
+    }
 }
 
 private struct VenvCreationFixture {
@@ -68,7 +121,10 @@ private struct VenvCreationFixture {
     let layout: MacOSManagedPythonProductVenvSlotLayout
     let creator: MacOSManagedPythonProductVenvCreator
 
-    init(skipCreation: Bool = false) throws {
+    init(
+        skipCreation: Bool = false,
+        wheel: ManagedPythonProductWheelTestDouble = ManagedPythonProductWheelTestDouble()
+    ) throws {
         base = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent(
             "venv-creation-\(UUID().uuidString)", isDirectory: true
         )
@@ -131,7 +187,8 @@ private struct VenvCreationFixture {
             layout: layout, runtimeVerifier: verifier, expectedOwner: Darwin.geteuid()
         )
         creator = MacOSManagedPythonProductVenvCreator(
-            layout: layout, runtimeVerifier: verifier, readback: reader
+            layout: layout, runtimeVerifier: verifier, readback: reader,
+            wheel: wheel
         )
     }
 

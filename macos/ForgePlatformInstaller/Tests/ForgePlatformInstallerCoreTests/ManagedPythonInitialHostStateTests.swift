@@ -4,6 +4,16 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedPythonInitialHostStateTests: XCTestCase {
+    func testReadOnlyObservationBindsLaterBootstrapWithoutWritingState() throws {
+        let fixture = try InitialHostStateFixture()
+        defer { fixture.cleanup() }
+        let observed = try fixture.bootstrap.observe().get()
+        XCTAssertEqual(try fixture.bootstrap.observe().get(), observed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.state.path))
+        XCTAssertEqual(try fixture.bootstrap.readOrBootstrap().get(), observed)
+        XCTAssertEqual(try fixture.bootstrap.observe().get(), observed)
+    }
+
     func testEmptyPrivateRootsBootstrapDurableAbsentStateIdempotently() throws {
         let fixture = try InitialHostStateFixture()
         defer { fixture.cleanup() }
@@ -28,6 +38,7 @@ final class ManagedPythonInitialHostStateTests: XCTestCase {
             let leftover = fixture.root.appendingPathComponent(directoryName)
                 .appendingPathComponent("pending-interrupted")
             try Data("partial".utf8).write(to: leftover)
+            XCTAssertEqual(fixture.bootstrap.observe(), .failure(.rejected))
             XCTAssertEqual(fixture.bootstrap.readOrBootstrap(), .failure(.rejected))
             XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.state.path))
         }
@@ -41,6 +52,7 @@ final class ManagedPythonInitialHostStateTests: XCTestCase {
             [.posixPermissions: 0o600], ofItemAtPath: fixture.state.path
         )
         XCTAssertEqual(fixture.bootstrap.readOrBootstrap(), .failure(.rejected))
+        XCTAssertEqual(fixture.bootstrap.observe(), .failure(.rejected))
         XCTAssertEqual(try Data(contentsOf: fixture.state), Data("{}".utf8))
     }
 
@@ -56,6 +68,7 @@ final class ManagedPythonInitialHostStateTests: XCTestCase {
         try FileManagedInstallerManagedPythonHostStateStore(rootDirectory: fixture.root)
             .persistManagedPythonHostState(existing).get()
         XCTAssertEqual(try fixture.bootstrap.readOrBootstrap().get(), existing)
+        XCTAssertEqual(try fixture.bootstrap.observe().get(), existing)
     }
 
     func testLooseOrSymlinkedRootFailsClosed() throws {

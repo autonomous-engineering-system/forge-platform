@@ -248,6 +248,12 @@ returns `READY`. An exact existing slot is idempotent; any existing, returned
 or read-back drift fails closed. The protocol does not itself provide the
 privileged implementation or authorize a live installation.
 
+The helper retains the exact admitted archive in a private digest-named cache.
+After staging discard or reboot, slot readback re-inspects those cached bytes
+and every extracted member independently. A slot whose cache is missing or
+corrupt is ambiguous and fails closed; an absent cache with an absent slot is
+still an uninstalled state.
+
 The native preparation coordinator composes these existing boundaries for one
 already verified composition session and one deployment target. It derives a
 deterministic operation identity from the session, composition, manifest,
@@ -363,7 +369,10 @@ by a cleanup-enforcing provider preparation transaction under the same lease.
 The canonical stable-plan fanout and its complete plan-bound receipt are also
 implemented at source level. Durable `PLANNED` seeding, provider fanout and
 managed-Python preparation are ordered by a separate source-level admission
-coordinator that revalidates every result against the same stable plan. The concrete extraction/install adapter and credential-home provisioning,
+coordinator that revalidates every result against the same stable plan. The
+provider `tar.gz`/ZIP extractor, target-bound slot publication and exact cached
+per-file tree readback are now source-qualified. Credential-home provisioning
+and the provider mutation adapter,
 service-account secure-store integration, the other four live gate observers,
 signed service registration and released route wiring are not yet implemented.
 
@@ -500,3 +509,12 @@ other four live gate observers are absent. A concrete reviewed authorized helper
 process, released mutation wiring and an actual
 protected arm64 runtime publication remain required before operational
 installation can be claimed.
+
+The helper-owned managed-Python preparation assembly now composes the fixed
+credential-free HTTPS transport, private staging and recovery store, archive
+inspector, host-wide operation lock, exact slot adapter and cached archive
+publisher under the helper's private state and runtime-slot roots. Restart
+recovery uses the same staging root and lease; an insecure state root is
+rejected before any fetch. This composition is source-qualified but is not yet
+called by the released reviewed-execution XPC route. It supplies no independent
+claim of live managed-Python installation or runtime readiness.

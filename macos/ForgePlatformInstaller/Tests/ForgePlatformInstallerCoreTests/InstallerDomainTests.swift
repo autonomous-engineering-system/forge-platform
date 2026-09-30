@@ -108,16 +108,16 @@ final class InstallerDomainTests: XCTestCase {
         ])
 
         XCTAssertFalse(state.enabledProvidersVerified)
-        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.canAdvance)
         let requiredCodexBefore = state.providers.first(where: { $0.id == .codex })
         XCTAssertFalse(state.setProviderSelected(.codex, isSelected: false))
         XCTAssertEqual(state.providers.first(where: { $0.id == .codex }), requiredCodexBefore)
         XCTAssertFalse(state.enabledProvidersVerified)
-        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.canAdvance)
 
         verifyRequiredProvider(.codex, state: &state)
         XCTAssertFalse(state.enabledProvidersVerified)
-        XCTAssertFalse(state.canAdvance)
+        XCTAssertTrue(state.canAdvance)
 
         verifyRequiredProvider(.githubCLI, state: &state)
         XCTAssertTrue(state.enabledProvidersVerified)
@@ -140,6 +140,25 @@ final class InstallerDomainTests: XCTestCase {
             state.providers.first(where: { $0.id == .githubCLI })?.state,
             .notSelected
         )
+    }
+
+    func testProviderActionInFlightCannotLeaveSelectionAndChangingSelectionInvalidatesReview() throws {
+        var state = try providerState([
+            ProviderRequirement(provider: .codex, isRequired: true),
+            ProviderRequirement(provider: .githubCLI, isRequired: false),
+        ])
+        XCTAssertTrue(state.requestProviderAction(.install, for: .codex))
+        XCTAssertFalse(state.canAdvance)
+        state.applyProviderActionResult(.authenticationRequired, for: .codex, action: .install)
+        XCTAssertTrue(state.canAdvance)
+        XCTAssertTrue(state.advance())
+        state.composition = CompositionReview(
+            manifestIdentity: "forge-platform-complete-v1", status: .compatible
+        )
+        XCTAssertTrue(state.goBack())
+        XCTAssertTrue(state.setProviderSelected(.githubCLI, isSelected: true))
+        XCTAssertFalse(state.composition.isReadyForExecution)
+        XCTAssertEqual(state.preMutationCurrency, .pending)
     }
 
     func testReviewCannotEnterExecutionUntilFreshInstallerCurrencyPasses() throws {

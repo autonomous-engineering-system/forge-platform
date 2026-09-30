@@ -110,7 +110,13 @@ public struct FileManagedInstallerManagedDeploymentRegistryReader: Sendable {
             if let forge = record.target.forgeInstanceID {
                 guard forgeInstances.insert(forge).inserted else { throw failure() }
             }
+            if let forge = record.target.preservedForgeInstanceID {
+                guard forgeInstances.insert(forge).inserted else { throw failure() }
+            }
             if let ep = record.target.engineeringPlatformInstanceID {
+                guard epInstances.insert(ep).inserted else { throw failure() }
+            }
+            if let ep = record.target.preservedEngineeringPlatformInstanceID {
                 guard epInstances.insert(ep).inserted else { throw failure() }
             }
             records.append(record)

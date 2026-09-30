@@ -76,6 +76,15 @@ mkdir "$WORK/app"
 ditto -x -k "$WORK/candidate/$ARCHIVE_NAME" "$WORK/app"
 APP="$WORK/app/ForgePlatformInstaller.app"
 test -d "$APP" || fail unsigned-app-missing
+python3 - "$APP" <<'PY' || fail unsigned-forge-update-resources-invalid
+from pathlib import Path
+import sys
+from forge_platform.forge_update_resources import read_forge_update_resources
+
+app = Path(sys.argv[1])
+worker = app / "Contents/Resources/forge-platform-product-worker.pyz"
+read_forge_update_resources(worker)
+PY
 for binary in ForgePlatformInstaller forge-platform-installer; do
   test -x "$APP/Contents/MacOS/$binary" || fail unsigned-binary-missing
   codesign --force --options runtime --timestamp     --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP/Contents/MacOS/$binary"

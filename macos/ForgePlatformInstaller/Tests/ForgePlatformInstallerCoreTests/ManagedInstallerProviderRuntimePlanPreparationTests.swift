@@ -30,12 +30,16 @@ final class ManagedInstallerProviderRuntimePlanPreparationTests: XCTestCase {
             }
         )
         XCTAssertEqual(Set(calls.map(\.operationID)).count, ordered.count)
+        XCTAssertEqual(calls.map(\.deploymentID),
+                       Array(repeating: stablePlan.deployment.id, count: ordered.count))
         XCTAssertTrue(calls.allSatisfy {
             ManagedPythonRuntimeStagingValidation.isOperationID($0.operationID)
         })
         XCTAssertEqual(receipt.stablePlanFingerprint, stablePlan.fingerprint)
         XCTAssertEqual(receipt.deploymentID, stablePlan.deployment.id)
         XCTAssertEqual(receipt.providerReceipts.map(\.providerTargetID), ordered.map(\.id))
+        XCTAssertEqual(receipt.providerReceipts.map(\.deploymentID),
+                       Array(repeating: stablePlan.deployment.id, count: ordered.count))
         XCTAssertEqual(receipt.state, .complete)
     }
 
@@ -134,6 +138,25 @@ final class ManagedInstallerProviderRuntimePlanPreparationTests: XCTestCase {
         XCTAssertEqual(calls.map(\.requirement), [requirements[0]])
     }
 
+    func testRejectsForeignDeploymentReceiptBeforeNextProvider() async throws {
+        let requirements = try planProviderRequirements().sorted {
+            $0.id.rawValue < $1.id.rawValue
+        }
+        let stablePlan = try providerStablePlan(
+            requirements: requirements, enabled: requirements
+        )
+        let preparer = PlanProviderPreparer(
+            driftDeploymentTarget: requirements[0].id
+        )
+        let result = await ManagedInstallerProviderRuntimePlanPreparationCoordinator(
+            providerPreparation: preparer
+        ).prepareProviderRuntimes(stablePlan: stablePlan)
+        XCTAssertEqual(result.failure,
+                       .rejected(providerTargetID: requirements[0].id))
+        let calls = await preparer.snapshot()
+        XCTAssertEqual(calls.map(\.requirement), [requirements[0]])
+    }
+
     func testReceiptRejectsMissingReorderedAndDifferentPlanEvidence() async throws {
         let requirements = try planProviderRequirements().sorted {
             $0.id.rawValue < $1.id.rawValue
@@ -214,6 +237,7 @@ final class ManagedInstallerProviderRuntimePlanPreparationTests: XCTestCase {
 
 private struct PlanProviderCall: Equatable, Sendable {
     let operationID: String
+    let deploymentID: String
     let requirement: ProviderRequirement
 }
 
@@ -221,20 +245,24 @@ private actor PlanProviderPreparer: ManagedInstallerProviderRuntimePreparing {
     private let failureTarget: ProviderTargetID?
     private let failure: ManagedInstallerProviderRuntimePreparationFailure
     private let driftTarget: ProviderTargetID?
+    private let driftDeploymentTarget: ProviderTargetID?
     private var calls: [PlanProviderCall] = []
 
     init(
         failureTarget: ProviderTargetID? = nil,
         failure: ManagedInstallerProviderRuntimePreparationFailure = .unavailable,
-        driftTarget: ProviderTargetID? = nil
+        driftTarget: ProviderTargetID? = nil,
+        driftDeploymentTarget: ProviderTargetID? = nil
     ) {
         self.failureTarget = failureTarget
         self.failure = failure
         self.driftTarget = driftTarget
+        self.driftDeploymentTarget = driftDeploymentTarget
     }
 
     func prepareProviderRuntime(
         operationID: String,
+        deploymentID: String,
         requirement: ProviderRequirement
     ) async -> Result<
         ManagedInstallerProviderRuntimePreparationReceipt,
@@ -242,6 +270,7 @@ private actor PlanProviderPreparer: ManagedInstallerProviderRuntimePreparing {
     > {
         calls.append(PlanProviderCall(
             operationID: operationID,
+            deploymentID: deploymentID,
             requirement: requirement
         ))
         if failureTarget == requirement.id {
@@ -251,6 +280,8 @@ private actor PlanProviderPreparer: ManagedInstallerProviderRuntimePreparing {
             return .success(try planProviderReceipt(
                 operationID: driftTarget == requirement.id
                     ? "drifted-provider-operation" : operationID,
+                deploymentID: driftDeploymentTarget == requirement.id
+                    ? "other-deployment" : deploymentID,
                 requirement: requirement
             ))
         } catch {
@@ -333,6 +364,7 @@ private func providerStablePlan(
 
 private func planProviderReceipt(
     operationID: String,
+    deploymentID: String,
     requirement: ProviderRequirement
 ) throws -> ManagedInstallerProviderRuntimePreparationReceipt {
     let runtime = try XCTUnwrap(requirement.runtime)
@@ -359,12 +391,14 @@ private func planProviderReceipt(
         evidenceReference: "receipt:provider-plan-inspection"
     )
     let request = try ManagedInstallerProviderRuntimeMutationRequest(
+        deploymentID: deploymentID,
         stagedArchive: staged,
         requirement: requirement,
         inspection: inspection
     )
     return try ManagedInstallerProviderRuntimePreparationReceipt(
         operationID: operationID,
+        deploymentID: deploymentID,
         requirement: requirement,
         stagedArchive: staged,
         inspection: inspection,

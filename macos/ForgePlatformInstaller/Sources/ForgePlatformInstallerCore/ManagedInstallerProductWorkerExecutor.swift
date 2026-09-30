@@ -48,6 +48,30 @@ protocol ManagedInstallerProductWorkerRunning: Sendable {
     ) async -> Result<Data, ManagedInstallerProductWorkerFailure>
 }
 
+protocol ManagedInstallerProductWheelWorkerRunning: Sendable {
+    func runWheelWorker(
+        _ invocation: ManagedInstallerProductWorkerInvocation,
+        request: ManagedInstallerProductWheelWorkerRequest
+    ) async -> Result<ManagedInstallerProductWheelWorkerReceipt,
+                      ManagedInstallerProductWorkerFailure>
+}
+
+protocol ManagedInstallerForgeUpdateResourcesChecking: Sendable {
+    func check() async -> Bool
+}
+
+struct SignedManagedInstallerForgeUpdateResourcesChecker:
+    ManagedInstallerForgeUpdateResourcesChecking {
+    func check() async -> Bool {
+        guard let resolver = ManagedInstallerForgeUpdateControllerResourceResolver
+            .forCurrentProcess(),
+              case .success = await resolver.resolveReleaseReceipt() else {
+            return false
+        }
+        return true
+    }
+}
+
 /// Resolves one active helper-owned CPython slot and the exact code-sealed
 /// worker resource. Neither path, digest nor process option crosses XPC.
 struct FileManagedInstallerProductWorkerInvocationResolver:
@@ -144,9 +168,16 @@ struct FileManagedInstallerProductWorkerInvocationResolver:
 /// bounded canonical JSON pipes. PATH, HOME, caller environment, shell and
 /// network-selected modules never participate in process construction.
 struct MacOSManagedInstallerProductWorkerRunner:
-    ManagedInstallerProductWorkerRunning, Sendable {
+    ManagedInstallerProductWorkerRunning,
+    ManagedInstallerProductWheelWorkerRunning, Sendable {
     private static let maximumErrorBytes = 8 * 1_024
     private static let maximumWorkerBytes = 16 * 1_024 * 1_024
+    private let forgeUpdateResources: any ManagedInstallerForgeUpdateResourcesChecking
+
+    init(forgeUpdateResources: any ManagedInstallerForgeUpdateResourcesChecking =
+        SignedManagedInstallerForgeUpdateResourcesChecker()) {
+        self.forgeUpdateResources = forgeUpdateResources
+    }
 
     func runProductWorker(
         _ invocation: ManagedInstallerProductWorkerInvocation,
@@ -161,13 +192,74 @@ struct MacOSManagedInstallerProductWorkerRunner:
         let reviewIntent = try? ManagedInstallerProductRemovalReviewIntent.decodeJSON(
             canonicalRequest
         )
+        let lifecycleIntent = try? ManagedInstallerPreservedLifecycleReviewIntent.decodeJSON(
+            canonicalRequest
+        )
+        let lifecycleRequest = try? ManagedInstallerPreservedLifecycleRequest.decodeJSON(
+            canonicalRequest
+        )
+        let preserveRecovery = try? ManagedInstallerPreserveRecoveryRequest.decodeJSON(
+            canonicalRequest
+        )
         guard !canonicalRequest.isEmpty,
               canonicalRequest.count <= ManagedInstallerProductOperationRequest.maximumBytes,
               productRequest?.canonicalJSONData() == canonicalRequest
                 || removalRequest?.canonicalJSONData() == canonicalRequest
-                || reviewIntent?.canonicalJSONData() == canonicalRequest,
-              secureInterpreter(invocation),
-              secureWorker(invocation) else {
+                || reviewIntent?.canonicalJSONData() == canonicalRequest
+                || lifecycleIntent?.canonicalJSONData() == canonicalRequest
+                || lifecycleRequest?.canonicalJSONData() == canonicalRequest
+                || preserveRecovery?.canonicalJSONData() == canonicalRequest else {
+            return .failure(.rejected)
+        }
+        let forgeUpdateRequested = productRequest?.components.contains {
+            $0.componentID == "forge-runtime" && $0.change == .update
+        } == true || lifecycleIntent?.component == "forge-runtime"
+            || lifecycleRequest?.intent.component == "forge-runtime"
+            || preserveRecovery?.intent.component == "forge-runtime"
+        if forgeUpdateRequested {
+            guard await forgeUpdateResources.check() else {
+                return .failure(.unavailable)
+            }
+        }
+        return await runVerifiedWorker(
+            invocation, canonicalRequest: canonicalRequest,
+            maximumReceiptBytes: max(
+                ManagedInstallerProductOperationReceipt.maximumBytes,
+                ManagedInstallerProductRemovalReceipt.maximumBytes,
+                ManagedInstallerPreservedLifecycleReviewProposal.maximumBytes,
+                ManagedInstallerPreservedLifecycleReceipt.maximumBytes,
+                ManagedInstallerPreserveRecoveryReceipt.maximumBytes
+            )
+        )
+    }
+
+    func runWheelWorker(
+        _ invocation: ManagedInstallerProductWorkerInvocation,
+        request: ManagedInstallerProductWheelWorkerRequest
+    ) async -> Result<ManagedInstallerProductWheelWorkerReceipt,
+                      ManagedInstallerProductWorkerFailure> {
+        let raw = request.canonicalJSONData()
+        let output: Data
+        switch await runVerifiedWorker(
+            invocation, canonicalRequest: raw, maximumReceiptBytes: 8192
+        ) {
+        case .success(let value): output = value
+        case .failure(let failure): return .failure(failure)
+        }
+        guard let receipt = try? ManagedInstallerProductWheelWorkerReceipt.decode(
+            output, for: request
+        ) else { return .failure(.rejected) }
+        return .success(receipt)
+    }
+
+    private func runVerifiedWorker(
+        _ invocation: ManagedInstallerProductWorkerInvocation,
+        canonicalRequest: Data, maximumReceiptBytes: Int
+    ) async -> Result<Data, ManagedInstallerProductWorkerFailure> {
+        guard !canonicalRequest.isEmpty,
+              canonicalRequest.count <= ManagedInstallerProductOperationRequest.maximumBytes,
+              maximumReceiptBytes > 0,
+              secureInterpreter(invocation), secureWorker(invocation) else {
             return .failure(.rejected)
         }
 
@@ -198,10 +290,7 @@ struct MacOSManagedInstallerProductWorkerRunner:
 
         async let output = Self.readBounded(
             standardOutput.fileHandleForReading,
-            maximumBytes: max(
-                ManagedInstallerProductOperationReceipt.maximumBytes,
-                ManagedInstallerProductRemovalReceipt.maximumBytes
-            ),
+            maximumBytes: maximumReceiptBytes,
             timeoutNanoseconds: invocation.timeoutNanoseconds
         )
         async let error = Self.readBounded(
@@ -647,5 +736,101 @@ public actor ManagedInstallerPythonProductOperationExecutor:
             return .failure(.rejected)
         }
         return .success(proposal)
+    }
+
+    public func preparePreservedLifecycleReview(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard !inFlight else { return .failure(.rejected) }
+        inFlight = true
+        defer { inFlight = false }
+        let invocation: ManagedInstallerProductWorkerInvocation
+        switch await resolver.resolveProductWorkerInvocation() {
+        case .success(let resolved): invocation = resolved
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        let response: Data
+        switch await runner.runProductWorker(
+            invocation, canonicalRequest: intent.canonicalJSONData()
+        ) {
+        case .success(let completed): response = completed
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        guard response.count <= ManagedInstallerPreservedLifecycleReviewProposal.maximumBytes,
+              let proposal = try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                  response, intent: intent
+              ), proposal.canonicalJSONData() == response else {
+            return .failure(.rejected)
+        }
+        return .success(proposal)
+    }
+
+    public func executePreservedLifecycle(
+        _ request: ManagedInstallerPreservedLifecycleRequest
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard !inFlight else { return .failure(.rejected) }
+        inFlight = true
+        defer { inFlight = false }
+        let invocation: ManagedInstallerProductWorkerInvocation
+        switch await resolver.resolveProductWorkerInvocation() {
+        case .success(let resolved): invocation = resolved
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        let response: Data
+        switch await runner.runProductWorker(
+            invocation, canonicalRequest: request.canonicalJSONData()
+        ) {
+        case .success(let completed): response = completed
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        guard response.count <= ManagedInstallerPreservedLifecycleReceipt.maximumBytes,
+              let receipt = try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+                  response, request: request
+              ), receipt.canonicalJSONData() == response else {
+            return .failure(.rejected)
+        }
+        return .success(receipt)
+    }
+
+    public func readTerminalPreserveRecovery(
+        _ request: ManagedInstallerPreserveRecoveryRequest
+    ) async -> Result<
+        ManagedInstallerPreserveRecoveryReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard !inFlight else { return .failure(.rejected) }
+        inFlight = true
+        defer { inFlight = false }
+        let invocation: ManagedInstallerProductWorkerInvocation
+        switch await resolver.resolveProductWorkerInvocation() {
+        case .success(let resolved): invocation = resolved
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        let response: Data
+        switch await runner.runProductWorker(
+            invocation, canonicalRequest: request.canonicalJSONData()
+        ) {
+        case .success(let completed): response = completed
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        guard response.count <= ManagedInstallerPreserveRecoveryReceipt.maximumBytes,
+              let receipt = try? ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+                response, request: request
+              ), receipt.canonicalJSONData() == response else {
+            return .failure(.rejected)
+        }
+        return .success(receipt)
     }
 }

@@ -1,0 +1,667 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from dataclasses import replace
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from forge_platform.engineering_platform_system_adapter import EPSystemInstanceTarget, ProductCommandResult
+from forge_platform.forge_server_adapter import ForgeCommandResult, ForgeServerTarget, _forge_product_digest
+from forge_platform.managed_deployments import (
+    MANAGED_DEPLOYMENT_SCHEMA_V2, ManagedDeployment, ManagedDeploymentRegistry,
+)
+from forge_platform.managed_preserve_execution import (
+    ManagedPreserveExecutionCoordinator, ManagedPreserveExecutionError,
+    ManagedPurgeExecutionCoordinator,
+    _write, read_terminal_preserve_evidence,
+)
+from forge_platform.managed_preserved_lifecycle_plan import prepare_preserved_lifecycle_review
+from forge_platform.managed_preserved_product_adapters import (
+    EPPreservedProductAdapter, ForgePreservedProductAdapter,
+)
+from forge_platform.product_preserved_lifecycle import EP_COMPONENT, EP_CONTRACT, FORGE_COMPONENT
+from tests.installer.test_managed_preserved_lifecycle_plan import _fixture
+from tests.installer.test_managed_preserved_product_adapters import (
+    FakeRunner, _ep_evidence, _forge_evidence, _wire,
+)
+from tests.installer.test_product_preserved_lifecycle import _artifact, _receipt_digest
+
+
+class Currency:
+    def __init__(self):
+        self.calls = []
+        self.denied = False
+
+    def require_current(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.denied:
+            raise RuntimeError("installer is stale")
+        return "currency:qualified"
+
+
+class Supervisor:
+    def __init__(self):
+        self.is_loaded = True
+        self.calls = []
+        self.fail_remove = False
+
+    def loaded(self, target):
+        self.calls.append(("loaded", target.instance_id))
+        return self.is_loaded
+
+    def stop(self, target):
+        self.calls.append(("stop", target.instance_id))
+        self.is_loaded = False
+        return {"result": "STOPPED"}
+
+    def remove(self, target):
+        self.calls.append(("remove", target.instance_id))
+        if self.fail_remove:
+            raise RuntimeError("remove failed")
+        return {"result": "REMOVED"}
+
+
+class ManagedPreserveExecutionTests(unittest.TestCase):
+    @staticmethod
+    def _read_terminal(root, registry, review, manifest):
+        return read_terminal_preserve_evidence(
+            operations_root=root / "operations", registry=registry,
+            deployment_id=review.deployment_id, operation_id=review.operation_id,
+            component=review.component, instance_id=review.instance_id,
+            review_fingerprint=review.review_fingerprint,
+            composition_id=manifest.composition_id,
+            manifest_digest=manifest.manifest_digest,
+            expected_owner_uid=os.getuid(),
+        )
+
+    def _state(self, root, component=FORGE_COMPONENT):
+        manifest, active, _ = _fixture()
+        active = replace(active, peer_binding=None)
+        registry = ManagedDeploymentRegistry(root / "registry")
+        registry.create(active)
+        instance = "forge-a" if component == FORGE_COMPONENT else "ep-a"
+        review = prepare_preserved_lifecycle_review(
+            current=active, installed_manifest=manifest, operation="PRESERVE",
+            operation_id="preserve-a", component=component, instance_id=instance,
+        )
+        currency = Currency()
+        supervisor = Supervisor()
+        coordinator = ManagedPreserveExecutionCoordinator(
+            operations_root=root / "operations", registry=registry,
+            currency_guard=currency, forge_supervisor=supervisor,
+            expected_owner_uid=os.getuid(),
+        )
+        return manifest, registry, active, review, currency, supervisor, coordinator
+
+    @staticmethod
+    def _forge_adapter(root):
+        target = ForgeServerTarget(
+            "forge-a", root / "instances" / "forge-a", root / "instances",
+            "_forge", 8765, root / "credentials" / "forge-a.json",
+        )
+        artifact = _artifact(FORGE_COMPONENT)
+        request = {
+            "operation_id": "preserve-a", "instance_id": "forge-a",
+            "runtime_id": "forge-a", "installation_id": "Install-A",
+            "installed_version": artifact.version,
+            "installed_source": artifact.source_revision,
+            "installed_artifact_digest": artifact.digest,
+            "data_root": str(target.data_root), "instances_root": str(target.instances_root),
+        }
+        receipt, status = _forge_evidence(
+            "PRESERVE", "preserve-a", "forge-a", "Install-A",
+            _forge_product_digest(request),
+        )
+        runner = FakeRunner(ForgeCommandResult, ((0, _wire(receipt)), (0, _wire(status))))
+        adapter = ForgePreservedProductAdapter(
+            lifecycle_executable=root / "forge", target=target,
+            installation_id="Install-A", artifact=artifact, runner=runner,
+        )
+        return adapter, runner, receipt
+
+    @staticmethod
+    def _ep_adapter(root):
+        receipt, status = _ep_evidence("PRESERVE", "preserve-a", "ep-a")
+        outer = {"contract": EP_CONTRACT, "result": "COMPLETE", "instance_id": "ep-a", "receipt": receipt}
+        runner = FakeRunner(ProductCommandResult, ((0, _wire(outer)), (0, _wire(status))))
+        adapter = EPPreservedProductAdapter(
+            provisioner_executable=root / "ep", product_root=root / "ep-root",
+            target=EPSystemInstanceTarget("ep-a", "EP A", "_ep", 8766),
+            artifact=_artifact(EP_COMPONENT), staged_wheel=root / "ep.whl",
+            launch_daemons_directory=root / "daemons", runner=runner,
+        )
+        return adapter, runner, receipt
+
+    def _purge_state(self, root, *, forge_only=False, paired=False):
+        manifest, active, _ = _fixture()
+        if not paired:
+            active = replace(active, peer_binding=None)
+        if forge_only:
+            active = replace(
+                active, components=(active.active_by_component[FORGE_COMPONENT],),
+                peer_binding=None,
+            )
+        registry = ManagedDeploymentRegistry(root / "registry")
+        registry.create(active)
+        review = prepare_preserved_lifecycle_review(
+            current=active, installed_manifest=manifest, operation="PURGE",
+            operation_id="purge-a", component=FORGE_COMPONENT, instance_id="forge-a",
+        )
+        currency = Currency()
+        supervisor = Supervisor()
+        coordinator = ManagedPurgeExecutionCoordinator(
+            operations_root=root / "operations", registry=registry,
+            currency_guard=currency, forge_supervisor=supervisor,
+            expected_owner_uid=os.getuid(),
+        )
+        return manifest, registry, active, review, currency, supervisor, coordinator
+
+    @staticmethod
+    def _forge_purge_adapter(root):
+        target = ForgeServerTarget(
+            "forge-a", root / "instances" / "forge-a", root / "instances",
+            "_forge", 8765, root / "credentials" / "forge-a.json",
+        )
+        artifact = _artifact(FORGE_COMPONENT)
+        request = {
+            "operation_id": "purge-a", "instance_id": "forge-a",
+            "runtime_id": "forge-a", "installation_id": "Install-A",
+            "installed_version": artifact.version,
+            "installed_source": artifact.source_revision,
+            "installed_artifact_digest": artifact.digest,
+            "data_root": str(target.data_root), "instances_root": str(target.instances_root),
+        }
+        receipt, status = _forge_evidence(
+            "PURGE", "purge-a", "forge-a", "Install-A",
+            _forge_product_digest(request),
+        )
+        runner = FakeRunner(ForgeCommandResult, ((0, _wire(receipt)), (0, _wire(status))))
+        adapter = ForgePreservedProductAdapter(
+            lifecycle_executable=root / "forge", target=target,
+            installation_id="Install-A", artifact=artifact, runner=runner,
+        )
+        return adapter, runner, receipt
+
+    @staticmethod
+    def _ep_purge_adapter(root):
+        receipt, status = _ep_evidence("PURGE", "purge-ep", "ep-a")
+        outer = {"contract": EP_CONTRACT, "result": "COMPLETE",
+                 "instance_id": "ep-a", "receipt": receipt}
+        runner = FakeRunner(ProductCommandResult, ((0, _wire(outer)), (0, _wire(status))))
+        adapter = EPPreservedProductAdapter(
+            provisioner_executable=root / "ep", product_root=root / "ep-root",
+            target=EPSystemInstanceTarget("ep-a", "EP A", "_ep", 8766),
+            artifact=_artifact(EP_COMPONENT), staged_wheel=root / "ep.whl",
+            launch_daemons_directory=root / "daemons", runner=runner,
+        )
+        return adapter, runner
+
+    def test_purge_exact_forge_only_deployment_and_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, currency, supervisor, coordinator = self._purge_state(
+                root, forge_only=True
+            )
+            sibling = replace(
+                active, deployment_id="other-deployment",
+                components=(replace(active.components[0], instance_id="forge-b"),),
+            )
+            registry.create(sibling)
+            adapter, runner, receipt = self._forge_purge_adapter(root)
+            result = coordinator.purge(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(result.state, "COMPLETE")
+            self.assertEqual(result.registry_revision, 2)
+            self.assertEqual(result.receipt_digest, receipt["receipt_digest"])
+            self.assertIsNone(registry.load(active.deployment_id))
+            self.assertEqual(registry.load(sibling.deployment_id), sibling)
+            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
+            self.assertTrue(all(call["mutation"] == "PURGE" for call in currency.calls))
+            self.assertEqual(coordinator.purge(
+                review, installed_manifest=manifest, adapter=adapter,
+            ), result)
+            self.assertEqual(len(runner.calls), 2)
+            journal = (root / "operations" / "purge-a.json").read_text()
+            self.assertNotIn("data_root", journal)
+            self.assertNotIn("Install-A", journal)
+            registry.create(replace(active, deployment_id="foreign"))
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "terminal inventory"):
+                coordinator.purge(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(len(runner.calls), 2)
+
+    def test_purge_of_one_unpaired_component_retains_ep(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, _, coordinator = self._purge_state(root)
+            adapter, _, _ = self._forge_purge_adapter(root)
+            result = coordinator.purge(review, installed_manifest=manifest, adapter=adapter)
+            current = registry.load(active.deployment_id)
+            self.assertEqual(current.revision, result.registry_revision)
+            self.assertEqual(current.active_by_component[EP_COMPONENT],
+                             active.active_by_component[EP_COMPONENT])
+            self.assertNotIn(FORGE_COMPONENT, current.active_by_component)
+
+    def test_ep_purge_retains_forge_and_never_touches_forge_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, _, currency, supervisor, coordinator = self._purge_state(root)
+            review = prepare_preserved_lifecycle_review(
+                current=active, installed_manifest=manifest, operation="PURGE",
+                operation_id="purge-ep", component=EP_COMPONENT, instance_id="ep-a",
+            )
+            adapter, runner = self._ep_purge_adapter(root)
+            result = coordinator.purge(review, installed_manifest=manifest, adapter=adapter)
+            current = registry.load(active.deployment_id)
+            self.assertEqual(current.revision, result.registry_revision)
+            self.assertEqual(current.active_by_component[FORGE_COMPONENT],
+                             active.active_by_component[FORGE_COMPONENT])
+            self.assertNotIn(EP_COMPONENT, current.active_by_component)
+            self.assertEqual(supervisor.calls, [])
+            self.assertEqual(len(runner.calls), 2)
+            self.assertTrue(all(call["component"] == EP_COMPONENT for call in currency.calls))
+
+    def test_purge_preserved_forge_uses_product_tombstone_and_retains_ep(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, preserve_review, currency, supervisor, preserve = self._state(root)
+            preserve_adapter, _, _ = self._forge_adapter(root)
+            preserve.preserve(
+                preserve_review, installed_manifest=manifest, adapter=preserve_adapter,
+            )
+            preserved = registry.load(active.deployment_id)
+            review = prepare_preserved_lifecycle_review(
+                current=preserved, installed_manifest=manifest, operation="PURGE",
+                operation_id="purge-a", component=FORGE_COMPONENT, instance_id="forge-a",
+            )
+            purge = ManagedPurgeExecutionCoordinator(
+                operations_root=root / "operations", registry=registry,
+                currency_guard=currency, forge_supervisor=supervisor,
+                expected_owner_uid=os.getuid(),
+            )
+            adapter, runner, receipt = self._forge_purge_adapter(root)
+            result = purge.purge(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(result.receipt_digest, receipt["receipt_digest"])
+            self.assertEqual(registry.load(active.deployment_id).active_by_component[EP_COMPONENT],
+                             active.active_by_component[EP_COMPONENT])
+            self.assertNotIn(FORGE_COMPONENT,
+                             registry.load(active.deployment_id).preserved_by_component)
+            self.assertEqual(len(runner.calls), 2)
+
+    def test_purge_preserved_ep_uses_product_tombstone_and_retains_forge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, preserve_review, currency, supervisor, preserve = self._state(
+                root, EP_COMPONENT
+            )
+            preserve_adapter, _, _ = self._ep_adapter(root)
+            preserve.preserve(
+                preserve_review, installed_manifest=manifest, adapter=preserve_adapter,
+            )
+            preserved = registry.load(active.deployment_id)
+            review = prepare_preserved_lifecycle_review(
+                current=preserved, installed_manifest=manifest, operation="PURGE",
+                operation_id="purge-ep", component=EP_COMPONENT, instance_id="ep-a",
+            )
+            purge = ManagedPurgeExecutionCoordinator(
+                operations_root=root / "operations", registry=registry,
+                currency_guard=currency, forge_supervisor=supervisor,
+                expected_owner_uid=os.getuid(),
+            )
+            adapter, runner = self._ep_purge_adapter(root)
+            result = purge.purge(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(result.state, "COMPLETE")
+            self.assertEqual(registry.load(active.deployment_id).active_by_component[FORGE_COMPONENT],
+                             active.active_by_component[FORGE_COMPONENT])
+            self.assertNotIn(EP_COMPONENT,
+                             registry.load(active.deployment_id).preserved_by_component)
+            self.assertEqual(supervisor.calls, [])
+            self.assertEqual(len(runner.calls), 2)
+
+    def test_purge_interruption_resumes_and_post_commit_crash_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, supervisor, coordinator = self._purge_state(
+                root, forge_only=True
+            )
+            adapter, _, _ = self._forge_purge_adapter(root)
+            supervisor.fail_remove = True
+            with self.assertRaisesRegex(RuntimeError, "remove failed"):
+                coordinator.purge(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(registry.load(active.deployment_id), active)
+            self.assertIn("PRODUCT_TERMINAL", (root / "operations" / "purge-a.json").read_text())
+            supervisor.fail_remove = False
+            changed_adapter, _, original_receipt = self._forge_purge_adapter(root)
+            changed_receipt = dict(original_receipt)
+            changed_receipt["operation_metadata"] = "different-terminal"
+            changed_receipt["receipt_digest"] = _receipt_digest(
+                FORGE_COMPONENT,
+                {key: item for key, item in changed_receipt.items()
+                 if key != "receipt_digest"},
+            )
+            changed_status = _forge_evidence(
+                "PURGE", "purge-a", "forge-a", "Install-A",
+                changed_receipt["request_digest"],
+            )[1]
+            changed_status["receipt_digest"] = changed_receipt["receipt_digest"]
+            changed_adapter.runner = FakeRunner(ForgeCommandResult, (
+                (0, _wire(changed_receipt)), (0, _wire(changed_status)),
+            ))
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "evidence changed"):
+                coordinator.purge(
+                    review, installed_manifest=manifest, adapter=changed_adapter,
+                )
+            self.assertEqual(registry.load(active.deployment_id), active)
+            resumed, runner, _ = self._forge_purge_adapter(root)
+            from forge_platform import managed_preserve_execution as execution
+            original_write = execution._write
+            def fail_complete(path, record):
+                if record.state == "COMPLETE":
+                    raise OSError("simulated journal interruption")
+                original_write(path, record)
+            with patch.object(execution, "_write", side_effect=fail_complete):
+                with self.assertRaisesRegex(OSError, "interruption"):
+                    coordinator.purge(review, installed_manifest=manifest, adapter=resumed)
+            self.assertIsNone(registry.load(active.deployment_id))
+            self.assertIn("COMMITTING", (root / "operations" / "purge-a.json").read_text())
+            completed = coordinator.purge(review, installed_manifest=manifest, adapter=resumed)
+            self.assertEqual(completed.state, "COMPLETE")
+            self.assertEqual(len(runner.calls), 2)
+
+    def test_purge_stale_wrong_target_pairing_and_currency_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, currency, supervisor, coordinator = self._purge_state(root)
+            adapter, runner, _ = self._forge_purge_adapter(root)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "not sealed"):
+                coordinator.purge(replace(review, instance_id="forge-b"),
+                                  installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(runner.calls, [])
+            registry.replace(replace(active, revision=2), expected_revision=1)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                coordinator.purge(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(runner.calls, [])
+            self.assertEqual(supervisor.calls, [])
+            new_review = prepare_preserved_lifecycle_review(
+                current=registry.load(active.deployment_id), installed_manifest=manifest,
+                operation="PURGE", operation_id="purge-b",
+                component=FORGE_COMPONENT, instance_id="forge-a",
+            )
+            currency.denied = True
+            with self.assertRaisesRegex(RuntimeError, "stale"):
+                coordinator.purge(new_review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(runner.calls, [])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, _, coordinator = self._purge_state(
+                root, paired=True
+            )
+            adapter, runner, _ = self._forge_purge_adapter(root)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "consumer revocation"):
+                coordinator.purge(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(registry.load(active.deployment_id), active)
+            self.assertEqual(runner.calls, [])
+
+    def test_paired_preserve_requires_product_owned_revocation_before_any_mutation(self):
+        for component in (FORGE_COMPONENT, EP_COMPONENT):
+            with self.subTest(component=component), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                manifest, active, _ = _fixture()
+                registry = ManagedDeploymentRegistry(root / "registry")
+                registry.create(active)
+                review = prepare_preserved_lifecycle_review(
+                    current=active, installed_manifest=manifest, operation="PRESERVE",
+                    operation_id="preserve-a", component=component,
+                    instance_id="forge-a" if component == FORGE_COMPONENT else "ep-a",
+                )
+                currency = Currency()
+                supervisor = Supervisor()
+                coordinator = ManagedPreserveExecutionCoordinator(
+                    operations_root=root / "operations", registry=registry,
+                    currency_guard=currency, forge_supervisor=supervisor,
+                    expected_owner_uid=os.getuid(),
+                )
+                adapter, runner, _ = (
+                    self._forge_adapter(root) if component == FORGE_COMPONENT
+                    else self._ep_adapter(root)
+                )
+                with self.assertRaisesRegex(ManagedPreserveExecutionError, "consumer revocation"):
+                    coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+                self.assertEqual(registry.load(active.deployment_id), active)
+                self.assertFalse((root / "operations").exists())
+                self.assertEqual(currency.calls, [])
+                self.assertEqual(supervisor.calls, [])
+                self.assertEqual(runner.calls, [])
+
+    def test_historical_pairing_cannot_be_preserved_again_without_revocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, active, partly_preserved = _fixture()
+            registry = ManagedDeploymentRegistry(root / "registry")
+            registry.create(active)
+            review = prepare_preserved_lifecycle_review(
+                current=partly_preserved, installed_manifest=manifest,
+                operation="PRESERVE", operation_id="preserve-a",
+                component=EP_COMPONENT, instance_id="ep-a",
+            )
+            currency = Currency()
+            coordinator = ManagedPreserveExecutionCoordinator(
+                operations_root=root / "operations", registry=registry,
+                currency_guard=currency, forge_supervisor=Supervisor(),
+                expected_owner_uid=os.getuid(),
+            )
+            adapter, runner, _ = self._ep_adapter(root)
+            with (
+                patch.object(registry, "load", return_value=partly_preserved),
+                self.assertRaisesRegex(ManagedPreserveExecutionError, "consumer revocation"),
+            ):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(registry.load(active.deployment_id), active)
+            self.assertFalse((root / "operations").exists())
+            self.assertEqual(currency.calls, [])
+            self.assertEqual(runner.calls, [])
+
+    def test_forge_preserve_commits_only_selected_instance_and_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, currency, supervisor, coordinator = self._state(root)
+            sibling = ManagedDeployment(
+                "other-deployment", 1, None,
+                (replace(active.active_by_component[FORGE_COMPONENT], instance_id="forge-b"),),
+                schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
+                composition_binding=active.composition_binding,
+            )
+            registry.create(sibling)
+            adapter, runner, receipt = self._forge_adapter(root)
+            result = coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(result.state, "COMPLETE")
+            self.assertEqual(result.registry_revision, 2)
+            current = registry.load(active.deployment_id)
+            self.assertEqual(current.preserved_by_component[FORGE_COMPONENT].instance_id, "forge-a")
+            self.assertEqual(current.preserved_by_component[FORGE_COMPONENT].forge_installation_id, "Install-A")
+            self.assertEqual(current.active_by_component[EP_COMPONENT].instance_id, "ep-a")
+            self.assertEqual(current.historical_peer_binding, active.peer_binding)
+            self.assertEqual(registry.load(sibling.deployment_id), sibling)
+            self.assertIsNone(current.peer_binding)
+            self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
+            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(len(currency.calls), 4)
+            self.assertEqual(coordinator.preserve(
+                review, installed_manifest=manifest, adapter=adapter,
+            ), result)
+            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
+            self.assertNotIn("Install-A", (root / "operations" / "preserve-a.json").read_text())
+            self.assertNotIn("data_root", (root / "operations" / "preserve-a.json").read_text())
+            self.assertEqual(receipt["receipt_digest"], result.receipt_digest)
+            self.assertEqual(self._read_terminal(root, registry, review, manifest), result)
+
+    def test_terminal_recovery_readback_rejects_foreign_stale_and_unsafe_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, _, coordinator = self._state(root)
+            adapter, _, _ = self._forge_adapter(root)
+            result = coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(self._read_terminal(root, registry, review, manifest), result)
+            self.assertEqual(registry.load(active.deployment_id).revision, result.registry_revision)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                read_terminal_preserve_evidence(
+                    operations_root=root / "operations", registry=registry,
+                    deployment_id=review.deployment_id, operation_id=review.operation_id,
+                    component=review.component, instance_id="forge-b",
+                    review_fingerprint=review.review_fingerprint,
+                    composition_id=manifest.composition_id,
+                    manifest_digest=manifest.manifest_digest,
+                    expected_owner_uid=os.getuid(),
+                )
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                read_terminal_preserve_evidence(
+                    operations_root=root / "operations", registry=registry,
+                    deployment_id=review.deployment_id, operation_id=review.operation_id,
+                    component=review.component, instance_id=review.instance_id,
+                    review_fingerprint="sha256:" + "a" * 64,
+                    composition_id=manifest.composition_id,
+                    manifest_digest=manifest.manifest_digest,
+                    expected_owner_uid=os.getuid(),
+                )
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                read_terminal_preserve_evidence(
+                    operations_root=root / "operations", registry=registry,
+                    deployment_id=review.deployment_id, operation_id=review.operation_id,
+                    component=review.component, instance_id=review.instance_id,
+                    review_fingerprint=review.review_fingerprint,
+                    composition_id="another-composition",
+                    manifest_digest=manifest.manifest_digest,
+                    expected_owner_uid=os.getuid(),
+                )
+            journal = root / "operations" / "preserve-a.json"
+            shadow = root / "operations" / "shadow.json"
+            os.link(journal, shadow)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "unsafe"):
+                self._read_terminal(root, registry, review, manifest)
+            shadow.unlink()
+            journal.rename(shadow)
+            journal.symlink_to(shadow)
+            with self.assertRaises(OSError):
+                self._read_terminal(root, registry, review, manifest)
+
+    def test_terminal_recovery_readback_rejects_inflight_and_registry_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, supervisor, coordinator = self._state(root)
+            adapter, _, _ = self._forge_adapter(root)
+            supervisor.fail_remove = True
+            with self.assertRaisesRegex(RuntimeError, "remove failed"):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                self._read_terminal(root, registry, review, manifest)
+            supervisor.fail_remove = False
+            resumed, _, _ = self._forge_adapter(root)
+            result = coordinator.preserve(review, installed_manifest=manifest, adapter=resumed)
+            self.assertEqual(self._read_terminal(root, registry, review, manifest), result)
+            _write(root / "operations" / "preserve-a.json", replace(
+                result, registry_revision=result.registry_revision + 1,
+            ))
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                self._read_terminal(root, registry, review, manifest)
+
+    def test_interrupted_service_removal_resumes_same_product_operation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, supervisor, coordinator = self._state(root)
+            adapter, _, _ = self._forge_adapter(root)
+            supervisor.fail_remove = True
+            with self.assertRaisesRegex(RuntimeError, "remove failed"):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(registry.load(active.deployment_id), active)
+            self.assertIn("PRODUCT_TERMINAL", (root / "operations" / "preserve-a.json").read_text())
+            supervisor.fail_remove = False
+            resumed, runner, _ = self._forge_adapter(root)
+            result = coordinator.preserve(review, installed_manifest=manifest, adapter=resumed)
+            self.assertEqual(result.state, "COMPLETE")
+            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(registry.load(active.deployment_id).revision, 2)
+
+    def test_unsafe_journal_and_missing_registry_evidence_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, _, supervisor, coordinator = self._state(root)
+            adapter, runner, _ = self._forge_adapter(root)
+            operations = root / "operations"
+            operations.mkdir(mode=0o755)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "root is unsafe"):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            operations.chmod(0o700)
+            journal = operations / "preserve-a.json"
+            journal.symlink_to(root / "other")
+            with self.assertRaises(OSError):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            journal.unlink()
+            registry.remove(active.deployment_id, expected_revision=1)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "unavailable"):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(supervisor.calls, [])
+            self.assertEqual(runner.calls, [])
+
+    def test_ep_preserve_does_not_touch_forge_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, currency, supervisor, coordinator = self._state(root, EP_COMPONENT)
+            adapter, runner, _ = self._ep_adapter(root)
+            result = coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(result.state, "COMPLETE")
+            self.assertEqual(registry.load(active.deployment_id).active_by_component[FORGE_COMPONENT].instance_id, "forge-a")
+            self.assertEqual(registry.load(active.deployment_id).preserved_by_component[EP_COMPONENT].instance_id, "ep-a")
+            self.assertEqual(supervisor.calls, [])
+            self.assertEqual(len(currency.calls), 2)
+            self.assertEqual(len(runner.calls), 2)
+
+    def test_stale_review_and_currency_denial_stop_before_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, active, review, currency, supervisor, coordinator = self._state(root)
+            adapter, runner, _ = self._forge_adapter(root)
+            registry.replace(replace(active, revision=2), expected_revision=1)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(supervisor.calls, [])
+            self.assertEqual(runner.calls, [])
+            review = prepare_preserved_lifecycle_review(
+                current=registry.load(active.deployment_id), installed_manifest=manifest,
+                operation="PRESERVE", operation_id="preserve-b",
+                component=FORGE_COMPONENT, instance_id="forge-a",
+            )
+            currency.denied = True
+            with self.assertRaisesRegex(RuntimeError, "stale"):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(supervisor.calls, [])
+            self.assertEqual(runner.calls, [])
+
+    def test_foreign_target_journal_and_restarted_service_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, review, _, supervisor, coordinator = self._state(root)
+            adapter, runner, _ = self._forge_adapter(root)
+            wrong = replace(review, instance_id="forge-b")
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "not sealed"):
+                coordinator.preserve(wrong, installed_manifest=manifest, adapter=adapter)
+            result = coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            supervisor.is_loaded = True
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "no exact terminal"):
+                coordinator.preserve(review, installed_manifest=manifest, adapter=adapter)
+            supervisor.is_loaded = False
+            foreign = replace(review, review_fingerprint="sha256:" + "a" * 64)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "identity changed"):
+                coordinator.preserve(foreign, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(result.state, "COMPLETE")
+            self.assertEqual(len(runner.calls), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

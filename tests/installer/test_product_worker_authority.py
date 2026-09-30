@@ -15,6 +15,7 @@ from forge_platform.product_worker_authority import (
     PRODUCT_WORKER_AUTHORITY_FILE,
     PRODUCT_WORKER_AUTHORITY_SCHEMA,
     PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA,
+    PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA,
     ProductWorkerAuthorityError,
     ProductWorkerAuthorityLoader,
 )
@@ -29,15 +30,18 @@ def _canonical(value: object) -> bytes:
 def _manifest_payload() -> dict:
     payload = manifest_payload(composition_id="forge-ep-current")
     ep = payload["components"][0]
-    ep["artifact"]["version"] = "2.3.102"
-    ep["artifact"]["source_revision"] = "cab85a84a6a8b5b574c796713e4363781fc05519"
+    ep["artifact"]["version"] = "2.3.106"
+    ep["artifact"]["source_revision"] = "7b99b578153ae5d72372a09db194306b49ec9f9c"
+    ep["artifact"]["digest"] = "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694"
+    ep["artifact"]["source"] = "https://registry.example.invalid/engineering-platform-2.3.106.whl"
+    ep["artifact"]["qualification"] = "https://evidence.example.invalid/ep-2.3.106"
     forge = json.loads(json.dumps(ep))
     forge["identity"] = "forge-runtime"
     forge["artifact"] = {
-        "version": "2.7.35",
-        "source_revision": "ff4c0d45f51161376104250cd6efcfb6f045b8ac",
+        "version": "2.7.37",
+        "source_revision": "a78523603d6ea081d07875ea6b557e73b5d4fe63",
         "source": "https://registry.example.invalid/forge-runtime.whl",
-        "digest": "sha256:" + "4" * 64,
+        "digest": "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
         "qualification": "https://evidence.example.invalid/forge-runtime",
     }
     forge["service"]["product_service_reference"] = "forge-server-service-v1"
@@ -73,8 +77,8 @@ def _authority() -> dict:
             "forge_installation_id": "forge-installation-prod",
             "forge_service_account": "_forge_prod",
             "forge_bind_port": 8875,
-            "forge_artifact_sha256": "sha256:" + "4" * 64,
-            "ep_artifact_sha256": "sha256:" + "3" * 64,
+            "forge_artifact_sha256": "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
+            "ep_artifact_sha256": "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694",
             "ep_instance_id": "ep-prod",
             "ep_display_label": "Production",
             "ep_service_account": "_ep_prod",
@@ -118,7 +122,11 @@ def _single_authority(component: str) -> dict:
         "instance_id": "forge-prod" if forge else "ep-prod",
         "service_account": "_forge_prod" if forge else "_ep_prod",
         "bind_port": 8875 if forge else 8876,
-        "artifact_sha256": "sha256:" + ("4" if forge else "3") * 64,
+        "artifact_sha256": (
+            "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938"
+            if forge else
+            "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694"
+        ),
         "forge_installation_id": "forge-installation-prod" if forge else None,
         "ep_display_label": None if forge else "Production",
     }]
@@ -126,6 +134,74 @@ def _single_authority(component: str) -> dict:
 
 
 class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
+    def test_v5_uses_helper_owned_product_venv_slots_for_pair_and_single(self) -> None:
+        paired = _authority()
+        paired["schema"] = PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA
+        paired["single_routes"] = []
+        paired["routes"][0]["forge_venv_slot"] = "venv-" + "a" * 64
+        paired["routes"][0]["ep_venv_slot"] = "venv-" + "b" * 64
+        self.write(paired)
+        routes = self.loader().load().dispatcher.resolver._routes
+        forge = routes["production"].adapters["forge-runtime"]
+        ep = routes["production"].adapters["engineering-platform-server"]
+        self.assertEqual(
+            forge.lifecycle_executable,
+            self.root / ("managed-python-product-venvs/venv-" + "a" * 64 + "/bin/forge"),
+        )
+        self.assertEqual(
+            ep.provisioner_executable,
+            self.root / ("managed-python-product-venvs/venv-" + "b" * 64
+                         + "/bin/engineering-platform-system-provisioner"),
+        )
+        single = _single_authority("forge-runtime")
+        single["schema"] = PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA
+        single["single_routes"][0]["venv_slot"] = "venv-" + "c" * 64
+        self.write(single)
+        forge = self.loader().load().dispatcher.resolver._routes["production"].adapters[
+            "forge-runtime"
+        ]
+        self.assertEqual(
+            forge.lifecycle_executable,
+            self.root / ("managed-python-product-venvs/venv-" + "c" * 64 + "/bin/forge"),
+        )
+
+    def test_v5_rejects_missing_malformed_or_shared_slot_authority(self) -> None:
+        paired = _authority()
+        paired["schema"] = PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA
+        paired["single_routes"] = []
+        paired["routes"][0]["forge_venv_slot"] = "venv-" + "a" * 64
+        paired["routes"][0]["ep_venv_slot"] = "venv-" + "b" * 64
+        for field, value in (
+            ("forge_venv_slot", None),
+            ("forge_venv_slot", "venv-" + "A" * 64),
+            ("forge_venv_slot", "../product-venvs/foreign"),
+            ("ep_venv_slot", "venv-" + "a" * 64),
+        ):
+            payload = json.loads(json.dumps(paired))
+            if value is None:
+                del payload["routes"][0][field]
+            else:
+                payload["routes"][0][field] = value
+            self.write(payload)
+            with self.subTest(field=field, value=value), self.assertRaises(
+                ProductWorkerAuthorityError
+            ):
+                self.loader().load()
+        other = _single_authority("forge-runtime")
+        route = other["single_routes"][0]
+        route.update({
+            "deployment_id": "other-deployment",
+            "instance_id": "other-forge",
+            "forge_installation_id": "other-installation",
+            "service_account": "_other_forge",
+            "bind_port": 9875,
+            "venv_slot": "venv-" + "a" * 64,
+        })
+        paired["single_routes"] = [route]
+        self.write(paired)
+        with self.assertRaisesRegex(ProductWorkerAuthorityError, "reuse a managed venv slot"):
+            self.loader().load()
+
     def test_native_v4_fixture_has_exact_python_canonical_bytes(self) -> None:
         fixture = (
             Path(__file__).resolve().parents[2]
@@ -295,7 +371,10 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
         self.assertEqual(route.pairing_executor.binding.endpoint, "http://127.0.0.1:8876")
         self.assertEqual(
             set(forge.staged_artifacts),
-            {"sha256:" + "4" * 64, "sha256:" + "3" * 64},
+            {
+                "sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938",
+                "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694",
+            },
         )
 
     def test_currency_guard_rechecks_exact_file_before_each_mutation(self) -> None:

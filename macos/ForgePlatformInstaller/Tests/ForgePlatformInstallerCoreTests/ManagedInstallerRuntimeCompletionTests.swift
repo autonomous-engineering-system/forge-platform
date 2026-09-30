@@ -367,6 +367,30 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(events.snapshot(), ["plan", "currency", "runtime", "product"])
     }
 
+    func testHelperExecutionUsesReadmittedPlanWithoutAppReviewState() async throws {
+        let fixture = try RuntimeCompletionFixture(managedGitAction: .install)
+        let events = RuntimeCompletionEvents()
+        let completed: ManagedDeploymentExecutionResult = .completed(
+            stages: [ExecutionStage(
+                id: "readiness", title: "Readiness", detail: "Exact instance",
+                state: .passed
+            )],
+            summaryItems: [InstallationSummaryItem(
+                componentID: "forge-runtime", title: "Forge", status: "Gereed"
+            )]
+        )
+        let result = await reviewedExecutionCoordinator(
+            stablePlan: .unavailable(.reviewUnavailable),
+            currency: .current(fixture.stablePlan.reviewedOperation.currentInstallerRelease),
+            runtime: .success(try fixture.transactionReceipt()),
+            product: completed,
+            events: events
+        ).execute(stablePlan: fixture.stablePlan)
+
+        XCTAssertEqual(result, completed)
+        XCTAssertEqual(events.snapshot(), ["currency", "runtime", "product"])
+    }
+
     func testReviewedExecutionForwardsReadOnlyRoutePreparation() async throws {
         let fixture = try RuntimeCompletionFixture()
         let coordinator = reviewedExecutionCoordinator(
@@ -454,6 +478,45 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             XCTAssertEqual(result, expected)
             XCTAssertEqual(events.snapshot(), ["plan", "currency"])
         }
+    }
+
+    func testHelperStablePlanUsesSameCurrencyRuntimeProductCore() async throws {
+        let fixture = try RuntimeCompletionFixture()
+        let events = RuntimeCompletionEvents()
+        let release = fixture.stablePlan.reviewedOperation.currentInstallerRelease
+        let product: ManagedDeploymentExecutionResult = .completed(
+            stages: [ExecutionStage(
+                id: "readiness", title: "Readiness", detail: "Exact product receipt",
+                state: .passed
+            )],
+            summaryItems: [InstallationSummaryItem(
+                componentID: "forge-runtime", title: "Forge", status: "Gereed"
+            )]
+        )
+        let core = ManagedInstallerStablePlanExecutionCoordinator(
+            currency: ReviewedExecutionCurrency(result: .current(release), events: events),
+            runtimeTransaction: ReviewedExecutionRuntime(
+                result: .success(try fixture.transactionReceipt()), events: events
+            ),
+            productOperations: ReviewedExecutionProduct(result: product, events: events)
+        )
+
+        let result = await core.execute(stablePlan: fixture.stablePlan)
+        XCTAssertEqual(result, product)
+        XCTAssertEqual(events.snapshot(), ["currency", "runtime", "product"])
+
+        let staleEvents = RuntimeCompletionEvents()
+        let stale = await ManagedInstallerStablePlanExecutionCoordinator(
+            currency: ReviewedExecutionCurrency(
+                result: .failed("stale signed release"), events: staleEvents
+            ),
+            runtimeTransaction: ReviewedExecutionRuntime(
+                result: .success(try fixture.transactionReceipt()), events: staleEvents
+            ),
+            productOperations: ReviewedExecutionProduct(result: product, events: staleEvents)
+        ).execute(stablePlan: fixture.stablePlan)
+        XCTAssertEqual(stale, .failed(.executionFailed, stages: []))
+        XCTAssertEqual(staleEvents.snapshot(), ["currency"])
     }
 
     func testReviewedExecutionRejectsRuntimeFailureAndSubstitutedReceipt() async throws {
@@ -834,6 +897,10 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             return XCTFail("Expected a terminal completed result")
         }
         XCTAssertEqual(stages.map(\.id), ["product-operations", "pairing", "readiness"])
+        XCTAssertEqual(
+            stages[1].detail,
+            "Producteigen relatiebewijs voor de geselecteerde operatie"
+        )
         XCTAssertTrue(stages.allSatisfy { $0.state == .passed })
         XCTAssertEqual(summaries.count, 2)
         XCTAssertEqual(summaries[0].componentID, "engineering-platform-server")
@@ -846,6 +913,40 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         XCTAssertEqual(summaries[1].status, "Gereed")
         XCTAssertEqual(summaries[1].dashboardURL?.absoluteString, "https://127.0.0.1:8443/")
         XCTAssertEqual(summaries[1].serviceScope, .systemLaunchDaemon)
+    }
+
+    func testSingleProductReceiptDoesNotClaimForgeEPPairing() async throws {
+        let fixture = try RuntimeCompletionFixture(singleComponent: "forge-runtime")
+        let runtimeReceipt = try fixture.transactionReceipt()
+        let transport = ProductBridgeTransport { data in
+            do {
+                let request = try ManagedInstallerProductOperationRequest.decodeJSON(data)
+                let receipt = try ManagedInstallerProductOperationReceipt(
+                    request: request,
+                    productReceiptReferences: ["receipt:forge-product"],
+                    pairingReceiptReference: nil,
+                    readinessReceiptReferences: ["receipt:forge-readiness"],
+                    completions: [try ManagedInstallerProductCompletion(
+                        componentID: "forge-runtime", state: .ready
+                    )]
+                )
+                return .success(receipt.canonicalJSONData())
+            } catch {
+                return .failure(.rejected)
+            }
+        }
+
+        let result = await ManagedInstallerCanonicalProductOperationsExecutor(
+            transport: transport
+        ).executeProductOperations(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: runtimeReceipt
+        )
+        guard case .completed(let stages, let summary) = result else {
+            return XCTFail("Expected exact single-product completion")
+        }
+        XCTAssertEqual(stages.map(\.id), ["product-operations", "readiness"])
+        XCTAssertEqual(summary.map(\.componentID), ["forge-runtime"])
     }
 
     func testCanonicalProductExecutorFailsClosedForTransportAndResponseDrift() async throws {
@@ -921,6 +1022,31 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         let calls = await executor.calls()
         XCTAssertEqual(calls, [request])
         await transport.invalidate()
+    }
+
+    func testHelperLocalProductTransportUsesSameBoundedReceiptContract() async throws {
+        let (request, receipt) = try productOperationXPCFixture()
+        let executor = ProductOperationHelperExecutor(results: [.success(receipt)])
+        let transport = ManagedInstallerHelperLocalProductOperationTransport(
+            executor: executor
+        )
+        let response = try await transport.executeProductOperation(
+            request.canonicalJSONData()
+        ).get()
+        let calls = await executor.calls()
+        let invalid = await transport.executeProductOperation(Data("{}".utf8))
+        let noncanonical = await transport.executeProductOperation(
+            request.canonicalJSONData() + Data(" ".utf8)
+        )
+        XCTAssertEqual(response, receipt.canonicalJSONData())
+        XCTAssertEqual(calls, [request])
+        XCTAssertEqual(invalid.failure, .invalidRequest)
+        XCTAssertEqual(noncanonical.failure, .invalidRequest)
+        let unavailable = ManagedInstallerHelperLocalProductOperationTransport(
+            executor: ProductOperationHelperExecutor(results: [.failure(.unavailable)])
+        )
+        let failed = await unavailable.executeProductOperation(request.canonicalJSONData())
+        XCTAssertEqual(failed.failure, .unavailable)
     }
 
     func testProductOperationXPCTransportRejectsInvalidRequestsBeforeIPC() async throws {
@@ -1185,7 +1311,9 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             requireSingleInterpreterLink: true,
             timeoutNanoseconds: 1
         )
-        let runner = MacOSManagedInstallerProductWorkerRunner()
+        let runner = MacOSManagedInstallerProductWorkerRunner(
+            forgeUpdateResources: FixedForgeUpdateResourcesChecker(ready: true)
+        )
         XCTAssertTrue(runner.secureInterpreter(invocation))
 
         try FileManager.default.setAttributes(
@@ -1274,7 +1402,9 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             requireSingleInterpreterLink: false,
             timeoutNanoseconds: 5_000_000_000
         )
-        let runner = MacOSManagedInstallerProductWorkerRunner()
+        let runner = MacOSManagedInstallerProductWorkerRunner(
+            forgeUpdateResources: FixedForgeUpdateResourcesChecker(ready: true)
+        )
         XCTAssertNil(invocation.interpreterURL.baseURL)
         XCTAssertNil(invocation.workerURL.baseURL)
         XCTAssertTrue(runner.secureInterpreter(invocation))
@@ -1294,11 +1424,21 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             requireSingleInterpreterLink: false,
             timeoutNanoseconds: 5_000_000_000
         )
-        let changedResult = await MacOSManagedInstallerProductWorkerRunner().runProductWorker(
+        let changedResult = await MacOSManagedInstallerProductWorkerRunner(
+            forgeUpdateResources: FixedForgeUpdateResourcesChecker(ready: true)
+        ).runProductWorker(
             changedDigest,
             canonicalRequest: request.canonicalJSONData()
         )
         XCTAssertEqual(changedResult.workerFailure, .rejected)
+        if request.components.contains(where: {
+            $0.componentID == "forge-runtime" && $0.change == .update
+        }) {
+            let blocked = await MacOSManagedInstallerProductWorkerRunner(
+                forgeUpdateResources: FixedForgeUpdateResourcesChecker(ready: false)
+            ).runProductWorker(invocation, canonicalRequest: request.canonicalJSONData())
+            XCTAssertEqual(blocked.workerFailure, .unavailable)
+        }
     }
 
     func testProductWorkerExitGateCompletesExactlyOnce() async {
@@ -1594,13 +1734,35 @@ private struct RuntimeCompletionFixture {
         )]
         default: nil
         }
+        let gitActions: [ManagedToolOriginalPlanAction]
+        if let managedGitAction {
+            let initial = try ManagedToolInstalledReadback(
+                identity: .git,
+                state: managedGitAction == .install ? .absent : .active,
+                version: managedGitAction == .install ? nil : (
+                    managedGitAction == .noChange ? git.version
+                        : try InstallerVersion("2.44.0")
+                ),
+                artifactSHA256: managedGitAction == .install ? nil : (
+                    managedGitAction == .noChange ? git.artifact.sha256
+                        : "sha256:" + String(repeating: "6", count: 64)
+                ),
+                managedRootIdentity: managedGitAction == .install ? nil
+                    : ManagedToolRequirement.managedRootIdentity,
+                evidenceReference: "receipt:completion-reviewed-git-initial"
+            )
+            gitActions = [.init(
+                requirement: git, action: managedGitAction,
+                initialReadback: initial
+            )]
+        } else {
+            gitActions = []
+        }
         stablePlan = try managedInstallerTestStablePlan(
             session: activationFixture.session,
             deployment: deployment,
             activationPlan: plan,
-            actions: managedGitAction.map {
-                [ManagedToolOriginalPlanAction(requirement: git, action: $0)]
-            } ?? [],
+            actions: gitActions,
             components: singleComponents
         )
         let journal = try ManagedPythonRuntimeParentJournalRecord(
@@ -2145,6 +2307,27 @@ final class RawProductOperationXPCService:
         executeProductOperation(canonicalIntent, withReply: reply)
     }
 
+    func preparePreservedLifecycleReview(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalIntent, withReply: reply)
+    }
+
+    func executePreservedLifecycle(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalRequest, withReply: reply)
+    }
+
+    func readTerminalPreserveRecovery(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalRequest, withReply: reply)
+    }
+
     func capturedRequests() -> [Data] {
         lock.lock()
         defer { lock.unlock() }
@@ -2242,4 +2425,10 @@ private struct FixedProductWorkerAuthorityReader:
     func readAuthorityDigest() -> Result<
         String, ManagedInstallerProductWorkerAuthorityReadFailure
     > { result }
+}
+
+private struct FixedForgeUpdateResourcesChecker:
+    ManagedInstallerForgeUpdateResourcesChecking {
+    let ready: Bool
+    func check() async -> Bool { ready }
 }

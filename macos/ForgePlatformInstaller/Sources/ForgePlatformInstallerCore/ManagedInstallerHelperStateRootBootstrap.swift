@@ -12,11 +12,23 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
     private static let vendorName = "AutonomousEngineeringSystem"
     private static let installerName = "ForgePlatformInstaller"
     static let productVenvsDirectoryName = "managed-python-product-venvs"
+    static let managedGitSlotsDirectoryName = "managed-git-slots"
+    static let productsDirectoryName = "products"
+    static let engineeringPlatformDirectoryName = "engineering-platform"
+    static let stagedDirectoryName = "staged"
     static let stateDirectoryName = "state"
+
+    /// One fixed private root for the host-wide Python/Git operation lease,
+    /// runtime recovery records and post-tool observation. The helper
+    /// bootstrap creates and verifies this directory before listeners start.
+    public static func operationStateRoot(for helperRoot: URL) -> URL {
+        helperRoot.appendingPathComponent(stateDirectoryName, isDirectory: true)
+    }
     static let deploymentsDirectoryName = "deployments"
     static let productOperationsDirectoryName = "product-operations"
     static let componentOperationsDirectoryName = "component-operations"
     static let deploymentSagaDirectoryName = "deployment-saga"
+    static let providerContextsDirectoryName = "provider-contexts"
 
     private let parentDirectory: URL
     private let expectedOwner: uid_t
@@ -66,10 +78,26 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
             in: installer
         )
         defer { Darwin.close(runtimeSlots) }
+        let managedGitSlots = try createPrivateChild(
+            Self.managedGitSlotsDirectoryName, in: installer
+        )
+        defer { Darwin.close(managedGitSlots) }
         let productVenvs = try createPrivateChild(
             Self.productVenvsDirectoryName, in: installer
         )
         defer { Darwin.close(productVenvs) }
+        let products = try createPrivateChild(Self.productsDirectoryName, in: installer)
+        defer { Darwin.close(products) }
+        let engineeringPlatform = try createPrivateChild(
+            Self.engineeringPlatformDirectoryName, in: products
+        )
+        defer { Darwin.close(engineeringPlatform) }
+        let providerContexts = try createPrivateChild(
+            Self.providerContextsDirectoryName, in: installer
+        )
+        defer { Darwin.close(providerContexts) }
+        let staged = try createPrivateChild(Self.stagedDirectoryName, in: installer)
+        defer { Darwin.close(staged) }
         let state = try createPrivateChild(Self.stateDirectoryName, in: installer)
         defer { Darwin.close(state) }
         let deployments = try createPrivateChild(
@@ -91,7 +119,12 @@ public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
         guard Self.isPrivateDirectory(vendor, owner: expectedOwner),
               Self.isPrivateDirectory(installer, owner: expectedOwner),
               Self.isPrivateDirectory(runtimeSlots, owner: expectedOwner),
+              Self.isPrivateDirectory(managedGitSlots, owner: expectedOwner),
               Self.isPrivateDirectory(productVenvs, owner: expectedOwner),
+              Self.isPrivateDirectory(products, owner: expectedOwner),
+              Self.isPrivateDirectory(engineeringPlatform, owner: expectedOwner),
+              Self.isPrivateDirectory(providerContexts, owner: expectedOwner),
+              Self.isPrivateDirectory(staged, owner: expectedOwner),
               Self.isPrivateDirectory(state, owner: expectedOwner),
               Self.isPrivateDirectory(deployments, owner: expectedOwner),
               Self.isPrivateDirectory(productOperations, owner: expectedOwner),

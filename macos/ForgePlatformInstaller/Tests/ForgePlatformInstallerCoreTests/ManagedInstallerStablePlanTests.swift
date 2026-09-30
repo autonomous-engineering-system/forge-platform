@@ -128,6 +128,75 @@ final class ManagedInstallerStablePlanTests: XCTestCase {
         XCTAssertEqual(plan.fingerprint.count, 64)
     }
 
+    func testFingerprintBindsReviewedInitialGitStateAndEvidence() throws {
+        let git = try stableGitRequirement()
+        let fixture = try ActivationFixture(managedTools: [git])
+        let activation = try ManagedPythonRuntimeActivationPlan(
+            session: fixture.session, deployment: fixture.deployment,
+            initialReadback: fixture.missingReadback()
+        )
+        func plan(_ evidence: String) throws -> ManagedInstallerStablePlan {
+            let initial = try ManagedToolInstalledReadback(
+                identity: .git, state: .absent, version: nil,
+                artifactSHA256: nil, managedRootIdentity: nil,
+                evidenceReference: evidence
+            )
+            return try managedInstallerTestStablePlan(
+                session: fixture.session, deployment: fixture.deployment,
+                activationPlan: activation,
+                actions: [ManagedToolOriginalPlanAction(
+                    requirement: git, action: .install,
+                    initialReadback: initial
+                )]
+            )
+        }
+        let first = try plan("receipt:git-initial-a")
+        let second = try plan("receipt:git-initial-b")
+        XCTAssertNotEqual(first.fingerprint, second.fingerprint)
+        XCTAssertEqual(
+            first.originalManagedToolActions[0].initialReadback?.state,
+            .absent
+        )
+    }
+
+    func testFingerprintBindsPreservedForgeAndEPInstanceIdentities() throws {
+        let fixture = try ActivationFixture()
+        let activation = try ManagedPythonRuntimeActivationPlan(
+            session: fixture.session,
+            deployment: fixture.deployment,
+            initialReadback: fixture.missingReadback()
+        )
+        func fingerprint(
+            activeForge: String? = nil,
+            activeEP: String? = nil,
+            preservedForge: String? = nil,
+            preservedEP: String? = nil
+        ) throws -> String {
+            let deployment = try ManagedDeploymentTarget(
+                id: fixture.deployment.id,
+                exists: true,
+                forgeInstanceID: activeForge,
+                engineeringPlatformInstanceID: activeEP,
+                preservedForgeInstanceID: preservedForge,
+                preservedEngineeringPlatformInstanceID: preservedEP
+            )
+            return try managedInstallerTestStablePlan(
+                session: fixture.session,
+                deployment: deployment,
+                activationPlan: activation,
+                actions: []
+            ).fingerprint
+        }
+        XCTAssertNotEqual(
+            try fingerprint(activeEP: "ep-one", preservedForge: "forge-a"),
+            try fingerprint(activeEP: "ep-one", preservedForge: "forge-b")
+        )
+        XCTAssertNotEqual(
+            try fingerprint(activeForge: "forge-one", preservedEP: "ep-a"),
+            try fingerprint(activeForge: "forge-one", preservedEP: "ep-b")
+        )
+    }
+
     func testBindsExactEnabledProviderSetAndRejectsMissingOrDriftedRequirements() throws {
         let git = try stableGitRequirement()
         let deployment = try ManagedDeploymentTarget(

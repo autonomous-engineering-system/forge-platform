@@ -20,10 +20,10 @@ from forge_platform.ep_consumer_revocation import (
 
 
 INSTANCE = "ep-prod01"
-SOURCE = "cab85a84a6a8b5b574c796713e4363781fc05519"
+SOURCE = "7b99b578153ae5d72372a09db194306b49ec9f9c"
 ARTIFACT = QualifiedArtifact(
-    "2.3.102", SOURCE, "https://example.invalid/ep-2.3.102.whl",
-    "sha256:" + "a" * 64, "https://example.invalid/ep-release",
+    "2.3.106", SOURCE, "https://example.invalid/ep-2.3.106.whl",
+    "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694", "https://example.invalid/ep-release",
 )
 
 
@@ -41,7 +41,7 @@ class ProvisionerRunner:
             "data_root": self.data_root,
             "service_account": "_ep_test",
             "selected_runtime": {
-                "version": "2.3.102", "source_revision": self.source,
+                "version": "2.3.106", "source_revision": self.source,
                 "artifact_digest": ARTIFACT.digest,
                 "interpreter": str(self.root / "runtimes" / "slot" / "bin" / "python"),
             },
@@ -206,15 +206,26 @@ class EPConsumerRevocationTests(unittest.TestCase):
             self.adapter.revoke()
 
     def test_wrong_artifact_and_missing_service_account_fail_closed(self) -> None:
-        with self.assertRaises(ValueError):
-            EPConsumerRevocationAdapter(
-                provisioner=self.provisioner,
-                scope=EPConsumerScope("consumer-A", "project-A"),
-                expected_artifact=QualifiedArtifact(
-                    "2.3.101", SOURCE, ARTIFACT.source, ARTIFACT.digest,
-                    ARTIFACT.qualification,
-                ),
-            )
+        for artifact in (
+            QualifiedArtifact(
+                "2.3.101", SOURCE, ARTIFACT.source, ARTIFACT.digest,
+                ARTIFACT.qualification,
+            ),
+            QualifiedArtifact(
+                "2.3.103", SOURCE, ARTIFACT.source, ARTIFACT.digest,
+                ARTIFACT.qualification,
+            ),
+            QualifiedArtifact(
+                ARTIFACT.version, SOURCE, ARTIFACT.source, "sha256:" + "0" * 64,
+                ARTIFACT.qualification,
+            ),
+        ):
+            with self.subTest(artifact=artifact), self.assertRaises(ValueError):
+                EPConsumerRevocationAdapter(
+                    provisioner=self.provisioner,
+                    scope=EPConsumerScope("consumer-A", "project-A"),
+                    expected_artifact=artifact,
+                )
         with patch("forge_platform.ep_consumer_revocation.pwd.getpwnam", side_effect=KeyError):
             with self.assertRaises(EPConsumerRevocationError):
                 self.adapter.revoke()

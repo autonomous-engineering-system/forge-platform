@@ -32,6 +32,8 @@ from .managed_pairing_revocation import (
     _digest as paired_digest,
     _read as read_pairing_revocation,
 )
+from .qualified_ep_lifecycle import qualified_ep_lifecycle_artifact
+from .qualified_forge_lifecycle import qualified_forge_lifecycle_artifact
 
 
 _OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -233,16 +235,12 @@ class ManagedPairedForgeComponentRemovalCoordinator:
             or forge_request.kind != "remove"
             or forge_request.installation_identity != reviewed_current.peer_binding.forge_instance_id
             or forge_request.product_request
-            or forge_request.artifact.version != "2.7.35"
-            or forge_request.artifact.source_revision
-            != "ff4c0d45f51161376104250cd6efcfb6f045b8ac"
+            or not qualified_forge_lifecycle_artifact(forge_request.artifact)
             or ep_readback_request.component != EP_COMPONENT
             or ep_readback_request.kind != "repair"
             or ep_readback_request.installation_identity != reviewed_current.peer_binding.ep_instance_id
             or ep_readback_request.product_request
-            or ep_readback_request.artifact.version != "2.3.102"
-            or ep_readback_request.artifact.source_revision
-            != "cab85a84a6a8b5b574c796713e4363781fc05519"
+            or not qualified_ep_lifecycle_artifact(ep_readback_request.artifact)
         ):
             raise ManagedPairedForgeRemovalError("reviewed paired Forge removal changed")
         support = getattr(forge_adapter, "removal_support", None)

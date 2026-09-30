@@ -547,7 +547,15 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     private let managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating
     private let removalReviewTransport: (any ManagedInstallerProductRemovalReviewTransporting)?
     private let removalTransport: (any ManagedInstallerProductRemovalTransporting)?
-    private var removalMutationInFlight = false
+    private let preservedLifecycleReviewTransport:
+        (any ManagedInstallerPreservedLifecycleReviewTransporting)?
+    private let preservedLifecycleTransport:
+        (any ManagedInstallerPreservedLifecycleTransporting)?
+    private let preserveRecoveryTransport:
+        (any ManagedInstallerPreserveRecoveryTransporting)?
+    private let preservedRegistryReadTransport:
+        (any ManagedInstallerPreservedRegistryReading)?
+    private var productMutationInFlight = false
 
     private var pendingUpdate: PendingUpdate?
     /// A release record observed during an update check is not yet authority
@@ -583,7 +591,15 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator(),
         managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator(),
         removalReviewTransport: (any ManagedInstallerProductRemovalReviewTransporting)? = nil,
-        removalTransport: (any ManagedInstallerProductRemovalTransporting)? = nil
+        removalTransport: (any ManagedInstallerProductRemovalTransporting)? = nil,
+        preservedLifecycleReviewTransport:
+            (any ManagedInstallerPreservedLifecycleReviewTransporting)? = nil,
+        preservedLifecycleTransport:
+            (any ManagedInstallerPreservedLifecycleTransporting)? = nil,
+        preserveRecoveryTransport:
+            (any ManagedInstallerPreserveRecoveryTransporting)? = nil,
+        preservedRegistryReadTransport:
+            (any ManagedInstallerPreservedRegistryReading)? = nil
     ) {
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
@@ -597,6 +613,10 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.managedDeploymentRouteCoordinator = managedDeploymentRouteCoordinator
         self.removalReviewTransport = removalReviewTransport
         self.removalTransport = removalTransport
+        self.preservedLifecycleReviewTransport = preservedLifecycleReviewTransport
+        self.preservedLifecycleTransport = preservedLifecycleTransport
+        self.preserveRecoveryTransport = preserveRecoveryTransport
+        self.preservedRegistryReadTransport = preservedRegistryReadTransport
     }
 
     public func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
@@ -733,13 +753,323 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         }
     }
 
+    public func preparePreservedLifecycleReview(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard let currentVerifiedReleaseRecord,
+              currentVerifiedReleaseRecord.release == intent.installerRelease,
+              let preservedLifecycleReviewTransport,
+              (try? ManagedInstallerPreservedLifecycleReviewIntent.decodeJSON(
+                  intent.canonicalJSONData()
+              )) == intent else {
+            return .failure(.rejected)
+        }
+        let result = await preservedLifecycleReviewTransport.preparePreservedLifecycleReview(
+            intent.canonicalJSONData()
+        )
+        guard self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+            return .failure(.rejected)
+        }
+        switch result {
+        case .failure(let failure): return .failure(failure)
+        case .success(let bytes):
+            guard let proposal = try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                bytes, intent: intent
+            ), proposal.canonicalJSONData() == bytes else {
+                return .failure(.rejected)
+            }
+            return .success(proposal)
+        }
+    }
+
+    public func executeReviewedPreservedLifecycle(
+        _ session: ManagedInstallerPreservedLifecycleReviewSession
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        await executeReviewedPreservedLifecycle(session, confirmedInstanceID: nil)
+    }
+
+    public func executeReviewedPreservedLifecycle(
+        _ session: ManagedInstallerPreservedLifecycleReviewSession,
+        confirmedInstanceID: String?
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard !productMutationInFlight,
+              let preservedLifecycleReviewTransport,
+              let preservedLifecycleTransport,
+              let preservedRegistryReadTransport,
+              (session.intent.operation == "PRESERVE" && confirmedInstanceID == nil
+                || session.intent.operation == "PURGE"
+                    && confirmedInstanceID == session.intent.instanceID),
+              session.inventoryEvidenceReference == session.inventory.evidenceReference,
+              session.inventory.existing.contains(session.target),
+              let currentVerifiedReleaseRecord,
+              currentVerifiedReleaseRecord.release == session.intent.installerRelease,
+              session.target.id == session.intent.deploymentID,
+              session.target.installedCompositionID
+                  == session.intent.installedCompositionIdentity,
+              session.target.installedCompositionManifestSHA256
+                  == session.intent.installedManifestSHA256,
+              (session.intent.component == "forge-runtime"
+                  ? session.target.forgeInstanceID
+                  : session.target.engineeringPlatformInstanceID) == session.intent.instanceID,
+              (try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                  session.proposal.canonicalJSONData(), intent: session.intent
+              )) == session.proposal,
+              let request = try? ManagedInstallerPreservedLifecycleRequest(
+                  intent: session.intent, proposal: session.proposal,
+                  confirmedInstanceID: confirmedInstanceID
+              ) else {
+            return .failure(.rejected)
+        }
+        productMutationInFlight = true
+        let result: Result<
+            ManagedInstallerPreservedLifecycleReceipt,
+            ManagedInstallerProductOperationBridgeFailure
+        > = await whileExclusivelyLocked(unavailable: { _ in .failure(.unavailable) }) {
+            guard case .available(let before) =
+                await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
+                before == session.inventory,
+                self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+                return .failure(.rejected)
+            }
+            var beforePurgeRegistry: ManagedInstallerManagedDeploymentRegistryRecord?
+            if session.intent.operation == "PURGE" {
+                guard let current = try? await preservedRegistryReadTransport
+                    .loadManagedDeploymentRegistryRecord(deploymentID: session.target.id),
+                      current.target == session.target,
+                      current.revision == session.proposal.registryRevision else {
+                    return .failure(.rejected)
+                }
+                beforePurgeRegistry = current
+            }
+            switch await self.checkForUpdateWhileLocked(
+                currentVersion: session.intent.installerRelease.version,
+                invalidateCompositionSession: false
+            ) {
+            case .verifiedGitHubRelease(let release)
+                where release == session.intent.installerRelease: break
+            default: return .failure(.rejected)
+            }
+            guard self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord,
+                  self.checkedCurrentReleaseRecord == currentVerifiedReleaseRecord else {
+                return .failure(.rejected)
+            }
+            let reviewBytes: Data
+            switch await preservedLifecycleReviewTransport.preparePreservedLifecycleReview(
+                session.intent.canonicalJSONData()
+            ) {
+            case .success(let bytes): reviewBytes = bytes
+            case .failure(let failure): return .failure(failure)
+            }
+            guard self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord,
+                  let freshProposal =
+                    try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                        reviewBytes, intent: session.intent
+                    ), freshProposal == session.proposal,
+                  case .available(let immediatelyBefore) =
+                    await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
+                  immediatelyBefore == session.inventory else {
+                return .failure(.rejected)
+            }
+            let receiptBytes: Data
+            switch await preservedLifecycleTransport.executePreservedLifecycle(
+                request.canonicalJSONData()
+            ) {
+            case .success(let bytes): receiptBytes = bytes
+            case .failure(let failure): return .failure(failure)
+            }
+            guard let receipt = try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+                receiptBytes, request: request
+            ), receipt.canonicalJSONData() == receiptBytes,
+                  case .available(let after) =
+                    await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
+                  after.existing.filter({ $0.id != session.target.id })
+                    == before.existing.filter({ $0.id != session.target.id }) else {
+                return .failure(.rejected)
+            }
+            if session.intent.operation == "PRESERVE" {
+                guard let updated = after.existing.first(where: { $0.id == session.target.id }),
+                      let expected = try? ManagedDeploymentTarget(
+                        id: session.target.id, label: session.target.label, exists: true,
+                        forgeInstanceID: session.intent.component == "forge-runtime"
+                            ? nil : session.target.forgeInstanceID,
+                        engineeringPlatformInstanceID:
+                            session.intent.component == "engineering-platform-server"
+                                ? nil : session.target.engineeringPlatformInstanceID,
+                        preservedForgeInstanceID: session.intent.component == "forge-runtime"
+                            ? session.intent.instanceID : session.target.preservedForgeInstanceID,
+                        preservedEngineeringPlatformInstanceID:
+                            session.intent.component == "engineering-platform-server"
+                                ? session.intent.instanceID
+                                : session.target.preservedEngineeringPlatformInstanceID,
+                        installedCompositionID: session.target.installedCompositionID,
+                        installedCompositionManifestSHA256:
+                            session.target.installedCompositionManifestSHA256
+                      ), updated == expected,
+                      let registry = try? await preservedRegistryReadTransport
+                        .loadManagedDeploymentRegistryRecord(deploymentID: session.target.id),
+                      registry.target == expected,
+                      registry.revision == receipt.registryRevision,
+                      let preserved = registry.preservedComponents[session.intent.component],
+                      preserved.instanceID == session.intent.instanceID,
+                      preserved.preserveOperationID == session.intent.operationID,
+                      preserved.preserveReceiptDigest == receipt.receiptDigest else {
+                    return .failure(.rejected)
+                }
+            } else {
+                guard let beforePurgeRegistry else { return .failure(.rejected) }
+                let otherComponent = session.intent.component == "forge-runtime"
+                    ? "engineering-platform-server" : "forge-runtime"
+                let forge = session.intent.component == "forge-runtime"
+                    ? nil : session.target.forgeInstanceID
+                let ep = session.intent.component == "engineering-platform-server"
+                    ? nil : session.target.engineeringPlatformInstanceID
+                let preservedForge = session.intent.component == "forge-runtime"
+                    ? nil : session.target.preservedForgeInstanceID
+                let preservedEP = session.intent.component == "engineering-platform-server"
+                    ? nil : session.target.preservedEngineeringPlatformInstanceID
+                if [forge, ep, preservedForge, preservedEP].compactMap({ $0 }).isEmpty {
+                    guard !after.existing.contains(where: { $0.id == session.target.id }),
+                          receipt.registryRevision == beforePurgeRegistry.revision + 1 else {
+                        return .failure(.rejected)
+                    }
+                } else {
+                    guard let expected = try? ManagedDeploymentTarget(
+                        id: session.target.id, label: session.target.label, exists: true,
+                        forgeInstanceID: forge, engineeringPlatformInstanceID: ep,
+                        preservedForgeInstanceID: preservedForge,
+                        preservedEngineeringPlatformInstanceID: preservedEP,
+                        installedCompositionID: session.target.installedCompositionID,
+                        installedCompositionManifestSHA256:
+                            session.target.installedCompositionManifestSHA256
+                    ), after.existing.first(where: { $0.id == session.target.id }) == expected,
+                          let registry = try? await preservedRegistryReadTransport
+                            .loadManagedDeploymentRegistryRecord(deploymentID: session.target.id),
+                          registry.target == expected,
+                          registry.revision == receipt.registryRevision,
+                          registry.revision == beforePurgeRegistry.revision + 1,
+                          registry.componentReceiptReferences[session.intent.component] == nil,
+                          registry.preservedComponents[session.intent.component] == nil,
+                          registry.componentReceiptReferences[otherComponent]
+                            == beforePurgeRegistry.componentReceiptReferences[otherComponent],
+                          registry.preservedComponents[otherComponent]
+                            == beforePurgeRegistry.preservedComponents[otherComponent] else {
+                        return .failure(.rejected)
+                    }
+                }
+            }
+            guard case .available(let finalInventory) =
+                await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
+                  finalInventory == after,
+                  self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+                return .failure(.rejected)
+            }
+            return .success(receipt)
+        }
+        productMutationInFlight = false
+        return result
+    }
+
+    public func readTerminalPreserveRecovery(
+        deploymentID: String, component: String,
+        installerRelease: VerifiedInstallerRelease
+    ) async -> Result<
+        ManagedInstallerPreserveRecoveryCompletion,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard !productMutationInFlight,
+              ManagedInstallerPreservedLifecycleReviewIntent.isID(deploymentID),
+              ["forge-runtime", "engineering-platform-server"].contains(component),
+              let currentVerifiedReleaseRecord,
+              currentVerifiedReleaseRecord.release == installerRelease,
+              let preserveRecoveryTransport,
+              let preservedRegistryReadTransport else {
+            return .failure(.rejected)
+        }
+        return await whileExclusivelyLocked(unavailable: { _ in .failure(.unavailable) }) {
+            guard case .available(let before) =
+                await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
+                  let target = before.existing.first(where: { $0.id == deploymentID }),
+                  let composition = target.installedCompositionID,
+                  let manifest = target.installedCompositionManifestSHA256,
+                  let instanceID = (component == "forge-runtime"
+                    ? target.preservedForgeInstanceID
+                    : target.preservedEngineeringPlatformInstanceID),
+                  (component == "forge-runtime"
+                    ? target.forgeInstanceID
+                    : target.engineeringPlatformInstanceID) == nil,
+                  let registry = try? await preservedRegistryReadTransport
+                    .loadManagedDeploymentRegistryRecord(deploymentID: deploymentID),
+                  registry.target == target,
+                  let preserved = registry.preservedComponents[component],
+                  preserved.instanceID == instanceID,
+                  let intent = try? ManagedInstallerPreservedLifecycleReviewIntent(
+                    operationID: preserved.preserveOperationID,
+                    deploymentID: deploymentID,
+                    operation: "PRESERVE", component: component,
+                    instanceID: instanceID,
+                    installedCompositionIdentity: composition,
+                    installedManifestSHA256: manifest,
+                    installerRelease: installerRelease
+                  ),
+                  let request = try? ManagedInstallerPreserveRecoveryRequest(intent: intent),
+                  self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+                return .failure(.rejected)
+            }
+            switch await self.checkForUpdateWhileLocked(
+                currentVersion: installerRelease.version,
+                invalidateCompositionSession: false
+            ) {
+            case .verifiedGitHubRelease(let release)
+                where release == installerRelease: break
+            default: return .failure(.rejected)
+            }
+            guard self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord,
+                  self.checkedCurrentReleaseRecord == currentVerifiedReleaseRecord else {
+                return .failure(.rejected)
+            }
+            let bytes: Data
+            switch await preserveRecoveryTransport.readTerminalPreserveRecovery(
+                request.canonicalJSONData()
+            ) {
+            case .success(let response): bytes = response
+            case .failure(let failure): return .failure(failure)
+            }
+            guard let receipt = try? ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+                bytes, request: request
+            ), receipt.canonicalJSONData() == bytes,
+                  receipt.receiptDigest == preserved.preserveReceiptDigest,
+                  receipt.registryRevision == registry.revision,
+                  case .available(let after) =
+                    await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
+                  after == before,
+                  let registryAfter = try? await preservedRegistryReadTransport
+                    .loadManagedDeploymentRegistryRecord(deploymentID: deploymentID),
+                  registryAfter == registry,
+                  self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+                return .failure(.rejected)
+            }
+            return .success(ManagedInstallerPreserveRecoveryCompletion(
+                intent: intent, receipt: receipt
+            ))
+        }
+    }
+
     public func executeReviewedProductRemoval(
         _ session: ManagedInstallerRemovalReviewSession
     ) async -> Result<
         ManagedInstallerProductRemovalReceipt,
         ManagedInstallerProductOperationBridgeFailure
     > {
-        guard !removalMutationInFlight,
+        guard !productMutationInFlight,
               let removalReviewTransport,
               let removalTransport else {
             return .failure(.unavailable)
@@ -771,7 +1101,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
               )) == session.proposal else {
             return .failure(.rejected)
         }
-        removalMutationInFlight = true
+        productMutationInFlight = true
         let result: Result<
             ManagedInstallerProductRemovalReceipt,
             ManagedInstallerProductOperationBridgeFailure
@@ -818,7 +1148,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             }
             return .success(receipt)
         }
-        removalMutationInFlight = false
+        productMutationInFlight = false
         return result
     }
 
@@ -846,6 +1176,27 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedDeploymentExecutionResult {
         await managedDeploymentRouteCoordinator.executeReviewedManagedDeployment(operation)
+    }
+
+    public func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        await managedDeploymentRouteCoordinator.stageReviewedProviders(operation)
+    }
+
+    public func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
+        await managedDeploymentRouteCoordinator.readReviewedProviders(operation)
+    }
+
+    public func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        await managedDeploymentRouteCoordinator.beginReviewedProviderAuthentication(
+            operation, providerTargetID: providerTargetID
+        )
     }
 
     /// A composition session may cross into the wizard only after this runtime
@@ -992,7 +1343,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     }
 
     public func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
-        guard !removalMutationInFlight else {
+        guard !productMutationInFlight else {
             return failed(.selfUpdateOperationInProgress)
         }
         invalidateVerifiedCompositionSession()

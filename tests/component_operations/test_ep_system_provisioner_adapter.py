@@ -35,6 +35,23 @@ class Runner:
         self.inventory_instances: list[dict[str, object]] = []
         self.ready = True
         self.operation_result = "COMPLETE"
+        self.providers = {
+            provider: {
+                "provider": provider,
+                "instance_id": "ep-prod",
+                "state": "READY",
+                "executable": "/Library/EP/instances/ep-prod/providers/" + provider + "/runtime/bin/" + (
+                    "codex" if provider == "codex" else "gh"
+                ),
+                "executable_sha256": "sha256:" + ("d" if provider == "codex" else "e") * 64,
+                "version": "0.146.0" if provider == "codex" else "2.68.0",
+                "home": "/Library/EP/instances/ep-prod/providers/" + provider + "/home",
+                "credential_scope": "COMPONENT_INSTANCE",
+                "authentication": {"state": "READY", "reference": provider + "-provider-owned-reference"},
+                "cold_boot_ready": True,
+            }
+            for provider in ("codex", "github")
+        }
 
     def run(self, argv):
         args = tuple(argv)
@@ -58,7 +75,7 @@ class Runner:
                         "interpreter": "/Library/EP/runtime/bin/python",
                     },
                 },
-                "providers": {},
+                "providers": self.providers,
                 "health": {"result": "PASS" if self.ready else "FAIL"},
             }
         elif command == "update-assess":
@@ -70,11 +87,23 @@ class Runner:
                 "target": {},
             }
         elif command == "provider-register":
+            provider = args[args.index("--provider") + 1]
             payload = {
-                "contract": "engineering-platform.system-provisioner/v1",
-                "provider": "codex",
+                "provider": provider,
                 "instance_id": "ep-prod",
                 "state": "READY",
+                "executable": "/Library/EP/instances/ep-prod/providers/" + provider + "/runtime/bin/" + (
+                    "codex" if provider == "codex" else "gh"
+                ),
+                "executable_sha256": args[args.index("--provider-executable-digest") + 1],
+                "version": args[args.index("--provider-version") + 1],
+                "home": "/Library/EP/instances/ep-prod/providers/" + provider + "/home",
+                "credential_scope": "COMPONENT_INSTANCE",
+                "authentication": {
+                    "state": "READY",
+                    "reference": args[args.index("--auth-reference") + 1],
+                },
+                "cold_boot_ready": True,
             }
         else:
             if command == "remove":
@@ -174,6 +203,31 @@ class EPSystemAdapterTests(unittest.TestCase):
         self.assertEqual(observed.artifact, ARTIFACT.correlation)
         self.assertEqual(observed.selected_instance_identity, "ep-prod")
 
+    def test_ready_status_requires_two_exact_independently_verified_provider_contexts(self) -> None:
+        self.runner.inventory_instances = [{
+            "instance_id": "ep-prod",
+            "service_label": "com.engineeringplatform.server.instance-deadbeef",
+            "selected_runtime": {
+                "version": "2.3.102",
+                "artifact_digest": ARTIFACT.digest,
+                "source_revision": ARTIFACT.source_revision,
+                "interpreter": "/Library/EP/runtime/bin/python",
+            },
+        }]
+        self.assertEqual(self.adapter.readback(request("repair")).state, "ACTIVE")
+        for mutation in (
+            lambda providers: providers.pop("github"),
+            lambda providers: providers["github"].update(instance_id="ep-other"),
+            lambda providers: providers["github"].update(home=providers["codex"]["home"]),
+            lambda providers: providers["codex"]["authentication"].update(state="MISSING"),
+        ):
+            with self.subTest(mutation=mutation):
+                import copy
+                self.runner.providers = copy.deepcopy(Runner().providers)
+                mutation(self.runner.providers)
+                with self.assertRaises(EngineeringPlatformAdapterError):
+                    self.adapter.readback(request("repair"))
+
     def test_update_assessment_and_execute_keep_exact_target(self) -> None:
         assessment = self.adapter.assess_update(request("update"))
         self.assertEqual(assessment.state, "UPDATE_AVAILABLE")
@@ -219,10 +273,52 @@ class EPSystemAdapterTests(unittest.TestCase):
             auth_bootstrap_receipt="receipt:provider-bootstrap",
         )
         self.assertEqual(result["instance_id"], "ep-prod")
+        self.assertEqual(result["authentication"]["state"], "READY")
         call = self.runner.calls[-1]
         self.assertIn("provider-register", call)
         self.assertIn("--instance-id", call)
         self.assertNotIn("token", " ".join(call).lower())
+        github = self.adapter.register_provider(
+            provider="github", executable_digest="sha256:" + "e" * 64,
+            version="2.68.0", auth_reference="github-auth-reference",
+            auth_bootstrap_receipt="receipt:github-bootstrap",
+        )
+        self.assertEqual(github["provider"], "github")
+        self.assertEqual(github["credential_scope"], "COMPONENT_INSTANCE")
+        self.assertTrue(github["cold_boot_ready"])
+
+    def test_provider_registration_rejects_wrong_product_readback_and_invalid_digest(self) -> None:
+        class DriftRunner(Runner):
+            def run(self, argv):
+                result = super().run(argv)
+                if "provider-register" in argv:
+                    import json
+                    payload = json.loads(result.stdout)
+                    payload["instance_id"] = "ep-other"
+                    return ProductCommandResult(0, json.dumps(payload), "")
+                return result
+
+        adapter = EngineeringPlatformSystemProvisionerAdapter(
+            provisioner_executable=self.adapter.provisioner_executable,
+            product_root=self.adapter.product_root,
+            target=self.adapter.target,
+            staged_artifacts={},
+            runner=DriftRunner(),
+        )
+        with self.assertRaisesRegex(EngineeringPlatformAdapterError, "exact target"):
+            adapter.register_provider(
+                provider="codex", executable_digest="sha256:" + "d" * 64,
+                version="0.146.0", auth_reference="provider-owned-reference",
+                auth_bootstrap_receipt="receipt:provider-bootstrap",
+            )
+        before = len(self.runner.calls)
+        with self.assertRaisesRegex(EngineeringPlatformAdapterError, "digest is invalid"):
+            self.adapter.register_provider(
+                provider="codex", executable_digest="wrong", version="0.146.0",
+                auth_reference="provider-owned-reference",
+                auth_bootstrap_receipt="receipt:provider-bootstrap",
+            )
+        self.assertEqual(len(self.runner.calls), before)
 
     def test_wrong_instance_or_generic_runtime_extension_fails_before_product_call(self) -> None:
         wrong = ComponentOperationRequest(

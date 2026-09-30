@@ -25,6 +25,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
                 operationLock: operationLock
             ).prepareProviderRuntime(
                 operationID: fixture.staged.operationID,
+                deploymentID: "deployment-a",
                 requirement: fixture.requirement
             )
         )
@@ -61,13 +62,22 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
 
         let badOperation = await coordinator.prepareProviderRuntime(
             operationID: "BAD",
+            deploymentID: "deployment-a",
             requirement: fixture.requirement
         )
         XCTAssertEqual(badOperation.failure, .invalidRequest)
 
+        let badDeployment = await coordinator.prepareProviderRuntime(
+            operationID: fixture.staged.operationID,
+            deploymentID: "../foreign-deployment",
+            requirement: fixture.requirement
+        )
+        XCTAssertEqual(badDeployment.failure, .invalidRequest)
+
         let legacy = ProviderRequirement(provider: .codex, isRequired: true)
         let badRequirement = await coordinator.prepareProviderRuntime(
             operationID: fixture.staged.operationID,
+            deploymentID: "deployment-a",
             requirement: legacy
         )
         XCTAssertEqual(badRequirement.failure, .invalidRequest)
@@ -103,6 +113,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
                 )
             ).prepareProviderRuntime(
                 operationID: fixture.staged.operationID,
+                deploymentID: "deployment-a",
                 requirement: fixture.requirement
             )
             XCTAssertEqual(result.failure, expected)
@@ -131,6 +142,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
             operationLock: ProviderPreparationOperationLock(events: events)
         ).prepareProviderRuntime(
             operationID: fixture.staged.operationID,
+            deploymentID: "deployment-a",
             requirement: fixture.requirement
         )
 
@@ -163,6 +175,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
                 operationLock: ProviderPreparationOperationLock(events: events)
             ).prepareProviderRuntime(
                 operationID: fixture.staged.operationID,
+                deploymentID: "deployment-a",
                 requirement: fixture.requirement
             )
             XCTAssertEqual(result.failure, expected)
@@ -184,6 +197,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
             operationLock: ProviderPreparationOperationLock(events: events)
         ).prepareProviderRuntime(
             operationID: fixture.staged.operationID,
+            deploymentID: "deployment-a",
             requirement: fixture.requirement
         )
 
@@ -217,6 +231,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
                 operationLock: ProviderPreparationOperationLock(events: events)
             ).prepareProviderRuntime(
                 operationID: fixture.staged.operationID,
+                deploymentID: "deployment-a",
                 requirement: fixture.requirement
             )
             XCTAssertEqual(result.failure, expected)
@@ -251,6 +266,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
                 operationLock: ProviderPreparationOperationLock(events: events)
             ).prepareProviderRuntime(
                 operationID: fixture.staged.operationID,
+                deploymentID: "deployment-a",
                 requirement: fixture.requirement
             )
             let expected: ManagedInstallerProviderRuntimePreparationFailure = switch failure {
@@ -284,6 +300,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
             operationLock: ProviderPreparationOperationLock(events: driftEvents)
         ).prepareProviderRuntime(
             operationID: fixture.staged.operationID,
+            deploymentID: "deployment-a",
             requirement: fixture.requirement
         )
         XCTAssertEqual(drift.failure, .invalidRequest)
@@ -307,6 +324,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
                 operationLock: ProviderPreparationOperationLock(events: events)
             ).prepareProviderRuntime(
                 operationID: fixture.staged.operationID,
+                deploymentID: "deployment-a",
                 requirement: fixture.requirement
             )
             XCTAssertEqual(result.failure, .cleanupPending)
@@ -318,6 +336,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
         let mutation = try fixture.mutationReceipt()
         XCTAssertThrowsError(try ManagedInstallerProviderRuntimePreparationReceipt(
             operationID: "BAD",
+            deploymentID: "deployment-a",
             requirement: fixture.requirement,
             stagedArchive: fixture.staged,
             inspection: fixture.inspection,
@@ -325,6 +344,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
         ))
         XCTAssertThrowsError(try ManagedInstallerProviderRuntimePreparationReceipt(
             operationID: fixture.staged.operationID,
+            deploymentID: "deployment-a",
             requirement: ProviderRequirement(provider: .codex, isRequired: true),
             stagedArchive: fixture.staged,
             inspection: fixture.inspection,
@@ -332,6 +352,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
         ))
         XCTAssertThrowsError(try ManagedInstallerProviderRuntimePreparationReceipt(
             operationID: fixture.staged.operationID,
+            deploymentID: "deployment-a",
             requirement: fixture.requirement,
             stagedArchive: try fixture.staged(provider: .githubCLI),
             inspection: fixture.inspection,
@@ -339,6 +360,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
         ))
         XCTAssertThrowsError(try ManagedInstallerProviderRuntimePreparationReceipt(
             operationID: fixture.staged.operationID,
+            deploymentID: "deployment-a",
             requirement: fixture.requirement,
             stagedArchive: fixture.staged,
             inspection: try fixture.inspection(providerTargetID: .githubCLI),
@@ -346,6 +368,7 @@ final class ManagedInstallerProviderRuntimePreparationTests: XCTestCase {
         ))
         XCTAssertThrowsError(try ManagedInstallerProviderRuntimePreparationReceipt(
             operationID: fixture.staged.operationID,
+            deploymentID: "deployment-a",
             requirement: fixture.requirement,
             stagedArchive: fixture.staged,
             inspection: fixture.inspection,
@@ -419,6 +442,7 @@ private struct ProviderPreparationFixture: Sendable {
 
     var request: ManagedInstallerProviderRuntimeMutationRequest {
         try! ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-a",
             stagedArchive: staged,
             requirement: requirement,
             inspection: inspection
@@ -594,6 +618,7 @@ private actor ProviderPreparationRuntime: ManagedInstallerProviderRuntimeEnsurin
     }
 
     func ensureProviderRuntime(
+        deploymentID: String,
         stagedArchive: ManagedInstallerProviderStagedArchive,
         requirement: ProviderRequirement,
         inspection: ManagedInstallerProviderRuntimeArchiveInspection
@@ -606,6 +631,7 @@ private actor ProviderPreparationRuntime: ManagedInstallerProviderRuntimeEnsurin
         if let result { return result }
         do {
             let request = try ManagedInstallerProviderRuntimeMutationRequest(
+                deploymentID: deploymentID,
                 stagedArchive: stagedArchive,
                 requirement: requirement,
                 inspection: inspection
@@ -681,6 +707,7 @@ private func providerPreparationMutationReceipt(
 ) throws -> ManagedInstallerProviderRuntimeMutationReceipt {
     try ManagedInstallerProviderRuntimeMutationReceipt(
         operationID: operationID ?? request.operationID,
+        deploymentID: request.deploymentID,
         providerTargetID: request.providerTargetID,
         provider: request.provider,
         runtime: request.runtime,
