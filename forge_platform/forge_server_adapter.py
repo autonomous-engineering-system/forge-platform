@@ -31,7 +31,9 @@ from .component_operations import (
     QualifiedArtifact,
 )
 from .forge_update_intent import ForgeUpdateIntent, ForgeUpdateIntentStore
-from .qualified_forge_lifecycle import qualified_forge_238_update_selection
+from .qualified_forge_lifecycle import (
+    qualified_forge_238_update_selection, qualified_forge_239_update_selection,
+)
 
 
 FORGE_COMPONENT = "forge-runtime"
@@ -40,6 +42,9 @@ _FORGE_LIFECYCLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _FORGE_238_CONTROLLER_SOURCE = "e4b99a249845a547fd6b8e7e11d22467b2d0886d"
 _FORGE_238_CONTROLLER_SHA256 = "sha256:6a6bb4ade3db9d1e45ba64a0d928e91013109de3243e8e2dbccfaa04a7a455b4"
 _FORGE_238_RELEASE_RECEIPT_SHA256 = "sha256:7f8f4646a369ea565e52f8420df665acb64d032e5004e1b45ef7dc8427548c49"
+_FORGE_239_CONTROLLER_SOURCE = "ebc43dc12da27353f85c991a26da9852aa790f05"
+_FORGE_239_CONTROLLER_SHA256 = "sha256:84bac133849c539a2bfae662234be93c3cd6583e841cae34eb27f3b21728fb87"
+_FORGE_239_RELEASE_RECEIPT_SHA256 = "sha256:078a9f09f048cbd1fd36c4d5f83a5739dfeb3c3a546ba94bb1148596135ba15f"
 
 
 class ForgeServerAdapterError(RuntimeError):
@@ -269,11 +274,27 @@ class ForgeUpdateBinding:
 
 def _verified_forge_238_controller(binding: ForgeUpdateBinding) -> bool:
     """Read the exact protected controller bytes without following path links."""
+    return _verified_external_controller(
+        binding, _FORGE_238_CONTROLLER_SOURCE, _FORGE_238_CONTROLLER_SHA256,
+        _FORGE_238_RELEASE_RECEIPT_SHA256,
+    )
+
+
+def _verified_forge_239_controller(binding: ForgeUpdateBinding) -> bool:
+    return _verified_external_controller(
+        binding, _FORGE_239_CONTROLLER_SOURCE, _FORGE_239_CONTROLLER_SHA256,
+        _FORGE_239_RELEASE_RECEIPT_SHA256,
+    )
+
+
+def _verified_external_controller(
+    binding: ForgeUpdateBinding, source: str, digest_value: str, receipt_digest: str,
+) -> bool:
     path = binding.updater_executable
     if (
-        binding.controller_source != _FORGE_238_CONTROLLER_SOURCE
-        or binding.controller_sha256 != _FORGE_238_CONTROLLER_SHA256
-        or binding.qualification_receipt_sha256 != _FORGE_238_RELEASE_RECEIPT_SHA256
+        binding.controller_source != source
+        or binding.controller_sha256 != digest_value
+        or binding.qualification_receipt_sha256 != receipt_digest
     ):
         return False
     current = Path(path.anchor)
@@ -297,12 +318,25 @@ def _verified_forge_238_controller(binding: ForgeUpdateBinding) -> bool:
             or metadata.st_nlink != 1
             or metadata.st_mode & 0o022
             or metadata.st_uid not in {0, os.getuid()}
+            or not 0 < metadata.st_size <= 512 * 1_024
         ):
             return False
         digest = sha256()
-        while chunk := os.read(descriptor, 1024 * 1024):
+        size = 0
+        while chunk := os.read(descriptor, 64 * 1_024):
+            size += len(chunk)
+            if size > 512 * 1_024:
+                return False
             digest.update(chunk)
-        return "sha256:" + digest.hexdigest() == _FORGE_238_CONTROLLER_SHA256
+        after = os.fstat(descriptor)
+        return (
+            size == metadata.st_size
+            and (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                 metadata.st_mtime_ns, metadata.st_ctime_ns)
+            == (after.st_dev, after.st_ino, after.st_size,
+                after.st_mtime_ns, after.st_ctime_ns)
+            and "sha256:" + digest.hexdigest() == digest_value
+        )
     except OSError:
         return False
     finally:
@@ -312,7 +346,15 @@ def _verified_forge_238_controller(binding: ForgeUpdateBinding) -> bool:
 
 def _verified_forge_238_release_receipt(binding: ForgeUpdateBinding) -> bool:
     """Re-read exact public terminal release evidence before product assessment/mutation."""
-    if binding.qualification_receipt_sha256 != _FORGE_238_RELEASE_RECEIPT_SHA256:
+    return _verified_external_release_receipt(binding, _FORGE_238_RELEASE_RECEIPT_SHA256)
+
+
+def _verified_forge_239_release_receipt(binding: ForgeUpdateBinding) -> bool:
+    return _verified_external_release_receipt(binding, _FORGE_239_RELEASE_RECEIPT_SHA256)
+
+
+def _verified_external_release_receipt(binding: ForgeUpdateBinding, expected_digest: str) -> bool:
+    if binding.qualification_receipt_sha256 != expected_digest:
         return False
     path = binding.qualification_receipt
     current = Path(path.anchor)
@@ -349,13 +391,21 @@ def _verified_forge_238_release_receipt(binding: ForgeUpdateBinding) -> bool:
             and before.st_size == after.st_size
             and before.st_mtime_ns == after.st_mtime_ns
             and before.st_ctime_ns == after.st_ctime_ns
-            and "sha256:" + digest.hexdigest() == _FORGE_238_RELEASE_RECEIPT_SHA256
+            and "sha256:" + digest.hexdigest() == expected_digest
         )
     except OSError:
         return False
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def _verified_published_update_resources(binding: ForgeUpdateBinding, version: str) -> bool:
+    if version == "2.7.38":
+        return _verified_forge_238_controller(binding) and _verified_forge_238_release_receipt(binding)
+    if version == "2.7.39":
+        return _verified_forge_239_controller(binding) and _verified_forge_239_release_receipt(binding)
+    return False
 
 
 @dataclass(frozen=True)
@@ -698,8 +748,8 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self._validate_request(request)
         if request.kind != "update":
             raise ForgeServerAdapterError("Forge update assessment requires update kind")
-        if request.artifact.version == "2.7.38":
-            return self._assess_external_238_update(request)
+        if request.artifact.version in {"2.7.38", "2.7.39"}:
+            return self._assess_external_published_update(request)
         binding = self.update_binding
         executable = self.lifecycle_executable
         wheel = self.staged_artifacts.get(request.artifact.digest)
@@ -769,7 +819,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             "forge-update-assess:" + digest,
         )
 
-    def _external_238_request(
+    def _external_published_request(
         self, request: ComponentOperationRequest, binding: ForgeUpdateBinding,
         wheel: Path, *, assessment_digest: str = "", assess_only: bool,
     ) -> tuple[dict[str, str], tuple[str, ...]]:
@@ -825,7 +875,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             "--assessment-digest", assessment_digest,
         ))
 
-    def _assess_external_238_update(
+    def _assess_external_published_update(
         self, request: ComponentOperationRequest,
     ) -> ProductUpdateAssessment:
         unavailable = ProductUpdateAssessment(
@@ -834,16 +884,24 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         )
         binding = self.update_binding
         wheel = self.staged_artifacts.get(request.artifact.digest)
+        if request.artifact.version == "2.7.38":
+            selected = qualified_forge_238_update_selection
+            verify_controller = _verified_forge_238_controller
+            verify_receipt = _verified_forge_238_release_receipt
+        else:
+            selected = qualified_forge_239_update_selection
+            verify_controller = _verified_forge_239_controller
+            verify_receipt = _verified_forge_239_release_receipt
         if (
             binding is None or not isinstance(wheel, Path) or not wheel.is_absolute()
-            or not qualified_forge_238_update_selection(self.installed_artifact, request.artifact)
-            or not _verified_forge_238_controller(binding)
-            or not _verified_forge_238_release_receipt(binding)
+            or not selected(self.installed_artifact, request.artifact)
+            or not verify_controller(binding)
+            or not verify_receipt(binding)
         ):
             return unavailable
         if binding.runtime_id != self.target.instance_id or binding.existing_version != self.installed_artifact.version:
             raise ForgeServerAdapterError("Forge external controller installed target changed")
-        selected, argv = self._external_238_request(
+        selected, argv = self._external_published_request(
             request, binding, wheel, assess_only=True,
         )
         payload = self._json_result(self.runner.run(argv), "Forge external update assessment")
@@ -1003,9 +1061,8 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         intent: ForgeUpdateIntent,
     ) -> str:
         if intent.phase == "UPDATER_INVOKED":
-            if request.artifact.version == "2.7.38" and (
-                not _verified_forge_238_controller(binding)
-                or not _verified_forge_238_release_receipt(binding)
+            if request.artifact.version in {"2.7.38", "2.7.39"} and not (
+                _verified_published_update_resources(binding, request.artifact.version)
             ):
                 raise ForgeServerAdapterError("Forge exact external update evidence changed before mutation")
             self.supervisor.stop(self.target)
@@ -1222,16 +1279,24 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             "--existing-version", binding.existing_version,
             "--base-python", str(binding.base_python),
         )
-        if request.artifact.version == "2.7.38":
+        if request.artifact.version in {"2.7.38", "2.7.39"}:
+            if request.artifact.version == "2.7.38":
+                selected_update = qualified_forge_238_update_selection
+                verify_controller = _verified_forge_238_controller
+                verify_receipt = _verified_forge_238_release_receipt
+            else:
+                selected_update = qualified_forge_239_update_selection
+                verify_controller = _verified_forge_239_controller
+                verify_receipt = _verified_forge_239_release_receipt
             if (
-                not qualified_forge_238_update_selection(self.installed_artifact, request.artifact)
-                or not _verified_forge_238_controller(binding)
-                or not _verified_forge_238_release_receipt(binding)
+                not selected_update(self.installed_artifact, request.artifact)
+                or not verify_controller(binding)
+                or not verify_receipt(binding)
                 or not assessment_reference.startswith("forge-update-assess:sha256:")
             ):
-                raise ForgeServerAdapterError("Forge exact 2.7.38 update authority is unavailable")
+                raise ForgeServerAdapterError("Forge exact published update authority is unavailable")
             assessment_digest = assessment_reference.removeprefix("forge-update-assess:")
-            selected, argv = self._external_238_request(
+            selected, argv = self._external_published_request(
                 request, binding, wheel, assessment_digest=assessment_digest,
                 assess_only=False,
             )
