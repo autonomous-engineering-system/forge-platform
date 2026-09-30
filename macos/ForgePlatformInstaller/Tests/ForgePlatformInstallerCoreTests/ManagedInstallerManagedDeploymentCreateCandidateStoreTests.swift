@@ -95,6 +95,21 @@ final class ManagedInstallerManagedDeploymentCreateCandidateStoreTests: XCTestCa
         XCTAssertEqual(bytes, Data((next + "\n").utf8))
     }
 
+    func testTwoTerminalCreatesReceiveDistinctDeploymentIdentities() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let candidateStore = store(root)
+        let first = try XCTUnwrap(candidateStore.loadCreateCandidateID())
+        let second = try candidateStore.rotateAfterTerminalCreate(
+            consumedDeploymentID: first, registry: terminalRegistry(first)
+        ).get()
+        let third = try candidateStore.rotateAfterTerminalCreate(
+            consumedDeploymentID: second, registry: terminalRegistry(second)
+        ).get()
+        XCTAssertEqual(Set([first, second, third]).count, 3)
+        XCTAssertEqual(candidateStore.loadCreateCandidateID(), third)
+    }
+
     func testRotationRequiresExactTerminalRegistryRecord() throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }

@@ -85,6 +85,45 @@ struct ManagedInstallerFreshAccountBoundProductOperations:
     }
 }
 
+protocol ManagedInstallerTerminalCreateCandidateRotating: Sendable {
+    func rotateAfterTerminalCreate(
+        consumedDeploymentID: String,
+        registry: any ManagedInstallerManagedDeploymentRegistrySnapshotLoading
+    ) -> Result<String, ManagedInstallerCreateCandidateRotationFailure>
+}
+
+extension FileManagedInstallerManagedDeploymentCreateCandidateStore:
+    ManagedInstallerTerminalCreateCandidateRotating {}
+
+/// A successful product receipt is the final authority for consuming a create
+/// candidate. Keep its rotation in the helper, after the shared execution core
+/// has accepted product readiness and the terminal deployment registry commit.
+struct ManagedInstallerTerminalCreateCandidateFinalizer: Sendable {
+    let candidate: any ManagedInstallerTerminalCreateCandidateRotating
+    let registry: any ManagedInstallerManagedDeploymentRegistrySnapshotLoading
+
+    func finalize(
+        _ result: ManagedDeploymentExecutionResult,
+        for plan: ManagedInstallerStablePlan
+    ) -> ManagedDeploymentExecutionResult {
+        guard case .completed(let stages, let summaries) = result else { return result }
+        guard !plan.deployment.exists, !stages.isEmpty, !summaries.isEmpty,
+              stages.allSatisfy({
+                  if case .passed = $0.state { return true }
+                  return false
+              }) else { return .failed(.readinessFailed, stages: []) }
+        guard case .success(let next) = candidate.rotateAfterTerminalCreate(
+            consumedDeploymentID: plan.deployment.id, registry: registry
+        ), next != plan.deployment.id,
+           case .success(let inventory) = registry.read(),
+           inventory.records.contains(where: {
+               $0.target.id == plan.deployment.id
+                   && $0.compositionReceiptReference != nil
+           }) else { return .failed(.executionFailed, stages: []) }
+        return result
+    }
+}
+
 /// Re-admits the signed composition on both sides of runtime assembly. The
 /// reviewed intent has already been resolved from private helper state; only
 /// an exact fresh-install plan reaches the shared execution core.
@@ -98,17 +137,20 @@ struct ManagedInstallerHelperFreshInstallPlanExecutor:
     private let currency: any ManagedInstallerMutationCurrencyChecking
     private let runtimeFactory: RuntimeFactory
     private let products: any ManagedInstallerProductOperationsExecuting
+    private let terminalCreate: ManagedInstallerTerminalCreateCandidateFinalizer
 
     init(
         material: any ManagedInstallerHelperExecutionMaterialAdmitting,
         currency: any ManagedInstallerMutationCurrencyChecking,
         runtimeFactory: @escaping RuntimeFactory,
-        products: any ManagedInstallerProductOperationsExecuting
+        products: any ManagedInstallerProductOperationsExecuting,
+        terminalCreate: ManagedInstallerTerminalCreateCandidateFinalizer
     ) {
         self.material = material
         self.currency = currency
         self.runtimeFactory = runtimeFactory
         self.products = products
+        self.terminalCreate = terminalCreate
     }
 
     static func production() -> Self? {
@@ -140,6 +182,10 @@ struct ManagedInstallerHelperFreshInstallPlanExecutor:
                             )
                         )
                     )
+            ),
+            terminalCreate: ManagedInstallerTerminalCreateCandidateFinalizer(
+                candidate: FileManagedInstallerManagedDeploymentCreateCandidateStore(),
+                registry: FileManagedInstallerManagedDeploymentRegistryReader()
             )
         )
     }
@@ -173,10 +219,11 @@ struct ManagedInstallerHelperFreshInstallPlanExecutor:
         ), confirmed == admitted else {
             return .failed(.staleSession, stages: [])
         }
-        return await ManagedInstallerStablePlanExecutionCoordinator(
+        let result = await ManagedInstallerStablePlanExecutionCoordinator(
             currency: currency,
             runtimeTransaction: transaction,
             productOperations: products
         ).execute(stablePlan: plan)
+        return terminalCreate.finalize(result, for: plan)
     }
 }
