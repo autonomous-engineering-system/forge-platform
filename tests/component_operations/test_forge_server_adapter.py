@@ -303,6 +303,90 @@ class Probe:
 
 
 class ForgeServerAdapterTests(unittest.TestCase):
+    def test_exact_current_239_product_assessment_is_read_only_no_change(self) -> None:
+        root = Path(self.temp.name).resolve()
+        current = QualifiedArtifact(
+            "2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
+            ARTIFACT.source,
+            "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+            ARTIFACT.qualification,
+        )
+        wheel = root / "forge-2.7.39.whl"
+
+        class CurrentRunner(Runner):
+            state = "UP_TO_DATE"
+            overrides: dict[str, object] = {}
+
+            def run(self, argv):
+                args = tuple(argv)
+                if "update-assess" not in args:
+                    return super().run(args)
+                self.calls.append(args)
+                value = {
+                    "contract": "forge-server-runtime-lifecycle/v1",
+                    "operation": "UPDATE_ASSESSMENT",
+                    "state": self.state,
+                    "mutating": False,
+                    "selected_installation": {
+                        "runtime_id": args[args.index("--runtime-id") + 1],
+                        "installation_id": args[args.index("--installation-id") + 1],
+                        "version": args[args.index("--installed-version") + 1],
+                        "source_revision": args[args.index("--installed-source") + 1],
+                        "artifact_digest": args[args.index("--installed-artifact-digest") + 1],
+                    },
+                    "candidate": {
+                        "version": args[args.index("--candidate-version") + 1],
+                        "source_revision": args[args.index("--candidate-source") + 1],
+                        "artifact_digest": args[args.index("--candidate-artifact-digest") + 1],
+                    },
+                    "reason_codes": ["EXACT_ARTIFACT_ALREADY_SELECTED"],
+                    "evidence": {"runtime_snapshot_digest": "sha256:" + "d" * 64},
+                }
+                value.update(self.overrides)
+                value["assessment_digest"] = "sha256:" + hashlib.sha256(
+                    (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+                ).hexdigest()
+                return ForgeCommandResult(0, json.dumps(value), "")
+
+        runner = CurrentRunner()
+        adapter = ForgeServerProductAdapter(
+            forge_executable=root / "current/bin/forge",
+            lifecycle_executable=root / "lifecycle/bin/forge",
+            target=self.target, installed_artifact=current,
+            staged_artifacts={current.digest: wheel}, supervisor=self.supervisor,
+            runner=runner, readiness_probe=Probe(),
+            uninstall_binding=ForgeUninstallBinding(self.target.instance_id, "installation-1"),
+        )
+        request = ComponentOperationRequest(
+            "forge-current-239", "forge-runtime", "update", current,
+            self.target.instance_id, "server", {},
+        )
+        result = adapter.assess_update(request)
+        self.assertEqual(result.state, "UP_TO_DATE")
+        self.assertTrue(result.evidence_reference.startswith("forge-update-assess:sha256:"))
+        self.assertEqual(runner.calls[-1][0], str(root / "lifecycle/bin/forge"))
+        self.assertIn(str(wheel), runner.calls[-1])
+        self.assertEqual(adapter.installed_artifact, current)
+        runner.state = "UNKNOWN"
+        self.assertEqual(adapter.assess_update(request).state, "UNKNOWN")
+        runner.state = "UPDATE_AVAILABLE"
+        with self.assertRaisesRegex(ForgeServerAdapterError, "installed artifact as an update"):
+            adapter.assess_update(request)
+        runner.state = "UP_TO_DATE"
+        runner.overrides = {"selected_installation": {"runtime_id": "other"}}
+        with self.assertRaisesRegex(ForgeServerAdapterError, "exact product target"):
+            adapter.assess_update(request)
+        runner.overrides = {}
+        adapter.uninstall_binding = ForgeUninstallBinding("other", "installation-1")
+        with self.assertRaisesRegex(ForgeServerAdapterError, "runtime identity"):
+            adapter.assess_update(request)
+        adapter.uninstall_binding = None
+        self.assertEqual(adapter.assess_update(request).state, "UNKNOWN")
+        self.assertEqual(len([call for call in runner.calls if "update-assess" in call]), 4)
+        adapter.uninstall_binding = ForgeUninstallBinding(self.target.instance_id, "installation-1")
+        adapter.staged_artifacts.clear()
+        self.assertEqual(adapter.assess_update(request).state, "UNKNOWN")
+
     def test_exact_239_published_assessment_and_terminal_receipt(self) -> None:
         root = Path(self.temp.name).resolve()
         old = QualifiedArtifact(

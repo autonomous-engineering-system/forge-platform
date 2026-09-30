@@ -33,6 +33,7 @@ from .component_operations import (
 from .forge_update_intent import ForgeUpdateIntent, ForgeUpdateIntentStore
 from .qualified_forge_lifecycle import (
     qualified_forge_238_update_selection, qualified_forge_239_update_selection,
+    qualified_forge_lifecycle_artifact,
 )
 
 
@@ -787,25 +788,38 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self._validate_request(request)
         if request.kind != "update":
             raise ForgeServerAdapterError("Forge update assessment requires update kind")
-        if request.artifact.version in {"2.7.38", "2.7.39"}:
+        current_239 = (
+            request.artifact.version == "2.7.39"
+            and self.installed_artifact == request.artifact
+            and qualified_forge_lifecycle_artifact(self.installed_artifact)
+        )
+        if request.artifact.version in {"2.7.38", "2.7.39"} and not current_239:
             return self._assess_external_published_update(request)
-        binding = self._binding_for(request)
+        binding = None if current_239 else self._binding_for(request)
+        uninstall = self.uninstall_binding if current_239 else None
         executable = self.lifecycle_executable
         wheel = self.staged_artifacts.get(request.artifact.digest)
-        if binding is None or executable is None or not isinstance(wheel, Path) or not wheel.is_absolute():
+        if (
+            (binding is None and uninstall is None)
+            or executable is None or not isinstance(wheel, Path) or not wheel.is_absolute()
+        ):
             return ProductUpdateAssessment(
                 FORGE_COMPONENT, self.target.instance_id, request.artifact.correlation,
                 "UNKNOWN", "forge-update-assess:unavailable",
             )
-        if binding.runtime_id != self.target.instance_id:
+        runtime_id = uninstall.runtime_id if uninstall is not None else binding.runtime_id
+        installation_id = (
+            uninstall.installation_id if uninstall is not None else binding.installation_id
+        )
+        if runtime_id != self.target.instance_id:
             raise ForgeServerAdapterError("Forge lifecycle runtime identity does not match the selected instance")
-        if binding.existing_version != self.installed_artifact.version:
+        if binding is not None and binding.existing_version != self.installed_artifact.version:
             raise ForgeServerAdapterError("Forge lifecycle installed version does not match the selected artifact")
         argv = (
             str(executable), "--data-root", str(self.target.data_root),
             "server", "update-assess",
-            "--runtime-id", binding.runtime_id,
-            "--installation-id", binding.installation_id,
+            "--runtime-id", runtime_id,
+            "--installation-id", installation_id,
             "--installed-version", self.installed_artifact.version,
             "--installed-source", self.installed_artifact.source_revision,
             "--installed-artifact-digest", self.installed_artifact.digest,
@@ -817,8 +831,8 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         result = self.runner.run(argv)
         payload = self._json_result(result, "Forge update assessment")
         expected_selected = {
-            "runtime_id": binding.runtime_id,
-            "installation_id": binding.installation_id,
+            "runtime_id": runtime_id,
+            "installation_id": installation_id,
             "version": self.installed_artifact.version,
             "source_revision": self.installed_artifact.source_revision,
             "artifact_digest": self.installed_artifact.digest,
@@ -850,6 +864,8 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             raise ForgeServerAdapterError("Forge update assessment reports a mismatched installed artifact as current")
         if state == "UPDATE_AVAILABLE" and same_artifact:
             raise ForgeServerAdapterError("Forge update assessment reports the installed artifact as an update")
+        if current_239 and state not in {"UP_TO_DATE", "UNKNOWN"}:
+            raise ForgeServerAdapterError("Forge current artifact assessment changed state")
         return ProductUpdateAssessment(
             FORGE_COMPONENT,
             self.target.instance_id,
