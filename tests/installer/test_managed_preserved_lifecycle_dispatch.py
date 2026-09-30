@@ -49,7 +49,10 @@ from forge_platform.managed_product_operation_service import (
     ManagedProductOperationServiceError,
     PinnedManagedProductOperationAuthorityResolver,
 )
-from forge_platform.released_product_routes import ReleasedManagedProductRouteConfiguration
+from forge_platform.released_product_routes import (
+    ReleasedManagedProductRouteConfiguration,
+    ReleasedManagedSingleProductRouteConfiguration,
+)
 from tests.installer import test_managed_preserve_execution as preserve_helpers
 from tests.installer.test_managed_preserved_lifecycle_plan import _fixture
 from tests.installer import test_managed_deployments as deployment_helpers
@@ -325,6 +328,72 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
                     calls_before,
                 )
                 self.assertEqual(registry.load("reviewed-pair"), preserved)
+
+    def test_ep_restore_review_requires_fresh_owning_preserve_and_standalone_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, config, service = self._service(root)
+            current = registry.load("reviewed-pair")
+            registry.remove("reviewed-pair", expected_revision=current.revision)
+            registry.create(replace(
+                current, components=(current.active_by_component["engineering-platform-server"],),
+            ))
+            service.preserved_dispatcher = ManagedPreservedLifecycleDispatcher(
+                coordinator=service.dispatcher.coordinator,
+                configurations=(ReleasedManagedSingleProductRouteConfiguration(
+                    deployment_id="reviewed-pair",
+                    component_identity="engineering-platform-server",
+                    executable=config.engineering_platform_provisioner,
+                    target=config.engineering_platform_target,
+                    installed_artifact=config.engineering_platform_installed_artifact,
+                    staged_artifacts=config.staged_artifacts,
+                    engineering_platform_product_root=config.engineering_platform_product_root,
+                    launch_daemons_directory=config.launch_daemons_directory,
+                ),), expected_owner_uid=os.getuid(),
+            )
+            intent = _intent(manifest)
+            intent.update(component="engineering-platform-server", instance_id="ep-a")
+            intent["intent_fingerprint"] = sha256(_wire({
+                key: value for key, value in intent.items() if key != "intent_fingerprint"
+            })).hexdigest()
+            receipt, status = _ep_evidence("PRESERVE", "preserve-a", "ep-a")
+            runner = FakeRunner(ProductCommandResult, (
+                (0, json.dumps({"contract": EP_CONTRACT, "result": "COMPLETE",
+                                "instance_id": "ep-a", "receipt": receipt})),
+                (0, json.dumps(status)),
+            ))
+            with patch(
+                "forge_platform.managed_preserved_product_adapters.SubprocessProductCommandRunner",
+                return_value=runner,
+            ):
+                service.execute_preserved_lifecycle(_wire(_request(
+                    manifest, registry, "PRESERVE",
+                    component="engineering-platform-server", instance_id="ep-a",
+                )))
+                restore = dict(intent, operation="RESTORE", operation_id="restore-a")
+                restore["intent_fingerprint"] = sha256(_wire({
+                    key: value for key, value in restore.items() if key != "intent_fingerprint"
+                })).hexdigest()
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.prepare_preserved_lifecycle_review(_wire(restore))
+                runner.results.append((0, json.dumps(status)))
+                proposal = service.prepare_preserved_lifecycle_review(_wire(restore))
+                self.assertEqual(json.loads(proposal)["review"]["operation"], "RESTORE")
+                runner.results.append((0, json.dumps({**status,
+                    "receipt_sha256": "sha256:" + "0" * 64})))
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.prepare_preserved_lifecycle_review(_wire(restore))
+            self.assertEqual(registry.load("reviewed-pair").preserved_by_component[
+                "engineering-platform-server"].instance_id, "ep-a")
+            service.preserved_dispatcher = ManagedPreservedLifecycleDispatcher(
+                coordinator=service.dispatcher.coordinator,
+                configurations=(config,), expected_owner_uid=os.getuid(),
+            )
+            with self.assertRaises(ManagedProductOperationServiceError):
+                service.prepare_preserved_lifecycle_review(_wire(restore))
+            service.preserved_dispatcher = None
+            with self.assertRaises(ManagedProductOperationServiceError):
+                service.prepare_preserved_lifecycle_review(_wire(restore))
 
     def test_worker_reads_exact_terminal_recovery_without_repeating_product_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
