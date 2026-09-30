@@ -47,6 +47,13 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
                 ManagedInstallerHelperStateRootBootstrap.productsDirectoryName,
                 isDirectory: true
             ).appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.forgeDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.productsDirectoryName,
+                isDirectory: true
+            ).appendingPathComponent(
                 ManagedInstallerHelperStateRootBootstrap.engineeringPlatformDirectoryName,
                 isDirectory: true
             ),
@@ -225,6 +232,25 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
         )
         try FileManager.default.createSymbolicLink(at: product,
                                                    withDestinationURL: outside)
+        XCTAssertThrowsError(try testBootstrap(parent).prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    func testRejectsUnsafeForgeProductRootWithoutFollowingSymlink() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = try testBootstrap(parent).prepare()
+        let product = root.appendingPathComponent("products/forge", isDirectory: true)
+        XCTAssertEqual(chmod(product.path, 0o755), 0)
+        XCTAssertThrowsError(try testBootstrap(parent).prepare())
+
+        try FileManager.default.removeItem(at: product)
+        let outside = parent.appendingPathComponent("outside-forge", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outside, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+        )
+        try FileManager.default.createSymbolicLink(at: product, withDestinationURL: outside)
         XCTAssertThrowsError(try testBootstrap(parent).prepare())
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
