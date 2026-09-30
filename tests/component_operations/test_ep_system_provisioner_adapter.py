@@ -88,16 +88,17 @@ class Runner:
             }
         elif command == "provider-register":
             provider = args[args.index("--provider") + 1]
+            context = Path(args[args.index("--product-root") + 1]) / "instances" / "ep-prod" / "providers" / provider
             payload = {
                 "provider": provider,
                 "instance_id": "ep-prod",
                 "state": "READY",
-                "executable": "/Library/EP/instances/ep-prod/providers/" + provider + "/runtime/bin/" + (
+                "executable": str(context / "runtime" / "bin" / (
                     "codex" if provider == "codex" else "gh"
-                ),
+                )),
                 "executable_sha256": args[args.index("--provider-executable-digest") + 1],
                 "version": args[args.index("--provider-version") + 1],
-                "home": "/Library/EP/instances/ep-prod/providers/" + provider + "/home",
+                "home": str(context / ("home" if provider == "codex" else "config")),
                 "credential_scope": "COMPONENT_INSTANCE",
                 "authentication": {
                     "state": "READY",
@@ -338,6 +339,41 @@ class EPSystemAdapterTests(unittest.TestCase):
                 auth_bootstrap_receipt="receipt:provider-bootstrap",
             )
         self.assertEqual(len(self.runner.calls), before)
+
+    def test_provider_registration_rejects_cross_instance_and_wrong_provider_paths(self) -> None:
+        for field, replacement in (
+            ("executable", "ep-other"),
+            ("home", "ep-other"),
+            ("executable", "github"),
+            ("home", "github"),
+        ):
+            with self.subTest(field=field, replacement=replacement):
+                class PathDriftRunner(Runner):
+                    def run(self, argv):
+                        result = super().run(argv)
+                        if "provider-register" in argv:
+                            import json
+                            payload = json.loads(result.stdout)
+                            payload[field] = payload[field].replace(
+                                "ep-prod" if replacement == "ep-other" else "codex",
+                                replacement,
+                            )
+                            return ProductCommandResult(0, json.dumps(payload), "")
+                        return result
+
+                adapter = EngineeringPlatformSystemProvisionerAdapter(
+                    provisioner_executable=self.adapter.provisioner_executable,
+                    product_root=self.adapter.product_root,
+                    target=self.adapter.target,
+                    staged_artifacts={},
+                    runner=PathDriftRunner(),
+                )
+                with self.assertRaisesRegex(EngineeringPlatformAdapterError, "exact target"):
+                    adapter.register_provider(
+                        provider="codex", executable_digest="sha256:" + "d" * 64,
+                        version="0.146.0", auth_reference="provider-owned-reference",
+                        auth_bootstrap_receipt="receipt:provider-bootstrap",
+                    )
 
     def test_wrong_instance_or_generic_runtime_extension_fails_before_product_call(self) -> None:
         wrong = ComponentOperationRequest(

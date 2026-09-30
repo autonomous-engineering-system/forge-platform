@@ -40,16 +40,17 @@ class ProductRunner:
         args = tuple(argv)
         self.calls.append(args)
         provider = args[args.index("--provider") + 1]
+        context = Path(args[args.index("--product-root") + 1]) / "instances" / "ep-prod" / "providers" / provider
         payload = {
             "provider": provider,
             "instance_id": self.instance_id,
             "state": "READY",
-            "executable": "/Library/EP/instances/ep-prod/providers/" + provider + "/runtime/bin/" + (
+            "executable": str(context / "runtime" / "bin" / (
                 "codex" if provider == "codex" else "gh"
-            ),
+            )),
             "executable_sha256": args[args.index("--provider-executable-digest") + 1],
             "version": args[args.index("--provider-version") + 1],
-            "home": "/Library/EP/instances/ep-prod/providers/" + provider + "/home",
+            "home": str(context / ("home" if provider == "codex" else "config")),
             "credential_scope": "COMPONENT_INSTANCE",
             "authentication": {
                 "state": "READY",
