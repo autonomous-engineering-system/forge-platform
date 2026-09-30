@@ -1,4 +1,4 @@
-"""Select one sealed helper product route for a reviewed PRESERVE operation."""
+"""Select one sealed helper product route for reviewed preserved lifecycle work."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from .forge_server_adapter import ForgeServerTarget, MacOSForgeLaunchDaemonSuper
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
 from .managed_preserve_execution import (
     ManagedPreserveExecutionCoordinator, ManagedPreserveExecutionRecord,
+    ManagedPurgeExecutionCoordinator,
 )
 from .managed_preserved_lifecycle_request import NativePreservedLifecycleRequest
 from .managed_preserved_product_adapters import (
@@ -71,7 +72,9 @@ class ManagedPreservedLifecycleDispatcher:
     ) -> ManagedPreserveExecutionRecord:
         if (
             not isinstance(request, NativePreservedLifecycleRequest)
-            or request.review.operation != "PRESERVE"
+            or request.review.operation not in {"PRESERVE", "PURGE"}
+            or request.review.operation == "PURGE"
+                and request.confirmed_instance_id != request.review.instance_id
             or not isinstance(installed_manifest, CompositionManifest)
             or (installed_manifest.composition_id, installed_manifest.manifest_digest)
                 != (request.review.composition_id, request.review.composition_digest)
@@ -82,17 +85,21 @@ class ManagedPreservedLifecycleDispatcher:
         if config is None:
             raise ManagedPreservedLifecycleDispatchError("reviewed deployment route is unavailable")
         current = self.registry.load(request.review.deployment_id)
-        if current is None:
+        if current is None and request.review.operation != "PURGE":
             raise ManagedPreservedLifecycleDispatchError("reviewed deployment is unavailable")
-        if current.peer_binding is not None or getattr(current, "historical_peer_binding", None) is not None:
-            raise ManagedPreservedLifecycleDispatchError(
-                "paired preserve requires product-owned consumer revocation"
-            )
-        claimed_components = set(current.active_by_component) | set(current.preserved_by_component)
-        if isinstance(config, ReleasedManagedSingleProductRouteConfiguration) and (
-            claimed_components != {config.component_identity}
-            or current.peer_binding is not None
+        if current is not None and (
+            current.peer_binding is not None
             or getattr(current, "historical_peer_binding", None) is not None
+        ):
+            raise ManagedPreservedLifecycleDispatchError(
+                "paired lifecycle requires product-owned consumer revocation"
+            )
+        claimed_components = (
+            set(current.active_by_component) | set(current.preserved_by_component)
+            if current is not None else set()
+        )
+        if isinstance(config, ReleasedManagedSingleProductRouteConfiguration) and (
+            current is not None and claimed_components != {config.component_identity}
         ):
             raise ManagedPreservedLifecycleDispatchError("single route cannot own paired inventory")
         artifacts = {
@@ -128,11 +135,18 @@ class ManagedPreservedLifecycleDispatcher:
             raise ManagedPreservedLifecycleDispatchError("product route targets another instance")
         supervisor = None
         if request.review.component == FORGE_COMPONENT:
+            preserved_forge = (
+                current.preserved_by_component.get(FORGE_COMPONENT)
+                if current is not None else None
+            )
             if (
                 not isinstance(target, ForgeServerTarget)
                 or config.forge_lifecycle_executable is None
                 or config.forge_uninstall_binding is None
                 or config.forge_uninstall_binding.runtime_id != target.instance_id
+                or preserved_forge is not None and
+                    preserved_forge.forge_installation_id
+                        != config.forge_uninstall_binding.installation_id
             ):
                 raise ManagedPreservedLifecycleDispatchError("Forge lifecycle route is unavailable")
             adapter = ForgePreservedProductAdapter(
@@ -152,12 +166,17 @@ class ManagedPreservedLifecycleDispatcher:
                 staged_wheel=wheel,
                 launch_daemons_directory=config.launch_daemons_directory,
             )
-        coordinator = ManagedPreserveExecutionCoordinator(
+        coordinator_type = (
+            ManagedPurgeExecutionCoordinator if request.review.operation == "PURGE"
+            else ManagedPreserveExecutionCoordinator
+        )
+        coordinator = coordinator_type(
             operations_root=self.operations_root, registry=self.registry,
             currency_guard=self.currency_guard, forge_supervisor=supervisor,
             expected_owner_uid=self.expected_owner_uid,
         )
-        return coordinator.preserve(
+        execute = coordinator.purge if request.review.operation == "PURGE" else coordinator.preserve
+        return execute(
             request.review, installed_manifest=installed_manifest,
             adapter=adapter,
         )

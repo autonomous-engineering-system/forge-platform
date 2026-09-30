@@ -28,6 +28,12 @@ from tests.installer.test_managed_product_operation_admission import installer_r
 
 def _request(manifest, registry, operation="PRESERVE", confirmation=None):
     intent = _intent(manifest, operation=operation)
+    if operation == "PURGE":
+        intent["operation_id"] = "purge-a"
+        intent["intent_fingerprint"] = sha256(_wire({
+            key: item for key, item in intent.items()
+            if key != "intent_fingerprint"
+        })).hexdigest()
     proposal = json.loads(prepare_native_preserved_lifecycle_review(
         _wire(intent), installed_manifest=manifest, registry=registry,
         current_installer_release=installer_release(),
