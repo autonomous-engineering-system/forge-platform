@@ -700,7 +700,20 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         credential_reference: str,
         operator_id: str,
         allow_loopback_http: bool = True,
+        expected_revision: int | None = None,
+        expected_digest: str | None = None,
     ) -> Mapping[str, object]:
+        replacing = expected_revision is not None or expected_digest is not None
+        if replacing and not (
+            self.installed_artifact.version == "2.7.39"
+            and qualified_forge_lifecycle_artifact(self.installed_artifact)
+            and isinstance(expected_revision, int)
+            and not isinstance(expected_revision, bool)
+            and expected_revision >= 1
+            and isinstance(expected_digest, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest)
+        ):
+            raise ForgeServerAdapterError("Forge peer replacement authority is invalid")
         args = [
             "execution-host", "configure",
             "--binding-id", binding_id,
@@ -716,6 +729,11 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         ]
         if allow_loopback_http:
             args.append("--allow-loopback-http")
+        if replacing:
+            args.extend((
+                "--replace", "--expected-revision", str(expected_revision),
+                "--expected-digest", expected_digest,
+            ))
         return self._run(*args)
 
     def preflight_ep_peer(self) -> Mapping[str, object]:
