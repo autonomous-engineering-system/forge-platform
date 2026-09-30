@@ -276,6 +276,72 @@ class ManagedProductOperationDispatchTests(unittest.TestCase):
                 "ep-new",
             )
 
+    def test_two_fresh_deployments_keep_exact_product_instances_isolated(self) -> None:
+        candidate = composition_manifest(
+            composition_id="forge-ep-current",
+            forge_version="2.7.38", forge_digest=FORGE_DIGEST,
+            ep_version="2.3.106", ep_digest=EP_DIGEST,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            registry = ManagedDeploymentRegistry(root / "registry")
+            first_route = route(forge="forge-a", ep="ep-a")
+            second_route = route(forge="forge-b", ep="ep-b")
+            dispatcher = ManagedProductOperationDispatcher(
+                coordinator=coordinator(root, registry),
+                resolver=PinnedManagedProductRouteResolver({
+                    "production": first_route,
+                    "qualification": second_route,
+                }),
+            )
+            first_request = decoded(request_payload(
+                candidate, installed=None, exists=False,
+            ))
+            first = admit_native_product_operation(
+                first_request, manifest=candidate, registry=registry,
+                current_installer_release=installer_release(),
+            )
+            first_receipt = dispatcher.dispatch(first)
+            first_record = registry.load("production")
+            self.assertIsNotNone(first_record)
+            first_bytes = (registry.root / "production.json").read_bytes()
+
+            second_payload = request_payload(candidate, installed=None, exists=False)
+            second_payload.update({
+                "deployment_id": "qualification",
+                "operation_id": "operation-two",
+                "session_id": "session-two",
+                "stable_plan_fingerprint": "2" * 64,
+                "inventory_evidence_reference": "evidence:inventory-two",
+            })
+            second_request = decoded(_refingerprint(second_payload))
+            second = admit_native_product_operation(
+                second_request, manifest=candidate, registry=registry,
+                current_installer_release=installer_release(),
+            )
+            second_receipt = dispatcher.dispatch(second)
+            second_record = registry.load("qualification")
+            self.assertIsNotNone(second_record)
+            self.assertEqual(first_record, registry.load("production"))
+            self.assertEqual(first_bytes, (registry.root / "production.json").read_bytes())
+            self.assertEqual(first_record.by_component["forge-runtime"].instance_id, "forge-a")
+            self.assertEqual(first_record.by_component["engineering-platform-server"].instance_id, "ep-a")
+            self.assertEqual(second_record.by_component["forge-runtime"].instance_id, "forge-b")
+            self.assertEqual(second_record.by_component["engineering-platform-server"].instance_id, "ep-b")
+            self.assertNotEqual(first_receipt.request_fingerprint, second_receipt.request_fingerprint)
+            self.assertEqual(
+                [adapter.execute_calls for adapter in first_route.adapters.values()],
+                [1, 1],
+            )
+            self.assertEqual(
+                [adapter.execute_calls for adapter in second_route.adapters.values()],
+                [1, 1],
+            )
+            self.assertEqual(
+                {item.deployment_id for item in registry.inventory()},
+                {"production", "qualification"},
+            )
+
     def test_existing_forge_update_commits_reviewed_new_composition_after_readiness(self) -> None:
         class AvailableForgeAdapter(Adapter):
             def assess_update(self, request):
