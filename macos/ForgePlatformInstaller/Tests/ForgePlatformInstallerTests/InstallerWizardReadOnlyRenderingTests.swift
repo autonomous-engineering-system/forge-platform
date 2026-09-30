@@ -420,30 +420,19 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
     }
 
     private func providerRequirements() throws -> [ProviderRequirement] {
+        // The screenshot matrix exercises the legacy user-scoped UI actions.
+        // Component-owned server contexts obtain VERIFIED only from the
+        // reviewed helper readback and are covered by the domain/XPC suites.
         [
             ProviderRequirement(
                 provider: .codex,
                 isRequired: true,
-                minimumVersion: try InstallerVersion("1.0.0"),
-                credentialScope: .component,
-                ownerComponent: .forgeRuntime,
-                targetIdentity: "forge-prod"
-            ),
-            ProviderRequirement(
-                provider: .codex,
-                isRequired: true,
-                minimumVersion: try InstallerVersion("1.0.0"),
-                credentialScope: .component,
-                ownerComponent: .engineeringPlatformServer,
-                targetIdentity: "ep-prod"
+                minimumVersion: try InstallerVersion("1.0.0")
             ),
             ProviderRequirement(
                 provider: .githubCLI,
                 isRequired: true,
-                minimumVersion: try InstallerVersion("1.0.0"),
-                credentialScope: .component,
-                ownerComponent: .engineeringPlatformServer,
-                targetIdentity: "ep-prod"
+                minimumVersion: try InstallerVersion("1.0.0")
             ),
         ]
     }

@@ -5,6 +5,50 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class MacOSManagedInstallerProviderHostInspectorTests: XCTestCase {
+    func testFreshProviderInspectionUsesSamePhysicalAccountAndRuntimeBoundary() async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .codex, freshDeployment: true
+        )
+        let runner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("codex-cli 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 1, standardOutput: nil)),
+        ])
+        let inspector = MacOSManagedInstallerProviderHostInspector(
+            rootDirectory: fixture.root, runner: runner
+        )
+        let readback = try await inspector.inspectFreshProvider(
+            fixture.requirement, stablePlan: fixture.stablePlan
+        ).get()
+        XCTAssertEqual(readback.providerTargetID, fixture.requirement.id)
+        XCTAssertEqual(readback.state, .authenticationRequired)
+        XCTAssertEqual(readback.executableSHA256, fixture.executableSHA256)
+    }
+    func testPublishedBinAllowsOnlySafeRootOwnedSearchMode() async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .githubCLI, epProductLayout: true
+        )
+        let bin = fixture.executable.deletingLastPathComponent()
+        XCTAssertEqual(chmod(bin.path, 0o755), 0)
+        let runner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 0, standardOutput: nil)),
+        ])
+        let inspector = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, runner: runner
+        )
+        let observed = try await inspector.inspectProvider(
+            fixture.requirement, for: fixture.request
+        ).get()
+        XCTAssertEqual(observed.state, .verified)
+        XCTAssertEqual(chmod(bin.path, 0o750), 0)
+        let refused = await inspector.inspectProvider(
+            fixture.requirement, for: fixture.request
+        )
+        XCTAssertEqual(refused.failure, .readbackFailed)
+    }
+
     func testCommandFactoryUsesOnlyFixedArgumentsAndScrubbedContext() throws {
         let executable = URL(fileURLWithPath: "/private/provider/bin/tool")
         let home = URL(fileURLWithPath: "/private/provider/home", isDirectory: true)
@@ -73,6 +117,278 @@ final class MacOSManagedInstallerProviderHostInspectorTests: XCTestCase {
                 "/deployments/activation-deployment/providers/engineering-platform-server/ep-one/github-cli/home"
             ) == true
         )
+    }
+
+    func testEPProductInspectorUsesFrozenInstanceRuntimeAndGitHubConfig() async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .githubCLI, epProductLayout: true
+        )
+        let runner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 0, standardOutput: nil)),
+        ])
+        let inspector = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, runner: runner
+        )
+
+        let observed = try await inspector.inspectProvider(
+            fixture.requirement, for: fixture.request
+        ).get()
+        XCTAssertEqual(observed.state, .verified)
+        XCTAssertEqual(observed.executableSHA256, fixture.executableSHA256)
+        let calls = await runner.recordedCommands()
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(calls[0].executableURL.resolvingSymlinksInPath(),
+                       fixture.executable.resolvingSymlinksInPath())
+        XCTAssertTrue(calls[1].environment["GH_CONFIG_DIR"]?.hasSuffix(
+            "/instances/ep-one/providers/github/config"
+        ) == true)
+        XCTAssertTrue(fixture.executable.path.hasSuffix(
+            "/instances/ep-one/providers/github/runtime/bin/gh"
+        ))
+        XCTAssertTrue(fixture.home.path.hasSuffix(
+            "/instances/ep-one/providers/github/config"
+        ))
+    }
+
+    func testFreshEPInspectorReadsDerivedProductInstanceAndRejectsCrossedDeployment()
+        async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .githubCLI, epProductLayout: true, freshEPProduct: true
+        )
+        let runner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 0, standardOutput: nil)),
+        ])
+        let inspector = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root,
+            freshDeploymentID: fixture.request.deploymentID, runner: runner
+        )
+        let observed = try await inspector.inspectProvider(
+            fixture.requirement, for: fixture.request
+        ).get()
+        XCTAssertEqual(observed.state, .verified)
+        let instance = ManagedInstallerProductServiceAccountPlanner.instanceID(
+            deploymentID: fixture.request.deploymentID,
+            componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue
+        )
+        XCTAssertTrue(fixture.executable.path.hasSuffix(
+            "/instances/\(instance)/providers/github/runtime/bin/gh"
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root
+            .appendingPathComponent("instances/\(fixture.request.deploymentID)").path))
+        let crossed = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshDeploymentID: "other-deployment",
+            runner: ProviderProbeRunnerSpy(results: [])
+        )
+        let refused = await crossed.inspectProvider(
+            fixture.requirement, for: fixture.request
+        )
+        XCTAssertEqual(refused.failure, .rejected)
+        let calls = await runner.recordedCommands()
+        XCTAssertEqual(calls.count, 2)
+    }
+
+    func testFreshEPProbeBindsFullAccountReadbackAndServiceOwnedHome()
+        async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .githubCLI, epProductLayout: true, freshEPProduct: true,
+            freshDeployment: true
+        )
+        let instance = ManagedInstallerProductServiceAccountPlanner.instanceID(
+            deploymentID: fixture.request.deploymentID,
+            componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue
+        )
+        let claim = ManagedInstallerProductServiceAccountClaim(
+            stablePlanFingerprint: fixture.request.stablePlanFingerprint,
+            operationID: fixture.request.operationID,
+            deploymentID: fixture.request.deploymentID,
+            componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue,
+            instanceID: instance,
+            productArtifactSHA256: "sha256:" + String(repeating: "a", count: 64),
+            accountName: ManagedInstallerProductServiceAccountPlanner.name(
+                deploymentID: fixture.request.deploymentID,
+                componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue,
+                instanceID: instance
+            )
+        )
+        let account = ManagedInstallerProductServiceAccountReadback(
+            claim: claim, uid: geteuid(), gid: getegid(),
+            evidenceReference: "receipt:fresh-provider-account-test"
+        )
+        let runner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 0, standardOutput: nil)),
+        ])
+        let inspector = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshClaim: claim,
+            accountReader: StaticFreshProviderAccountReader(account: account),
+            runner: runner
+        )
+        let observed = try await inspector.inspectProvider(
+            fixture.requirement, for: fixture.request
+        ).get()
+        XCTAssertEqual(observed.state, .verified)
+        let commands = await runner.recordedCommands()
+        XCTAssertEqual(commands.count, 2)
+        XCTAssertEqual(commands.map(\.account), [
+            ManagedInstallerProviderProbeAccount(
+                name: claim.accountName, uid: account.uid, gid: account.gid
+            ),
+            ManagedInstallerProviderProbeAccount(
+                name: claim.accountName, uid: account.uid, gid: account.gid
+            ),
+        ])
+        let authenticationRunner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 1, standardOutput: nil)),
+        ])
+        let authenticationInspector = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshClaim: claim,
+            accountReader: StaticFreshProviderAccountReader(account: account),
+            runner: authenticationRunner
+        )
+        let prepared = await authenticationInspector.prepareFreshAuthentication(
+            fixture.requirement, stablePlan: fixture.stablePlan
+        )
+        XCTAssertEqual(prepared?.provider, .githubCLI)
+        XCTAssertEqual(prepared?.account.name, claim.accountName)
+        XCTAssertEqual(prepared?.executableURL.resolvingSymlinksInPath(),
+                       fixture.executable.resolvingSymlinksInPath())
+        XCTAssertEqual(prepared?.providerHomeURL.resolvingSymlinksInPath(),
+                       fixture.home.resolvingSymlinksInPath())
+        XCTAssertTrue(prepared?.priorEvidenceReference.hasPrefix(
+            "receipt:provider-observation-"
+        ) == true)
+        let verifiedRunner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 0, standardOutput: nil)),
+        ])
+        let verifiedTarget = await MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshClaim: claim,
+            accountReader: StaticFreshProviderAccountReader(account: account),
+            runner: verifiedRunner
+        ).prepareFreshAuthentication(
+            fixture.requirement, stablePlan: fixture.stablePlan
+        )
+        XCTAssertNil(verifiedTarget)
+        let foreign = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshClaim: claim,
+            accountReader: StaticFreshProviderAccountReader(account: nil),
+            runner: ProviderProbeRunnerSpy(results: [])
+        )
+        let refused = await foreign.inspectProvider(
+            fixture.requirement, for: fixture.request
+        )
+        XCTAssertEqual(refused.failure, .rejected)
+
+        let wrongOwner = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshClaim: claim,
+            accountReader: StaticFreshProviderAccountReader(account:
+                ManagedInstallerProductServiceAccountReadback(
+                    claim: claim, uid: account.uid + 1, gid: account.gid,
+                    evidenceReference: account.evidenceReference
+                )
+            ), runner: ProviderProbeRunnerSpy(results: [])
+        )
+        let wrongOwnerResult = await wrongOwner.inspectProvider(
+            fixture.requirement, for: fixture.request
+        )
+        XCTAssertEqual(wrongOwnerResult.failure, .readbackFailed)
+
+        if geteuid() != 0 {
+            let boundCommand = MacOSManagedInstallerProviderProbeCommandFactory.command(
+                provider: .githubCLI, probe: .authenticationStatus,
+                executableURL: fixture.executable, providerHomeURL: fixture.home,
+                account: ManagedInstallerProviderProbeAccount(
+                    name: claim.accountName, uid: account.uid, gid: account.gid
+                )
+            )
+            let unprivileged = await MacOSSystemManagedInstallerProviderProbeRunner()
+                .runProviderProbe(boundCommand)
+            XCTAssertEqual(unprivileged.failure, .rejected)
+        }
+    }
+
+    func testEPProductInspectorRejectsWrongRuntimePathAndIgnoresLegacySlot() async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .codex, epProductLayout: true
+        )
+        let oldLayout = MacOSManagedInstallerProviderHostInspector(
+            rootDirectory: fixture.root, runner: ProviderProbeRunnerSpy(results: [])
+        )
+        let oldReadback = try await oldLayout.inspectProvider(
+            fixture.requirement, for: fixture.request
+        ).get()
+        XCTAssertEqual(oldReadback.state, .absent)
+
+        let wrongRuntime = try ProviderRuntimeRequirement(
+            version: InstallerVersion("2.70.0"),
+            archiveKind: .zip,
+            artifactURL: "https://artifacts.example.test/provider.zip",
+            artifactSHA256: "sha256:" + String(repeating: "6", count: 64),
+            executableRelativePath: "release/bin/codex",
+            executableSHA256: fixture.executableSHA256
+        )
+        let wrongRequirement = ProviderRequirement(
+            provider: .codex,
+            isRequired: true,
+            minimumVersion: try InstallerVersion("1.0.0"),
+            credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer,
+            targetIdentity: "ep-one",
+            runtime: wrongRuntime
+        )
+        let wrongFixture = try ProviderInspectionFixture(
+            provider: .codex, requestRequirementOverride: wrongRequirement,
+            epProductLayout: true
+        )
+        let runner = ProviderProbeRunnerSpy(results: [])
+        let rejected = await MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: wrongFixture.root, runner: runner
+        ).inspectProvider(wrongRequirement, for: wrongFixture.request)
+        XCTAssertEqual(rejected.failure, .rejected)
+        let calls = await runner.recordedCommands()
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testEPProductInspectorRequiresComponentOwnedTargetAndPrivateConfig() async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .githubCLI, epProductLayout: true
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: fixture.home.path
+        )
+        let runner = ProviderProbeRunnerSpy(results: [])
+        let failed = await MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, runner: runner
+        ).inspectProvider(fixture.requirement, for: fixture.request)
+        XCTAssertEqual(failed.failure, .readbackFailed)
+        let calls = await runner.recordedCommands()
+        XCTAssertTrue(calls.isEmpty)
+
+        let forgeRequirement = ProviderRequirement(
+            provider: .githubCLI,
+            isRequired: true,
+            minimumVersion: try InstallerVersion("1.0.0"),
+            credentialScope: .component,
+            ownerComponent: .forgeRuntime,
+            targetIdentity: "forge-one",
+            runtime: fixture.requirement.runtime
+        )
+        let forgeFixture = try ProviderInspectionFixture(
+            provider: .githubCLI, requestRequirementOverride: forgeRequirement,
+            epProductLayout: true
+        )
+        let rejected = await MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: forgeFixture.root, runner: runner
+        ).inspectProvider(forgeRequirement, for: forgeFixture.request)
+        XCTAssertEqual(rejected.failure, .rejected)
     }
 
     func testSystemRunnerExecutesOnlyDerivedCodexProbes() async throws {
@@ -355,13 +671,17 @@ private struct ProviderInspectionFixture {
     let executableSHA256: String
     let requirement: ProviderRequirement
     let request: ManagedInstallerPostToolHostObservationRequest
+    let stablePlan: ManagedInstallerStablePlan
 
     init(
         provider: ProviderID,
         version: String = "2.70.0",
         executableBytes: Data = Data("fixed-provider-executable".utf8),
         declaredExecutableSHA256: String? = nil,
-        requestRequirementOverride: ProviderRequirement? = nil
+        requestRequirementOverride: ProviderRequirement? = nil,
+        epProductLayout: Bool = false,
+        freshEPProduct: Bool = false,
+        freshDeployment: Bool = false
     ) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "provider-inspector-\(UUID().uuidString)",
@@ -386,7 +706,7 @@ private struct ProviderInspectionFixture {
             minimumVersion: try InstallerVersion("1.0.0"),
             credentialScope: .component,
             ownerComponent: .engineeringPlatformServer,
-            targetIdentity: "ep-one",
+            targetIdentity: freshEPProduct ? "activation-deployment" : "ep-one",
             runtime: runtime
         )
         requirement = requestRequirementOverride ?? boundRequirement
@@ -401,10 +721,15 @@ private struct ProviderInspectionFixture {
         )
         let activation = try ActivationFixture(
             providerRequirements: [requirement],
-            managedTools: [git]
+            managedTools: [git],
+            overrideDeployment: freshDeployment
+                ? ManagedDeploymentTarget(
+                    id: freshEPProduct ? "activation-deployment" : "ep-one",
+                    exists: false
+                ) : nil
         )
         let activationRequest = try activation.request(initial: activation.missingReadback())
-        let stablePlan = try managedInstallerTestStablePlan(
+        stablePlan = try managedInstallerTestStablePlan(
             session: activation.session,
             deployment: activation.deployment,
             activationPlan: ManagedPythonRuntimeActivationPlan(
@@ -420,39 +745,50 @@ private struct ProviderInspectionFixture {
             request: activationRequest
         )
 
-        let targetRoot = root
-            .appendingPathComponent("deployments", isDirectory: true)
-            .appendingPathComponent(request.deploymentID, isDirectory: true)
-            .appendingPathComponent("providers", isDirectory: true)
-            .appendingPathComponent(
-                ProviderOwnerComponent.engineeringPlatformServer.rawValue,
-                isDirectory: true
-            )
-            .appendingPathComponent("ep-one", isDirectory: true)
-            .appendingPathComponent(provider.rawValue, isDirectory: true)
-        home = targetRoot.appendingPathComponent("home", isDirectory: true)
-        let runtimeRoot = targetRoot
-            .appendingPathComponent("runtime", isDirectory: true)
-            .appendingPathComponent(version, isDirectory: true)
+        let targetRoot: URL
+        if epProductLayout {
+            let instanceID = freshEPProduct
+                ? ManagedInstallerProductServiceAccountPlanner.instanceID(
+                    deploymentID: request.deploymentID,
+                    componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue
+                ) : "ep-one"
+            targetRoot = root
+                .appendingPathComponent("instances", isDirectory: true)
+                .appendingPathComponent(instanceID, isDirectory: true)
+                .appendingPathComponent("providers", isDirectory: true)
+                .appendingPathComponent(provider == .codex ? "codex" : "github",
+                                        isDirectory: true)
+        } else {
+            targetRoot = root
+                .appendingPathComponent("deployments", isDirectory: true)
+                .appendingPathComponent(request.deploymentID, isDirectory: true)
+                .appendingPathComponent("providers", isDirectory: true)
+                .appendingPathComponent(
+                    ProviderOwnerComponent.engineeringPlatformServer.rawValue,
+                    isDirectory: true
+                )
+                .appendingPathComponent("ep-one", isDirectory: true)
+                .appendingPathComponent(provider.rawValue, isDirectory: true)
+        }
+        home = targetRoot.appendingPathComponent(
+            epProductLayout && provider == .githubCLI ? "config" : "home",
+            isDirectory: true
+        )
+        let runtimeRoot = epProductLayout
+            ? targetRoot.appendingPathComponent("runtime", isDirectory: true)
+            : targetRoot.appendingPathComponent("runtime", isDirectory: true)
+                .appendingPathComponent(version, isDirectory: true)
         executable = runtimeRoot
             .appendingPathComponent("bin", isDirectory: true)
             .appendingPathComponent(provider == .githubCLI ? "gh" : "codex")
-        for directory in [
-            root.appendingPathComponent("deployments", isDirectory: true),
-            root.appendingPathComponent("deployments", isDirectory: true)
-                .appendingPathComponent(request.deploymentID, isDirectory: true),
-            root.appendingPathComponent("deployments", isDirectory: true)
-                .appendingPathComponent(request.deploymentID, isDirectory: true)
-                .appendingPathComponent("providers", isDirectory: true),
-            targetRoot.deletingLastPathComponent().deletingLastPathComponent(),
-            targetRoot.deletingLastPathComponent(),
-            targetRoot,
-            home,
-            runtimeRoot.deletingLastPathComponent(),
-            runtimeRoot,
-            executable.deletingLastPathComponent(),
-        ] {
+        var directory = root
+        for segment in targetRoot.path.dropFirst(root.path.count).split(separator: "/") {
+            directory.appendPathComponent(String(segment), isDirectory: true)
             try Self.createPrivateDirectory(directory)
+        }
+        for child in [home, runtimeRoot.deletingLastPathComponent(),
+                      runtimeRoot, executable.deletingLastPathComponent()] {
+            try Self.createPrivateDirectory(child)
         }
         try executableBytes.write(to: executable, options: .withoutOverwriting)
         try FileManager.default.setAttributes(
@@ -473,6 +809,18 @@ private struct ProviderInspectionFixture {
             [.posixPermissions: 0o700],
             ofItemAtPath: url.path
         )
+    }
+}
+
+private struct StaticFreshProviderAccountReader:
+    ManagedInstallerFreshProductAccountReading {
+    let account: ManagedInstallerProductServiceAccountReadback?
+
+    func readAccountSynchronously(_ claim: ManagedInstallerProductServiceAccountClaim)
+        -> Result<ManagedInstallerProductServiceAccountReadback?,
+                  ManagedInstallerProductServiceAccountPreparationFailure> {
+        _ = claim
+        return .success(account)
     }
 }
 

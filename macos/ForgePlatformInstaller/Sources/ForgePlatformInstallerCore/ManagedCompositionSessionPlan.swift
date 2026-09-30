@@ -17,6 +17,32 @@ struct ManagedCompositionSessionPlanBuilder {
         "providers", "components", "upgrade_from",
     ]
 
+    /// Projects only the tool requirements from exact bytes named by a
+    /// verified signed catalog entry. The caller must check the entry digest
+    /// and installed composition identity before using this read-only result.
+    static func signedManagedTools(
+        in manifestBytes: Data,
+        compositionID: String,
+        channel: InstallerReleaseChannel
+    ) -> [ManagedToolRequirement]? {
+        guard var reader = try? StrictJSONResourceReader(data: manifestBytes)
+        else { return nil }
+        guard !manifestBytes.isEmpty,
+              manifestBytes.count <= CompositionCatalogFeedReadback.maximumCatalogBytes,
+              let root = try? reader.parseDocument(),
+              let fields = root.objectValue,
+              Set(fields.keys) == rootFields,
+              let schema = fields["schema"]?.stringValue,
+              [schemaV1, schemaV2, schemaV3].contains(schema),
+              fields["composition_id"]?.stringValue == compositionID,
+              fields["channel"]?.stringValue == channel.rawValue,
+              StrictSignedJSON.canonicalPayload(from: root) == manifestBytes,
+              let tools = try? managedTools(fields["managed_tools"]) else {
+            return nil
+        }
+        return tools
+    }
+
     func build(
         sessionID: String,
         manifestBytes: Data,

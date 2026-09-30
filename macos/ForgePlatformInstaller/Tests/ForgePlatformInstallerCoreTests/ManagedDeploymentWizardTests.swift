@@ -134,6 +134,39 @@ final class ManagedDeploymentWizardTests: XCTestCase {
         XCTAssertEqual(inventory.existing.map(\.id), ["first", "second"])
     }
 
+    func testPreservedInstanceRemainsExclusiveAcrossInventory() throws {
+        let create = try ManagedDeploymentTarget(id: "new", exists: false)
+        let preserved = try ManagedDeploymentTarget(
+            id: "preserved", exists: true,
+            preservedForgeInstanceID: "forge-one",
+            preservedEngineeringPlatformInstanceID: "ep-one"
+        )
+        let activeForge = try ManagedDeploymentTarget(
+            id: "active", exists: true, forgeInstanceID: "forge-one"
+        )
+        XCTAssertThrowsError(try ManagedDeploymentInventory(
+            existing: [preserved, activeForge], createCandidate: create,
+            evidenceReference: "inventory:fixture"
+        )) { error in
+            XCTAssertEqual(error as? ManagedDeploymentInventoryError,
+                           .duplicateForgeInstanceIdentity)
+        }
+        let activeEP = try ManagedDeploymentTarget(
+            id: "active", exists: true, engineeringPlatformInstanceID: "ep-one"
+        )
+        XCTAssertThrowsError(try ManagedDeploymentInventory(
+            existing: [preserved, activeEP], createCandidate: create,
+            evidenceReference: "inventory:fixture"
+        )) { error in
+            XCTAssertEqual(error as? ManagedDeploymentInventoryError,
+                           .duplicateEngineeringPlatformInstanceIdentity)
+        }
+        XCTAssertThrowsError(try ManagedDeploymentTarget(
+            id: "invalid", exists: true,
+            forgeInstanceID: "forge-one", preservedForgeInstanceID: "forge-two"
+        ))
+    }
+
     func testTerminalCompositionProvenanceIsOptionalForLegacyButExactWhenPresent() throws {
         let legacy = try ManagedDeploymentTarget(
             id: "legacy",

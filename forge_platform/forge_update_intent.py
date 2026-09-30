@@ -19,12 +19,27 @@ from typing import Mapping
 
 _OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
+_SOURCE = re.compile(r"[0-9a-f]{40}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _PHASES = ("PREPARED", "UPDATER_INVOKED", "PRODUCT_COMPLETE", "COMPLETE")
 _FIELDS = frozenset({
     "schema", "operation_id", "request_fingerprint", "instance_id",
     "installed_artifact", "candidate_artifact", "assessment_reference",
     "phase", "product_receipt_reference",
+})
+_BINDING_FIELDS = frozenset({
+    "updater_executable", "qualification_receipt", "qualification_receipt_sha256",
+    "controller_source", "controller_sha256", "resolver", "resolver_sha256",
+    "runtime_root", "runtime_id", "installation_id", "peer_configuration_digest",
+    "existing_interpreter", "existing_version", "base_python", "intent_root",
+})
+_BINDING_PATHS = frozenset({
+    "updater_executable", "qualification_receipt", "resolver", "runtime_root",
+    "existing_interpreter", "base_python", "intent_root",
+})
+_BINDING_DIGESTS = frozenset({
+    "qualification_receipt_sha256", "controller_sha256", "resolver_sha256",
+    "peer_configuration_digest",
 })
 
 
@@ -55,6 +70,7 @@ class ForgeUpdateIntent:
     assessment_reference: str
     phase: str = "PREPARED"
     product_receipt_reference: str | None = None
+    binding_snapshot: tuple[tuple[str, str], ...] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.operation_id, str) or _OPERATION_ID.fullmatch(self.operation_id) is None or self.operation_id in {".", ".."}:
@@ -81,10 +97,41 @@ class ForgeUpdateIntent:
             raise ValueError("Forge update terminal intent requires a product receipt")
         if self.phase in {"PREPARED", "UPDATER_INVOKED"} and self.product_receipt_reference is not None:
             raise ValueError("Forge update pending intent cannot claim a product receipt")
+        if self.binding_snapshot is not None:
+            if (
+                not isinstance(self.binding_snapshot, tuple)
+                or len(self.binding_snapshot) != len(_BINDING_FIELDS)
+                or any(
+                    not isinstance(item, tuple) or len(item) != 2
+                    or not isinstance(item[0], str) or not isinstance(item[1], str)
+                    for item in self.binding_snapshot
+                )
+                or tuple(sorted(self.binding_snapshot)) != self.binding_snapshot
+                or {key for key, _ in self.binding_snapshot} != _BINDING_FIELDS
+            ):
+                raise ValueError("Forge update durable binding shape is invalid")
+            values = dict(self.binding_snapshot)
+            if any(
+                not Path(values[key]).is_absolute()
+                or ".." in Path(values[key]).parts
+                or "\x00" in values[key]
+                for key in _BINDING_PATHS
+            ) or any(_DIGEST.fullmatch(values[key]) is None for key in _BINDING_DIGESTS):
+                raise ValueError("Forge update durable binding paths or digests are invalid")
+            if (
+                not _SOURCE.fullmatch(values["controller_source"])
+                or not _OPERATION_ID.fullmatch(values["runtime_id"])
+                or not _OPERATION_ID.fullmatch(values["installation_id"])
+                or values["runtime_id"] != self.instance_id
+                or not values["existing_version"]
+                or len(values["existing_version"]) > 64
+            ):
+                raise ValueError("Forge update durable binding identity is invalid")
 
     def payload(self) -> dict[str, object]:
-        return {
-            "schema": "forge-platform.forge-update-intent/v1",
+        result = {
+            "schema": "forge-platform.forge-update-intent/v2"
+                if self.binding_snapshot is not None else "forge-platform.forge-update-intent/v1",
             "operation_id": self.operation_id,
             "request_fingerprint": self.request_fingerprint,
             "instance_id": self.instance_id,
@@ -94,6 +141,9 @@ class ForgeUpdateIntent:
             "phase": self.phase,
             "product_receipt_reference": self.product_receipt_reference,
         }
+        if self.binding_snapshot is not None:
+            result["binding_snapshot"] = dict(self.binding_snapshot)
+        return result
 
     def same_selection(self, other: "ForgeUpdateIntent") -> bool:
         return all(
@@ -101,6 +151,7 @@ class ForgeUpdateIntent:
             for name in (
                 "operation_id", "request_fingerprint", "instance_id",
                 "installed_artifact", "candidate_artifact", "assessment_reference",
+                "binding_snapshot",
             )
         )
 
@@ -131,10 +182,22 @@ class ForgeUpdateIntentStore:
             value = json.loads(raw, object_pairs_hook=_unique_pairs)
         except (UnicodeError, json.JSONDecodeError, ValueError) as error:
             raise ForgeUpdateIntentError("Forge update intent is unreadable") from error
-        if not isinstance(value, dict) or set(value) != _FIELDS or value.get("schema") != "forge-platform.forge-update-intent/v1":
+        if not isinstance(value, dict):
+            raise ForgeUpdateIntentError("Forge update intent shape is invalid")
+        v2 = value.get("schema") == "forge-platform.forge-update-intent/v2"
+        if (
+            set(value) != (_FIELDS | {"binding_snapshot"} if v2 else _FIELDS)
+            or not v2 and value.get("schema") != "forge-platform.forge-update-intent/v1"
+        ):
             raise ForgeUpdateIntentError("Forge update intent shape is invalid")
         try:
-            intent = ForgeUpdateIntent(**{key: value[key] for key in _FIELDS if key != "schema"})
+            snapshot = value.get("binding_snapshot")
+            if v2 and (not isinstance(snapshot, dict) or set(snapshot) != _BINDING_FIELDS):
+                raise ValueError("Forge update binding snapshot is invalid")
+            intent = ForgeUpdateIntent(
+                **{key: value[key] for key in _FIELDS if key != "schema"},
+                binding_snapshot=tuple(sorted(snapshot.items())) if v2 else None,
+            )
         except (TypeError, ValueError) as error:
             raise ForgeUpdateIntentError("Forge update intent values are invalid") from error
         if raw != _canonical(intent.payload()):
@@ -240,6 +303,7 @@ class ForgeUpdateIntentStore:
                 current.operation_id, current.request_fingerprint, current.instance_id,
                 current.installed_artifact, current.candidate_artifact,
                 current.assessment_reference, phase, receipt,
+                current.binding_snapshot,
             )
             self._write(updated, create=False)
             if self.read(current.operation_id) != updated:

@@ -37,6 +37,77 @@ struct FileManagedInstallerProductWorkerAuthorityReader:
     func readAuthorityDigest() -> Result<
         String, ManagedInstallerProductWorkerAuthorityReadFailure
     > {
+        switch readSecureAuthorityData() {
+        case .success(let data):
+            let digest = SHA256.hash(data: data).map {
+                String(format: "%02x", $0)
+            }.joined()
+            return .success("sha256:" + digest)
+        case .failure(let failure): return .failure(failure)
+        }
+    }
+
+    /// Internal helper-only typed readback. The publisher's canonical decoder
+    /// rejects unknown fields, noncanonical bytes and inconsistent route claims.
+    func readCanonicalAuthority() -> Result<
+        ManagedInstallerProductWorkerAuthoritySnapshot,
+        ManagedInstallerProductWorkerAuthorityReadFailure
+    > {
+        switch readSecureAuthorityData() {
+        case .success(let data):
+            guard let snapshot = try? FileManagedInstallerProductWorkerAuthorityPublisher
+                .decodeCanonicalAuthority(data) else {
+                return .failure(.invalidState)
+            }
+            return .success(snapshot)
+        case .failure(let failure): return .failure(failure)
+        }
+    }
+
+    /// Only a verified absent entry is a first-install condition. An unreadable,
+    /// symlinked or malformed authority is never treated as absence.
+    func readCanonicalAuthorityIfPresent() -> Result<
+        ManagedInstallerProductWorkerAuthoritySnapshot?,
+        ManagedInstallerProductWorkerAuthorityReadFailure
+    > {
+        guard rootDirectory.isFileURL, rootDirectory.baseURL == nil,
+              rootDirectory.path.hasPrefix("/"), rootDirectory.path != "/" else {
+            return .failure(.unavailable)
+        }
+        let root = rootDirectory.path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard root >= 0 else { return .failure(.unavailable) }
+        defer { Darwin.close(root) }
+        var before = stat()
+        guard Darwin.fstat(root, &before) == 0,
+              Self.privateDirectory(before, owner: expectedOwner) else {
+            return .failure(.invalidState)
+        }
+        var entry = stat()
+        let status = Self.fileName.withCString {
+            Darwin.fstatat(root, $0, &entry, AT_SYMLINK_NOFOLLOW)
+        }
+        if status == 0 { return readCanonicalAuthority().map(Optional.some) }
+        guard errno == ENOENT else { return .failure(.invalidState) }
+        var after = stat()
+        guard Darwin.fstat(root, &after) == 0,
+              Self.sameDirectory(before, after),
+              Self.privateDirectory(after, owner: expectedOwner) else {
+            return .failure(.invalidState)
+        }
+        let repeated = Self.fileName.withCString {
+            Darwin.fstatat(root, $0, &entry, AT_SYMLINK_NOFOLLOW)
+        }
+        guard repeated == -1, errno == ENOENT else {
+            return .failure(.invalidState)
+        }
+        return .success(nil)
+    }
+
+    private func readSecureAuthorityData() -> Result<
+        Data, ManagedInstallerProductWorkerAuthorityReadFailure
+    > {
         guard rootDirectory.isFileURL, rootDirectory.baseURL == nil,
               rootDirectory.path.hasPrefix("/"), rootDirectory.path != "/" else {
             return .failure(.unavailable)
@@ -85,8 +156,7 @@ struct FileManagedInstallerProductWorkerAuthorityReader:
               Self.privateDirectory(rootAfter, owner: expectedOwner) else {
             return .failure(.invalidState)
         }
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        return .success("sha256:" + digest)
+        return .success(data)
     }
 
     private static func privateDirectory(_ value: stat, owner: uid_t) -> Bool {

@@ -178,9 +178,10 @@ Released candidate packaging also requires
 LaunchDaemon plist under `Contents/Library/LaunchDaemons` binds that relative
 program to the three fixed Mach services. The protected signer signs the helper
 first with its fixed signing identifier and verifies that identity again after
-the final archive is extracted. The helper's released-route handler is
-read-only; product mutation remains unavailable until its production backend
-is connected.
+the final archive is extracted. The earlier public 0.2.4 qualification helper
+does not establish a functional product-mutation release. Current source has a
+helper-owned product backend, but its producer, composition and live lifecycle
+gates remain open.
 
 The layout helper also accepts an optional `--product-worker PATH` only for a
 bounded deterministic `.pyz`. It requires canonical sorted regular `0644`
@@ -191,8 +192,10 @@ tagged SHA-256 to `ForgePlatformProductWorkerSHA256` in `Info.plist`. For each
 product operation the helper locates its own signed parent app, takes the
 worker URL and digest from that exact bundle, and repeats the full signing
 inspection after the read. The runner verifies the worker bytes against that
-digest immediately before invocation. The release
-workflow does not yet construct or pass a production worker.
+digest immediately before invocation. The release workflow now builds and
+packages this deterministic worker. Packaging alone does not supply the
+immutable production composition, corrected producer evidence or live
+qualification required for a functional release.
 
 `scripts/build_installer_product_worker.py --output PATH.pyz` builds the exact
 deterministic zipapp form accepted above. It includes only the repository's

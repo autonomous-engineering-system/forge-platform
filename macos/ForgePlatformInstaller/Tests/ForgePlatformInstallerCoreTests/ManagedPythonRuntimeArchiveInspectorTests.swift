@@ -29,6 +29,42 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
         XCTAssertEqual(repeatInstall, installed)
     }
 
+    func testRestartReadbackUsesCachedArchiveAfterStagingDiscard() async throws {
+        let fixture = try ArchiveInspectionFixture()
+        let root = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let publisher = MacOSManagedPythonRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        )
+        let request = try slotRequest(fixture)
+        let first = MacOSManagedPythonRuntimeSlotAdapter(
+            runtime: fixture.runtime, staging: ArchiveSlotStaging(fixture: fixture),
+            publisher: publisher
+        )
+        let installed = await first.installRuntimeSlot(request)
+        guard case .success(let receipt) = installed else {
+            return XCTFail("Initial runtime publication failed: \(installed)")
+        }
+        let restarted = MacOSManagedPythonRuntimeSlotAdapter(
+            runtime: fixture.runtime,
+            staging: ArchiveSlotStaging(fixture: fixture, failure: .unavailable),
+            publisher: publisher
+        )
+        let restartedReadback = await restarted.readRuntimeSlot(request)
+        XCTAssertEqual(restartedReadback, .success(receipt))
+        let cache = root.appendingPathComponent(
+            "archive-" + request.archiveSHA256.dropFirst("sha256:".count)
+                + ".tar.gz"
+        )
+        try FileManager.default.removeItem(at: cache)
+        let missingCache = await restarted.readRuntimeSlot(request)
+        XCTAssertEqual(missingCache, .failure(.rejected))
+        try Data("corrupt cache".utf8).write(to: cache)
+        XCTAssertEqual(chmod(cache.path, 0o600), 0)
+        let corruptCache = await restarted.readRuntimeSlot(request)
+        XCTAssertEqual(corruptCache, .failure(.rejected))
+    }
+
     func testSlotCoordinatorUsesConcreteAdapterAndIndependentFinalReadback() async throws {
         let fixture = try ArchiveInspectionFixture()
         let root = try extractionSlot()
@@ -97,7 +133,7 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
         )
         let corruptRead = await corrupt.readRuntimeSlot(request)
         let corruptInstall = await corrupt.installRuntimeSlot(request)
-        XCTAssertEqual(corruptRead, .failure(.rejected))
+        XCTAssertEqual(corruptRead, .success(nil))
         XCTAssertEqual(corruptInstall, .failure(.rejected))
         for failure in [
             ManagedPythonRuntimeStagingFailure.invalidRequest,
@@ -115,7 +151,7 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
             }
             let read = await unavailable.readRuntimeSlot(request)
             let install = await unavailable.installRuntimeSlot(request)
-            XCTAssertEqual(read, .failure(expected))
+            XCTAssertEqual(read, .success(nil))
             XCTAssertEqual(install, .failure(expected))
         }
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
@@ -287,7 +323,8 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
             layout: layout, runtimeVerifier: verifier, expectedOwner: geteuid()
         )
         let creator = MacOSManagedPythonProductVenvCreator(
-            layout: layout, runtimeVerifier: verifier, readback: readback
+            layout: layout, runtimeVerifier: verifier, readback: readback,
+            wheel: ManagedPythonProductWheelTestDouble()
         )
         XCTAssertNil(try readback.readPublished(venvRequest).get())
         let initialVenv = await creator.readProductVenv(venvRequest)
@@ -679,7 +716,7 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
     }
 }
 
-private enum ArchiveInspectionMutation: Equatable {
+enum ArchiveInspectionMutation: Equatable {
     case missingManifest, emptyManifest, missingInterpreter, emptyInterpreter
     case missingBinDirectory, interpreterNotExecutable, duplicateInterpreter
     case setuidManifest, writableInterpreter, writableGenericFile, nonTraversableBinDirectory
@@ -968,13 +1005,13 @@ private actor ArchiveInspectionStaging: ManagedPythonRuntimeAssetStaging {
     func observedKinds() -> [ManagedPythonRuntimeAssetKind] { observations }
 }
 
-private enum ArchiveTarEntry {
+enum ArchiveTarEntry {
     case file(String, Data, UInt64)
     case directory(String, UInt64)
     case symbolicLink(String, String)
 }
 
-private func archiveTar(_ entries: [ArchiveTarEntry]) -> Data {
+func archiveTar(_ entries: [ArchiveTarEntry]) -> Data {
     var archive = Data()
     for entry in entries {
         let path: String
@@ -1015,7 +1052,7 @@ private func archiveTar(_ entries: [ArchiveTarEntry]) -> Data {
     return archive
 }
 
-private func archiveGZIP(_ body: Data) throws -> Data {
+func archiveGZIP(_ body: Data) throws -> Data {
     var compressed = Data(count: body.count + 1024)
     let count = compressed.withUnsafeMutableBytes { destination in
         body.withUnsafeBytes { source in
@@ -1038,7 +1075,7 @@ private func archiveGZIP(_ body: Data) throws -> Data {
     return result
 }
 
-private func archiveMachO(mutation: ArchiveInspectionMutation?) -> Data {
+func archiveMachO(mutation: ArchiveInspectionMutation?) -> Data {
     let commandCount: UInt32 = mutation == .missingBuildVersion ? 1 : (mutation == .duplicateBuildVersion ? 2 : 1)
     let commandSize: UInt32 = mutation == .malformedLoadCommand ? 7 : 24
     let totalCommandBytes = mutation == .duplicateBuildVersion ? 48 : Int(commandSize)

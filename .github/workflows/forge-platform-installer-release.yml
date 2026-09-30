@@ -194,6 +194,12 @@ jobs:
           mkdir release-input
           python3 scripts/build_installer_product_worker.py \
             --output release-input/forge-platform-product-worker.pyz
+          curl --fail --location --silent --show-error --retry 3 --max-time 60 \
+            --output release-input/forge-update-controller.py \
+            https://raw.githubusercontent.com/pcvantol/forge/e4b99a249845a547fd6b8e7e11d22467b2d0886d/scripts/update_installed_forge.py
+          curl --fail --location --silent --show-error --retry 3 --max-time 60 \
+            --output release-input/forge-release-complete-2.7.38.json \
+            https://github.com/pcvantol/forge/releases/download/forge-v2.7.38/forge-release-complete-2.7.38-0a3d6e35b01da93bb5a674ae7795558655c16c7d.json
           python3 scripts/prepare_offline_installer_resources.py \
             --release-trust-resource release-trust/ForgePlatformInstallerReleaseTrust.json \
             --catalog-trust-resource release-trust/ForgePlatformInstallerCompositionCatalogTrust.json \
@@ -207,6 +213,8 @@ jobs:
             --cli-executable "$BINARY_DIRECTORY/forge-platform-installer" \
             --helper-executable "$BINARY_DIRECTORY/forge-platform-installer-helper" \
             --product-worker release-input/forge-platform-product-worker.pyz \
+            --forge-update-controller release-input/forge-update-controller.py \
+            --forge-release-complete-receipt release-input/forge-release-complete-2.7.38.json \
             --output release-input/ForgePlatformInstaller.app \
             --bundle-identifier "$BUNDLE_IDENTIFIER" \
             --sealed-release-trust-resource release-trust/ForgePlatformInstallerReleaseTrust.json \
@@ -217,6 +225,17 @@ jobs:
           test -x release-input/ForgePlatformInstaller.app/Contents/MacOS/forge-platform-installer
           test -x release-input/ForgePlatformInstaller.app/Contents/Resources/forge-platform-installer-helper
           test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-platform-product-worker.pyz
+          test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-update-controller.py
+          test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-release-complete-2.7.38.json
+          python3 - <<'PY'
+          from pathlib import Path
+          from forge_platform.forge_update_resources import read_forge_update_resources
+
+          worker = Path("release-input/ForgePlatformInstaller.app/Contents/Resources/forge-platform-product-worker.pyz").resolve()
+          resources = read_forge_update_resources(worker)
+          assert resources.controller.name == "forge-update-controller.py"
+          assert resources.release_receipt.name == "forge-release-complete-2.7.38.json"
+          PY
           test -f release-input/ForgePlatformInstaller.app/Contents/Library/LaunchDaemons/com.autonomous-engineering-system.forge-platform-installer.helper.plist
           ARCHIVE="$ASSET_PREFIX$ARCHITECTURE.zip"
           python3 scripts/package_macos_installer_archive.py \

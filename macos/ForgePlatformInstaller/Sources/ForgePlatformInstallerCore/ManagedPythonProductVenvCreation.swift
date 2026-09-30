@@ -14,31 +14,66 @@ protocol ManagedPythonProductVenvCreating: Sendable {
     ) async -> Result<ManagedPythonProductVenvReceipt, ManagedPythonRuntimeActivationFailure>
 }
 
+/// The helper's exact wheel installer is the only collaborator allowed to
+/// populate the unpublished product venv. Its readback is repeated on every
+/// adoption; an interpreter-only venv cannot become product-ready.
+public protocol ManagedPythonProductVenvWheelInstalling: Sendable {
+    func installIntoPending(
+        _ pending: URL, published: URL,
+        request: ManagedPythonProductVenvMutationRequest
+    ) async -> Result<String, ManagedPythonRuntimeActivationFailure>
+
+    func readPublished(
+        _ published: URL, request: ManagedPythonProductVenvMutationRequest
+    ) async -> Result<String, ManagedPythonRuntimeActivationFailure>
+}
+
 struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, Sendable {
     private let layout: MacOSManagedPythonProductVenvSlotLayout
     private let runtimeVerifier: any ManagedPythonProductVenvRuntimeVerifying
     private let readback: MacOSManagedPythonProductVenvReadback
+    private let wheel: any ManagedPythonProductVenvWheelInstalling
 
     init(
         layout: MacOSManagedPythonProductVenvSlotLayout,
         runtimeVerifier: any ManagedPythonProductVenvRuntimeVerifying,
-        readback: MacOSManagedPythonProductVenvReadback
+        readback: MacOSManagedPythonProductVenvReadback,
+        wheel: any ManagedPythonProductVenvWheelInstalling
     ) {
         self.layout = layout
         self.runtimeVerifier = runtimeVerifier
         self.readback = readback
+        self.wheel = wheel
     }
 
     func readProductVenv(
         _ request: ManagedPythonProductVenvMutationRequest
     ) async -> Result<ManagedPythonProductVenvReceipt?, ManagedPythonRuntimeActivationFailure> {
-        readback.readPublished(request)
+        let receipt: ManagedPythonProductVenvReceipt
+        switch readback.readPublished(request) {
+        case .success(let ready?): receipt = ready
+        case .success(nil): return .success(nil)
+        case .failure(let failure): return .failure(failure)
+        }
+        let published: URL
+        switch layout.readPublishedDirectory(for: request) {
+        case .success(let directory?): published = directory
+        case .success: return .failure(.rejected)
+        case .failure(let failure): return .failure(failure)
+        }
+        switch await wheel.readPublished(published, request: request) {
+        case .success(let evidence)
+            where CompositionCatalogValidation.isTaggedSHA256(evidence):
+            return .success(receipt)
+        case .success: return .failure(.rejected)
+        case .failure(let failure): return .failure(failure)
+        }
     }
 
     func ensureProductVenv(
         _ request: ManagedPythonProductVenvMutationRequest
     ) async -> Result<ManagedPythonProductVenvReceipt, ManagedPythonRuntimeActivationFailure> {
-        switch readback.readPublished(request) {
+        switch await readProductVenv(request) {
         case .success(let receipt?) where receipt.matches(request): return .success(receipt)
         case .success(nil): break
         case .success: return .failure(.rejected)
@@ -70,6 +105,24 @@ struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, S
         } catch { return .failure(.unavailable) }
         guard process.terminationReason == .exit, process.terminationStatus == 0,
               case .success = runtimeVerifier.verifiedInterpreter(for: request),
+              case .success = readback.probePending(pending, request: request) else {
+            return .failure(.rejected)
+        }
+        let published = pending.url.deletingLastPathComponent().appendingPathComponent(
+            MacOSManagedPythonProductVenvSlotLayout.slotName(for: request),
+            isDirectory: true
+        )
+        let installedWheelEvidence: String
+        switch await wheel.installIntoPending(
+            pending.url, published: published, request: request
+        ) {
+        case .success(let evidence)
+            where CompositionCatalogValidation.isTaggedSHA256(evidence):
+            installedWheelEvidence = evidence
+        case .success: return .failure(.rejected)
+        case .failure(let failure): return .failure(failure)
+        }
+        guard case .success = runtimeVerifier.verifiedInterpreter(for: request),
               case .success = readback.probePending(pending, request: request),
               synchronizeCriticalFiles(in: pending.url) else {
             return .failure(.rejected)
@@ -78,7 +131,12 @@ struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, S
         case .success: break
         case .failure(let failure): return .failure(failure)
         }
-        switch readback.readPublished(request) {
+        switch await wheel.readPublished(published, request: request) {
+        case .success(let evidence) where evidence == installedWheelEvidence: break
+        case .success: return .failure(.rejected)
+        case .failure(let failure): return .failure(failure)
+        }
+        switch await readProductVenv(request) {
         case .success(let receipt?) where receipt.matches(request): return .success(receipt)
         case .success: return .failure(.rejected)
         case .failure(let failure): return .failure(failure)

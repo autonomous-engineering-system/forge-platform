@@ -15,6 +15,7 @@ public struct ManagedInstallerProviderRuntimeMutationRequest: Equatable, Sendabl
     public static let managedRootIdentity = "forge-platform-managed-provider-runtime-v1"
 
     public let operationID: String
+    public let deploymentID: String
     public let providerTargetID: ProviderTargetID
     public let provider: ProviderID
     public let runtime: ProviderRuntimeRequirement
@@ -27,11 +28,13 @@ public struct ManagedInstallerProviderRuntimeMutationRequest: Equatable, Sendabl
     public let minimumMacOSVersion: InstallerVersion
 
     public init(
+        deploymentID: String,
         stagedArchive: ManagedInstallerProviderStagedArchive,
         requirement: ProviderRequirement,
         inspection: ManagedInstallerProviderRuntimeArchiveInspection
     ) throws {
-        guard Self.isExactComponentRequirement(requirement),
+        guard (try? ManagedDeploymentTarget(id: deploymentID, exists: false)) != nil,
+              Self.isExactComponentRequirement(requirement),
               let runtime = requirement.runtime,
               stagedArchive.providerTargetID == requirement.id,
               stagedArchive.provider == requirement.provider,
@@ -44,11 +47,16 @@ public struct ManagedInstallerProviderRuntimeMutationRequest: Equatable, Sendabl
             throw ManagedInstallerProviderRuntimeMutationFailure.invalidRequest
         }
         operationID = stagedArchive.operationID
+        self.deploymentID = deploymentID
         providerTargetID = requirement.id
         provider = requirement.provider
         self.runtime = runtime
-        runtimeSlotIdentity = Self.runtimeSlotIdentity(for: requirement)
-        providerHomeIdentity = Self.providerHomeIdentity(for: requirement)
+        runtimeSlotIdentity = Self.runtimeSlotIdentity(
+            for: requirement, deploymentID: deploymentID
+        )
+        providerHomeIdentity = Self.providerHomeIdentity(
+            for: requirement, deploymentID: deploymentID
+        )
         stagedArchiveOpaqueReference = stagedArchive.opaqueReference
         stagedArchiveFileIdentity = stagedArchive.fileIdentity
         inspectionEvidenceReference = inspection.evidenceReference
@@ -56,12 +64,16 @@ public struct ManagedInstallerProviderRuntimeMutationRequest: Equatable, Sendabl
         minimumMacOSVersion = inspection.minimumMacOSVersion
     }
 
-    public static func runtimeSlotIdentity(for requirement: ProviderRequirement) -> String {
+    public static func runtimeSlotIdentity(
+        for requirement: ProviderRequirement, deploymentID: String
+    ) -> String {
         guard isExactComponentRequirement(requirement),
+              (try? ManagedDeploymentTarget(id: deploymentID, exists: false)) != nil,
               let runtime = requirement.runtime else { return "" }
         return identity(
             prefix: "provider-runtime-slot",
             fields: [
+                deploymentID,
                 requirement.id.rawValue,
                 runtime.version.description,
                 runtime.artifactSHA256,
@@ -71,11 +83,15 @@ public struct ManagedInstallerProviderRuntimeMutationRequest: Equatable, Sendabl
         )
     }
 
-    public static func providerHomeIdentity(for requirement: ProviderRequirement) -> String {
-        guard isExactComponentRequirement(requirement) else { return "" }
+    public static func providerHomeIdentity(
+        for requirement: ProviderRequirement, deploymentID: String
+    ) -> String {
+        guard isExactComponentRequirement(requirement),
+              (try? ManagedDeploymentTarget(id: deploymentID, exists: false)) != nil
+        else { return "" }
         return identity(
             prefix: "provider-home",
-            fields: [requirement.id.rawValue]
+            fields: [deploymentID, requirement.id.rawValue]
         )
     }
 
@@ -107,6 +123,7 @@ public struct ManagedInstallerProviderRuntimeMutationReceipt: Equatable, Sendabl
     }
 
     public let operationID: String
+    public let deploymentID: String
     public let providerTargetID: ProviderTargetID
     public let provider: ProviderID
     public let runtime: ProviderRuntimeRequirement
@@ -120,6 +137,7 @@ public struct ManagedInstallerProviderRuntimeMutationReceipt: Equatable, Sendabl
 
     public init(
         operationID: String,
+        deploymentID: String,
         providerTargetID: ProviderTargetID,
         provider: ProviderID,
         runtime: ProviderRuntimeRequirement,
@@ -132,6 +150,7 @@ public struct ManagedInstallerProviderRuntimeMutationReceipt: Equatable, Sendabl
         evidenceReference: String
     ) throws {
         guard ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+              (try? ManagedDeploymentTarget(id: deploymentID, exists: false)) != nil,
               managedRootIdentity == ManagedInstallerProviderRuntimeMutationRequest
                 .managedRootIdentity,
               InstallerSelfUpdateValidation.isOpaqueReference(runtimeSlotIdentity),
@@ -144,6 +163,7 @@ public struct ManagedInstallerProviderRuntimeMutationReceipt: Equatable, Sendabl
             throw ManagedInstallerProviderRuntimeMutationFailure.invalidRequest
         }
         self.operationID = operationID
+        self.deploymentID = deploymentID
         self.providerTargetID = providerTargetID
         self.provider = provider
         self.runtime = runtime
@@ -162,6 +182,7 @@ public struct ManagedInstallerProviderRuntimeMutationReceipt: Equatable, Sendabl
     ) throws {
         try self.init(
             operationID: request.operationID,
+            deploymentID: request.deploymentID,
             providerTargetID: request.providerTargetID,
             provider: request.provider,
             runtime: request.runtime,
@@ -178,6 +199,7 @@ public struct ManagedInstallerProviderRuntimeMutationReceipt: Equatable, Sendabl
 
     func matches(_ request: ManagedInstallerProviderRuntimeMutationRequest) -> Bool {
         operationID == request.operationID
+            && deploymentID == request.deploymentID
             && providerTargetID == request.providerTargetID
             && provider == request.provider
             && runtime == request.runtime
@@ -227,6 +249,7 @@ public struct ManagedInstallerProviderRuntimeMutationCoordinator: Sendable {
     }
 
     public func ensureProviderRuntime(
+        deploymentID: String,
         stagedArchive: ManagedInstallerProviderStagedArchive,
         requirement: ProviderRequirement,
         inspection: ManagedInstallerProviderRuntimeArchiveInspection
@@ -236,6 +259,7 @@ public struct ManagedInstallerProviderRuntimeMutationCoordinator: Sendable {
     > {
         do {
             let request = try ManagedInstallerProviderRuntimeMutationRequest(
+                deploymentID: deploymentID,
                 stagedArchive: stagedArchive,
                 requirement: requirement,
                 inspection: inspection

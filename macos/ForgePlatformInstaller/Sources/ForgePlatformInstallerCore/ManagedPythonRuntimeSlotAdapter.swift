@@ -21,13 +21,7 @@ struct MacOSManagedPythonRuntimeSlotAdapter: ManagedPythonRuntimeSlotMutating {
     func readRuntimeSlot(
         _ request: ManagedPythonRuntimeSlotMutationRequest
     ) async -> Result<ManagedPythonRuntimeSlotReceipt?, ManagedPythonRuntimeSlotMutationFailure> {
-        switch await readExactStagedArchive(request) {
-        case .success(let bytes):
-            return publisher.readPublishedSlot(
-                archive: bytes, runtime: runtime, request: request
-            )
-        case .failure(let failure): return .failure(failure)
-        }
+        publisher.readPublishedSlotFromCache(runtime: runtime, request: request)
     }
 
     func installRuntimeSlot(

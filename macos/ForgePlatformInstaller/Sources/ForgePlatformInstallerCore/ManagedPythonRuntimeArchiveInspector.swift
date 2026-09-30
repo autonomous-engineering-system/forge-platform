@@ -298,7 +298,7 @@ private enum ManagedPythonRuntimeArchiveManifest {
     }
 }
 
-private enum ManagedPythonGZIP {
+enum ManagedPythonGZIP {
     private static let headerByteCount = 10
     private static let trailerByteCount = 8
     private static let outputChunkByteCount = 64 * 1024
@@ -389,7 +389,7 @@ private enum ManagedPythonGZIP {
     }
 }
 
-private struct ManagedPythonTarContents {
+struct ManagedPythonTarContents {
     let manifest: Data
     let interpreter: Data
     let members: [ManagedPythonRuntimeArchiveMember]
@@ -397,7 +397,7 @@ private struct ManagedPythonTarContents {
     let expandedByteCount: UInt64
 }
 
-private struct ManagedPythonTarInspector {
+struct ManagedPythonTarInspector {
     private enum State {
         case header
         case payload(
@@ -413,6 +413,8 @@ private struct ManagedPythonTarInspector {
     private let maximumPathBytes: Int
     private let maximumManifestBytes: UInt64
     private let maximumInterpreterBytes: UInt64
+    private let manifestPath: String
+    private let executablePath: String
     private var state: State = .header
     private var buffer = Data()
     private var paths = Set<String>()
@@ -430,7 +432,9 @@ private struct ManagedPythonTarInspector {
         maximumEntries: Int,
         maximumPathBytes: Int,
         maximumManifestBytes: UInt64,
-        maximumInterpreterBytes: UInt64
+        maximumInterpreterBytes: UInt64,
+        manifestPath: String = ManagedPythonRuntimeArchiveInspection.manifestPath,
+        executablePath: String = ManagedPythonRuntimeArchiveInspection.interpreterRelativePath
     ) throws {
         guard maximumExpandedBytes > 0,
               maximumEntries > 0,
@@ -444,6 +448,8 @@ private struct ManagedPythonTarInspector {
         self.maximumPathBytes = maximumPathBytes
         self.maximumManifestBytes = maximumManifestBytes
         self.maximumInterpreterBytes = maximumInterpreterBytes
+        self.manifestPath = manifestPath
+        self.executablePath = executablePath
     }
 
     mutating func consume(_ data: Data) throws {
@@ -573,9 +579,9 @@ private struct ManagedPythonTarInspector {
                 throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
             }
             let limit: UInt64?
-            if path == ManagedPythonRuntimeArchiveInspection.manifestPath {
+            if path == manifestPath {
                 limit = maximumManifestBytes
-            } else if path == ManagedPythonRuntimeArchiveInspection.interpreterRelativePath {
+            } else if path == executablePath {
                 guard mode & 0o100 != 0 else {
                     throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
                 }
@@ -623,12 +629,12 @@ private struct ManagedPythonTarInspector {
             path: path, kind: .file, mode: mode,
             byteCount: size, sha256: "sha256:" + digest
         ))
-        if path == ManagedPythonRuntimeArchiveInspection.manifestPath {
+        if path == manifestPath {
             guard manifest == nil, let collected, !collected.isEmpty else {
                 throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
             }
             manifest = collected
-        } else if path == ManagedPythonRuntimeArchiveInspection.interpreterRelativePath {
+        } else if path == executablePath {
             guard interpreter == nil, let collected, !collected.isEmpty else {
                 throw ManagedPythonRuntimeArchiveInspectionFailure.rejected
             }

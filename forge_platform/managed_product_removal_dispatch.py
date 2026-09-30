@@ -27,6 +27,8 @@ from .managed_product_removal_admission import (
     NativeProductRemovalRequest, admit_native_product_removal,
 )
 from .managed_product_removal_review import ManagedProductRemovalReviewJournal
+from .qualified_ep_lifecycle import qualified_ep_lifecycle_artifact
+from .qualified_forge_lifecycle import qualified_forge_lifecycle_artifact
 from .universal_installer import CompositionManifest
 
 
@@ -123,11 +125,9 @@ class ManagedProductRemovalDispatcher:
             or by_component[FORGE_COMPONENT].instance_id != request.forge_instance_id
             or (by_component.get(EP_COMPONENT).instance_id if EP_COMPONENT in by_component else None)
             != request.engineering_platform_instance_id
-            or forge is None or forge.version != "2.7.35"
-            or forge.source_revision != "ff4c0d45f51161376104250cd6efcfb6f045b8ac"
+            or not qualified_forge_lifecycle_artifact(forge)
             or EP_COMPONENT in by_component and (
-                ep is None or ep.version != "2.3.102"
-                or ep.source_revision != "cab85a84a6a8b5b574c796713e4363781fc05519"
+                not qualified_ep_lifecycle_artifact(ep)
             )
         ):
             raise ManagedProductRemovalDispatchError("reviewed product authority changed")

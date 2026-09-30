@@ -142,13 +142,30 @@ linked, permissive or oversized entry fails closed. A host-wide nonblocking
 provider lease now closes reconciliation, staging, read-only inspection and
 exact terminal discard into one cleanup-enforcing qualification transaction.
 Busy, cleanup and release failures cannot return `QUALIFIED`. A separate closed
-provider-runtime mutation coordinator now binds the exact component target,
-runtime, staged file identity and inspection evidence to derived opaque runtime
-slot and provider-home identities. It sends no path, command, environment value
+provider-runtime mutation coordinator now binds the exact managed deployment,
+component target, runtime, staged file identity and inspection evidence to
+deployment-scoped opaque runtime-slot and provider-home identities. It sends no path, command, environment value
 or credential across its injected privilege seam, re-reads the staged bytes
 before and after mutation, and requires an independent exact installed-runtime
-readback before returning `READY`. The concrete archive extraction and
-installation adapter remains absent. A cleanup-enforcing provider preparation
+readback before returning `READY`. Archive extraction, slot publication and
+the exact staged-archive adapter are source-qualified; credential-home
+provisioning and the complete privileged provider mutation adapter now have
+native source-level qualification. The helper derives an exact Forge home or EP
+product `home`/`config` directory, verifies private no-follow ownership, and
+binds it to a freshly resolved product service account. The adapter requires
+an independently read runtime slot and home before returning a terminal
+receipt; partial publication remains resumable and fail-closed. The helper now
+bootstraps one fixed private Forge provider-context root, and the Forge slot
+publisher derives deployment, instance and provider subdirectories from the
+reviewed target with no-follow checks. A helper factory now assembles exact
+Forge and EP preparation paths from one admitted composition and stable plan;
+construction has no side effects. A fresh-install account planner now binds
+distinct helper-chosen non-root names to each exact reviewed component,
+deployment, product wheel and operation; an exclusive-lease coordinator
+requires independent OS readback after account creation and rejects partial,
+foreign or ambiguous identities. The concrete Open Directory mutator,
+canonical product-route publication and released-route wiring remain absent,
+so live provider readiness is not established. A cleanup-enforcing provider preparation
 coordinator now composes reconciliation, staging, inspection, that mutation
 seam and terminal discard under the same host-wide lease. Its final `READY`
 receipt rebinds every archive, inspection, runtime-slot and provider-home

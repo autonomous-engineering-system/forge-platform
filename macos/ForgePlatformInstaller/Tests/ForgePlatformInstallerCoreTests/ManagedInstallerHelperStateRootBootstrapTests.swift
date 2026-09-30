@@ -14,11 +14,40 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
 
         XCTAssertEqual(try bootstrap.prepare(), expected)
         XCTAssertEqual(try bootstrap.prepare(), expected)
+        XCTAssertEqual(
+            ManagedInstallerHelperStateRootBootstrap.operationStateRoot(
+                for: expected
+            ),
+            expected.appendingPathComponent("state", isDirectory: true)
+        )
         for directory in [
             expected.deletingLastPathComponent(), expected,
             expected.appendingPathComponent("managed-python-runtime-slots", isDirectory: true),
             expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.managedGitSlotsDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
                 ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.stagedDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.providerContextsDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.productsDirectoryName,
+                isDirectory: true
+            ),
+            expected.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.productsDirectoryName,
+                isDirectory: true
+            ).appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.engineeringPlatformDirectoryName,
                 isDirectory: true
             ),
             expected.appendingPathComponent(
@@ -78,6 +107,29 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
 
+    func testRejectsUnsafeManagedGitSlotsRoot() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let bootstrap = testBootstrap(parent)
+        let root = try bootstrap.prepare()
+        let slots = root.appendingPathComponent(
+            ManagedInstallerHelperStateRootBootstrap.managedGitSlotsDirectoryName,
+            isDirectory: true
+        )
+        XCTAssertEqual(chmod(slots.path, 0o755), 0)
+        XCTAssertThrowsError(try bootstrap.prepare())
+
+        try FileManager.default.removeItem(at: slots)
+        let outside = parent.appendingPathComponent("outside-git-slots", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outside, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+        )
+        try FileManager.default.createSymbolicLink(at: slots, withDestinationURL: outside)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
     func testRejectsUnsafeExistingProductVenvsRoot() throws {
         let parent = try makePrivateParent()
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -100,6 +152,75 @@ final class ManagedInstallerHelperStateRootBootstrapTests: XCTestCase {
         )
         try FileManager.default.createSymbolicLink(at: venvs, withDestinationURL: outside)
         XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    func testRejectsUnsafeProviderContextRoot() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let bootstrap = testBootstrap(parent)
+        let root = try bootstrap.prepare()
+        let contexts = root.appendingPathComponent(
+            ManagedInstallerHelperStateRootBootstrap.providerContextsDirectoryName,
+            isDirectory: true
+        )
+        XCTAssertEqual(chmod(contexts.path, 0o755), 0)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        try FileManager.default.removeItem(at: contexts)
+        let outside = parent.appendingPathComponent("outside-contexts", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside,
+                                                withIntermediateDirectories: false)
+        XCTAssertEqual(chmod(outside.path, 0o700), 0)
+        try FileManager.default.createSymbolicLink(at: contexts, withDestinationURL: outside)
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    func testRejectsSymlinkedProductArtifactStagingRoot() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let bootstrap = testBootstrap(parent)
+        let root = try bootstrap.prepare()
+        let staged = root.appendingPathComponent(
+            ManagedInstallerHelperStateRootBootstrap.stagedDirectoryName,
+            isDirectory: true
+        )
+        try FileManager.default.removeItem(at: staged)
+        let outside = parent.appendingPathComponent("outside-staged", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outside, withIntermediateDirectories: false
+        )
+        XCTAssertEqual(Darwin.chmod(outside.path, 0o700), 0)
+        try FileManager.default.createSymbolicLink(
+            at: staged, withDestinationURL: outside
+        )
+        XCTAssertThrowsError(try bootstrap.prepare())
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(
+            atPath: outside.path
+        ).isEmpty)
+    }
+
+    func testRejectsUnsafeEPProductRootWithoutFollowingSymlink() throws {
+        let parent = try makePrivateParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = try testBootstrap(parent).prepare()
+        let product = root.appendingPathComponent("products/engineering-platform",
+                                                isDirectory: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: product.path
+        )
+        XCTAssertThrowsError(try testBootstrap(parent).prepare())
+
+        try FileManager.default.removeItem(at: product)
+        let outside = parent.appendingPathComponent("outside-product", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside,
+                                                withIntermediateDirectories: false)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: outside.path
+        )
+        try FileManager.default.createSymbolicLink(at: product,
+                                                   withDestinationURL: outside)
+        XCTAssertThrowsError(try testBootstrap(parent).prepare())
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
 

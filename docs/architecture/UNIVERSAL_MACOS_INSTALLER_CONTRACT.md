@@ -1,5 +1,17 @@
 # Universal macOS Installer contract
 
+**Current qualification hold (2026-09-29):** The historical implementation
+snapshot below is not production admission. Forge 2.7.36 and EP 2.3.103/2.3.104
+have proven lifecycle ownership gaps. Forge 2.7.38 and EP 2.3.106 are the
+current separate released-wheel producer dependencies in
+[forge#142 terminal revision 27](https://github.com/pcvantol/forge/issues/142#issuecomment-5892374672).
+EP 2.3.105 retains its historical evidence and inherited-cwd defect.
+Production composition and live Forge/EP lifecycle qualification remain held
+until Forge Platform consumes the exact producer evidence in
+[forge#141](https://github.com/pcvantol/forge/issues/141). The installer 0.2.4
+qualification helper is registered on one Mac, but that observation does not
+prove the first functional release or cold reboot before interactive login.
+
 **Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a durable platform-neutral managed-Python executor kernel with an atomic terminal-receipt-to-installer-journal bridge, a native wizard shell, an internal read-only C-3a catalog-admission coordinator that composes sealed trust, exact transport, independently injected time evidence and a read-only anti-replay anchor, a native source-level exact component-combination selector for the digest-pinned index, credential-free native transport plus private no-follow staging/readback for the four exact managed-Python identity assets, a read-only native archive/Mach-O inspector, a closed source-level runtime-slot mutation coordinator behind an injected privilege seam, a cleanup-enforcing preparation coordinator with a host-wide nonblocking operation lease, private atomic pending-record, cleanup-only restart integration and descriptor-safe acquisition-orphan reconciliation, separately locked native coordination for exact product-venv readiness, activation, rollback retention, final readback, durable private `READY`-receipt recovery, platform-neutral `COMPLETE`-receipt handoff and exact typed `TOOLS_VERIFIED` evidence projection, a private atomic/idempotent active parent-journal store behind the admission bridge, a source-level exact `PLANNED` journal seeder with durable readback, and a strict context-bound post-tool snapshot reader with a durable single-assignment store, capture/persist/readback producer coordinator, closed canonical host-observation request/response adapter, fixed privileged NSXPC client transport and atomic helper-owned host-state publication with exact durable readback. The released bundle path now includes a separate thin-arm64 helper code object, exact SMAppService LaunchDaemon plist and explicit nested Developer ID signing/readback, while the helper exports fail-closed unavailable handlers until its production backend is wired. No independently reviewed production time-evidence adapter, concrete privileged helper backend, live signed helper registration, released executor-journal wiring, composition-session producer, product provisioner adapter, published production runtime, released mutation wiring, or production deployment is certified.
 
 Exact V3 provider archives additionally have credential-free transport, private
@@ -16,8 +28,14 @@ V3 targets in canonical order and returns only a complete plan-bound receipt
 set. A source-level runtime-preparation admission coordinator requires exact
 durable parent-`PLANNED` readback before provider or managed-Python preparation,
 revalidates each result before advancing and returns one stable-plan-bound
-`RUNTIMES_READY` receipt. It is not released-route wiring. The concrete provider extraction/install adapter,
-credential-home provisioning and released wiring remain unimplemented; this
+`RUNTIMES_READY` receipt. It is not released-route wiring. The helper-side
+provider archive extractor now re-inspects exact `tar.gz`/ZIP bytes before
+mutation, extracts into an empty private destination, normalizes only the
+provider executable to root-owned `0500`, and independently verifies every
+resulting path, mode and file digest. Target-bound versioned runtime slots now
+retain the digest-pinned archive for exact reboot readback and refuse corrupt
+or crossed target state. Component-owned credential-home provisioning,
+the provider mutation adapter and released wiring remain unimplemented; this
 source-level seam is not live provider-readiness evidence.
 
 The fixed NSXPC client authenticates the exact helper signing identifier and
@@ -733,12 +751,12 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 ## Managed Installer V1 implementation — 2026-09-23
 
 The active `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923` source slice
-implements the ADR-0007 management model. Its accepted producer baseline is now
-Forge 2.7.36 at `ed1e623ef3cedd8c4f720510e0052409b2d5ab1f` and Engineering
-Platform 2.3.103 at `9b1b9d49d7c8f6ceb7cae914078f56b475e8f4a2`.
-Both protected releases and their additive lifecycle contracts are `QUALIFIED`;
-binding those versions into the production composition and released installer
-remains consumer work. The exact implementation/limitations
+implements the ADR-0007 management model. Its source contracts currently model
+Forge 2.7.38 at `0a3d6e35b01da93bb5a674ae7795558655c16c7d` and Engineering
+Platform 2.3.106 at `7b99b578153ae5d72372a09db194306b49ec9f9c`.
+The lifecycle producer hold above supersedes any earlier qualification claim
+for those exact artifacts. Binding corrected qualified producers into the
+production composition and released installer remains consumer work. The exact implementation/limitations
 are documented in [Managed Installer V1](MANAGED_INSTALLER_V1.md).
 
 This source now contains a durable managed-deployment registry and execution
@@ -748,8 +766,8 @@ provider fan-out coordination, the EP system-provisioner adapter, and the Forge
 Server deployment/service adapter.
 
 These source surfaces do not by themselves claim installer publication or live
-Mac success. Forge 2.7.36 supplies product-owned update assessment, legacy
-uninstall and preserve/purge/restore boundaries; EP 2.3.103 supplies the matching
+Mac success. Forge 2.7.38 supplies product-owned update assessment, legacy
+uninstall and preserve/purge/restore boundaries; EP 2.3.106 supplies the matching
 system-instance lifecycle. Forge Platform must still bind the exact producer
 executables and artifacts and complete reviewed lifecycle execution before those
 operations can be released. Signing/notarization, provider-supported real authentication,
@@ -846,7 +864,7 @@ discard under the same lease, with cleanup and release failure precedence. The
 exact stable-plan provider fanout is also implemented as a fail-fast,
 source-level coordinator with deterministic per-target operations and a
 complete plan-bound receipt. A separate admission coordinator enforces durable
-`PLANNED` seeding before provider and managed-Python runtime preparation. The concrete extraction/install adapter and credential-home provisioning,
+`PLANNED` seeding before provider and managed-Python runtime preparation. Provider archive extraction, target-bound runtime slot publication and exact cached tree readback are source-qualified; credential-home provisioning and the provider mutation adapter,
 service-account secure-store integration, the other four live gate observers,
 signed helper registration and released journal-seeding integration remain
 unimplemented.
@@ -931,8 +949,18 @@ cleanup-enforcing provider preparation transaction are implemented. The
 canonical stable-plan fanout and its complete plan-bound receipt are also
 implemented. Exact parent-journal seeding is ordered before provider and
 managed-Python preparation by a source-level stable-plan admission coordinator.
-The concrete extraction/install adapter and credential-home provisioning, service-account secure-store
-integration, other four live gate observers, signed service registration and
+Provider archive extraction, deployment-and-target-bound runtime slot
+publication, exact staged-archive-to-slot binding and cached tree readback are
+source-qualified. The stable-plan deployment ID now survives per-target
+preparation, mutation request/receipt and slot readback; a foreign deployment
+receipt or slot root fails closed.
+The helper can independently read the canonical product-worker authority
+snapshot and resolve a provider's exact deployment, product instance, product
+artifact and current installer release to one non-root local service account.
+Absent or stale product routes and OS accounts fail closed. This read-only
+resolution creates no account, provider home or authentication state.
+Credential-home provisioning, the complete provider mutation adapter and
+service-account secure-store integration, other four live gate observers, signed service registration and
 released wiring remain unimplemented. The source-level provider-gate evaluator,
 separate gate router and fixed-layout macOS component-provider inspector are
 implemented. A descriptor-safe reader, atomic publisher and complete-set exact

@@ -13,6 +13,43 @@ struct MacOSManagedPythonRuntimeSlotPublisher: Sendable {
         self.expectedOwner = expectedOwner
     }
 
+    /// Reconstructs the exact archive inventory from the private digest cache
+    /// after operation staging has been discarded. An existing slot without
+    /// its archive is ambiguous and can never be accepted as installed.
+    func readPublishedSlotFromCache(
+        runtime: ManagedPythonRuntimeIdentity,
+        request: ManagedPythonRuntimeSlotMutationRequest
+    ) -> Result<ManagedPythonRuntimeSlotReceipt?, ManagedPythonRuntimeSlotMutationFailure> {
+        guard request.runtimeIdentitySHA256 == runtime.identitySHA256,
+              request.runtimeSlotIdentity
+                == ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+                    for: runtime.identitySHA256
+                ),
+              request.archiveSHA256 == runtime.artifact.sha256 else {
+            return .failure(.invalidRequest)
+        }
+        switch MacOSManagedPythonRuntimeArchiveCache(
+            slotsRoot: slotsRoot, expectedOwner: expectedOwner
+        ).read(archiveSHA256: request.archiveSHA256) {
+        case .success(let archive?):
+            return readPublishedSlot(
+                archive: archive, runtime: runtime, request: request
+            )
+        case .success(nil):
+            do {
+                let root = try openPrivateSlotsRoot()
+                defer { _ = Darwin.close(root) }
+                var details = stat()
+                let status = request.runtimeSlotIdentity.withCString {
+                    Darwin.fstatat(root, $0, &details, AT_SYMLINK_NOFOLLOW)
+                }
+                if status == 0 { return .failure(.rejected) }
+                return errno == ENOENT ? .success(nil) : .failure(.rejected)
+            } catch { return .failure(.rejected) }
+        case .failure(let failure): return .failure(failure)
+        }
+    }
+
     func readPublishedSlot(
         archive: Data,
         runtime: ManagedPythonRuntimeIdentity,

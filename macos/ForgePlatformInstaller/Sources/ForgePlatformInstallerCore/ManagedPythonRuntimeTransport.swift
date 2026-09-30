@@ -67,30 +67,41 @@ public final class HTTPSManagedPythonRuntimeAssetTransport: NSObject, ManagedPyt
         for runtime: ManagedPythonRuntimeIdentity
     ) async -> Result<ManagedPythonRuntimeAssetReadback, ManagedPythonRuntimeTransportFailure> {
         let identity = Self.downloadIdentity(for: kind, runtime: runtime)
-        guard let endpoint = URL(string: identity.url),
-              Self.isExactCanonicalEndpoint(endpoint, identity: identity) else {
-            return .failure(.invalidRequest)
-        }
-        do {
-            let bytes = try await fetch(
-                endpoint: endpoint,
-                maximumBytes: Self.maximumBytes(for: kind)
-            )
-            guard "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: bytes)
-                    == identity.sha256 else {
-                return .failure(.rejected)
-            }
+        switch await fetchExactAsset(identity, maximumBytes: Self.maximumBytes(for: kind)) {
+        case .success(let bytes):
             return .success(ManagedPythonRuntimeAssetReadback(
                 runtimeIdentitySHA256: runtime.identitySHA256,
                 kind: kind,
                 downloadIdentity: identity,
                 bytes: bytes
             ))
+        case .failure(let failure): return .failure(failure)
+        }
+    }
+
+    /// The helper's other catalog-bound archive consumers use the same
+    /// credential-free, no-redirect byte transport. Only their already
+    /// admitted immutable identity may supply the URL and digest.
+    func fetchExactAsset(
+        _ identity: ManagedPythonDownloadIdentity,
+        maximumBytes: Int
+    ) async -> Result<Data, ManagedPythonRuntimeTransportFailure> {
+        guard let endpoint = URL(string: identity.url),
+              Self.isExactCanonicalEndpoint(endpoint, identity: identity),
+              maximumBytes > 0,
+              maximumBytes <= Self.maximumRuntimeArchiveBytes else {
+            return .failure(.invalidRequest)
+        }
+        do {
+            let bytes = try await fetch(endpoint: endpoint, maximumBytes: maximumBytes)
+            guard "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: bytes)
+                    == identity.sha256 else {
+                return .failure(.rejected)
+            }
+            return .success(bytes)
         } catch let failure as ManagedPythonRuntimeTransportFailure {
             return .failure(failure)
-        } catch {
-            return .failure(.unavailable)
-        }
+        } catch { return .failure(.unavailable) }
     }
 
     private func fetch(endpoint: URL, maximumBytes: Int) async throws -> Data {

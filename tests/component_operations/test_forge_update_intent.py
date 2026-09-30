@@ -17,6 +17,50 @@ from forge_platform.forge_update_intent import (
 
 
 class ForgeUpdateIntentTests(unittest.TestCase):
+    def test_v2_binding_snapshot_is_durable_and_exact_across_recovery(self) -> None:
+        binding = tuple(sorted({
+            "updater_executable": "/Applications/Installer.app/Contents/Resources/forge-update-controller.py",
+            "qualification_receipt": "/Applications/Installer.app/Contents/Resources/forge-release-complete-2.7.38.json",
+            "qualification_receipt_sha256": "sha256:" + "1" * 64,
+            "controller_source": "2" * 40,
+            "controller_sha256": "sha256:" + "3" * 64,
+            "resolver": "/Library/Forge/bin/forge",
+            "resolver_sha256": "sha256:" + "4" * 64,
+            "runtime_root": "/Library/Forge/update-runtime",
+            "runtime_id": "forge-instance-1",
+            "installation_id": "installation-1",
+            "peer_configuration_digest": "sha256:" + "5" * 64,
+            "existing_interpreter": "/Library/Forge/bin/python3",
+            "existing_version": "2.7.37",
+            "base_python": "/Library/Forge/base/bin/python3",
+            "intent_root": str(self.root),
+        }.items()))
+        intent = replace(self.intent, binding_snapshot=binding)
+        pending = self.store.prepare(intent)
+        self.assertEqual(self.store.read(intent.operation_id), pending)
+        self.assertEqual(json.loads((self.root / "forge-update-1.json").read_bytes())["schema"],
+                         "forge-platform.forge-update-intent/v2")
+        invoked = self.store.advance(pending, "UPDATER_INVOKED")
+        self.assertEqual(invoked.binding_snapshot, binding)
+        with self.assertRaisesRegex(ForgeUpdateIntentError, "identity changed"):
+            self.store.prepare(replace(intent, binding_snapshot=tuple(sorted({
+                **dict(binding), "peer_configuration_digest": "sha256:" + "6" * 64,
+            }.items()))))
+        terminal = self.store.advance(invoked, "PRODUCT_COMPLETE", self.receipt)
+        self.assertEqual(self.store.advance(terminal, "COMPLETE").binding_snapshot, binding)
+        path = self.root / "forge-update-1.json"
+        original = path.read_bytes()
+        payload = json.loads(original)
+        payload["binding_snapshot"]["resolver"] = "../foreign"
+        path.write_bytes((json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode())
+        with self.assertRaises(ForgeUpdateIntentError):
+            self.store.read(intent.operation_id)
+        path.write_bytes(original)
+        with self.assertRaises(ValueError):
+            replace(intent, binding_snapshot=tuple(sorted({
+                **dict(binding), "runtime_id": "foreign",
+            }.items())))
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

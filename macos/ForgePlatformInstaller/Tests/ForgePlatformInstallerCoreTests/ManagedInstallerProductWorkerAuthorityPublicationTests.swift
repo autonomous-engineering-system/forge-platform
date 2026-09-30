@@ -4,6 +4,232 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
+    func testV5BindsDistinctHelperOwnedProductVenvSlots() async throws {
+        let (legacy, _) = try fixture()
+        let route = try XCTUnwrap(legacy.routes.first)
+        let forgeEvidence = try venvEvidence(
+            deployment: route.deploymentID, component: "forge-runtime"
+        )
+        let epEvidence = try venvEvidence(
+            deployment: route.deploymentID, component: "engineering-platform-server"
+        )
+        let forgeSlot = MacOSManagedPythonProductVenvSlotLayout.slotName(
+            for: forgeEvidence.request
+        )
+        let epSlot = MacOSManagedPythonProductVenvSlotLayout.slotName(for: epEvidence.request)
+        let bound = try ManagedInstallerProductWorkerRouteAuthority(
+            deploymentID: route.deploymentID,
+            forgeInstanceID: route.forgeInstanceID,
+            forgeInstallationID: route.forgeInstallationID,
+            forgeServiceAccount: route.forgeServiceAccount,
+            forgeBindPort: route.forgeBindPort,
+            forgeArtifactSHA256: route.forgeArtifactSHA256,
+            engineeringPlatformArtifactSHA256: route.engineeringPlatformArtifactSHA256,
+            engineeringPlatformInstanceID: route.engineeringPlatformInstanceID,
+            engineeringPlatformDisplayLabel: route.engineeringPlatformDisplayLabel,
+            engineeringPlatformServiceAccount: route.engineeringPlatformServiceAccount,
+            engineeringPlatformBindPort: route.engineeringPlatformBindPort,
+            pairing: route.pairing,
+            forgeVenvSlotName: forgeSlot,
+            engineeringPlatformVenvSlotName: epSlot
+        )
+        let snapshot = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: legacy.installerRelease,
+            candidateManifests: legacy.candidateManifests,
+            routes: [bound]
+        )
+        let bytes = snapshot.canonicalJSONData()
+        let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        XCTAssertEqual(wire["schema"] as? String,
+                       ManagedInstallerProductWorkerAuthoritySnapshot.slotSchema)
+        XCTAssertEqual((wire["single_routes"] as? [Any])?.count, 0)
+        let routes = try XCTUnwrap(wire["routes"] as? [[String: Any]])
+        XCTAssertEqual(routes[0]["forge_venv_slot"] as? String, forgeSlot)
+        XCTAssertEqual(routes[0]["ep_venv_slot"] as? String, epSlot)
+        let (parent, root, publisher) = try preparedPublisher()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let evidence = [forgeEvidence, epEvidence]
+        let reader = VenvReceiptReader(receipts: evidence.map(\.activationReceipt))
+        let wheel = ManagedPythonProductWheelTestDouble(
+            evidence: forgeEvidence.wheelBindingEvidence
+        )
+        XCTAssertEqual(publisher.publishProductWorkerAuthority(snapshot),
+                       .failure(.invalidAuthority))
+        let receipt = try await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: evidence, reader: reader, wheel: wheel
+        ).get()
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(receipt.fileName)), bytes)
+        let replay = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: evidence, reader: reader, wheel: wheel
+        )
+        XCTAssertEqual(replay, .success(receipt))
+        let missing = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: [forgeEvidence], reader: reader, wheel: wheel
+        )
+        XCTAssertEqual(missing, .failure(.invalidAuthority))
+        let noRuntimeReadback = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: evidence,
+            reader: VenvReceiptReader(receipts: []), wheel: wheel
+        )
+        XCTAssertEqual(noRuntimeReadback, .failure(.invalidAuthority))
+        let noWheel = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: evidence, reader: reader,
+            wheel: ManagedPythonProductWheelTestDouble(failReadback: true)
+        )
+        XCTAssertEqual(noWheel, .failure(.invalidAuthority))
+        let driftedWheel = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: evidence, reader: reader,
+            wheel: ManagedPythonProductWheelTestDouble(
+                evidence: forgeEvidence.wheelBindingEvidence,
+                readbackEvidence: "sha256:" + String(repeating: "f", count: 64)
+            )
+        )
+        XCTAssertEqual(driftedWheel, .failure(.invalidAuthority))
+        let stale = try venvEvidence(
+            deployment: route.deploymentID, component: "forge-runtime",
+            operation: "different-venv-operation"
+        )
+        let staleResult = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: [stale, epEvidence],
+            reader: VenvReceiptReader(receipts: [stale.activationReceipt,
+                                                 epEvidence.activationReceipt]),
+            wheel: wheel
+        )
+        XCTAssertEqual(staleResult, .failure(.invalidAuthority))
+        let wrongManifest = try venvEvidence(
+            deployment: route.deploymentID, component: "forge-runtime",
+            venvIdentity: "foreign-venv"
+        )
+        let wrongRoute = try ManagedInstallerProductWorkerRouteAuthority(
+            deploymentID: route.deploymentID,
+            forgeInstanceID: route.forgeInstanceID,
+            forgeInstallationID: route.forgeInstallationID,
+            forgeServiceAccount: route.forgeServiceAccount,
+            forgeBindPort: route.forgeBindPort,
+            forgeArtifactSHA256: route.forgeArtifactSHA256,
+            engineeringPlatformArtifactSHA256: route.engineeringPlatformArtifactSHA256,
+            engineeringPlatformInstanceID: route.engineeringPlatformInstanceID,
+            engineeringPlatformDisplayLabel: route.engineeringPlatformDisplayLabel,
+            engineeringPlatformServiceAccount: route.engineeringPlatformServiceAccount,
+            engineeringPlatformBindPort: route.engineeringPlatformBindPort,
+            pairing: route.pairing,
+            forgeVenvSlotName: MacOSManagedPythonProductVenvSlotLayout.slotName(
+                for: wrongManifest.request
+            ),
+            engineeringPlatformVenvSlotName: epSlot
+        )
+        let wrongSnapshot = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: legacy.installerRelease,
+            candidateManifests: legacy.candidateManifests,
+            routes: [wrongRoute]
+        )
+        let wrongResult = await publisher.publishVerifiedProductWorkerAuthority(
+            wrongSnapshot, evidence: [wrongManifest, epEvidence],
+            reader: VenvReceiptReader(receipts: [wrongManifest.activationReceipt,
+                                                 epEvidence.activationReceipt]),
+            wheel: wheel
+        )
+        XCTAssertEqual(wrongResult, .failure(.invalidAuthority))
+        let changedReadback = try ManagedPythonProductVenvReceipt(
+            operationID: forgeEvidence.request.operationID,
+            deploymentID: forgeEvidence.request.deploymentID,
+            componentIdentity: forgeEvidence.request.componentIdentity,
+            venvIdentity: forgeEvidence.request.venvIdentity,
+            runtimeIdentitySHA256: forgeEvidence.request.runtimeIdentitySHA256,
+            runtimeSlotIdentity: forgeEvidence.request.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: forgeEvidence.request.runtimeSlotEvidenceReference,
+            state: .ready, evidenceReference: "receipt:changed-venv-readback"
+        )
+        let changedResult = await publisher.publishVerifiedProductWorkerAuthority(
+            snapshot, evidence: evidence,
+            reader: VenvReceiptReader(receipts: [changedReadback,
+                                                 epEvidence.activationReceipt]),
+            wheel: wheel
+        )
+        XCTAssertEqual(changedResult, .failure(.invalidAuthority))
+        let (singleLegacy, _) = try singleFixture()
+        let single = try XCTUnwrap(singleLegacy.singleRoutes.first)
+        let singleEvidence = try venvEvidence(
+            deployment: single.deploymentID, component: single.componentIdentity
+        )
+        let singleSlot = MacOSManagedPythonProductVenvSlotLayout.slotName(
+            for: singleEvidence.request
+        )
+        let boundSingle = try ManagedInstallerProductWorkerSingleRouteAuthority(
+            deploymentID: single.deploymentID,
+            componentIdentity: single.componentIdentity,
+            instanceID: single.instanceID,
+            serviceAccount: single.serviceAccount,
+            bindPort: single.bindPort,
+            artifactSHA256: single.artifactSHA256,
+            forgeInstallationID: single.forgeInstallationID,
+            engineeringPlatformDisplayLabel: single.engineeringPlatformDisplayLabel,
+            venvSlotName: singleSlot
+        )
+        let singleSnapshot = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: singleLegacy.installerRelease,
+            candidateManifests: singleLegacy.candidateManifests,
+            routes: [], singleRoutes: [boundSingle]
+        )
+        let singleWire = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: singleSnapshot.canonicalJSONData()) as? [String: Any])
+        XCTAssertEqual(singleWire["schema"] as? String,
+                       ManagedInstallerProductWorkerAuthoritySnapshot.slotSchema)
+        let singleRoutes = try XCTUnwrap(singleWire["single_routes"] as? [[String: Any]])
+        XCTAssertEqual(singleRoutes[0]["venv_slot"] as? String, singleSlot)
+        let (singleParent, _, singlePublisher) = try preparedPublisher()
+        defer { try? FileManager.default.removeItem(at: singleParent) }
+        let singleResult = await singlePublisher.publishVerifiedProductWorkerAuthority(
+            singleSnapshot, evidence: [singleEvidence],
+            reader: VenvReceiptReader(receipts: [singleEvidence.activationReceipt]),
+            wheel: wheel
+        )
+        XCTAssertNoThrow(try singleResult.get())
+        let duplicateSlot = try ManagedInstallerProductWorkerSingleRouteAuthority(
+            deploymentID: "other-deployment", componentIdentity: single.componentIdentity,
+            instanceID: "other-forge", serviceAccount: "_other_forge", bindPort: 9875,
+            artifactSHA256: single.artifactSHA256,
+            forgeInstallationID: "other-installation", venvSlotName: forgeSlot
+        )
+        XCTAssertThrowsError(try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: legacy.installerRelease,
+            candidateManifests: legacy.candidateManifests,
+            routes: [bound], singleRoutes: [duplicateSlot]
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductWorkerRouteAuthority(
+            deploymentID: route.deploymentID,
+            forgeInstanceID: route.forgeInstanceID,
+            forgeInstallationID: route.forgeInstallationID,
+            forgeServiceAccount: route.forgeServiceAccount,
+            forgeBindPort: route.forgeBindPort,
+            forgeArtifactSHA256: route.forgeArtifactSHA256,
+            engineeringPlatformArtifactSHA256: route.engineeringPlatformArtifactSHA256,
+            engineeringPlatformInstanceID: route.engineeringPlatformInstanceID,
+            engineeringPlatformDisplayLabel: route.engineeringPlatformDisplayLabel,
+            engineeringPlatformServiceAccount: route.engineeringPlatformServiceAccount,
+            engineeringPlatformBindPort: route.engineeringPlatformBindPort,
+            pairing: route.pairing,
+            forgeVenvSlotName: forgeSlot,
+            engineeringPlatformVenvSlotName: forgeSlot
+        ))
+        XCTAssertThrowsError(try ManagedInstallerProductWorkerRouteAuthority(
+            deploymentID: route.deploymentID,
+            forgeInstanceID: route.forgeInstanceID,
+            forgeInstallationID: route.forgeInstallationID,
+            forgeServiceAccount: route.forgeServiceAccount,
+            forgeBindPort: route.forgeBindPort,
+            forgeArtifactSHA256: route.forgeArtifactSHA256,
+            engineeringPlatformArtifactSHA256: route.engineeringPlatformArtifactSHA256,
+            engineeringPlatformInstanceID: route.engineeringPlatformInstanceID,
+            engineeringPlatformDisplayLabel: route.engineeringPlatformDisplayLabel,
+            engineeringPlatformServiceAccount: route.engineeringPlatformServiceAccount,
+            engineeringPlatformBindPort: route.engineeringPlatformBindPort,
+            pairing: route.pairing,
+            forgeVenvSlotName: "../foreign",
+            engineeringPlatformVenvSlotName: epSlot
+        ))
+    }
+
     func testV4SingleRouteMatchesPythonBytesAndCASReplacesV3() throws {
         let (pairSnapshot, pairBytes) = try fixture()
         let (singleSnapshot, singleBytes) = try singleFixture()
@@ -368,6 +594,72 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
         XCTAssertFalse(expected.isEmpty)
     }
 
+    func testPairingAuthorityRequiresForgeCanonicalKeychainReference() throws {
+        func binding(_ reference: String) throws -> ManagedInstallerProductWorkerPairingAuthority {
+            try ManagedInstallerProductWorkerPairingAuthority(
+                bindingID: "binding", consumerID: "consumer", hostID: "host",
+                projectID: "project", repositoryID: "repository",
+                repositoryIdentity: "owner:repository",
+                credentialReference: reference, operatorID: "operator"
+            )
+        }
+        for reference in [
+            "keychain://forge.ep/consumer",
+            "keychain://forge.ep/consumer?namespace=system",
+            "keychain://forge.ep/consumer?version=one",
+            "keychain://forge.ep/consumer?namespace=system&version=one",
+        ] {
+            XCTAssertEqual(try binding(reference).credentialReference, reference)
+        }
+        for reference in [
+            "keychain://consumer", "keychain://forge.ep/", "keychain:///consumer",
+            "keychain://forge.ep/consumer/other", "keychain://forge.ep/consumer?",
+            "keychain://forge.ep/consumer?namespace=",
+            "keychain://forge.ep/consumer?namespace=x&namespace=y",
+            "keychain://forge.ep/consumer?version=one&namespace=system",
+            "keychain://forge.ep/consumer?unknown=x",
+            "keychain://forge.ep/consumer%2Fother", "keychain://forge.ep/consumer#x",
+        ] {
+            XCTAssertThrowsError(try binding(reference), reference)
+        }
+    }
+
+    func testPairingAuthorityRequiresEPCanonicalConsumerAndProjectScope() throws {
+        func binding(_ consumer: String, _ project: String) throws
+            -> ManagedInstallerProductWorkerPairingAuthority {
+            try ManagedInstallerProductWorkerPairingAuthority(
+                bindingID: "binding", consumerID: consumer, hostID: "host",
+                projectID: project, repositoryID: "repository",
+                repositoryIdentity: "owner:repository",
+                credentialReference: "keychain://forge.ep/consumer",
+                operatorID: "operator"
+            )
+        }
+        XCTAssertEqual(try binding("forge-consumer-1", "project-1").projectID,
+                       "project-1")
+        for invalid in ["Forge", "project_name", "1project", "project.name",
+                        "project:name", "project/other", String(repeating: "a", count: 129)] {
+            XCTAssertThrowsError(try binding(invalid, "project"), invalid)
+            XCTAssertThrowsError(try binding("consumer", invalid), invalid)
+        }
+        XCTAssertNoThrow(try ManagedInstallerProductWorkerPairingAuthority(
+            bindingID: "binding", consumerID: "consumer", hostID: "host",
+            projectID: "project", repositoryID: "1repo_name.test",
+            repositoryIdentity: "owner:repository",
+            credentialReference: "keychain://forge.ep/consumer",
+            operatorID: "operator"
+        ))
+        for invalid in ["ab", "Repository", "repo/path"] {
+            XCTAssertThrowsError(try ManagedInstallerProductWorkerPairingAuthority(
+                bindingID: "binding", consumerID: "consumer", hostID: "host",
+                projectID: "project", repositoryID: invalid,
+                repositoryIdentity: "owner:repository",
+                credentialReference: "keychain://forge.ep/consumer",
+                operatorID: "operator"
+            ), invalid)
+        }
+    }
+
     private func preparedPublisher() throws -> (
         URL, URL, FileManagedInstallerProductWorkerAuthorityPublisher
     ) {
@@ -384,6 +676,40 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
         return (parent, root, FileManagedInstallerProductWorkerAuthorityPublisher(
             rootDirectory: root, expectedOwner: geteuid()
         ))
+    }
+
+    private func venvEvidence(
+        deployment: String, component: String,
+        operation: String = "venv-operation-1", venvIdentity: String? = nil
+    ) throws -> ManagedInstallerProductWorkerVenvPublicationEvidence {
+        let runtime = "sha256:17a676c2824aa0ed7e53515282d033bb754d0921cb000b1ff4aa156ed02b9def"
+        let request = ManagedPythonProductVenvMutationRequest(
+            operationID: operation, deploymentID: deployment,
+            environment: try ManagedProductVirtualEnvironmentIdentity(
+                componentIdentity: component,
+                venvIdentity: venvIdentity ?? component + "-primary",
+                pythonRuntimeIdentitySHA256: runtime
+            ),
+            runtimeSlotIdentity: ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+                for: runtime
+            ),
+            runtimeSlotEvidenceReference: "receipt:runtime-slot-test"
+        )
+        let receipt = try ManagedPythonProductVenvReceipt(
+            operationID: request.operationID,
+            deploymentID: request.deploymentID,
+            componentIdentity: request.componentIdentity,
+            venvIdentity: request.venvIdentity,
+            runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+            runtimeSlotIdentity: request.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: request.runtimeSlotEvidenceReference,
+            state: .ready,
+            evidenceReference: "receipt:venv-readback-test"
+        )
+        return ManagedInstallerProductWorkerVenvPublicationEvidence(
+            request: request, activationReceipt: receipt,
+            wheelBindingEvidence: "sha256:" + String(repeating: "a", count: 64)
+        )
     }
 
     private func fixture() throws -> (ManagedInstallerProductWorkerAuthoritySnapshot, Data) {
@@ -490,5 +816,15 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
             routes: [],
             singleRoutes: singleRoutes
         ), expected)
+    }
+}
+
+private struct VenvReceiptReader: ManagedInstallerProductWorkerVenvReading {
+    let receipts: [ManagedPythonProductVenvReceipt]
+
+    func readPublished(
+        _ request: ManagedPythonProductVenvMutationRequest
+    ) -> Result<ManagedPythonProductVenvReceipt?, ManagedPythonRuntimeActivationFailure> {
+        .success(receipts.first { $0.matches(request) })
     }
 }

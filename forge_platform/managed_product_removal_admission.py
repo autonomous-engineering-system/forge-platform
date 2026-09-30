@@ -19,6 +19,8 @@ from .managed_deployments import (
 )
 from .managed_install_flow import EP_COMPONENT, FORGE_COMPONENT
 from .managed_product_operation_admission import NativeInstallerReleaseBinding
+from .qualified_ep_lifecycle import qualified_ep_lifecycle_artifact
+from .qualified_forge_lifecycle import qualified_forge_lifecycle_artifact
 from .universal_installer import CompositionManifest
 
 
@@ -204,11 +206,9 @@ def admit_native_product_removal(
     forge = artifacts.get(FORGE_COMPONENT)
     ep = artifacts.get(EP_COMPONENT)
     if (
-        forge is None or forge.version != "2.7.35"
-        or forge.source_revision != "ff4c0d45f51161376104250cd6efcfb6f045b8ac"
+        not qualified_forge_lifecycle_artifact(forge)
         or EP_COMPONENT in by_component and (
-            ep is None or ep.version != "2.3.102"
-            or ep.source_revision != "cab85a84a6a8b5b574c796713e4363781fc05519"
+            not qualified_ep_lifecycle_artifact(ep)
         )
     ):
         raise ManagedProductRemovalAdmissionError("product-owned removal contract is unavailable")

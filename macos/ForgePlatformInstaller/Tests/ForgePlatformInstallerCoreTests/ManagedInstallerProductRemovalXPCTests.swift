@@ -5,6 +5,45 @@ import XCTest
 final class ManagedInstallerProductRemovalXPCTests: XCTestCase {
     private let digest = String(repeating: "a", count: 64)
 
+    func testHelperLocalRemovalReviewAndExecutionRemainCorrelated() async throws {
+        let intent = try makeReviewIntent()
+        let proposal = try makeReviewProposal(for: intent)
+        let request = try makeRequest()
+        let receipt = try makeReceipt(for: request)
+        let executor = RemovalXPCExecutor(
+            results: [.success(receipt)], reviewResults: [.success(proposal)]
+        )
+        let transport = ManagedInstallerHelperLocalProductOperationTransport(
+            executor: executor
+        )
+
+        let reviewed = try await transport.prepareProductRemovalReview(
+            intent.canonicalJSONData()
+        ).get()
+        let removed = try await transport.executeProductRemoval(
+            request.canonicalJSONData()
+        ).get()
+        let reviewCalls = await executor.reviewCalls()
+        let removalCalls = await executor.calls()
+        let invalidReview = await transport.prepareProductRemovalReview(Data("{}".utf8))
+        let invalidRemoval = await transport.executeProductRemoval(Data("{}".utf8))
+        let noncanonicalReview = await transport.prepareProductRemovalReview(
+            intent.canonicalJSONData() + Data(" ".utf8)
+        )
+        let noncanonicalRemoval = await transport.executeProductRemoval(
+            request.canonicalJSONData() + Data(" ".utf8)
+        )
+
+        XCTAssertEqual(reviewed, proposal.canonicalJSONData())
+        XCTAssertEqual(removed, receipt.canonicalJSONData())
+        XCTAssertEqual(reviewCalls, [intent])
+        XCTAssertEqual(removalCalls, [request])
+        XCTAssertEqual(invalidReview.failure, .invalidRequest)
+        XCTAssertEqual(invalidRemoval.failure, .invalidRequest)
+        XCTAssertEqual(noncanonicalReview.failure, .invalidRequest)
+        XCTAssertEqual(noncanonicalRemoval.failure, .invalidRequest)
+    }
+
     func testAuthenticatedXPCReviewRoundTripUsesOneCanonicalIntent() async throws {
         let intent = try makeReviewIntent()
         let proposal = try makeReviewProposal(for: intent)

@@ -3,11 +3,38 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReviewedExecutionAdmissionTests: XCTestCase {
+    func testReleasedBindingRequiresBothPrivateLoaderAndHelperExecutor()
+        async throws {
+        let plan = try makePlan()
+        let events = AdmissionEvents()
+        let loader = AdmissionPlanLoader(
+            results: [.success(plan), .success(plan)], events: events
+        )
+        let executor = AdmissionExecutor(events: events)
+        XCTAssertNil(ManagedInstallerReviewedExecutionAdmission.whenReady(
+            loader: nil, executor: executor
+        ))
+        XCTAssertNil(ManagedInstallerReviewedExecutionAdmission.whenReady(
+            loader: loader, executor: nil
+        ))
+        let bound = try XCTUnwrap(
+            ManagedInstallerReviewedExecutionAdmission.whenReady(
+                loader: loader, executor: executor
+            )
+        )
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+        let result = await bound.execute(canonicalIntent: intent.canonicalJSONData())
+        XCTAssertEqual(result,
+                       .completed(stages: [], summaryItems: []))
+        let calls = await events.calls
+        XCTAssertEqual(calls, ["load", "load", "execute"])
+    }
+
     func testExactCanonicalIntentRefreshesPlanBeforeCallingExecutor() async throws {
         let plan = try makePlan()
         let events = AdmissionEvents()
         let admission = makeAdmission(
-            loaded: .success(plan), refreshed: .prepared(plan), events: events
+            loaded: [.success(plan), .success(plan)], events: events
         )
         let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
 
@@ -15,14 +42,14 @@ final class ManagedInstallerReviewedExecutionAdmissionTests: XCTestCase {
 
         XCTAssertEqual(result, .completed(stages: [], summaryItems: []))
         let calls = await events.calls
-        XCTAssertEqual(calls, ["load", "refresh", "execute"])
+        XCTAssertEqual(calls, ["load", "load", "execute"])
     }
 
     func testMalformedAndNoncanonicalIntentsNeverReachHelperPlanLoader() async throws {
         let plan = try makePlan()
         let events = AdmissionEvents()
         let admission = makeAdmission(
-            loaded: .success(plan), refreshed: .prepared(plan), events: events
+            loaded: [.success(plan), .success(plan)], events: events
         )
         let canonical = try ManagedInstallerReviewedExecutionIntent(
             stablePlan: plan
@@ -39,8 +66,7 @@ final class ManagedInstallerReviewedExecutionAdmissionTests: XCTestCase {
         let plan = try makePlan()
         let events = AdmissionEvents()
         let admission = makeAdmission(
-            loaded: .failure(AdmissionError.missing),
-            refreshed: .prepared(plan), events: events
+            loaded: [.failure(AdmissionError.missing)], events: events
         )
         let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
 
@@ -56,8 +82,7 @@ final class ManagedInstallerReviewedExecutionAdmissionTests: XCTestCase {
         let substituted = try makePlan(detail: "Another instance's reviewed action")
         let events = AdmissionEvents()
         let admission = makeAdmission(
-            loaded: .success(substituted),
-            refreshed: .prepared(substituted), events: events
+            loaded: [.success(substituted)], events: events
         )
         let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
 
@@ -73,7 +98,7 @@ final class ManagedInstallerReviewedExecutionAdmissionTests: XCTestCase {
         let drift = try makePlan(detail: "Changed after review")
         let events = AdmissionEvents()
         let admission = makeAdmission(
-            loaded: .success(plan), refreshed: .prepared(drift), events: events
+            loaded: [.success(plan), .success(drift)], events: events
         )
         let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
 
@@ -81,33 +106,31 @@ final class ManagedInstallerReviewedExecutionAdmissionTests: XCTestCase {
 
         XCTAssertEqual(result, .failed(.staleSession, stages: []))
         let calls = await events.calls
-        XCTAssertEqual(calls, ["load", "refresh"])
+        XCTAssertEqual(calls, ["load", "load"])
     }
 
-    func testRefreshFailureIsForwardedWithoutMutation() async throws {
+    func testFreshPlanUnavailableFailsWithoutMutation() async throws {
         let plan = try makePlan()
         let events = AdmissionEvents()
         let admission = makeAdmission(
-            loaded: .success(plan),
-            refreshed: .unavailable(.reviewUnavailable), events: events
+            loaded: [.success(plan), .failure(AdmissionError.missing)],
+            events: events
         )
         let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
 
         let result = await admission.execute(canonicalIntent: intent.canonicalJSONData())
 
-        XCTAssertEqual(result, .failed(.reviewUnavailable, stages: []))
+        XCTAssertEqual(result, .failed(.coordinatorUnavailable, stages: []))
         let calls = await events.calls
-        XCTAssertEqual(calls, ["load", "refresh"])
+        XCTAssertEqual(calls, ["load", "load"])
     }
 
     private func makeAdmission(
-        loaded: Result<ManagedInstallerStablePlan, Error>,
-        refreshed: ManagedInstallerStablePlanPreparationResult,
+        loaded: [Result<ManagedInstallerStablePlan, Error>],
         events: AdmissionEvents
     ) -> ManagedInstallerReviewedExecutionAdmission {
         ManagedInstallerReviewedExecutionAdmission(
-            loader: AdmissionPlanLoader(result: loaded, events: events),
-            preparer: AdmissionPlanPreparer(result: refreshed, events: events),
+            loader: AdmissionPlanLoader(results: loaded, events: events),
             executor: AdmissionExecutor(events: events)
         )
     }
@@ -143,61 +166,31 @@ private actor AdmissionEvents {
     func append(_ call: String) { calls.append(call) }
 }
 
-private struct AdmissionPlanLoader: ManagedInstallerHelperOwnedStablePlanLoading {
-    let result: Result<ManagedInstallerStablePlan, Error>
+private actor AdmissionPlanLoader: ManagedInstallerHelperOwnedStablePlanLoading {
+    var results: [Result<ManagedInstallerStablePlan, Error>]
     let events: AdmissionEvents
+
+    init(results: [Result<ManagedInstallerStablePlan, Error>], events: AdmissionEvents) {
+        self.results = results
+        self.events = events
+    }
 
     func loadStablePlan(
         for intent: ManagedInstallerReviewedExecutionIntent
     ) async throws -> ManagedInstallerStablePlan {
         _ = intent
         await events.append("load")
-        return try result.get()
+        guard !results.isEmpty else { throw AdmissionError.missing }
+        return try results.removeFirst().get()
     }
 }
 
-private struct AdmissionPlanPreparer: ManagedInstallerStablePlanPreparing {
-    let result: ManagedInstallerStablePlanPreparationResult
+private struct AdmissionExecutor: ManagedInstallerStablePlanExecuting {
     let events: AdmissionEvents
 
-    func prepareStablePlan(
-        for operation: ReviewedManagedDeploymentOperation
-    ) async -> ManagedInstallerStablePlanPreparationResult {
-        _ = operation
-        await events.append("refresh")
-        return result
-    }
-}
-
-private struct AdmissionExecutor: ManagedDeploymentRouteCoordinating {
-    let events: AdmissionEvents
-
-    func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
-        .unavailable(.coordinatorUnavailable)
-    }
-
-    func prepareHostPreflight(
-        session: VerifiedCompositionSessionPlan,
-        deployment: ManagedDeploymentTarget
-    ) async -> HostPreflightPreparationResult {
-        _ = session
-        _ = deployment
-        return .unavailable(.coordinatorUnavailable)
-    }
-
-    func prepareCompositionReview(
-        session: VerifiedCompositionSessionPlan,
-        deployment: ManagedDeploymentTarget
-    ) async -> CompositionReviewPreparationResult {
-        _ = session
-        _ = deployment
-        return .unavailable(.coordinatorUnavailable)
-    }
-
-    func executeReviewedManagedDeployment(
-        _ operation: ReviewedManagedDeploymentOperation
-    ) async -> ManagedDeploymentExecutionResult {
-        _ = operation
+    func execute(stablePlan: ManagedInstallerStablePlan) async
+        -> ManagedDeploymentExecutionResult {
+        _ = stablePlan
         await events.append("execute")
         return .completed(stages: [], summaryItems: [])
     }

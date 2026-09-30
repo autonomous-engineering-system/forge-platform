@@ -479,16 +479,34 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         let request = try fixture.request(initial: initial)
         let assembled = ManagedPythonInitialRuntimeHelperAssembly.make(
             helperRoot: host.root, runtime: fixture.runtime,
-            expectedOwner: Darwin.geteuid()
+            expectedOwner: Darwin.geteuid(), wheel: ManagedPythonProductWheelTestDouble()
         )
         let observed = await assembled.readActiveRuntime(request)
         XCTAssertEqual(observed, .success(initial))
         let wrongOwner = ManagedPythonInitialRuntimeHelperAssembly.make(
             helperRoot: host.root, runtime: fixture.runtime,
-            expectedOwner: Darwin.geteuid() + 1
+            expectedOwner: Darwin.geteuid() + 1,
+            wheel: ManagedPythonProductWheelTestDouble()
         )
         let rejected = await wrongOwner.readActiveRuntime(request)
         XCTAssertEqual(rejected, .failure(.rejected))
+    }
+
+    func testInitialRuntimeReadbackDoesNotBootstrapDuringReview() async throws {
+        let host = try InitialActivationHostFixture()
+        defer { host.cleanup() }
+        let initial = try host.bootstrap.observe().get()
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: initial)
+        let assembled = ManagedPythonInitialRuntimeHelperAssembly.make(
+            helperRoot: host.root, runtime: fixture.runtime,
+            expectedOwner: Darwin.geteuid(), wheel: ManagedPythonProductWheelTestDouble()
+        )
+        let observed = await assembled.readActiveRuntime(request)
+        XCTAssertEqual(observed, .success(initial))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: host.root.appendingPathComponent(
+            FileManagedInstallerManagedPythonHostReader.fileName
+        ).path))
     }
 
     func testInitialRuntimeActivatorRejectsUnavailableSlotAndStaleInitialEvidence() async throws {
@@ -657,15 +675,17 @@ struct ActivationFixture {
 
     init(
         providerRequirements: [ProviderRequirement] = [],
-        managedTools: [ManagedToolRequirement] = []
+        managedTools: [ManagedToolRequirement] = [],
+        overrideSession: VerifiedCompositionSessionPlan? = nil,
+        overrideDeployment: ManagedDeploymentTarget? = nil
     ) throws {
-        deployment = try ManagedDeploymentTarget(
+        deployment = try overrideDeployment ?? ManagedDeploymentTarget(
             id: "activation-deployment",
             exists: true,
             forgeInstanceID: "forge-one",
             engineeringPlatformInstanceID: "ep-one"
         )
-        session = try VerifiedCompositionSessionPlan(
+        session = try overrideSession ?? VerifiedCompositionSessionPlan(
             sessionID: "activation-session",
             compositionIdentity: "forge-ep-managed-v3",
             manifestSHA256: taggedActivationDigest("a"),

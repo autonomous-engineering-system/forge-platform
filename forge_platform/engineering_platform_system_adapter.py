@@ -1,4 +1,4 @@
-"""Concrete adapter for the frozen Engineering Platform 2.3.102 system provisioner.
+"""Concrete adapter for the qualified Engineering Platform system provisioner.
 
 The adapter invokes only the published `engineering-platform-system-provisioner`
 contract with a fixed absolute executable and product root. Runtime/service/data
@@ -14,6 +14,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 from typing import Mapping, Protocol, Sequence
 
@@ -168,10 +169,10 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
             raise EngineeringPlatformAdapterError("EP provisioner returned non-JSON evidence") from error
         wire = _mapping(payload, "EP provisioner result")
         if wire.get("contract") != EP_SYSTEM_PROVISIONER_CONTRACT:
-            # Inventory is the one product surface whose machine inventory
-            # payload predates the outer command envelope. Accept it only for
-            # read-only discovery; all mutating/status operations are contract-bound.
-            if command != "inventory":
+            # Inventory and provider-register use their product-owned direct
+            # readback shapes. The latter is checked field by field before it
+            # can leave register_provider; other operations keep the envelope.
+            if command not in {"inventory", "provider-register"}:
                 raise EngineeringPlatformAdapterError("EP provisioner contract mismatch")
         if result.returncode != 0:
             raise EngineeringPlatformAdapterError("EP provisioner rejected the exact operation")
@@ -251,6 +252,8 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
         server_identity = _string(descriptor.get("service_label"), "EP service identity")
         state_value = status.get("state")
         ready = status.get("ready") is True and state_value == "READY"
+        if ready:
+            self._verify_provider_status(status.get("providers"))
         state = "ACTIVE" if ready else "UNHEALTHY"
         health = "HEALTHY" if ready else "UNHEALTHY"
         status_ref = "ep-status:" + _canonical_digest(status)
@@ -269,6 +272,56 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
             inventory_ref,
             status_ref,
         )
+
+    def _verify_provider_status(self, value: object) -> None:
+        if not isinstance(value, Mapping) or set(value) != {"codex", "github"}:
+            raise EngineeringPlatformAdapterError("EP ready status lacks both provider contexts")
+        homes: set[str] = set()
+        for provider in ("codex", "github"):
+            context = value[provider]
+            if not isinstance(context, Mapping):
+                raise EngineeringPlatformAdapterError("EP provider context is unavailable")
+            authentication = context.get("authentication")
+            executable = context.get("executable")
+            home = context.get("home")
+            if (
+                set(context) != {
+                    "provider", "instance_id", "state", "executable",
+                    "executable_sha256", "version", "home", "credential_scope",
+                    "authentication", "cold_boot_ready",
+                }
+                or context.get("provider") != provider
+                or context.get("instance_id") != self.target.instance_id
+                or context.get("state") != "READY"
+                or context.get("credential_scope") != "COMPONENT_INSTANCE"
+                or context.get("cold_boot_ready") is not True
+                or not isinstance(context.get("executable_sha256"), str)
+                or re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", context["executable_sha256"]
+                ) is None
+                or not isinstance(context.get("version"), str)
+                or not context["version"]
+                or not isinstance(authentication, Mapping)
+                or set(authentication) != {"state", "reference"}
+                or authentication.get("state") != "READY"
+                or not isinstance(authentication.get("reference"), str)
+                or re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._:-]{7,255}",
+                    authentication["reference"],
+                ) is None
+                or any(
+                    not isinstance(path, str)
+                    or not Path(path).is_absolute()
+                    or ".." in Path(path).parts
+                    for path in (executable, home)
+                )
+            ):
+                raise EngineeringPlatformAdapterError(
+                    "EP ready provider context does not match the exact instance"
+                )
+            homes.add(home)
+        if len(homes) != 2:
+            raise EngineeringPlatformAdapterError("EP ready provider homes overlap")
 
     def assess_update(self, request: ComponentOperationRequest) -> ProductUpdateAssessment:
         self._validate_request(request)
@@ -364,7 +417,20 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
     ) -> Mapping[str, object]:
         if provider not in {"codex", "github"}:
             raise ValueError("EP provider identity is unsupported")
-        return self._run(
+        if not isinstance(executable_digest, str) or re.fullmatch(
+            r"sha256:[0-9a-f]{64}", executable_digest
+        ) is None:
+            raise EngineeringPlatformAdapterError("EP provider executable digest is invalid")
+        if not isinstance(version, str) or not version or len(version) > 128:
+            raise EngineeringPlatformAdapterError("EP provider version is invalid")
+        for value in (auth_reference, auth_bootstrap_receipt):
+            if not isinstance(value, str) or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:-]{7,255}", value
+            ) is None:
+                raise EngineeringPlatformAdapterError(
+                    "EP provider authentication reference is invalid"
+                )
+        result = self._run(
             "provider-register",
             "--instance-id", self.target.instance_id,
             "--display-label", self.target.display_label,
@@ -375,6 +441,38 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
             "--auth-reference", auth_reference,
             "--auth-bootstrap-receipt", auth_bootstrap_receipt,
         )
+        authentication = result.get("authentication")
+        executable = result.get("executable")
+        home = result.get("home")
+        if (
+            set(result) != {
+                "provider", "instance_id", "state", "executable",
+                "executable_sha256", "version", "home", "credential_scope",
+                "authentication", "cold_boot_ready",
+            }
+            or result.get("provider") != provider
+            or result.get("instance_id") != self.target.instance_id
+            or result.get("state") != "READY"
+            or result.get("executable_sha256") != executable_digest
+            or result.get("version") != version
+            or result.get("credential_scope") != "COMPONENT_INSTANCE"
+            or result.get("cold_boot_ready") is not True
+            or not isinstance(authentication, Mapping)
+            or set(authentication) != {"state", "reference"}
+            or authentication.get("state") != "READY"
+            or authentication.get("reference") != auth_reference
+            or any(
+                not isinstance(value, str)
+                or not Path(value).is_absolute()
+                or ".." in Path(value).parts
+                for value in (executable, home)
+            )
+            or executable == home
+        ):
+            raise EngineeringPlatformAdapterError(
+                "EP product-owned provider readback does not match the exact target"
+            )
+        return result
 
     @staticmethod
     def _receipt(

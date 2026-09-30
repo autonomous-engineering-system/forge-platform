@@ -89,6 +89,51 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
         }
     }
 
+    func testProviderBoundReviewIsReadOnlyAndExecutionStillRequiresVerification() throws {
+        var state = try makePreflightState(
+            providers: [ProviderRequirement(provider: .codex, isRequired: true)]
+        )
+        let session = try XCTUnwrap(state.acceptedSessionPlan)
+        XCTAssertTrue(state.recordHostPreflightPreparation(.prepared(
+            PreparedHostPreflight(
+                sessionID: session.sessionID,
+                deploymentID: "deployment-new",
+                preflight: passedPreflight()
+            )
+        )))
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .providers)
+        XCTAssertFalse(state.enabledProvidersVerified)
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .review)
+        XCTAssertTrue(state.recordCompositionReviewPreparation(.prepared(
+            PreparedCompositionReview(
+                sessionID: session.sessionID,
+                deploymentID: "deployment-new",
+                review: compatibleReview(for: session)
+            )
+        )))
+        XCTAssertFalse(state.beginPreMutationCurrencyCheck())
+        XCTAssertTrue(state.setReviewedPairingTarget(try pairingTarget()))
+        XCTAssertTrue(state.setCompositionAcknowledged(true))
+        XCTAssertTrue(state.beginPreMutationCurrencyCheck())
+        XCTAssertNil(state.beginManagedDeploymentExecution())
+        XCTAssertNil(state.reviewedProviderStageOperation())
+        XCTAssertTrue(state.recordPreMutationCurrencyCheck(
+            .current(try makeRelease("1.2.3"))
+        ))
+        let staged = try XCTUnwrap(state.reviewedProviderStageOperation())
+        XCTAssertEqual(staged.enabledProviderRequirements,
+                       [ProviderRequirement(provider: .codex, isRequired: true)])
+        XCTAssertEqual(staged.deploymentID, "deployment-new")
+        XCTAssertEqual(state.step, .review)
+        XCTAssertNil(state.beginManagedDeploymentExecution())
+
+        var stale = state
+        XCTAssertTrue(stale.goBack())
+        XCTAssertNil(stale.reviewedProviderStageOperation())
+    }
+
     func testExecutionUpdateRequiredInvalidatesReviewedSession() throws {
         var state = try makeExecutionReadyState()
         let operation = try XCTUnwrap(state.beginManagedDeploymentExecution())
@@ -104,6 +149,34 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
             return XCTFail("newer installer must become mandatory")
         }
         XCTAssertEqual(required, newer)
+    }
+
+    func testPairedReviewRequiresExplicitScopeAndChangingItInvalidatesAuthority() throws {
+        var state = try makeReviewState()
+        let session = try XCTUnwrap(state.acceptedSessionPlan)
+        XCTAssertTrue(state.recordCompositionReviewPreparation(.prepared(
+            PreparedCompositionReview(sessionID: session.sessionID,
+                                      deploymentID: "deployment-new",
+                                      review: compatibleReview(for: session))
+        )))
+        XCTAssertTrue(state.requiresPairingTarget)
+        XCTAssertFalse(state.pairingTargetIsReady)
+        XCTAssertTrue(state.setCompositionAcknowledged(true))
+        XCTAssertFalse(state.beginPreMutationCurrencyCheck())
+        XCTAssertTrue(state.setReviewedPairingTarget(try pairingTarget()))
+        XCTAssertFalse(state.composition.isAcknowledged)
+        XCTAssertTrue(state.setCompositionAcknowledged(true))
+        XCTAssertTrue(state.beginPreMutationCurrencyCheck())
+        XCTAssertTrue(state.recordPreMutationCurrencyCheck(.current(try makeRelease("1.2.3"))))
+        let oldScope = try XCTUnwrap(state.pairingTarget)
+        XCTAssertTrue(state.setReviewedPairingTarget(try ManagedInstallerReviewedPairingTarget(
+            projectID: "other-project", repositoryID: "repo-one",
+            repositoryIdentity: "owner.repo-one"
+        )))
+        XCTAssertNotEqual(state.pairingTarget, oldScope)
+        XCTAssertFalse(state.composition.isAcknowledged)
+        XCTAssertFalse(state.preMutationCurrency.isCurrent)
+        XCTAssertNil(state.beginManagedDeploymentExecution())
     }
 
     func testExecutionFailurePreservesProvidedBoundedStagesAndRejectsMismatchedOperation() throws {
@@ -143,7 +216,9 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
         }
     }
 
-    private func makePreflightState() throws -> InstallerWizardState {
+    private func makePreflightState(
+        providers: [ProviderRequirement] = []
+    ) throws -> InstallerWizardState {
         var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
         state.recordSelfUpdateCheck(.verifiedGitHubRelease(try makeRelease("1.2.3")))
         XCTAssertTrue(state.advance())
@@ -161,7 +236,7 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
         XCTAssertTrue(state.selectManagedDeployment("deployment-new"))
         XCTAssertTrue(state.advance())
         XCTAssertTrue(state.beginSessionPreparation())
-        let session = try makeSession()
+        let session = try makeSession(providers: providers)
         XCTAssertTrue(state.recordSessionPreparation(.prepared(session)))
         XCTAssertTrue(state.advance())
         XCTAssertEqual(state.step, .preflight)
@@ -196,6 +271,7 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
                 review: compatibleReview(for: session)
             )
         )))
+        XCTAssertTrue(state.setReviewedPairingTarget(try pairingTarget()))
         XCTAssertTrue(state.setCompositionAcknowledged(true))
         XCTAssertTrue(state.beginPreMutationCurrencyCheck())
         XCTAssertTrue(state.recordPreMutationCurrencyCheck(
@@ -203,6 +279,13 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
         ))
         XCTAssertTrue(state.canAdvance)
         return state
+    }
+
+    private func pairingTarget() throws -> ManagedInstallerReviewedPairingTarget {
+        try ManagedInstallerReviewedPairingTarget(
+            projectID: "project-one", repositoryID: "repo-one",
+            repositoryIdentity: "owner.repo-one"
+        )
     }
 
     private func passedPreflight() -> HostPreflight {
@@ -243,7 +326,9 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
         )
     }
 
-    private func makeSession() throws -> VerifiedCompositionSessionPlan {
+    private func makeSession(
+        providers: [ProviderRequirement] = []
+    ) throws -> VerifiedCompositionSessionPlan {
         try VerifiedCompositionSessionPlan(
             sessionID: "route-session",
             compositionIdentity: "forge-ep-managed-v3",
@@ -265,7 +350,7 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
             componentSelectionSequence: 4,
             managedPythonRuntime: managedPythonTestRuntime,
             productVirtualEnvironments: managedPythonTestVenvs,
-            providerRequirements: []
+            providerRequirements: providers
         )
     }
 

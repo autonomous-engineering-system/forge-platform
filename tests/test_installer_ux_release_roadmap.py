@@ -35,10 +35,16 @@ class InstallerUXReleaseRoadmapTests(unittest.TestCase):
 
     def test_lifecycle_producer_evidence_and_consumer_status_are_separate(self):
         baselines = self.graph["lifecycle_producer_baselines"]
-        self.assertEqual(baselines["forge"]["version"], "2.7.36")
+        self.assertEqual(baselines["forge"]["version"], "2.7.38")
+        self.assertEqual(baselines["forge"]["source_revision"],
+                         "0a3d6e35b01da93bb5a674ae7795558655c16c7d")
+        self.assertEqual(baselines["forge"]["wheel_sha256"],
+                         "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8")
         self.assertEqual(baselines["forge"]["contract"],
                          "forge-server-instance-lifecycle/v1")
-        self.assertEqual(baselines["engineering-platform"]["version"], "2.3.103")
+        self.assertEqual(baselines["engineering-platform"]["version"], "2.3.106")
+        self.assertEqual(baselines["engineering-platform"]["wheel_sha256"],
+                         "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694")
         self.assertEqual(baselines["engineering-platform"]["contract"],
                          "engineering-platform.system-instance-lifecycle/v1")
         self.assertTrue(all(item["status"] == "QUALIFIED" for item in baselines.values()))
@@ -47,9 +53,10 @@ class InstallerUXReleaseRoadmapTests(unittest.TestCase):
         qualified = {
             "IUR-LC-FORGE-CONTRACT", "IUR-LC-FORGE-RELEASE",
             "IUR-LC-EP-CONTRACT", "IUR-LC-EP-RELEASE",
+            "IUR-LC-PRODUCER-REBASELINE",
         }
         designed = {
-            "IUR-LC-PRODUCER-REBASELINE", "IUR-LC-PRESERVED-INVENTORY",
+            "IUR-LC-PRESERVED-INVENTORY",
             "IUR-LC-RESTORE-PLAN", "IUR-LC-PURGE-PLAN",
         }
         self.assertTrue(all(nodes[node_id]["status"] == "QUALIFIED" for node_id in qualified))

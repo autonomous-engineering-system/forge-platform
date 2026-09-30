@@ -19,10 +19,17 @@ python3 tests/component_operations/test_ep_system_provisioner_adapter.py
 python3 tests/component_operations/test_forge_server_adapter.py
 python3 tests/installer/test_universal_installer.py
 python3 tests/installer/test_managed_deployments.py
+python3 tests/installer/test_managed_preserved_lifecycle_plan.py
+python3 tests/installer/test_managed_preserved_product_adapters.py
+python3 tests/installer/test_managed_preserve_execution.py
+python3 tests/installer/test_managed_preserved_lifecycle_request.py
+python3 tests/installer/test_managed_preserved_lifecycle_dispatch.py
+python3 tests/installer/test_managed_preserved_lifecycle_proposal.py
 python3 tests/installer/test_managed_installer.py
 python3 tests/installer/test_managed_install_flow.py
 python3 tests/installer/test_managed_pairing.py
 python3 -m unittest tests.installer.test_product_preserved_lifecycle
+python3 -m unittest tests.installer.test_qualified_forge_lifecycle
 python3 tests/test_installer_ux_release_roadmap.py
 python3 tests/installer/test_provider_targets.py
 python3 tests/installer/test_provider_fanout.py
@@ -36,11 +43,18 @@ python3 tests/installer/test_installer_release_identity.py
 python3 tests/installer/test_installer_release_trust.py
 python3 tests/installer/test_installer_release_provenance.py
 python3 tests/installer/test_prepare_offline_installer_resources.py
+python3 tests/installer/test_forge_update_resources.py
+python3 -m unittest tests.installer.test_managed_product_wheel_inspection
+python3 -m unittest tests.installer.test_managed_product_wheel_materialization
+python3 -m unittest tests.installer.test_managed_product_wheel_readback
+python3 -m unittest tests.installer.test_managed_product_wheel_worker
 python3 tests/installer/test_composition_catalog_trust.py
 python3 tests/installer/test_package_macos_installer_app.py
 python3 tests/installer/test_package_macos_installer_archive.py
 python3 tests/installer/test_verify_installer_release_evidence.py
 python3 tests/installer/test_installer_release_workflow.py
+python3 tests/installer/test_managed_tool_pages.py
+python3 tests/installer/test_verify_managed_tool_pages.py
 python3 tests/installer/test_composition_catalog_release.py
 python3 tests/installer/test_composition_producer_observer.py
 python3 tests/installer/test_local_signing_authorization.py

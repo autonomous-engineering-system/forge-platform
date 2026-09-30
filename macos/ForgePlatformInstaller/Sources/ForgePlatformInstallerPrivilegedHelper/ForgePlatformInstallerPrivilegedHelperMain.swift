@@ -37,6 +37,14 @@ final class UnavailableManagedInstallerPrivilegedHelperBackend:
         reply(nil)
     }
 
+    func loadManagedDeploymentRegistryRecord(
+        _ deploymentID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = deploymentID
+        reply(nil)
+    }
+
     func loadReleasedRouteSnapshot(
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
@@ -50,6 +58,39 @@ final class UnavailableManagedInstallerPrivilegedHelperBackend:
         withReply reply: @escaping (Data?) -> Void
     ) {
         _ = canonicalIntent
+        reply(nil)
+    }
+
+    func stageReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        reply(nil)
+    }
+
+    func readReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        reply(nil)
+    }
+
+    func beginReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        _ = providerTargetID
+        reply(nil)
+    }
+
+    func registerReviewedSelection(
+        _ canonicalSelection: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalSelection
         reply(nil)
     }
 }
@@ -79,9 +120,10 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
             teamIdentifier: ManagedInstallerPrivilegedHelperProcessContract
                 .appleTeamIdentifier
         )
-        let postToolBackend = Self.makePostToolService(
-            rootDirectory: FileManagedInstallerReleasedRouteXPCService.productionRoot
-        )
+        // Terminal completion captures physical state inside its already-held
+        // host lease. A separate XPC request cannot reconstruct that lease or
+        // activation context and must not replay the stored host-state file.
+        let postToolBackend = UnavailableManagedInstallerPrivilegedHelperBackend()
         let productBackend = ManagedInstallerProductOperationXPCServiceHandler(
             executor: ManagedInstallerPythonProductOperationExecutor()
         )
@@ -109,21 +151,6 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
                 productListener.invalidate,
                 routeListener.invalidate,
             ]
-        )
-    }
-
-    static func makePostToolService(
-        rootDirectory: URL
-    ) -> ManagedInstallerPostToolObservationXPCServiceHandler {
-        ManagedInstallerPostToolObservationXPCServiceHandler(
-            snapshotCapturer: ManagedInstallerPostToolLockedHelperSnapshotCapturer(
-                operationLock: FileManagedPythonRuntimeOperationLock(
-                    rootDirectory: rootDirectory
-                ),
-                hostReader: FileManagedInstallerPostToolAtomicHostReader(
-                    rootDirectory: rootDirectory
-                )
-            )
         )
     }
 
@@ -169,6 +196,11 @@ public enum ForgePlatformInstallerPrivilegedHelperMain {
     }
 
     public static func main() {
+        if [ManagedInstallerProviderAccountProbeChild.flag,
+            ManagedInstallerProviderAccountProbeChild.authenticationFlag]
+            .contains(CommandLine.arguments.dropFirst().first ?? "") {
+            Darwin.exit(ManagedInstallerProviderAccountProbeChild.run(CommandLine.arguments))
+        }
         let status = run(
             arguments: CommandLine.arguments,
             makeRuntime: MacOSManagedInstallerPrivilegedHelperRuntime.init,

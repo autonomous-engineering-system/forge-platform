@@ -1,8 +1,40 @@
+import Darwin
 import XCTest
 @testable import ForgePlatformInstallerCLI
 @testable import ForgePlatformInstallerCore
 
 final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
+    func testDeviceChallengeWritesOnlyToExplicitTerminalDescriptor() throws {
+        let payload = Data("""
+        {"operationID":"operation-one","stablePlanFingerprint":"fingerprint-one",\
+        "providerTargetID":"codex:forge-runtime:deployment-one","provider":"codex",\
+        "verificationURL":"https://auth.openai.com/codex/device","userCode":"ABCD-EF12"}
+        """.utf8)
+        let challenge = try JSONDecoder().decode(
+            ManagedInstallerProviderAuthenticationChallengeResponse.self,
+            from: payload
+        )
+        var descriptors: [Int32] = [0, 0]
+        XCTAssertEqual(Darwin.pipe(&descriptors), 0)
+        XCTAssertTrue(ForgePlatformInstallerCLIApplication.writeChallenge(
+            challenge, to: descriptors[1]
+        ))
+        _ = Darwin.close(descriptors[1])
+        let data = FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true)
+            .readDataToEndOfFile()
+        let displayed = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(displayed.contains("ABCD-EF12"))
+        XCTAssertTrue(displayed.contains("https://auth.openai.com/codex/device"))
+        XCTAssertFalse(ForgePlatformInstallerCLIApplication.writeChallenge(
+            challenge, to: -1
+        ))
+        let result = InstallerCLIResult(
+            exitCode: .interactionRequired, status: "provider-authentication-required",
+            message: "Aanmelding vereist", authenticationChallenge: challenge
+        )
+        XCTAssertFalse(String(reflecting: result).contains("ABCD-EF12"))
+    }
+
     func testHelpAndVersionDoNotEnterTrustedStartup() async throws {
         let startup = CLIStartupSpy(outcome: .blocked("must not be used"))
         let help = await run([], startup: startup, version: "1.2.3")
@@ -356,6 +388,61 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         )
         XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
         XCTAssertTrue(result.stdout.joined().contains("removal-review-blocked"))
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
+    func testLifecyclePlanCommandUsesSharedReviewAndFailsClosedWithoutInstalledProvenance() async throws {
+        let startup = CLIStartupSpy(outcome: .ready(
+            currentRelease: try release("1.2.3"),
+            coordinator: CLIReadyCoordinator()
+        ))
+        let result = await run(
+            [
+                "deployment", "lifecycle", "plan", "preserve",
+                "--deployment", "production",
+                "--operation-id", "preserve-one",
+                "--component", "forge-runtime", "--json",
+            ],
+            startup: startup, version: "1.2.3"
+        )
+        XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(result.stdout.joined().contains("lifecycle-review-blocked"))
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
+    func testLifecyclePreserveCommandFailsClosedWithoutInstalledProvenance() async throws {
+        let startup = CLIStartupSpy(outcome: .ready(
+            currentRelease: try release("1.2.3"),
+            coordinator: CLIReadyCoordinator()
+        ))
+        let result = await run(
+            [
+                "deployment", "lifecycle", "preserve",
+                "--deployment", "production", "--operation-id", "preserve-one",
+                "--component", "forge-runtime", "--yes", "--non-interactive", "--json",
+            ],
+            startup: startup, version: "1.2.3"
+        )
+        XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(result.stdout.joined().contains("lifecycle-review-blocked"))
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
+    func testLifecycleRecoveryCommandFailsClosedWithoutHelperTerminalProof() async throws {
+        let startup = CLIStartupSpy(outcome: .ready(
+            currentRelease: try release("1.2.3"),
+            coordinator: CLIReadyCoordinator()
+        ))
+        let result = await run(
+            [
+                "deployment", "lifecycle", "recover",
+                "--deployment", "production", "--component", "forge-runtime",
+                "--non-interactive", "--json",
+            ],
+            startup: startup, version: "1.2.3"
+        )
+        XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(result.stdout.joined().contains("lifecycle-recovery-blocked"))
         XCTAssertTrue(result.stderr.isEmpty)
     }
 

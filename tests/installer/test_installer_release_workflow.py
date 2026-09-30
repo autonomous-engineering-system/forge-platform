@@ -60,6 +60,28 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("scripts/prepare_installer_release_candidate.py", self.workflow)
         self.assertIn("installer-release-preparation.json", self.workflow)
 
+    def test_corrected_forge_controller_and_release_receipt_are_sealed_before_archiving(self) -> None:
+        controller = "e4b99a249845a547fd6b8e7e11d22467b2d0886d"
+        release_source = "0a3d6e35b01da93bb5a674ae7795558655c16c7d"
+        self.assertIn(
+            f"raw.githubusercontent.com/pcvantol/forge/{controller}/scripts/update_installed_forge.py",
+            self.workflow,
+        )
+        self.assertIn(
+            f"forge-release-complete-2.7.38-{release_source}.json",
+            self.workflow,
+        )
+        self.assertIn("--forge-update-controller release-input/forge-update-controller.py", self.workflow)
+        self.assertIn(
+            "--forge-release-complete-receipt release-input/forge-release-complete-2.7.38.json",
+            self.workflow,
+        )
+        self.assertIn("read_forge_update_resources(worker)", self.workflow)
+        self.assertLess(
+            self.workflow.index("read_forge_update_resources(worker)"),
+            self.workflow.index("scripts/package_macos_installer_archive.py"),
+        )
+
     def test_protected_environment_emits_only_exact_non_secret_authorization(self) -> None:
         authorization = self.workflow.split("  authorize-local-signing:\n", 1)[1]
         self.assertIn("environment:\n      name: forge-platform-installer-signing", authorization)
@@ -103,6 +125,10 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("signed-helper-identity-invalid", self.local_release)
         self.assertIn("final-archive-helper-identity-invalid", self.local_release)
         self.assertNotIn("DESCRIPTOR_SIGNING_KEY_PATHS", self.local_release)
+        self.assertLess(
+            self.local_release.index("read_forge_update_resources(worker)"),
+            self.local_release.index("codesign --force"),
+        )
 
     def test_offline_signer_packages_worker_before_apple_signing(self) -> None:
         builder = self.offline_release.index("scripts/build_installer_product_worker.py")
@@ -111,6 +137,12 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(builder, packager)
         self.assertLess(packager, signing)
         self.assertIn("product-worker-not-packaged", self.offline_release)
+        self.assertIn("FORGE_PLATFORM_FORGE_UPDATE_CONTROLLER", self.offline_release)
+        self.assertIn("FORGE_PLATFORM_FORGE_RELEASE_COMPLETE_RECEIPT", self.offline_release)
+        self.assertLess(
+            self.offline_release.index("read_forge_update_resources(worker)"),
+            signing,
+        )
 
 
 if __name__ == "__main__":

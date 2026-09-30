@@ -280,7 +280,14 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 compositionSessionPreparer: compositionSessionPreparer,
                 managedDeploymentRouteCoordinator: routeCoordinator,
                 removalReviewTransport: productTransport,
-                removalTransport: productTransport
+                removalTransport: productTransport,
+                preservedLifecycleReviewTransport: productTransport,
+                preservedLifecycleTransport: productTransport,
+                preserveRecoveryTransport: productTransport,
+                preservedRegistryReadTransport:
+                    MacOSManagedInstallerReleasedRouteXPCTransport(
+                        helperIdentity: helperIdentity
+                    )
             ))
         } catch {
             // Do not leak a filesystem location, architecture detail, network

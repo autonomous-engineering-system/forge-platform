@@ -4,6 +4,195 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
+    func testPhysicalPostToolReaderRebindsSignedPlanAndPhysicalSources() async throws {
+        let fixture = try FreshReplannerFixture(freshInstall: true)
+        let material = ManagedInstallerHelperExecutionMaterial(
+            material: ManagedVerifiedCompositionMaterial(
+                session: fixture.stablePlan.session,
+                manifestBytes: physicalPostToolManifest()
+            ),
+            currentRelease: fixture.stablePlan.reviewedOperation.currentInstallerRelease
+        )
+        let facts = physicalPostToolFacts()
+        let reader = try physicalPostToolReader(
+            fixture: fixture,
+            material: material,
+            host: PhysicalPostToolFactSource(facts: facts)
+        )
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let observed = try await reader.readAtomicPostToolHostState(for: request).get()
+        XCTAssertEqual(observed.managedTools[0].identity, .git)
+        XCTAssertEqual(observed.pythonRuntime, fixture.finalReadback)
+        XCTAssertTrue(observed.gates.allSatisfy(\.passed))
+        XCTAssertTrue(observed.evidenceReference.hasPrefix("receipt:post-tool-physical-"))
+        let repeated = try await reader.readAtomicPostToolHostState(for: request).get()
+        XCTAssertEqual(repeated, observed)
+
+        let other = try FreshReplannerFixture(
+            deploymentID: "other-post-tool-target", freshInstall: true
+        )
+        let wrong = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: other.stablePlan, request: other.request
+        )
+        let wrongResult = await reader.readAtomicPostToolHostState(for: wrong)
+        XCTAssertEqual(wrongResult.failure, .rejected)
+    }
+
+    func testPhysicalPostToolReaderRejectsMissingMaterialDriftAndFailedHost() async throws {
+        let fixture = try FreshReplannerFixture(freshInstall: true)
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let material = ManagedInstallerHelperExecutionMaterial(
+            material: ManagedVerifiedCompositionMaterial(
+                session: fixture.stablePlan.session,
+                manifestBytes: physicalPostToolManifest()
+            ),
+            currentRelease: fixture.stablePlan.reviewedOperation.currentInstallerRelease
+        )
+        let missing = try physicalPostToolReader(fixture: fixture, material: nil)
+        let missingResult = await missing.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(missingResult.failure, .readbackFailed)
+        let stale = try physicalPostToolReader(
+            fixture: fixture, material: material, stalePlan: true
+        )
+        let staleResult = await stale.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(staleResult.failure, .rejected)
+        let noHost = try physicalPostToolReader(
+            fixture: fixture, material: material,
+            host: PhysicalPostToolFactSource(facts: nil)
+        )
+        let noHostResult = await noHost.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(noHostResult.failure, .readbackFailed)
+        let lowDisk = try physicalPostToolReader(
+            fixture: fixture, material: material,
+            host: PhysicalPostToolFactSource(facts: physicalPostToolFacts(disk: 100))
+        )
+        let blocked = try await lowDisk.readAtomicPostToolHostState(for: request).get()
+        XCTAssertEqual(blocked.gates.first(where: { $0.gate == .hostPreflight })?.passed,
+                       false)
+
+        let original = material.currentRelease
+        let wrongRelease = ManagedInstallerHelperExecutionMaterial(
+            material: material.material,
+            currentRelease: VerifiedInstallerRelease(
+                version: original.version, releasePage: original.releasePage,
+                assetName: original.assetName,
+                sha256: "sha256:" + String(repeating: "f", count: 64),
+                signingKeyID: original.signingKeyID
+            )
+        )
+        let releaseDrift = try physicalPostToolReader(
+            fixture: fixture, material: wrongRelease
+        )
+        let releaseResult = await releaseDrift.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(releaseResult.failure, .readbackFailed)
+        let malformed = try physicalPostToolReader(
+            fixture: fixture,
+            material: ManagedInstallerHelperExecutionMaterial(
+                material: ManagedVerifiedCompositionMaterial(
+                    session: fixture.stablePlan.session,
+                    manifestBytes: Data("{}".utf8)
+                ),
+                currentRelease: original
+            )
+        )
+        let malformedResult = await malformed.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(malformedResult.failure, .readbackFailed)
+        let changedBytes = try physicalPostToolReader(
+            fixture: fixture,
+            material: ManagedInstallerHelperExecutionMaterial(
+                material: ManagedVerifiedCompositionMaterial(
+                    session: fixture.stablePlan.session,
+                    manifestBytes: physicalPostToolManifest() + Data(" ".utf8)
+                ),
+                currentRelease: original
+            )
+        )
+        let changedResult = await changedBytes.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(changedResult.failure, .readbackFailed)
+        let gitDrift = try physicalPostToolReader(
+            fixture: fixture, material: material, gitPlan: .drift
+        )
+        let gitResult = await gitDrift.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(gitResult.failure, .rejected)
+        let pythonFailure = try physicalPostToolReader(
+            fixture: fixture, material: material,
+            pythonResult: .failure(.readbackFailed)
+        )
+        let pythonResult = await pythonFailure.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(pythonResult.failure, .readbackFailed)
+        XCTAssertFalse(ManagedInstallerPostToolPhysicalReviewedTargetVerifier()
+            .verify(fixture.stablePlan))
+    }
+
+    func testPhysicalPostToolReaderBlocksDriftedReviewedProductCandidate() async throws {
+        let fixture = try FreshReplannerFixture(
+            freshInstall: true, reviewedProductCandidateDrift: true
+        )
+        let material = ManagedInstallerHelperExecutionMaterial(
+            material: ManagedVerifiedCompositionMaterial(
+                session: fixture.stablePlan.session,
+                manifestBytes: physicalPostToolManifest()
+            ),
+            currentRelease: fixture.stablePlan.reviewedOperation.currentInstallerRelease
+        )
+        let reader = try physicalPostToolReader(fixture: fixture, material: material)
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let observed = try await reader.readAtomicPostToolHostState(for: request).get()
+        XCTAssertEqual(observed.gates.first(where: { $0.gate == .productPlan })?.passed,
+                       false)
+        XCTAssertTrue(observed.gates.filter { $0.gate != .productPlan }
+            .allSatisfy(\.passed))
+    }
+
+    func testSignedPhysicalHostRequirementRejectsMalformedAndUnsafeFacts() throws {
+        let requirements = try XCTUnwrap(ManagedInstallerPostToolSignedHostRequirement.parse(
+            physicalPostToolManifest()
+        ))
+        XCTAssertTrue(requirements.permits(
+            physicalPostToolFacts(), freshSignedMaterialAndClock: true
+        ))
+        XCTAssertFalse(requirements.permits(
+            physicalPostToolFacts(), freshSignedMaterialAndClock: false
+        ))
+        XCTAssertFalse(requirements.permits(
+            physicalPostToolFacts(disk: 100), freshSignedMaterialAndClock: true
+        ))
+        XCTAssertNil(ManagedInstallerPostToolSignedHostRequirement.parse(
+            Data("{\"host_requirements\":{}}".utf8)
+        ))
+        XCTAssertNil(ManagedInstallerPostToolSignedHostRequirement.parse(
+            Data("{\"host_requirements\":{\"minimum_macos_version\":\"25.0.0\"}}".utf8)
+        ))
+    }
+
+    func testMacOSPhysicalHostFactsUseAnExistingFixedDirectory() throws {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(
+            "post-tool-host-facts-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let observed = MacOSManagedInstallerPostToolPhysicalHostFactReader(
+            rootDirectory: root
+        ).readFacts()
+        XCTAssertNotNil(observed)
+        XCTAssertEqual(observed?.hardwareArchitecture, "arm64")
+        XCTAssertTrue(observed?.nativeArm64Process ?? false)
+        XCTAssertGreaterThan(observed?.availableDiskBytes ?? 0, 0)
+        let missing = root.appendingPathComponent("missing", isDirectory: true)
+        XCTAssertNil(MacOSManagedInstallerPostToolPhysicalHostFactReader(
+            rootDirectory: missing
+        ).readFacts())
+    }
+
     func testFreshExactReadbacksProduceDeterministicDispatchableQualification() async throws {
         let fixture = try FreshReplannerFixture()
         let replanner = try fixture.replanner()
@@ -801,6 +990,126 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(calls, [required, optional, required, optional])
     }
 
+    func testComponentProviderInspectorRoutesOnlyExactOwnedContexts() async throws {
+        let target = "activation-deployment"
+        let forge = ProviderRequirement(
+            provider: .codex, isRequired: true,
+            credentialScope: .component,
+            ownerComponent: .forgeRuntime, targetIdentity: target,
+            runtime: try ProviderRuntimeRequirement(
+                version: InstallerVersion("1.0.0"), archiveKind: .zip,
+                artifactURL: "https://artifacts.example.test/codex.zip",
+                artifactSHA256: "sha256:" + String(repeating: "1", count: 64),
+                executableRelativePath: "bin/codex",
+                executableSHA256: "sha256:" + String(repeating: "2", count: 64)
+            )
+        )
+        let ep = ProviderRequirement(
+            provider: .githubCLI, isRequired: true,
+            credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer, targetIdentity: target,
+            runtime: try ProviderRuntimeRequirement(
+                version: InstallerVersion("2.70.0"), archiveKind: .zip,
+                artifactURL: "https://artifacts.example.test/gh.zip",
+                artifactSHA256: "sha256:" + String(repeating: "3", count: 64),
+                executableRelativePath: "bin/gh",
+                executableSHA256: "sha256:" + String(repeating: "4", count: 64)
+            )
+        )
+        let fixture = try FreshReplannerFixture(
+            providerRequirements: [forge, ep],
+            enabledProviderRequirements: [forge, ep], freshInstall: true,
+            components: [
+                ComponentDiff(
+                    componentID: "forge-runtime", title: "Forge", change: .install,
+                    candidateVersion: "1.0.0",
+                    artifactDigest: "sha256:" + String(repeating: "8", count: 64),
+                    detail: "Fresh Forge"
+                ),
+                ComponentDiff(
+                    componentID: "engineering-platform-server",
+                    title: "Engineering Platform", change: .install,
+                    candidateVersion: "2.0.0",
+                    artifactDigest: "sha256:" + String(repeating: "7", count: 64),
+                    detail: "Fresh EP"
+                ),
+            ]
+        )
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let forgeReader = ProviderInspectorSpy(results: [
+            forge.id: .success(try exactProviderReadback(forge)),
+        ])
+        let epReader = ProviderInspectorSpy(results: [
+            ep.id: .success(try exactProviderReadback(ep)),
+        ])
+        let inspector = try ManagedInstallerPostToolComponentProviderInspector(
+            stablePlan: fixture.stablePlan, activationRequest: fixture.request,
+            forge: forgeReader, engineeringPlatform: epReader
+        )
+        let forgeObserved = try await inspector.inspectProvider(forge, for: request).get()
+        let epObserved = try await inspector.inspectProvider(ep, for: request).get()
+        XCTAssertEqual(forgeObserved.providerTargetID, forge.id)
+        XCTAssertEqual(epObserved.providerTargetID, ep.id)
+        let forgeCalls = await forgeReader.calls()
+        let epCalls = await epReader.calls()
+        XCTAssertEqual(forgeCalls, [forge])
+        XCTAssertEqual(epCalls, [ep])
+        XCTAssertNotNil(ManagedInstallerPostToolComponentProviderInspector.production(
+            stablePlan: fixture.stablePlan, activationRequest: fixture.request
+        ))
+
+        let mismatchedReader = try ManagedInstallerPostToolComponentProviderInspector(
+            stablePlan: fixture.stablePlan, activationRequest: fixture.request,
+            forge: ProviderInspectorSpy(results: [
+                forge.id: .success(try exactProviderReadback(ep)),
+            ]),
+            engineeringPlatform: epReader
+        )
+        let mismatchedResult = await mismatchedReader.inspectProvider(forge, for: request)
+        XCTAssertEqual(mismatchedResult.failure, .rejected)
+        let unavailableReader = try ManagedInstallerPostToolComponentProviderInspector(
+            stablePlan: fixture.stablePlan, activationRequest: fixture.request,
+            forge: ProviderInspectorSpy(results: [
+                forge.id: .failure(.readbackFailed),
+            ]),
+            engineeringPlatform: epReader
+        )
+        let unavailableResult = await unavailableReader.inspectProvider(forge, for: request)
+        XCTAssertEqual(unavailableResult.failure, .readbackFailed)
+
+        let other = try FreshReplannerFixture(
+            deploymentID: "other-deployment",
+            providerRequirements: [forge, ep],
+            enabledProviderRequirements: [forge, ep]
+        )
+        let crossed = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: other.stablePlan, request: other.request
+        )
+        let crossedResult = await inspector.inspectProvider(forge, for: crossed)
+        XCTAssertEqual(crossedResult.failure, .rejected)
+        let altered = ProviderRequirement(
+            provider: forge.provider, isRequired: false,
+            credentialScope: .component, ownerComponent: .forgeRuntime,
+            targetIdentity: target, runtime: forge.runtime
+        )
+        let alteredResult = await inspector.inspectProvider(altered, for: request)
+        XCTAssertEqual(alteredResult.failure, .rejected)
+        let unchangedForgeCalls = await forgeReader.calls()
+        XCTAssertEqual(unchangedForgeCalls, [forge])
+
+        let wrongOwner = try providerRuntimeRequirement()
+        let invalid = try FreshReplannerFixture(
+            providerRequirements: [wrongOwner],
+            enabledProviderRequirements: [wrongOwner]
+        )
+        XCTAssertThrowsError(try ManagedInstallerPostToolComponentProviderInspector(
+            stablePlan: invalid.stablePlan, activationRequest: invalid.request,
+            forge: forgeReader, engineeringPlatform: epReader
+        ))
+    }
+
     func testProviderGateObserverReturnsBlockingGateForEveryProviderDrift() async throws {
         let requirement = try providerRuntimeRequirement(isRequired: true)
         let fixture = try FreshReplannerFixture(
@@ -1434,6 +1743,172 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         ])
     }
 
+    func testDigestEpochBindsAllSourceValuesAndRequest() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+        let tools = HostToolSource(readback: expected.managedTools[0])
+        let python = HostPythonSource(readback: expected.pythonRuntime)
+        let gates = HostGateSource(readbacks: expected.gates)
+        let epoch = ManagedInstallerPostToolDigestHostEpochReader(
+            managedTools: tools, pythonRuntime: python, gates: gates
+        )
+        let first = try await epoch.readPostToolHostEpoch(for: request).get()
+        let second = try await epoch.readPostToolHostEpoch(for: request).get()
+        XCTAssertEqual(first, second)
+        XCTAssertTrue(ManagedPythonRuntimeInstalledReadback.isEvidenceReference(first))
+        let observed = try await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: tools, pythonRuntime: python, gates: gates, epoch: epoch
+        ).readAtomicPostToolHostState(for: request).get()
+        XCTAssertEqual(observed.evidenceReference, first)
+        XCTAssertEqual(observed.managedTools, expected.managedTools)
+    }
+
+    func testDigestEpochRejectsChangedSourceAndUnavailableSource() async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let expected = try atomicReadback(fixture.snapshot())
+        let original = expected.managedTools[0]
+        let changed = try ManagedToolInstalledReadback(
+            identity: original.identity,
+            state: original.state,
+            version: original.version,
+            artifactSHA256: original.artifactSHA256,
+            managedRootIdentity: original.managedRootIdentity,
+            evidenceReference: "receipt:changed-git-source"
+        )
+        let changingTools = SequencedHostToolSource(
+            readbacks: [original, original, changed]
+        )
+        let python = HostPythonSource(readback: expected.pythonRuntime)
+        let gates = HostGateSource(readbacks: expected.gates)
+        let epoch = ManagedInstallerPostToolDigestHostEpochReader(
+            managedTools: changingTools, pythonRuntime: python, gates: gates
+        )
+        let drifted = await ManagedInstallerPostToolAtomicHostSourceReader(
+            managedTools: changingTools, pythonRuntime: python,
+            gates: gates, epoch: epoch
+        ).readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(drifted.failure, .rejected)
+
+        let unavailable = await ManagedInstallerPostToolDigestHostEpochReader(
+            managedTools: HostToolSource(
+                readback: original, failure: .readbackFailed
+            ),
+            pythonRuntime: python, gates: gates
+        ).readPostToolHostEpoch(for: request)
+        XCTAssertEqual(unavailable.failure, .readbackFailed)
+    }
+
+    func testPhysicalPythonPostToolReadbackRequiresExactPlanAndActiveVenvEvidence()
+        async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let final = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: fixture.request.runtimeIdentitySHA256,
+            activeRuntimeSlotIdentity: fixture.request.runtimeSlotIdentity,
+            retainedRuntimeIdentitySHA256s:
+                fixture.request.requiredRetainedRuntimeIdentitySHA256s,
+            evidenceReference: fixture.request.expectedResumeEvidenceReference
+        )
+        let physical = PhysicalPythonReadbackProbe(result: .success(final))
+        let reader = try ManagedInstallerPostToolPhysicalPythonHostReader(
+            stablePlan: fixture.stablePlan,
+            activationRequest: fixture.request,
+            readback: physical
+        )
+        let observed = try await reader.readPostToolPythonRuntime(for: request).get()
+        XCTAssertEqual(observed, final)
+        let other = try FreshReplannerFixture(deploymentID: "other-deployment")
+        let crossed = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: other.stablePlan, request: other.request
+        )
+        let crossedResult = await reader.readPostToolPythonRuntime(for: crossed)
+        XCTAssertEqual(crossedResult.failure, .rejected)
+        let calls = await physical.calls
+        XCTAssertEqual(calls, 1)
+
+        for stale in [fixture.finalReadback,
+                      try fixture.activation.missingReadback()] {
+            let staleReader = try ManagedInstallerPostToolPhysicalPythonHostReader(
+                stablePlan: fixture.stablePlan,
+                activationRequest: fixture.request,
+                readback: PhysicalPythonReadbackProbe(result: .success(stale))
+            )
+            let staleResult = await staleReader.readPostToolPythonRuntime(for: request)
+            XCTAssertEqual(staleResult.failure, .rejected)
+        }
+    }
+
+    func testPhysicalPythonPostToolReadbackPreservesFailClosedReadbackFailures()
+        async throws {
+        let fixture = try FreshReplannerFixture()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let cases: [(ManagedPythonRuntimeActivationFailure,
+                     ManagedPythonRuntimeTerminalReceiptFailure)] = [
+            (.invalidRequest, .rejected), (.rejected, .rejected),
+            (.unavailable, .readbackFailed),
+            (.operationInProgress, .operationInProgress),
+            (.operationLockUnavailable, .operationLockUnavailable),
+            (.operationLockReleaseFailed, .operationLockReleaseFailed),
+            (.receiptPersistenceFailed, .receiptPersistenceFailed),
+        ]
+        for (failure, expected) in cases {
+            let reader = try ManagedInstallerPostToolPhysicalPythonHostReader(
+                stablePlan: fixture.stablePlan,
+                activationRequest: fixture.request,
+                readback: PhysicalPythonReadbackProbe(result: .failure(failure))
+            )
+            let result = await reader.readPostToolPythonRuntime(for: request)
+            XCTAssertEqual(result.failure, expected)
+        }
+    }
+
+    func testPhysicalGitPostToolReadbackRequiresSignedPlanRequirementAndActiveSlot()
+        async throws {
+        let fixture = try FreshReplannerFixture()
+        let active = try fixture.toolReadback(.active)
+        let physical = HostToolSource(readback: active)
+        let reader = try ManagedInstallerPostToolPhysicalGitHostReader(
+            stablePlan: fixture.stablePlan, physical: physical
+        )
+        let observed = try await reader.readManagedTool(fixture.git).get()
+        XCTAssertEqual(observed, active)
+        XCTAssertNotNil(ManagedInstallerPostToolPhysicalGitHostReader.production(
+            stablePlan: fixture.stablePlan
+        ))
+        let substituted = ManagedToolRequirement(
+            identity: .git,
+            version: try InstallerVersion("2.46.0"),
+            artifact: fixture.git.artifact
+        )
+        let wrong = await reader.readManagedTool(substituted)
+        XCTAssertEqual(wrong.failure, .rejected)
+
+        let absent = try ManagedInstallerPostToolPhysicalGitHostReader(
+            stablePlan: fixture.stablePlan,
+            physical: HostToolSource(readback: fixture.toolReadback(.absent))
+        )
+        let absentResult = await absent.readManagedTool(fixture.git)
+        XCTAssertEqual(absentResult.failure, .rejected)
+        let unavailable = try ManagedInstallerPostToolPhysicalGitHostReader(
+            stablePlan: fixture.stablePlan,
+            physical: HostToolSource(
+                readback: active, failure: .readbackFailed
+            )
+        )
+        let unavailableResult = await unavailable.readManagedTool(fixture.git)
+        XCTAssertEqual(unavailableResult.failure, .readbackFailed)
+    }
+
     func testAtomicHostSourceReaderStopsAtEveryFailedSourceBoundary() async throws {
         let fixture = try FreshReplannerFixture()
         let request = try ManagedInstallerPostToolHostObservationRequest(
@@ -1586,15 +2061,20 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         }
     }
 
-    func testManagedGitHostReaderRejectsMissingAndInsecureFilesystemState() async throws {
+    func testManagedGitHostReaderTreatsMissingStateAsAbsentAndRejectsInsecureState()
+        async throws {
         let fixture = try FreshReplannerFixture()
         let readback = try fixture.toolReadback(.active)
 
         let root = try privateTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let reader = FileManagedInstallerManagedGitHostReader(rootDirectory: root)
-        let missingResult = await reader.readManagedTool(fixture.git)
-        XCTAssertEqual(missingResult.failure, .readbackFailed)
+        let missingResult = try await reader.readManagedTool(fixture.git).get()
+        XCTAssertEqual(missingResult.state, .absent)
+        XCTAssertEqual(
+            missingResult.evidenceReference,
+            FileManagedInstallerManagedGitHostReader.missingStateEvidenceReference
+        )
 
         let state = try writeManagedGitHostState(
             readback.canonicalManagedGitHostStateJSONData(),
@@ -1662,6 +2142,28 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         try writeManagedGitHostState(Data(wrongIdentity.utf8), root: root)
         let wrongIdentityResult = await reader.readManagedTool(fixture.git)
         XCTAssertEqual(wrongIdentityResult.failure, .readbackFailed)
+    }
+
+    func testManagedGitHostReaderAndStoreRejectSymlinkedRoot() async throws {
+        let fixture = try FreshReplannerFixture()
+        let readback = try fixture.toolReadback(.active)
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeManagedGitHostState(
+            readback.canonicalManagedGitHostStateJSONData(), root: root
+        )
+        let link = root.deletingLastPathComponent().appendingPathComponent(
+            "post-tool-readback-link-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
+        defer { try? FileManager.default.removeItem(at: link) }
+
+        let reader = FileManagedInstallerManagedGitHostReader(rootDirectory: link)
+        let result = await reader.readManagedTool(fixture.git)
+        XCTAssertEqual(result.failure, .readbackFailed)
+        let store = FileManagedInstallerManagedGitHostStateStore(rootDirectory: link)
+        XCTAssertEqual(store.persistManagedGitHostState(readback).failure,
+                       .receiptPersistenceFailed)
     }
 
     func testManagedGitHostStateStorePublishesRetriesAndReplacesCanonically() async throws {
@@ -2640,6 +3142,31 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertTrue(calls.isEmpty)
     }
 
+    func testHelperLocalPostToolTransportUsesCanonicalHandlerAndExactReceipt()
+        async throws {
+        let fixture = try FreshReplannerFixture()
+        let snapshot = try fixture.snapshot()
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let capturer = HelperSnapshotCapturerSpy(results: [
+            .success(snapshot), .failure(.readbackFailed),
+        ])
+        let transport = ManagedInstallerHelperLocalPostToolTransport(
+            capturer: capturer
+        )
+        let first = await transport.capturePostToolObservation(request)
+        if case .success(let bytes) = first {
+            XCTAssertEqual(bytes, snapshot.canonicalJSONData())
+        } else {
+            XCTFail("exact helper snapshot rejected")
+        }
+        let second = await transport.capturePostToolObservation(request)
+        XCTAssertEqual(second.failure, .receiptUnavailable)
+        let calls = await capturer.calls()
+        XCTAssertEqual(calls, [request, request])
+    }
+
     func testXPCServiceHandlerRejectsCaptureFailureAndContextDrift() async throws {
         let fixture = try FreshReplannerFixture()
         let snapshot = try fixture.snapshot()
@@ -2886,6 +3413,86 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
     }
 }
 
+private func physicalPostToolManifest() -> Data {
+    let fixture = try! PrepublicationWheelFixture(includeProductVenvs: true)
+    var reader = try! StrictJSONResourceReader(data: fixture.material.manifestBytes)
+    var fields = try! reader.parseDocument().objectValue!
+    fields["host_requirements"] = .object([
+        "minimum_macos_version": .string("26.0.0"),
+        "supported_architectures": .array([.string("arm64")]),
+        "minimum_available_disk_bytes": .integer("100"),
+        "backup_reserve_bytes": .integer("25"),
+        "minimum_memory_bytes": .integer("50"),
+        "requires_administrator": .boolean(true),
+        "requires_network": .boolean(true),
+        "requires_trusted_clock": .boolean(true),
+    ])
+    return StrictSignedJSON.canonicalPayload(from: .object(fields))
+}
+
+private func physicalPostToolFacts(disk: UInt64 = 1_000) ->
+    ManagedInstallerPostToolPhysicalHostFacts {
+    ManagedInstallerPostToolPhysicalHostFacts(
+        macOSVersion: try! InstallerVersion("26.0.0"),
+        hardwareArchitecture: "arm64", nativeArm64Process: true,
+        rosettaTranslated: false, availableDiskBytes: disk,
+        memoryBytes: 1_000, administratorAuthorized: true
+    )
+}
+
+private struct PhysicalPostToolFactSource:
+    ManagedInstallerPostToolPhysicalHostFactReading {
+    let facts: ManagedInstallerPostToolPhysicalHostFacts?
+    func readFacts() -> ManagedInstallerPostToolPhysicalHostFacts? { facts }
+}
+
+private struct PhysicalPostToolMaterialSource:
+    ManagedInstallerHelperExecutionMaterialAdmitting {
+    let admitted: ManagedInstallerHelperExecutionMaterial?
+    func admit(deployment: ManagedDeploymentTarget, componentIdentities: [String]) async
+        -> ManagedInstallerHelperExecutionMaterial? {
+        _ = deployment
+        _ = componentIdentities
+        return admitted
+    }
+}
+
+private struct PhysicalPostToolPlanSource:
+    ManagedInstallerPostToolReviewedTargetVerifying {
+    let plan: ManagedInstallerStablePlan
+    let stale: Bool
+    func verify(_ stablePlan: ManagedInstallerStablePlan) -> Bool {
+        !stale && stablePlan == plan
+    }
+}
+
+private func physicalPostToolReader(
+    fixture: FreshReplannerFixture,
+    material: ManagedInstallerHelperExecutionMaterial?,
+    stalePlan: Bool = false,
+    gitPlan: ToolReadback.Plan = .exact,
+    pythonResult: Result<ManagedPythonRuntimeInstalledReadback,
+                         ManagedPythonRuntimeTerminalReceiptFailure>? = nil,
+    host: PhysicalPostToolFactSource = PhysicalPostToolFactSource(
+        facts: physicalPostToolFacts()
+    )
+) throws -> ManagedInstallerPostToolPhysicalAtomicHostReader {
+    try ManagedInstallerPostToolPhysicalAtomicHostReader(
+        stablePlan: fixture.stablePlan,
+        activationRequest: fixture.request,
+        material: PhysicalPostToolMaterialSource(admitted: material),
+        reviewedPlan: PhysicalPostToolPlanSource(
+            plan: fixture.stablePlan, stale: stalePlan
+        ),
+        git: ToolReadback(requirement: fixture.git, plan: gitPlan),
+        python: ManagedPythonHostReaderSpy(
+            result: pythonResult ?? .success(fixture.finalReadback)
+        ),
+        providerInspector: ProviderInspectorSpy(results: [:]),
+        host: host
+    )
+}
+
 private struct FreshReplannerFixture {
     let git: ManagedToolRequirement
     let activation: ActivationFixture
@@ -2900,7 +3507,10 @@ private struct FreshReplannerFixture {
     init(
         deploymentID: String? = nil,
         providerRequirements: [ProviderRequirement] = [],
-        enabledProviderRequirements: [ProviderRequirement]? = nil
+        enabledProviderRequirements: [ProviderRequirement]? = nil,
+        freshInstall: Bool = false,
+        reviewedProductCandidateDrift: Bool = false,
+        components: [ComponentDiff]? = nil
     ) throws {
         git = ManagedToolRequirement(
             identity: .git,
@@ -2910,9 +3520,39 @@ private struct FreshReplannerFixture {
                 sha256: "sha256:" + String(repeating: "9", count: 64)
             )
         )
+        let freshSession: VerifiedCompositionSessionPlan?
+        if freshInstall {
+            let original = try ActivationFixture(
+                providerRequirements: providerRequirements, managedTools: [git]
+            ).session
+            freshSession = try VerifiedCompositionSessionPlan(
+                sessionID: original.sessionID,
+                compositionIdentity: original.compositionIdentity,
+                manifestSHA256: "sha256:" + GitHubInstallerReleaseDescriptor.sha256(
+                    of: physicalPostToolManifest()
+                ),
+                installerReleaseSequence: original.installerReleaseSequence,
+                installerProvenanceSHA256: original.installerProvenanceSHA256,
+                installerReleaseTrustConfigurationSHA256:
+                    original.installerReleaseTrustConfigurationSHA256,
+                compositionCatalogFeed: original.compositionCatalogFeed,
+                compositionCatalog: original.compositionCatalog,
+                componentCombinationCatalog: original.componentCombinationCatalog,
+                componentSelectionSequence: original.componentSelectionSequence,
+                managedPythonRuntime: original.managedPythonRuntime,
+                productVirtualEnvironments: original.productVirtualEnvironments,
+                providerRequirements: original.providerRequirements,
+                managedTools: original.managedTools
+            )
+        } else {
+            freshSession = nil
+        }
         activation = try ActivationFixture(
             providerRequirements: providerRequirements,
-            managedTools: [git]
+            managedTools: [git], overrideSession: freshSession,
+            overrideDeployment: freshInstall ? ManagedDeploymentTarget(
+                id: "activation-deployment", exists: false
+            ) : nil
         )
         if let deploymentID {
             let replacement = try ManagedDeploymentTarget(
@@ -2947,6 +3587,24 @@ private struct FreshReplannerFixture {
             request: request,
             activationReceipt: try terminalReceipt(request)
         )
+        let candidateComponents = freshInstall
+            ? try ManagedInstallerReleasedRouteCandidateReview().installDiffs(
+                compositionIdentity: activation.session.compositionIdentity,
+                manifestSHA256: activation.session.manifestSHA256,
+                componentIdentities: activation.session.productVirtualEnvironments
+                    .map(\.componentIdentity).sorted(),
+                manifestBytes: physicalPostToolManifest()
+            ) : components
+        let reviewedComponents = reviewedProductCandidateDrift
+            ? candidateComponents?.map { component in
+                component.componentID == "forge-runtime"
+                    ? ComponentDiff(
+                        componentID: component.componentID, title: component.title,
+                        change: .install, candidateVersion: "2.7.99",
+                        artifactDigest: component.artifactDigest,
+                        detail: component.detail
+                    ) : component
+            } : candidateComponents
         stablePlan = try managedInstallerTestStablePlan(
             session: activation.session,
             deployment: deployment,
@@ -2956,7 +3614,8 @@ private struct FreshReplannerFixture {
                 initialReadback: request.initialReadback
             ),
             actions: [ManagedToolOriginalPlanAction(requirement: git, action: .install)],
-            enabledProviderRequirements: enabledProviderRequirements
+            enabledProviderRequirements: enabledProviderRequirements,
+            components: reviewedComponents
         )
     }
 
@@ -3238,6 +3897,26 @@ private struct HostToolSource: ManagedToolPostMutationReading {
     ) async -> Result<ManagedToolInstalledReadback, ManagedPythonRuntimeTerminalReceiptFailure> {
         events?.record("tool:\(requirement.identity.rawValue)")
         if let failure { return .failure(failure) }
+        return .success(readback)
+    }
+}
+
+private actor SequencedHostToolSource: ManagedToolPostMutationReading {
+    private var readbacks: [ManagedToolInstalledReadback]
+
+    init(readbacks: [ManagedToolInstalledReadback]) {
+        self.readbacks = readbacks
+    }
+
+    func readManagedTool(
+        _ requirement: ManagedToolRequirement
+    ) async -> Result<ManagedToolInstalledReadback,
+                      ManagedPythonRuntimeTerminalReceiptFailure> {
+        guard !readbacks.isEmpty else { return .failure(.readbackFailed) }
+        let readback = readbacks.removeFirst()
+        guard readback.identity == requirement.identity else {
+            return .failure(.rejected)
+        }
         return .success(readback)
     }
 }
@@ -3931,6 +4610,34 @@ private struct PythonReadback: ManagedPythonRuntimeActivationReading {
         case .failure:
             return .failure(.unavailable)
         }
+    }
+}
+
+private actor PhysicalPythonReadbackProbe: ManagedPythonRuntimeActivationReading {
+    let result: Result<ManagedPythonRuntimeInstalledReadback,
+                       ManagedPythonRuntimeActivationFailure>
+    private(set) var calls = 0
+
+    init(result: Result<ManagedPythonRuntimeInstalledReadback,
+                        ManagedPythonRuntimeActivationFailure>) {
+        self.result = result
+    }
+
+    func readProductVenv(
+        _ request: ManagedPythonProductVenvMutationRequest
+    ) async -> Result<ManagedPythonProductVenvReceipt?,
+                      ManagedPythonRuntimeActivationFailure> {
+        _ = request
+        return .failure(.unavailable)
+    }
+
+    func readActiveRuntime(
+        _ request: ManagedPythonRuntimeActivationRequest
+    ) async -> Result<ManagedPythonRuntimeInstalledReadback,
+                      ManagedPythonRuntimeActivationFailure> {
+        _ = request
+        calls += 1
+        return result
     }
 }
 

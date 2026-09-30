@@ -21,12 +21,32 @@ from .managed_product_removal_proposal import (
     decode_native_product_removal_review_intent,
     decode_native_product_removal_review_proposal,
 )
+from .managed_preserved_lifecycle_proposal import (
+    NATIVE_PRESERVED_LIFECYCLE_REVIEW_INTENT_SCHEMA,
+    decode_native_preserved_lifecycle_review_intent,
+    decode_native_preserved_lifecycle_review_proposal,
+)
+from .managed_preserved_lifecycle_request import (
+    NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
+    MAXIMUM_NATIVE_PRESERVED_LIFECYCLE_RECEIPT_BYTES,
+    NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
+    decode_native_preserved_lifecycle_receipt,
+    decode_native_preserved_lifecycle_request,
+)
+from .managed_preserve_recovery import (
+    MAXIMUM_NATIVE_PRESERVE_RECOVERY_RECEIPT_BYTES,
+    NATIVE_PRESERVE_RECOVERY_REQUEST_SCHEMA,
+    decode_native_preserve_recovery_request,
+    decode_native_preserve_recovery_receipt,
+)
 from .managed_product_operation_service import (
     MAXIMUM_NATIVE_PRODUCT_OPERATION_RECEIPT_BYTES,
     MAXIMUM_NATIVE_PRODUCT_REMOVAL_RECEIPT_BYTES,
     NATIVE_PRODUCT_REMOVAL_RECEIPT_SCHEMA,
     ManagedProductOperationHelperService,
 )
+from .managed_product_wheel_worker import SCHEMA as PRODUCT_WHEEL_WORKER_SCHEMA
+from .managed_product_wheel_worker import execute_wheel_request
 from .product_worker_authority import ProductWorkerAuthorityLoader
 
 
@@ -213,6 +233,74 @@ def execute_removal_review_intent(
     return response
 
 
+def execute_preserved_lifecycle_review_intent(
+    canonical_intent: bytes,
+    *,
+    service_loader: ServiceLoader = load_released_product_service,
+) -> bytes:
+    """Emit only a correlated read-only proposal from released worker state."""
+    intent = decode_native_preserved_lifecycle_review_intent(canonical_intent)
+    service = service_loader()
+    if not isinstance(service, ManagedProductOperationHelperService):
+        raise InstallerProductWorkerUnavailable("lifecycle review service is unavailable")
+    response = service.prepare_preserved_lifecycle_review(canonical_intent)
+    try:
+        decode_native_preserved_lifecycle_review_proposal(response, intent=intent)
+    except Exception as error:
+        raise InstallerProductWorkerUnavailable(
+            "product lifecycle review proposal was rejected"
+        ) from error
+    return response
+
+
+def execute_preserved_lifecycle_request(
+    canonical_request: bytes, *,
+    service_loader: ServiceLoader = load_released_product_service,
+) -> bytes:
+    """Bind an executed lifecycle receipt to the exact reviewed native request."""
+    request = decode_native_preserved_lifecycle_request(canonical_request)
+    service = service_loader()
+    if not isinstance(service, ManagedProductOperationHelperService):
+        raise InstallerProductWorkerUnavailable("lifecycle execution service is unavailable")
+    response = service.execute_preserved_lifecycle(canonical_request)
+    if (
+        not isinstance(response, bytes) or not response
+        or len(response) > MAXIMUM_NATIVE_PRESERVED_LIFECYCLE_RECEIPT_BYTES
+    ):
+        raise InstallerProductWorkerUnavailable("lifecycle execution receipt is unavailable")
+    try:
+        decode_native_preserved_lifecycle_receipt(response, request=request)
+    except Exception as error:
+        raise InstallerProductWorkerUnavailable(
+            "lifecycle execution receipt was rejected"
+        ) from error
+    return response
+
+
+def read_terminal_preserve_recovery_request(
+    canonical_request: bytes, *,
+    service_loader: ServiceLoader = load_released_product_service,
+) -> bytes:
+    """Read only helper-owned terminal recovery proof for one exact operation."""
+    request = decode_native_preserve_recovery_request(canonical_request)
+    service = service_loader()
+    if not isinstance(service, ManagedProductOperationHelperService):
+        raise InstallerProductWorkerUnavailable("preserve recovery service is unavailable")
+    response = service.read_terminal_preserve_recovery(canonical_request)
+    if (
+        not isinstance(response, bytes) or not response
+        or len(response) > MAXIMUM_NATIVE_PRESERVE_RECOVERY_RECEIPT_BYTES
+    ):
+        raise InstallerProductWorkerUnavailable("preserve recovery receipt is unavailable")
+    try:
+        decode_native_preserve_recovery_receipt(response, request=request)
+    except Exception as error:
+        raise InstallerProductWorkerUnavailable(
+            "preserve recovery receipt was rejected"
+        ) from error
+    return response
+
+
 def run(
     input_stream: BinaryIO,
     output_stream: BinaryIO,
@@ -225,8 +313,25 @@ def run(
             envelope = json.loads(request)
         except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
             envelope = None
-        if isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REVIEW_INTENT_SCHEMA:
+        if isinstance(envelope, dict) and envelope.get("schema") == PRODUCT_WHEEL_WORKER_SCHEMA:
+            response = execute_wheel_request(request)
+        elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REVIEW_INTENT_SCHEMA:
             response = execute_removal_review_intent(request, service_loader=service_loader)
+        elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVED_LIFECYCLE_REVIEW_INTENT_SCHEMA:
+            response = execute_preserved_lifecycle_review_intent(
+                request, service_loader=service_loader,
+            )
+        elif isinstance(envelope, dict) and envelope.get("schema") in {
+            NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
+            NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
+        }:
+            response = execute_preserved_lifecycle_request(
+                request, service_loader=service_loader,
+            )
+        elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVE_RECOVERY_REQUEST_SCHEMA:
+            response = read_terminal_preserve_recovery_request(
+                request, service_loader=service_loader,
+            )
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REQUEST_SCHEMA:
             response = execute_removal_request(request, service_loader=service_loader)
         else:

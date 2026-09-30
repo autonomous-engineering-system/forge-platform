@@ -14,6 +14,7 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
 
         let receipt = try providerMutationSuccess(
             await coordinator.ensureProviderRuntime(
+                deploymentID: "deployment-a",
                 stagedArchive: fixture.staged,
                 requirement: fixture.requirement,
                 inspection: fixture.inspection
@@ -21,6 +22,7 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
         )
 
         XCTAssertEqual(receipt.operationID, fixture.staged.operationID)
+        XCTAssertEqual(receipt.deploymentID, "deployment-a")
         XCTAssertEqual(receipt.providerTargetID, fixture.requirement.id)
         XCTAssertEqual(receipt.provider, fixture.requirement.provider)
         XCTAssertEqual(receipt.runtime, fixture.runtime)
@@ -41,6 +43,7 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
         XCTAssertEqual(observations.installs, 1)
         let request = try XCTUnwrap(observations.request)
         XCTAssertEqual(request.operationID, fixture.staged.operationID)
+        XCTAssertEqual(request.deploymentID, "deployment-a")
         XCTAssertEqual(request.providerTargetID, fixture.requirement.id)
         XCTAssertEqual(request.provider, fixture.requirement.provider)
         XCTAssertEqual(request.runtime, fixture.runtime)
@@ -71,6 +74,7 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
             staging: staging,
             mutation: mutation
         ).ensureProviderRuntime(
+            deploymentID: "deployment-a",
             stagedArchive: fixture.staged,
             requirement: fixture.requirement,
             inspection: fixture.inspection
@@ -81,6 +85,44 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
         XCTAssertEqual(stagingReads, 1)
         let observations = await mutation.snapshot()
         XCTAssertEqual(observations.reads, 1)
+        XCTAssertEqual(observations.installs, 0)
+    }
+
+    func testRejectsForeignDeploymentReceiptAndUnsafeDeploymentID() async throws {
+        let fixture = try ProviderRuntimeMutationFixture()
+        let request = try fixture.request()
+        XCTAssertThrowsError(try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "../other",
+            stagedArchive: fixture.staged,
+            requirement: fixture.requirement,
+            inspection: fixture.inspection
+        ))
+        let foreign = try ManagedInstallerProviderRuntimeMutationReceipt(
+            operationID: request.operationID,
+            deploymentID: "deployment-b",
+            providerTargetID: request.providerTargetID,
+            provider: request.provider,
+            runtime: request.runtime,
+            managedRootIdentity: ManagedInstallerProviderRuntimeMutationRequest.managedRootIdentity,
+            runtimeSlotIdentity: request.runtimeSlotIdentity,
+            providerHomeIdentity: request.providerHomeIdentity,
+            executableArchitectures: request.executableArchitectures,
+            minimumMacOSVersion: request.minimumMacOSVersion,
+            state: .ready,
+            evidenceReference: "receipt:foreign-deployment-runtime"
+        )
+        let mutation = ProviderRuntimeMutation(existing: foreign)
+        let result = await ManagedInstallerProviderRuntimeMutationCoordinator(
+            staging: ProviderRuntimeMutationStaging(fixture: fixture),
+            mutation: mutation
+        ).ensureProviderRuntime(
+            deploymentID: "deployment-a",
+            stagedArchive: fixture.staged,
+            requirement: fixture.requirement,
+            inspection: fixture.inspection
+        )
+        XCTAssertEqual(result.failure, .rejected)
+        let observations = await mutation.snapshot()
         XCTAssertEqual(observations.installs, 0)
     }
 
@@ -101,6 +143,7 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
                 staging: staging,
                 mutation: mutation
             ).ensureProviderRuntime(
+                deploymentID: "deployment-a",
                 stagedArchive: fixture.staged,
                 requirement: fixture.requirement,
                 inspection: fixture.inspection
@@ -169,6 +212,7 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
                 staging: staging,
                 mutation: ProviderRuntimeMutation()
             ).ensureProviderRuntime(
+                deploymentID: "deployment-a",
                 stagedArchive: fixture.staged,
                 requirement: fixture.requirement,
                 inspection: fixture.inspection
@@ -208,6 +252,7 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
                 staging: staging,
                 mutation: mutation
             ).ensureProviderRuntime(
+                deploymentID: "deployment-a",
                 stagedArchive: staged,
                 requirement: requirement,
                 inspection: inspection
@@ -225,25 +270,37 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
         let fixture = try ProviderRuntimeMutationFixture()
         XCTAssertEqual(
             ManagedInstallerProviderRuntimeMutationRequest.runtimeSlotIdentity(
-                for: fixture.requirement
+                for: fixture.requirement, deploymentID: "deployment-a"
             ),
             fixture.runtimeSlotIdentity
         )
         XCTAssertEqual(
             ManagedInstallerProviderRuntimeMutationRequest.providerHomeIdentity(
-                for: fixture.requirement
+                for: fixture.requirement, deploymentID: "deployment-a"
             ),
             fixture.providerHomeIdentity
         )
         XCTAssertNotEqual(fixture.runtimeSlotIdentity, fixture.providerHomeIdentity)
+        XCTAssertNotEqual(
+            fixture.runtimeSlotIdentity,
+            ManagedInstallerProviderRuntimeMutationRequest.runtimeSlotIdentity(
+                for: fixture.requirement, deploymentID: "deployment-b"
+            )
+        )
+        XCTAssertNotEqual(
+            fixture.providerHomeIdentity,
+            ManagedInstallerProviderRuntimeMutationRequest.providerHomeIdentity(
+                for: fixture.requirement, deploymentID: "deployment-b"
+            )
+        )
 
         let legacy = ProviderRequirement(provider: .codex, isRequired: true)
         XCTAssertEqual(
-            ManagedInstallerProviderRuntimeMutationRequest.runtimeSlotIdentity(for: legacy),
+            ManagedInstallerProviderRuntimeMutationRequest.runtimeSlotIdentity(for: legacy, deploymentID: "deployment-a"),
             ""
         )
         XCTAssertEqual(
-            ManagedInstallerProviderRuntimeMutationRequest.providerHomeIdentity(for: legacy),
+            ManagedInstallerProviderRuntimeMutationRequest.providerHomeIdentity(for: legacy, deploymentID: "deployment-a"),
             ""
         )
 
@@ -265,11 +322,11 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
             runtime: secondRuntime
         )
         XCTAssertNotEqual(
-            ManagedInstallerProviderRuntimeMutationRequest.runtimeSlotIdentity(for: second),
+            ManagedInstallerProviderRuntimeMutationRequest.runtimeSlotIdentity(for: second, deploymentID: "deployment-a"),
             fixture.runtimeSlotIdentity
         )
         XCTAssertEqual(
-            ManagedInstallerProviderRuntimeMutationRequest.providerHomeIdentity(for: second),
+            ManagedInstallerProviderRuntimeMutationRequest.providerHomeIdentity(for: second, deploymentID: "deployment-a"),
             fixture.providerHomeIdentity
         )
     }
@@ -327,6 +384,7 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
         for values in invalidValues {
             XCTAssertThrowsError(try ManagedInstallerProviderRuntimeMutationReceipt(
                 operationID: values.0,
+                deploymentID: request.deploymentID,
                 providerTargetID: request.providerTargetID,
                 provider: request.provider,
                 runtime: request.runtime,
@@ -352,6 +410,7 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
             staging: ProviderRuntimeMutationStaging(fixture: fixture),
             mutation: mutation
         ).ensureProviderRuntime(
+            deploymentID: "deployment-a",
             stagedArchive: fixture.staged,
             requirement: fixture.requirement,
             inspection: fixture.inspection
@@ -410,15 +469,16 @@ private struct ProviderRuntimeMutationFixture: Sendable {
     }
 
     var runtimeSlotIdentity: String {
-        ManagedInstallerProviderRuntimeMutationRequest.runtimeSlotIdentity(for: requirement)
+        ManagedInstallerProviderRuntimeMutationRequest.runtimeSlotIdentity(for: requirement, deploymentID: "deployment-a")
     }
 
     var providerHomeIdentity: String {
-        ManagedInstallerProviderRuntimeMutationRequest.providerHomeIdentity(for: requirement)
+        ManagedInstallerProviderRuntimeMutationRequest.providerHomeIdentity(for: requirement, deploymentID: "deployment-a")
     }
 
     func request() throws -> ManagedInstallerProviderRuntimeMutationRequest {
         try ManagedInstallerProviderRuntimeMutationRequest(
+            deploymentID: "deployment-a",
             stagedArchive: staged,
             requirement: requirement,
             inspection: inspection
@@ -615,6 +675,7 @@ private func providerMutationReceipt(
 ) throws -> ManagedInstallerProviderRuntimeMutationReceipt {
     try ManagedInstallerProviderRuntimeMutationReceipt(
         operationID: operationID ?? request.operationID,
+        deploymentID: request.deploymentID,
         providerTargetID: request.providerTargetID,
         provider: request.provider,
         runtime: request.runtime,

@@ -36,6 +36,22 @@ from .managed_product_removal_proposal import (
     prepare_native_product_removal_review,
 )
 from .managed_product_removal_dispatch import ManagedProductRemovalDispatcher
+from .managed_preserved_lifecycle_proposal import (
+    NativePreservedLifecycleReviewIntent,
+    decode_native_preserved_lifecycle_review_intent,
+    prepare_native_preserved_lifecycle_review,
+)
+from .managed_preserved_lifecycle_dispatch import ManagedPreservedLifecycleDispatcher
+from .managed_preserve_execution import read_terminal_preserve_evidence
+from .managed_preserve_recovery import (
+    decode_native_preserve_recovery_request,
+    decode_native_preserve_recovery_receipt,
+    encode_native_preserve_recovery_receipt,
+)
+from .managed_preserved_lifecycle_request import (
+    decode_native_preserved_lifecycle_request,
+    encode_native_preserved_lifecycle_receipt,
+)
 from .managed_installer import ManagedDeploymentExecutionRecord
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
 from .released_product_routes import (
@@ -206,6 +222,26 @@ class PinnedManagedProductOperationAuthorityResolver:
             )
         return installed
 
+    def resolve_installed_lifecycle_review(
+        self, intent: NativePreservedLifecycleReviewIntent,
+    ) -> CompositionManifest:
+        """Select only helper-pinned installed composition for lifecycle review."""
+        if not isinstance(intent, NativePreservedLifecycleReviewIntent):
+            raise TypeError("decoded lifecycle review intent is required")
+        if intent.installer_release != self.current_installer_release:
+            raise ManagedProductOperationServiceError(
+                "installer release authority changed for lifecycle review"
+            )
+        installed = self._installed_manifests.get((
+            intent.installed_composition_identity,
+            intent.installed_manifest_sha256,
+        ))
+        if installed is None:
+            raise ManagedProductOperationServiceError(
+                "installed lifecycle composition authority is unavailable"
+            )
+        return installed
+
 
 class ReleasedManagedProductOperationAuthorityLoader:
     """Load one helper snapshot only from verified released selections.
@@ -305,6 +341,7 @@ class ManagedProductOperationHelperService:
         authority_resolver: ManagedProductOperationAuthorityResolving,
         dispatcher: ManagedProductOperationDispatcher,
         removal_dispatcher: ManagedProductRemovalDispatcher | None = None,
+        preserved_dispatcher: ManagedPreservedLifecycleDispatcher | None = None,
     ) -> None:
         if not callable(getattr(authority_resolver, "resolve", None)):
             raise TypeError("helper-owned authority resolver is required")
@@ -313,6 +350,7 @@ class ManagedProductOperationHelperService:
         self.authority_resolver = authority_resolver
         self.dispatcher = dispatcher
         self.removal_dispatcher = removal_dispatcher
+        self.preserved_dispatcher = preserved_dispatcher
 
     def execute(self, canonical_request: bytes) -> bytes:
         """Return one bounded canonical receipt or raise a generic failure."""
@@ -339,6 +377,93 @@ class ManagedProductOperationHelperService:
         except Exception as error:
             raise ManagedProductOperationServiceError(
                 "native product operation was rejected"
+            ) from error
+
+    def prepare_preserved_lifecycle_review(self, canonical_intent: bytes) -> bytes:
+        """Read one exact product lifecycle proposal from helper-owned state."""
+        try:
+            if not isinstance(
+                self.authority_resolver, PinnedManagedProductOperationAuthorityResolver
+            ):
+                raise TypeError("released lifecycle review authority is unavailable")
+            intent = decode_native_preserved_lifecycle_review_intent(canonical_intent)
+            manifest = self.authority_resolver.resolve_installed_lifecycle_review(intent)
+            return prepare_native_preserved_lifecycle_review(
+                canonical_intent, installed_manifest=manifest,
+                registry=self.dispatcher.coordinator.registry,
+                current_installer_release=self.authority_resolver.current_installer_release,
+            )
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "native preserved lifecycle review was rejected"
+            ) from error
+
+    def execute_preserved_lifecycle(self, canonical_request: bytes) -> bytes:
+        """Execute an exact reviewed lifecycle against helper-pinned product routes."""
+        try:
+            if (
+                not isinstance(self.authority_resolver, PinnedManagedProductOperationAuthorityResolver)
+                or not isinstance(self.preserved_dispatcher, ManagedPreservedLifecycleDispatcher)
+            ):
+                raise TypeError("released lifecycle execution authority is unavailable")
+            request = decode_native_preserved_lifecycle_request(canonical_request)
+            if request.intent.installer_release != self.authority_resolver.current_installer_release:
+                raise ValueError("installer release changed after lifecycle review")
+            manifest = self.authority_resolver.resolve_installed_lifecycle_review(request.intent)
+            record = self.preserved_dispatcher.dispatch(
+                request, installed_manifest=manifest,
+            )
+            if (
+                record.operation_id != request.review.operation_id
+                or record.deployment_id != request.review.deployment_id
+                or record.component != request.review.component
+                or record.instance_id != request.review.instance_id
+                or record.review_fingerprint != request.review.review_fingerprint
+                or record.state != "COMPLETE"
+                or record.receipt_digest is None
+                or record.registry_revision is None
+            ):
+                raise ValueError("lifecycle execution record changed")
+            return encode_native_preserved_lifecycle_receipt(
+                request, receipt_digest=record.receipt_digest,
+                registry_revision=record.registry_revision,
+            )
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "native preserved lifecycle execution was rejected"
+            ) from error
+
+    def read_terminal_preserve_recovery(self, canonical_request: bytes) -> bytes:
+        """Return only exact terminal journal and V3 registry evidence."""
+        try:
+            if (
+                not isinstance(self.authority_resolver, PinnedManagedProductOperationAuthorityResolver)
+                or not isinstance(self.preserved_dispatcher, ManagedPreservedLifecycleDispatcher)
+            ):
+                raise TypeError("released preserve recovery authority is unavailable")
+            request = decode_native_preserve_recovery_request(canonical_request)
+            manifest = self.authority_resolver.resolve_installed_lifecycle_review(
+                request.intent
+            )
+            record = read_terminal_preserve_evidence(
+                operations_root=self.preserved_dispatcher.operations_root,
+                registry=self.preserved_dispatcher.registry,
+                deployment_id=request.intent.deployment_id,
+                operation_id=request.intent.operation_id,
+                component=request.intent.component,
+                instance_id=request.intent.instance_id,
+                review_fingerprint=None,
+                composition_id=manifest.composition_id,
+                manifest_digest=manifest.manifest_digest,
+                expected_owner_uid=self.preserved_dispatcher.expected_owner_uid,
+            )
+            response = encode_native_preserve_recovery_receipt(request, record)
+            if decode_native_preserve_recovery_receipt(response, request=request) != record:
+                raise ValueError("terminal preserve recovery response changed")
+            return response
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "native preserve recovery evidence was rejected"
             ) from error
 
     def execute_removal(self, canonical_request: bytes) -> bytes:
@@ -515,8 +640,9 @@ class ManagedProductOperationHelperBuilder:
 
         candidates = tuple(candidate_manifests)
         installed = tuple(installed_manifests)
+        configurations = tuple(route_configurations)
         routes = ReleasedManagedProductRouteBuilder.build_from_manifests(
-            configurations=route_configurations,
+            configurations=configurations,
             candidate_manifests=candidates,
             installed_manifests=installed,
         )
@@ -529,6 +655,7 @@ class ManagedProductOperationHelperBuilder:
             authority_resolver=authority_resolver,
             coordinator=coordinator,
             routes=routes,
+            route_configurations=configurations,
         )
 
     @staticmethod
@@ -557,6 +684,10 @@ class ManagedProductOperationHelperBuilder:
         authority_resolver: PinnedManagedProductOperationAuthorityResolver,
         coordinator: ManagedForgeEPInstallationCoordinator,
         routes: Mapping[str, ResolvedManagedProductRoute],
+        route_configurations: tuple[
+            ReleasedManagedProductRouteConfiguration
+            | ReleasedManagedSingleProductRouteConfiguration, ...
+        ] = (),
     ) -> ManagedProductOperationHelperService:
         if not isinstance(coordinator, ManagedForgeEPInstallationCoordinator):
             raise TypeError("managed Forge+EP coordinator is required")
@@ -574,8 +705,12 @@ class ManagedProductOperationHelperBuilder:
             routes=routes,
             current_installer_release=authority_resolver.current_installer_release,
         )
+        preserved_dispatcher = ManagedPreservedLifecycleDispatcher(
+            coordinator=coordinator, configurations=route_configurations,
+        ) if route_configurations else None
         return ManagedProductOperationHelperService(
             authority_resolver=authority_resolver,
             dispatcher=dispatcher,
             removal_dispatcher=removal_dispatcher,
+            preserved_dispatcher=preserved_dispatcher,
         )

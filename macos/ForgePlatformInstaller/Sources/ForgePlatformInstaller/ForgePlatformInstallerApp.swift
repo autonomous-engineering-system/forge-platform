@@ -20,6 +20,16 @@ struct ForgePlatformInstallerApp: App {
 /// runtime selection, venv handling, or service mutation.
 @MainActor
 final class InstallerWizardViewModel: ObservableObject {
+    enum ProviderStageState {
+        case idle
+        case staging
+        case prepared(ManagedInstallerReviewedProviderStageReceipt)
+        case observed(ManagedInstallerReviewedProviderReadback)
+        case authenticating(ProviderTargetID)
+        case challenge(ManagedInstallerProviderAuthenticationChallengeResponse)
+        case blocked(String)
+    }
+
     enum RemovalReviewState {
         case idle
         case loading
@@ -30,8 +40,30 @@ final class InstallerWizardViewModel: ObservableObject {
         case blocked(String)
     }
 
+    enum LifecycleReviewState {
+        case idle
+        case loading
+        case prepared(ManagedInstallerPreservedLifecycleReviewSession)
+        case executing(ManagedInstallerPreservedLifecycleReviewSession)
+        case recoveryPending(ManagedInstallerPreservedLifecycleReviewSession)
+        case completed(
+            ManagedInstallerPreservedLifecycleReviewSession,
+            ManagedInstallerPreservedLifecycleReceipt
+        )
+        case recovered(ManagedInstallerPreserveRecoveryCompletion)
+        case blocked(String)
+    }
+
     @Published private(set) var state: InstallerWizardState
     @Published private(set) var removalReview: RemovalReviewState = .idle
+    @Published private(set) var lifecycleReview: LifecycleReviewState = .idle
+    @Published private(set) var providerStage: ProviderStageState = .idle
+
+    var isProviderStageInFlight: Bool {
+        if case .staging = providerStage { return true }
+        if case .authenticating = providerStage { return true }
+        return false
+    }
 
     private let coordinator: any InstallerWizardCoordinator
     @Published private(set) var isPreflightRequestInFlight = false
@@ -39,6 +71,8 @@ final class InstallerWizardViewModel: ObservableObject {
     @Published private(set) var isExecutionRequestInFlight = false
     @Published private(set) var isRemovalReviewRequestInFlight = false
     @Published private(set) var isRemovalExecutionInFlight = false
+    @Published private(set) var isLifecycleReviewRequestInFlight = false
+    @Published private(set) var isLifecycleExecutionInFlight = false
     private var removalOperationKey: String?
     private var removalOperationID: String?
 
@@ -76,6 +110,7 @@ final class InstallerWizardViewModel: ObservableObject {
             return
         }
         resetRemovalReview()
+        resetLifecycleReview()
         let coordinator = coordinator
         Task { @MainActor [weak self] in
             let result = await coordinator.prepareManagedDeploymentInventory()
@@ -87,6 +122,7 @@ final class InstallerWizardViewModel: ObservableObject {
         guard !isRemovalExecutionInFlight else { return }
         if state.selectManagedDeployment(deploymentID) {
             resetRemovalReview()
+            resetLifecycleReview()
         }
     }
 
@@ -216,6 +252,154 @@ final class InstallerWizardViewModel: ObservableObject {
         isRemovalReviewRequestInFlight = false
     }
 
+    func prepareLifecycleReview(operation: String, component: String) {
+        guard state.step == .deployment,
+              case .selected(let deployment, _) = state.deploymentSelection,
+              deployment.exists,
+              case .current(let release) = state.selfUpdate,
+              !isLifecycleReviewRequestInFlight,
+              !isRemovalExecutionInFlight,
+              let operationID = try? ManagedInstallerPreservedLifecycleOperationIdentity.derive(
+                target: deployment, operation: operation, component: component,
+                installerRelease: release
+              ) else { return }
+        isLifecycleReviewRequestInFlight = true
+        lifecycleReview = .loading
+        let workflow = ManagedInstallerPreservedLifecycleReviewWorkflow(
+            coordinator: coordinator, currentRelease: release
+        )
+        Task { @MainActor [weak self] in
+            let result = await workflow.prepare(
+                operationID: operationID, deploymentID: deployment.id,
+                operation: operation, component: component
+            )
+            guard let self,
+                  self.state.step == .deployment,
+                  case .selected(let current, _) = self.state.deploymentSelection,
+                  current == deployment,
+                  case .current(let currentRelease) = self.state.selfUpdate,
+                  currentRelease == release else { return }
+            self.isLifecycleReviewRequestInFlight = false
+            switch result {
+            case .success(let session):
+                guard session.operationID == operationID,
+                      session.target == deployment else {
+                    self.lifecycleReview = .blocked("Het exacte lifecyclevoorstel is gewijzigd.")
+                    return
+                }
+                self.lifecycleReview = .prepared(session)
+            case .failure:
+                self.lifecycleReview = .blocked(
+                    "Het exacte helpervoorstel is niet beschikbaar. Lees de inventaris opnieuw."
+                )
+            }
+        }
+    }
+
+    func recoverTerminalPreserve(component: String) {
+        guard state.step == .deployment,
+              case .selected(let deployment, _) = state.deploymentSelection,
+              deployment.exists,
+              case .current(let release) = state.selfUpdate,
+              !isLifecycleReviewRequestInFlight,
+              !isRemovalExecutionInFlight,
+              ["forge-runtime", "engineering-platform-server"].contains(component),
+              (component == "forge-runtime"
+                ? deployment.preservedForgeInstanceID
+                : deployment.preservedEngineeringPlatformInstanceID) != nil else { return }
+        isLifecycleReviewRequestInFlight = true
+        lifecycleReview = .loading
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.readTerminalPreserveRecovery(
+                deploymentID: deployment.id, component: component,
+                installerRelease: release
+            )
+            guard let self,
+                  self.state.step == .deployment,
+                  case .selected(let current, _) = self.state.deploymentSelection,
+                  current == deployment,
+                  case .current(let currentRelease) = self.state.selfUpdate,
+                  currentRelease == release else { return }
+            self.isLifecycleReviewRequestInFlight = false
+            switch result {
+            case .success(let completion):
+                guard completion.intent.deploymentID == deployment.id,
+                      completion.intent.component == component,
+                      completion.intent.installerRelease == release,
+                      let request = try? ManagedInstallerPreserveRecoveryRequest(
+                        intent: completion.intent
+                      ),
+                      (try? ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+                        completion.receipt.canonicalJSONData(), request: request
+                      )) == completion.receipt else {
+                    self.lifecycleReview = .blocked("Het PRESERVE-herstelbewijs hoort niet bij dit doel.")
+                    return
+                }
+                self.lifecycleReview = .recovered(completion)
+            case .failure:
+                self.lifecycleReview = .blocked(
+                    "Exact terminal PRESERVE-bewijs is niet beschikbaar."
+                )
+            }
+        }
+    }
+
+    func executeReviewedPreserve(operationID: String, reviewFingerprint: String) {
+        guard case .prepared(let session) = lifecycleReview,
+              session.intent.operation == "PRESERVE",
+              !isLifecycleReviewRequestInFlight,
+              !isLifecycleExecutionInFlight,
+              !isRemovalExecutionInFlight,
+              state.step == .deployment,
+              case .selected(let target, _) = state.deploymentSelection,
+              target == session.target,
+              case .current(let release) = state.selfUpdate,
+              release == session.intent.installerRelease,
+              operationID == session.operationID,
+              reviewFingerprint == session.reviewFingerprint else { return }
+        isLifecycleExecutionInFlight = true
+        lifecycleReview = .executing(session)
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.executeReviewedPreservedLifecycle(session)
+            guard let self else { return }
+            self.isLifecycleExecutionInFlight = false
+            guard self.state.step == .deployment,
+                  case .selected(let current, _) = self.state.deploymentSelection,
+                  current == session.target,
+                  case .current(let currentRelease) = self.state.selfUpdate,
+                  currentRelease == session.intent.installerRelease else {
+                self.lifecycleReview = .blocked(
+                    "De selectie of installer-release is gewijzigd. Lees de inventaris opnieuw."
+                )
+                return
+            }
+            switch result {
+            case .failure:
+                self.lifecycleReview = .recoveryPending(session)
+            case .success(let receipt):
+                guard let request = try? ManagedInstallerPreservedLifecycleRequest(
+                    intent: session.intent, proposal: session.proposal
+                ),
+                      (try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+                        receipt.canonicalJSONData(), request: request
+                      )) == receipt else {
+                    self.lifecycleReview = .blocked(
+                        "Het productreceipt past niet bij het beoordeelde doel."
+                    )
+                    return
+                }
+                self.lifecycleReview = .completed(session, receipt)
+            }
+        }
+    }
+
+    private func resetLifecycleReview() {
+        lifecycleReview = .idle
+        isLifecycleReviewRequestInFlight = false
+    }
+
     /// The coordinator must return one typed, immutable composition session
     /// after an exact managed deployment has been selected.
     func prepareVerifiedCompositionSession() {
@@ -255,12 +439,13 @@ final class InstallerWizardViewModel: ObservableObject {
         guard !isReviewRequestInFlight,
               state.step == .review,
               state.preflight.isPassed,
-              state.enabledProvidersVerified,
+              state.providerRequirementsAreProjected,
               let session = state.acceptedSessionPlan,
               case .selected(let deployment, _) = state.deploymentSelection else {
             return
         }
         isReviewRequestInFlight = true
+        providerStage = .idle
         let coordinator = coordinator
         Task { @MainActor [weak self] in
             let result = await coordinator.prepareCompositionReview(
@@ -274,7 +459,9 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func setProviderSelected(_ target: ProviderTargetID, isSelected: Bool) {
-        _ = state.setProviderTargetSelected(target, isSelected: isSelected)
+        if state.setProviderTargetSelected(target, isSelected: isSelected) {
+            providerStage = .idle
+        }
     }
 
     func performProviderAction(_ action: ProviderAction, target: ProviderTargetID) {
@@ -286,15 +473,38 @@ final class InstallerWizardViewModel: ObservableObject {
         Task { @MainActor [weak self] in
             let result = await coordinator.performProviderAction(action, for: requirement)
             self?.state.applyProviderTargetActionResult(result, for: target, action: action)
+            self?.providerStage = .idle
         }
     }
 
     func setCompositionAcknowledged(_ acknowledged: Bool) {
-        _ = state.setCompositionAcknowledged(acknowledged)
+        if state.setCompositionAcknowledged(acknowledged) {
+            providerStage = .idle
+        }
+    }
+
+    func clearReviewedPairingTarget() {
+        if state.setReviewedPairingTarget(nil) {
+            providerStage = .idle
+        }
+    }
+
+    func setReviewedPairingTarget(
+        projectID: String,
+        repositoryID: String,
+        repositoryIdentity: String
+    ) {
+        guard let target = try? ManagedInstallerReviewedPairingTarget(
+            projectID: projectID,
+            repositoryID: repositoryID,
+            repositoryIdentity: repositoryIdentity
+        ), state.setReviewedPairingTarget(target) else { return }
+        providerStage = .idle
     }
 
     func advance() {
         if state.step == .review {
+            guard !isExecutionRequestInFlight, !isProviderStageInFlight else { return }
             guard state.beginPreMutationCurrencyCheck() else { return }
             let currentVersion = state.currentInstallerVersion
             let coordinator = coordinator
@@ -303,8 +513,43 @@ final class InstallerWizardViewModel: ObservableObject {
                 let result = await coordinator.recheckInstallerBeforeMutation(
                     currentVersion: currentVersion
                 )
-                if self.state.recordPreMutationCurrencyCheck(result),
-                   let operation = self.state.beginManagedDeploymentExecution() {
+                guard self.state.recordPreMutationCurrencyCheck(result) else { return }
+                if !self.state.enabledProvidersVerified {
+                    guard let operation = self.state.reviewedProviderStageOperation() else {
+                        self.providerStage = .blocked("Het beoordeelde providerplan is gewijzigd. Bouw het wijzigingsplan opnieuw op.")
+                        return
+                    }
+                    self.providerStage = .staging
+                    let staged = await coordinator.stageReviewedProviders(operation)
+                    guard self.state.step == .review,
+                          self.state.reviewedProviderStageOperation() == operation else {
+                        self.providerStage = .blocked("De doelinstantie of review is gewijzigd. Bouw het wijzigingsplan opnieuw op.")
+                        return
+                    }
+                    switch staged {
+                    case .prepared(let receipt):
+                        let expected = self.state.enabledProviders.map(\.id)
+                            .sorted { $0.rawValue < $1.rawValue }
+                        guard receipt.providerTargetIDs == expected else {
+                            self.providerStage = .blocked("De helper gaf andere providertargets terug.")
+                            return
+                        }
+                        self.providerStage = .prepared(receipt)
+                        switch await coordinator.readReviewedProviders(operation) {
+                        case .observed(let readback):
+                            self.providerStage = self.state.recordReviewedProviderReadback(
+                                readback, after: receipt, for: operation
+                            ) ? .observed(readback)
+                                : .blocked("De providerstatus past niet bij het beoordeelde doel.")
+                        case .unavailable:
+                            self.providerStage = .blocked("De helper kon de providerstatus niet onafhankelijk teruglezen.")
+                        }
+                    case .unavailable:
+                        self.providerStage = .blocked("De helper kon de beoordeelde provideromgevingen niet voorbereiden.")
+                    }
+                    return
+                }
+                if let operation = self.state.beginManagedDeploymentExecution() {
                     self.isExecutionRequestInFlight = true
                     let execution = await coordinator.executeReviewedManagedDeployment(operation)
                     _ = self.state.recordManagedDeploymentExecution(execution, for: operation)
@@ -316,9 +561,54 @@ final class InstallerWizardViewModel: ObservableObject {
         _ = state.advance()
     }
 
+    func beginReviewedProviderAuthentication(_ targetID: ProviderTargetID) {
+        guard state.step == .review,
+              case .observed(let readback) = providerStage,
+              readback.targets.contains(where: {
+                  $0.id == targetID && $0.state == .authenticationRequired
+              }),
+              !isProviderStageInFlight else { return }
+        providerStage = .authenticating(targetID)
+        let coordinator = coordinator
+        let currentVersion = state.currentInstallerVersion
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard self.state.beginPreMutationCurrencyCheck() else {
+                self.providerStage = .blocked("De installercontrole kon niet opnieuw starten.")
+                return
+            }
+            let currency = await coordinator.recheckInstallerBeforeMutation(
+                currentVersion: currentVersion
+            )
+            guard self.state.recordPreMutationCurrencyCheck(currency),
+                  let operation = self.state.reviewedProviderStageOperation()
+            else {
+                self.providerStage = .blocked(
+                    "De installer of het beoordeelde doel is gewijzigd. Bouw het plan opnieuw op."
+                )
+                return
+            }
+            let challenge = await coordinator.beginReviewedProviderAuthentication(
+                operation, providerTargetID: targetID
+            )
+            guard self.state.step == .review,
+                  self.state.reviewedProviderStageOperation() == operation,
+                  let challenge,
+                  challenge.providerTargetID == targetID.rawValue else {
+                self.providerStage = .blocked(
+                    "De beoordeelde aanmelding kon niet veilig worden gestart. Controleer het doel opnieuw."
+                )
+                return
+            }
+            self.providerStage = .challenge(challenge)
+        }
+    }
+
     func goBack() {
-        guard !isRemovalExecutionInFlight else { return }
-        _ = state.goBack()
+        guard !isRemovalExecutionInFlight, !isProviderStageInFlight else { return }
+        if state.goBack() {
+            providerStage = .idle
+        }
         resetRemovalReview()
     }
 }
@@ -414,7 +704,9 @@ struct InstallerWizardView: View {
         case .review:
             return viewModel.state.preMutationCurrency.isChecking
                 ? "Installer opnieuw controleren…"
-                : "Controleer en voer uit"
+                : (viewModel.state.enabledProvidersVerified
+                    ? "Controleer en voer uit"
+                    : "Controleer en bereid providers voor")
         case .execution:
             return "Naar samenvatting"
         default:
@@ -425,6 +717,8 @@ struct InstallerWizardView: View {
     private var primaryActionDisabled: Bool {
         if viewModel.state.step == .review {
             return !viewModel.state.canBeginPreMutationCurrencyCheck
+                || viewModel.isExecutionRequestInFlight
+                || viewModel.isProviderStageInFlight
         }
         return !viewModel.state.canAdvance
     }
@@ -548,6 +842,10 @@ private struct ManagedDeploymentSelectionScreen: View {
     @State private var confirmationOperationID = ""
     @State private var confirmationFingerprint = ""
     @State private var confirmationSummary = ""
+    @State private var confirmingPreserve = false
+    @State private var preserveOperationID = ""
+    @State private var preserveReviewFingerprint = ""
+    @State private var preserveSummary = ""
 
     var body: some View {
         ScreenHeader(
@@ -595,6 +893,14 @@ private struct ManagedDeploymentSelectionScreen: View {
                         if let ep = deployment.engineeringPlatformInstanceID {
                             Text("EP: \(ep)").font(.caption).foregroundStyle(.secondary)
                         }
+                        if let forge = deployment.preservedForgeInstanceID {
+                            Text("Forge bewaard: \(forge)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let ep = deployment.preservedEngineeringPlatformInstanceID {
+                            Text("EP bewaard: \(ep)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         Text(deployment.exists ? "Bestaande deployment" : "Nieuwe deployment")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -611,6 +917,9 @@ private struct ManagedDeploymentSelectionScreen: View {
                 .foregroundStyle(.green)
                 if deployment.exists, deployment.forgeInstanceID != nil {
                     removalReviewPanel(for: deployment)
+                }
+                if deployment.exists {
+                    lifecycleReviewPanel(for: deployment)
                 }
 
             case .unavailable(let failure):
@@ -730,6 +1039,125 @@ private struct ManagedDeploymentSelectionScreen: View {
         }
         .disabled(viewModel.isRemovalExecutionInFlight)
     }
+
+    @ViewBuilder
+    private func lifecycleReviewPanel(for deployment: ManagedDeploymentTarget) -> some View {
+        GroupBox("Productgegevens bewaren, herstellen of definitief wissen") {
+            VStack(alignment: .leading, spacing: 10) {
+                lifecycleActionButtons(
+                    component: "forge-runtime", label: "Forge",
+                    active: deployment.forgeInstanceID != nil,
+                    preserved: deployment.preservedForgeInstanceID != nil
+                )
+                lifecycleActionButtons(
+                    component: "engineering-platform-server", label: "EP",
+                    active: deployment.engineeringPlatformInstanceID != nil,
+                    preserved: deployment.preservedEngineeringPlatformInstanceID != nil
+                )
+                switch viewModel.lifecycleReview {
+                case .idle:
+                    Text("Kies een actie om het product-eigen voorstel alleen te lezen.")
+                        .foregroundStyle(.secondary)
+                case .loading:
+                    ProgressView("Exacte lifecycle-review wordt gelezen…")
+                case .executing:
+                    ProgressView("Product-eigen PRESERVE en registry-readback worden uitgevoerd…")
+                case .recoveryPending(let session):
+                    Text("Terminal bewijs ontbreekt voor operation \(session.operationID). Inventariseer opnieuw en verifieer het bewaarbewijs.")
+                        .font(.caption.monospaced())
+                case .completed(let session, let receipt):
+                    Label("PRESERVE en exact registry-readback zijn terminaal bevestigd.",
+                          systemImage: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                    Text("Operation ID: \(session.operationID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Registerrevisie: \(receipt.registryRevision)")
+                        .font(.caption.monospaced())
+                case .blocked(let reason):
+                    FailureCallout(reason: reason)
+                case .prepared(let session):
+                    Text("Actie: \(session.intent.operation) / \(session.intent.component)")
+                    Text("Deployment: \(session.intent.deploymentID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Instance: \(session.intent.instanceID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Operation ID: \(session.operationID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Registerrevisie: \(session.proposal.registryRevision)")
+                        .font(.caption.monospaced())
+                    Text("Review-fingerprint: \(session.reviewFingerprint)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Dit voorstel voert geen productmutatie uit.")
+                        .foregroundStyle(.secondary)
+                    if session.intent.operation == "PRESERVE" {
+                        Button("Bevestig bewaren") {
+                            preserveOperationID = session.operationID
+                            preserveReviewFingerprint = session.reviewFingerprint
+                            preserveSummary = "Deployment \(session.intent.deploymentID), component \(session.intent.component), instance \(session.intent.instanceID), registerrevisie \(session.proposal.registryRevision), operation \(session.operationID), review-fingerprint \(session.reviewFingerprint)."
+                            confirmingPreserve = true
+                        }
+                        .disabled(viewModel.isLifecycleExecutionInFlight
+                            || viewModel.isRemovalExecutionInFlight)
+                    }
+                case .recovered(let completion):
+                    Text("PRESERVE terminaal bevestigd voor \(completion.intent.component)")
+                    Text("Instance: \(completion.intent.instanceID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Operation ID: \(completion.intent.operationID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Registerrevisie: \(completion.receipt.registryRevision)")
+                        .font(.caption.monospaced())
+                    Text("Dit herstel leest alleen helperjournal en deploymentregister.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .alert("Bevestig productgegevens bewaren", isPresented: $confirmingPreserve) {
+            Button("Bewaar") {
+                viewModel.executeReviewedPreserve(
+                    operationID: preserveOperationID,
+                    reviewFingerprint: preserveReviewFingerprint
+                )
+            }
+            Button("Annuleer", role: .cancel) {}
+        } message: {
+            Text(preserveSummary)
+        }
+    }
+
+    @ViewBuilder
+    private func lifecycleActionButtons(
+        component: String, label: String, active: Bool, preserved: Bool
+    ) -> some View {
+        if active || preserved {
+            HStack {
+                Text(label).fontWeight(.semibold)
+                if active {
+                    Button("Beoordeel bewaren") {
+                        viewModel.prepareLifecycleReview(operation: "PRESERVE", component: component)
+                    }
+                    Button("Beoordeel wissen") {
+                        viewModel.prepareLifecycleReview(operation: "PURGE", component: component)
+                    }
+                }
+                if preserved {
+                    Button("Verifieer bewaarbewijs") {
+                        viewModel.recoverTerminalPreserve(component: component)
+                    }
+                    Button("Beoordeel herstellen") {
+                        viewModel.prepareLifecycleReview(operation: "RESTORE", component: component)
+                    }
+                    Button("Beoordeel definitief wissen") {
+                        viewModel.prepareLifecycleReview(operation: "PURGE", component: component)
+                    }
+                }
+            }
+            .disabled(viewModel.isLifecycleReviewRequestInFlight
+                || viewModel.isLifecycleExecutionInFlight
+                || viewModel.isRemovalExecutionInFlight)
+        }
+    }
 }
 
 private struct CompositionSelectionScreen: View {
@@ -847,7 +1275,7 @@ private struct ProviderScreen: View {
     var body: some View {
         ScreenHeader(
             title: "Providers toevoegen",
-            subtitle: "Codex CLI en GitHub CLI komen uitsluitend uit de eerder geverifieerde compositiesessie. Iedere ingeschakelde provider moet onafhankelijk zijn geïnstalleerd, geauthenticeerd en geverifieerd voordat u verder kunt."
+            subtitle: "Kies de providertargets uit de geverifieerde compositiesessie. De keuze wordt onderdeel van het wijzigingsplan. Voor uitvoering moet elke gekozen provider onafhankelijk zijn geïnstalleerd, aangemeld en geverifieerd."
         )
 
         VStack(alignment: .leading, spacing: 14) {
@@ -864,8 +1292,8 @@ private struct ProviderScreen: View {
 
             let verified = viewModel.state.enabledProvidersVerified
             Label(
-                verified ? "Alle ingeschakelde providers zijn geverifieerd." : "De volgende stap blijft geblokkeerd totdat iedere ingeschakelde provider is geverifieerd.",
-                systemImage: verified ? "checkmark.circle.fill" : "lock.fill"
+                verified ? "Alle gekozen providers zijn geverifieerd." : "Je kunt het wijzigingsplan bekijken. Uitvoering blijft geblokkeerd tot verificatie.",
+                systemImage: verified ? "checkmark.circle.fill" : "info.circle"
             )
             .foregroundStyle(verified ? .green : .secondary)
             .padding(.top, 4)
@@ -919,7 +1347,11 @@ private struct ProviderRow: View {
                     FailureCallout(reason: failure.userFacingMessage)
                 }
 
-                if let action = nextAction(for: provider) {
+                if provider.requirement.credentialScope == .component {
+                    Text("Na beoordeling bereidt de helper deze componentomgeving voor en leest de aanmeldstatus onafhankelijk terug.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let action = nextAction(for: provider) {
                     Button(label(for: action)) {
                         viewModel.performProviderAction(action, target: provider.id)
                     }
@@ -951,11 +1383,14 @@ private struct ProviderRow: View {
 
 private struct CompositionReviewScreen: View {
     @ObservedObject var viewModel: InstallerWizardViewModel
+    @State private var pairingProject = ""
+    @State private var pairingRepository = ""
+    @State private var pairingRepositoryIdentity = ""
 
     var body: some View {
         ScreenHeader(
             title: "Compositie en wijzigingsplan",
-            subtitle: "Na host-, tool- en providergates toont de wizard uitsluitend de reviewdiff voor de eerder geverifieerde immutable compositie. Product-adapters beslissen afzonderlijk over runtime, data, migratie en rollback."
+            subtitle: "Na de host- en toolcontrole toont de wizard het wijzigingsplan voor de gekozen compositie en providertargets. Uitvoering vereist daarna onafhankelijke providerverificatie."
         )
 
         VStack(alignment: .leading, spacing: 16) {
@@ -995,6 +1430,53 @@ private struct CompositionReviewScreen: View {
                 }
             }
 
+            if viewModel.state.requiresPairingTarget {
+                GroupBox("Forge↔EP project en repository") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Kies het bestaande EP-project en de repository expliciet. Deze keuze wordt onderdeel van het beoordeelde plan.")
+                            .font(.caption)
+                        TextField("EP-project ID", text: Binding(
+                            get: { pairingProject },
+                            set: { pairingProject = $0; viewModel.clearReviewedPairingTarget() }
+                        ))
+                        TextField("EP-repository ID", text: Binding(
+                            get: { pairingRepository },
+                            set: { pairingRepository = $0; viewModel.clearReviewedPairingTarget() }
+                        ))
+                        TextField("Forge-repository-identiteit", text: Binding(
+                            get: { pairingRepositoryIdentity },
+                            set: { pairingRepositoryIdentity = $0; viewModel.clearReviewedPairingTarget() }
+                        ))
+                        Button("Neem project en repository op in het plan") {
+                            viewModel.setReviewedPairingTarget(
+                                projectID: pairingProject,
+                                repositoryID: pairingRepository,
+                                repositoryIdentity: pairingRepositoryIdentity
+                            )
+                        }
+                        if let target = viewModel.state.pairingTarget {
+                            Text("Beoordeeld: \(target.projectID) / \(target.repositoryID) / \(target.repositoryIdentity)")
+                                .textSelection(.enabled)
+                        } else {
+                            Text("Project: kleine letters, cijfers en streepjes. Repository: 3–128 kleine letters, cijfers, punten, underscores of streepjes. Geen paden of geheimen.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            GroupBox("Gekozen providertargets") {
+                if viewModel.state.enabledProviders.isEmpty {
+                    Text("Geen")
+                } else {
+                    ForEach(viewModel.state.enabledProviders) { provider in
+                        Text("\(provider.requirement.provider.displayName) · \(provider.id.rawValue)")
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
             Toggle(
                 "Ik heb de gekwalificeerde compositie en de voorgestelde wijzigingen beoordeeld.",
                 isOn: Binding(
@@ -1002,7 +1484,8 @@ private struct CompositionReviewScreen: View {
                     set: { viewModel.setCompositionAcknowledged($0) }
                 )
             )
-            .disabled(!isCompatible(viewModel.state.composition.status))
+            .disabled(!isCompatible(viewModel.state.composition.status)
+                || !viewModel.state.pairingTargetIsReady)
 
             switch viewModel.state.preMutationCurrency {
             case .pending:
@@ -1023,6 +1506,50 @@ private struct CompositionReviewScreen: View {
                 .font(.caption)
                 .foregroundStyle(.green)
             case .failed(let reason):
+                FailureCallout(reason: reason)
+            }
+
+            switch viewModel.providerStage {
+            case .idle:
+                EmptyView()
+            case .staging:
+                Label("De helper bereidt de beoordeelde provideromgevingen voor…", systemImage: "gearshape")
+            case .prepared(let receipt):
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Provideromgevingen voorbereid voor \(receipt.providerTargetIDs.map(\.rawValue).joined(separator: ", ")).")
+                    Text("Menselijke aanmelding en onafhankelijke verificatie per doelinstantie zijn nog vereist.")
+                }
+                .font(.callout)
+            case .observed(let readback):
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(readback.targets, id: \.id) { target in
+                        Text("\(target.id.rawValue): \(target.state == .verified ? "VERIFIED" : "Aanmelding vereist")")
+                        if target.state == .authenticationRequired {
+                            Button("Start veilige aanmelding") {
+                                viewModel.beginReviewedProviderAuthentication(target.id)
+                            }
+                        }
+                    }
+                    if !readback.allVerified {
+                        Text("Meld je aan in elke gekozen componentomgeving en controleer de status daarna opnieuw.")
+                    }
+                }
+                .font(.callout)
+            case .authenticating(let targetID):
+                Label("Aanmelding voor \(targetID.rawValue) wordt gestart…",
+                      systemImage: "lock.shield")
+            case .challenge(let challenge):
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Meld \(challenge.providerTargetID) aan met deze eenmalige code:")
+                    Text(challenge.userCode)
+                        .font(.title3.monospaced().weight(.semibold))
+                        .textSelection(.enabled)
+                    Link("Open provider-aanmeldpagina",
+                         destination: challenge.verificationURL)
+                    Text("Kies daarna opnieuw Verder voor onafhankelijke verificatie.")
+                        .font(.caption)
+                }
+            case .blocked(let reason):
                 FailureCallout(reason: reason)
             }
         }

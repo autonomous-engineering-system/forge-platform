@@ -72,6 +72,7 @@ public struct ReviewedManagedDeploymentOperation: Equatable, Sendable {
     public let currentInstallerRelease: VerifiedInstallerRelease
     public let enabledProviderRequirements: [ProviderRequirement]
     public let components: [ComponentDiff]
+    public let pairingTarget: ManagedInstallerReviewedPairingTarget?
 
     init(
         sessionID: String,
@@ -82,7 +83,8 @@ public struct ReviewedManagedDeploymentOperation: Equatable, Sendable {
         inventoryEvidenceReference: String,
         currentInstallerRelease: VerifiedInstallerRelease,
         enabledProviderRequirements: [ProviderRequirement] = [],
-        components: [ComponentDiff]
+        components: [ComponentDiff],
+        pairingTarget: ManagedInstallerReviewedPairingTarget? = nil
     ) {
         self.sessionID = sessionID
         self.compositionIdentity = compositionIdentity
@@ -95,6 +97,7 @@ public struct ReviewedManagedDeploymentOperation: Equatable, Sendable {
             $0.id.rawValue < $1.id.rawValue
         }
         self.components = components
+        self.pairingTarget = pairingTarget
     }
 }
 
@@ -102,6 +105,16 @@ public enum ManagedDeploymentExecutionResult: Equatable, Sendable {
     case completed(stages: [ExecutionStage], summaryItems: [InstallationSummaryItem])
     case failed(InstallerOperationFailureCode, stages: [ExecutionStage])
     case updateRequired(VerifiedInstallerRelease)
+}
+
+public enum ManagedInstallerProviderStagePreparationResult: Equatable, Sendable {
+    case prepared(ManagedInstallerReviewedProviderStageReceipt)
+    case unavailable(InstallerOperationFailureCode)
+}
+
+public enum ManagedInstallerProviderReadbackResult: Equatable, Sendable {
+    case observed(ManagedInstallerReviewedProviderReadback)
+    case unavailable(InstallerOperationFailureCode)
 }
 
 /// Narrow collaborator injected into the trusted installer runtime. Product
@@ -120,6 +133,41 @@ public protocol ManagedDeploymentRouteCoordinating: Sendable {
     func executeReviewedManagedDeployment(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedDeploymentExecutionResult
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse?
+}
+
+public extension ManagedDeploymentRouteCoordinating {
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        _ = operation
+        return .unavailable(.coordinatorUnavailable)
+    }
+
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
+        _ = operation
+        return .unavailable(.coordinatorUnavailable)
+    }
+
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        _ = operation
+        _ = providerTargetID
+        return nil
+    }
 }
 
 public struct UnavailableManagedDeploymentRouteCoordinator: ManagedDeploymentRouteCoordinating {
@@ -188,9 +236,10 @@ public extension InstallerWizardState {
               let plan = acceptedSessionPlan,
               let selected = selectedDeploymentRouteContext,
               preflight.isPassed,
-              enabledProvidersVerified else {
+              providerRequirementsAreProjected else {
             return false
         }
+        clearReviewedPairingEvidence()
         switch result {
         case .prepared(let prepared):
             guard prepared.sessionID == plan.sessionID,
@@ -214,6 +263,38 @@ public extension InstallerWizardState {
         }
     }
 
+    /// Forms the same exact operation for helper-owned provider preparation,
+    /// while remaining on the review screen. This grants no product-execution
+    /// authority and is available only for a provider-bound fresh install.
+    func reviewedProviderStageOperation() -> ReviewedManagedDeploymentOperation? {
+        guard step == .review,
+              hasAcceptedSessionPlan,
+              preflight.isPassed,
+              providerRequirementsAreProjected,
+              !enabledProviders.isEmpty,
+              !enabledProvidersVerified,
+              composition.isReadyForExecution,
+              pairingTargetIsReady,
+              let plan = acceptedSessionPlan,
+              let selected = selectedDeploymentRouteContext,
+              !selected.target.exists,
+              case .current(let release) = preMutationCurrency else {
+            return nil
+        }
+        return ReviewedManagedDeploymentOperation(
+            sessionID: plan.sessionID,
+            compositionIdentity: plan.compositionIdentity,
+            manifestSHA256: plan.manifestSHA256,
+            deploymentID: selected.target.id,
+            deploymentExists: false,
+            inventoryEvidenceReference: selected.evidenceReference,
+            currentInstallerRelease: release,
+            enabledProviderRequirements: enabledProviders.map(\.requirement),
+            components: composition.components,
+            pairingTarget: pairingTarget
+        )
+    }
+
     /// Crosses the final reviewed/current gate exactly once. Execution starts
     /// with a running stage so navigation cannot claim success before bounded
     /// terminal evidence is returned.
@@ -234,7 +315,8 @@ public extension InstallerWizardState {
             inventoryEvidenceReference: selected.evidenceReference,
             currentInstallerRelease: release,
             enabledProviderRequirements: enabledProviders.map(\.requirement),
-            components: composition.components
+            components: composition.components,
+            pairingTarget: pairingTarget
         )
         step = .execution
         executionStages = [

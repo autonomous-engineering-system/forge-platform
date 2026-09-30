@@ -1,9 +1,173 @@
+import CryptoKit
 import XCTest
 @testable import ForgePlatformInstaller
 @testable import ForgePlatformInstallerCore
 
 @MainActor
 final class InstallerWizardViewModelTests: XCTestCase {
+    func testLifecycleReviewShowsExactReadOnlyHelperProposalAndStableOperation() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = LifecycleReviewGUICoordinator(inventory: inventory)
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.prepareLifecycleReview(operation: "PRESERVE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .prepared(let first) = model.lifecycleReview else {
+            return XCTFail("Exact helper lifecycle review should be visible")
+        }
+        XCTAssertEqual(first.intent.deploymentID, "deployment-prod")
+        XCTAssertEqual(first.intent.instanceID, "forge-prod")
+        XCTAssertEqual(first.proposal.operation, "PRESERVE")
+        XCTAssertTrue(first.reviewFingerprint.hasPrefix("sha256:"))
+        XCTAssertFalse(model.isLifecycleReviewRequestInFlight)
+
+        model.prepareLifecycleReview(operation: "PRESERVE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .prepared(let repeated) = model.lifecycleReview else {
+            return XCTFail("Repeated review should remain read-only")
+        }
+        XCTAssertEqual(repeated.operationID, first.operationID)
+        let restarted = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        restarted.prepareLifecycleReview(operation: "PRESERVE", component: "forge-runtime")
+        await waitForLifecycleReview(on: restarted)
+        guard case .prepared(let resumed) = restarted.lifecycleReview else {
+            return XCTFail("Restarted review should resolve same exact operation")
+        }
+        XCTAssertEqual(resumed.operationID, first.operationID)
+        let calls = await coordinator.reviewCalls()
+        XCTAssertEqual(calls, 3)
+    }
+
+    func testLifecycleReviewFailsClosedWhenHelperUnavailable() async throws {
+        let (state, _) = try removalSelectionState()
+        let model = InstallerWizardViewModel(
+            state: state, coordinator: UnavailableInstallerWizardCoordinator()
+        )
+        model.prepareLifecycleReview(operation: "PRESERVE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .blocked = model.lifecycleReview else {
+            return XCTFail("Unavailable lifecycle helper must block review")
+        }
+        XCTAssertFalse(model.isLifecycleReviewRequestInFlight)
+    }
+
+    func testGUIExecutesOnlyExactAcknowledgedPreserveThroughSharedCoordinator() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = LifecycleReviewGUICoordinator(inventory: inventory)
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.prepareLifecycleReview(operation: "PRESERVE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .prepared(let session) = model.lifecycleReview else {
+            return XCTFail("Expected exact read-only proposal")
+        }
+        model.executeReviewedPreserve(
+            operationID: "another-operation",
+            reviewFingerprint: session.reviewFingerprint
+        )
+        model.executeReviewedPreserve(
+            operationID: session.operationID,
+            reviewFingerprint: "sha256:" + String(repeating: "a", count: 64)
+        )
+        let deniedCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(deniedCalls, 0)
+        model.executeReviewedPreserve(
+            operationID: session.operationID,
+            reviewFingerprint: session.reviewFingerprint
+        )
+        await waitForLifecycleExecution(on: model)
+        guard case .completed(let completedSession, let receipt) = model.lifecycleReview else {
+            return XCTFail("Exact terminal receipt should be visible")
+        }
+        XCTAssertEqual(completedSession.operationID, session.operationID)
+        XCTAssertEqual(receipt.registryRevision, 4)
+        let acceptedCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(acceptedCalls, 1)
+        model.executeReviewedPreserve(
+            operationID: session.operationID,
+            reviewFingerprint: session.reviewFingerprint
+        )
+        let duplicateCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(duplicateCalls, 1)
+    }
+
+    func testGUIKeepsPreserveFailurePendingWithoutTerminalPass() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = LifecycleReviewGUICoordinator(
+            inventory: inventory, executionAvailable: false
+        )
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.prepareLifecycleReview(operation: "PRESERVE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .prepared(let session) = model.lifecycleReview else {
+            return XCTFail("Expected exact proposal")
+        }
+        model.executeReviewedPreserve(
+            operationID: session.operationID,
+            reviewFingerprint: session.reviewFingerprint
+        )
+        await waitForLifecycleExecution(on: model)
+        guard case .recoveryPending(let pending) = model.lifecycleReview else {
+            return XCTFail("Missing terminal receipt must remain pending")
+        }
+        XCTAssertEqual(pending.operationID, session.operationID)
+    }
+
+    func testGUIReadsTerminalPreserveRecoveryForSelectedPreservedInstance() async throws {
+        let (state, _) = try removalSelectionState(preservedForge: true)
+        let current = try makeRelease("1.2.3")
+        let intent = try ManagedInstallerPreservedLifecycleReviewIntent(
+            operationID: "preserve-prod", deploymentID: "deployment-prod",
+            operation: "PRESERVE", component: "forge-runtime", instanceID: "forge-prod",
+            installedCompositionIdentity: "forge-ep-qualified",
+            installedManifestSHA256: "sha256:" + String(repeating: "a", count: 64),
+            installerRelease: current
+        )
+        let request = try ManagedInstallerPreserveRecoveryRequest(intent: intent)
+        let bytes = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPreserveRecoveryReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "intent_fingerprint": .string(intent.intentFingerprint),
+            "record": .object([
+                "operation_id": .string(intent.operationID),
+                "deployment_id": .string(intent.deploymentID),
+                "review_fingerprint": .string("sha256:" + String(repeating: "b", count: 64)),
+                "component": .string(intent.component),
+                "instance_id": .string(intent.instanceID),
+                "state": .string("COMPLETE"),
+                "receipt_digest": .string("sha256:" + String(repeating: "c", count: 64)),
+                "registry_revision": .integer("3"),
+            ]),
+        ]))
+        let terminal = try ManagedInstallerPreserveRecoveryReceipt.decodeJSON(
+            bytes, request: request
+        )
+        let coordinator = LifecycleRecoveryGUICoordinator(
+            completion: ManagedInstallerPreserveRecoveryCompletion(
+                intent: intent, receipt: terminal
+            )
+        )
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.recoverTerminalPreserve(component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .recovered(let completion) = model.lifecycleReview else {
+            return XCTFail("Selected terminal PRESERVE proof should be visible")
+        }
+        XCTAssertEqual(completion.intent.instanceID, "forge-prod")
+        XCTAssertEqual(completion.receipt.registryRevision, 3)
+        let calls = await coordinator.calls()
+        XCTAssertEqual(calls, ["deployment-prod:forge-runtime"])
+    }
+
+    func testGUIRecoveryFailsClosedWithoutTerminalHelperEvidence() async throws {
+        let (state, _) = try removalSelectionState(preservedForge: true)
+        let model = InstallerWizardViewModel(
+            state: state, coordinator: UnavailableInstallerWizardCoordinator()
+        )
+        model.recoverTerminalPreserve(component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .blocked = model.lifecycleReview else {
+            return XCTFail("Missing terminal proof must remain blocked")
+        }
+    }
     func testSelectedPairedDeploymentShowsReadOnlyForgeRemovalProposal() async throws {
         let (state, inventory) = try removalSelectionState()
         let coordinator = RemovalReviewGUICoordinator(inventory: inventory)
@@ -168,6 +332,77 @@ final class InstallerWizardViewModelTests: XCTestCase {
         XCTAssertEqual(preparationCalls, 1)
     }
 
+    func testGUIStagesExactReviewedProvidersWithoutClaimingExecution() async throws {
+        var state = try compositionSelectionState()
+        let session = try makeSessionPlan(sessionID: "ui-provider-stage")
+        XCTAssertTrue(state.beginSessionPreparation())
+        XCTAssertTrue(state.recordSessionPreparation(.prepared(session)))
+        XCTAssertTrue(state.advance())
+        let preflight = PreparedHostPreflight(
+            sessionID: session.sessionID,
+            deploymentID: "deployment-new",
+            preflight: HostPreflight(checks: [PreflightCheck(
+                id: "host", title: "Host", detail: "qualified", state: .passed
+            )])
+        )
+        XCTAssertTrue(state.recordHostPreflightPreparation(.prepared(preflight)))
+        XCTAssertTrue(state.advance())
+        XCTAssertTrue(state.advance())
+        let review = CompositionReview(
+            manifestIdentity: session.compositionIdentity,
+            status: .compatible,
+            components: [ComponentDiff(
+                componentID: "forge-runtime", title: "Forge",
+                change: .install, candidateVersion: "2.7.38",
+                artifactDigest: "sha256:" + String(repeating: "a", count: 64),
+                detail: "qualified"
+            )]
+        )
+        XCTAssertTrue(state.recordCompositionReviewPreparation(.prepared(
+            PreparedCompositionReview(
+                sessionID: session.sessionID,
+                deploymentID: "deployment-new",
+                review: review
+            )
+        )))
+        let coordinator = ProviderStageGUICoordinator(release: try makeRelease("1.2.3"))
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.setCompositionAcknowledged(true)
+        model.advance()
+        for _ in 0..<400 {
+            switch model.providerStage {
+            case .observed, .blocked, .authenticating, .challenge: break
+            case .idle, .staging, .prepared:
+                try? await Task.sleep(for: .milliseconds(5))
+                continue
+            }
+            break
+        }
+        guard case .observed(let readback) = model.providerStage else {
+            return XCTFail("Provider stage must be followed by physical readback")
+        }
+        XCTAssertEqual(readback.targets.map(\.id), [.codex])
+        XCTAssertFalse(readback.allVerified)
+        XCTAssertEqual(model.state.step, .review)
+        XCTAssertFalse(model.state.enabledProvidersVerified)
+        model.beginReviewedProviderAuthentication(.codex)
+        for _ in 0..<400 {
+            if case .blocked = model.providerStage { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let authenticationStarts = await coordinator.authenticationStartCount()
+        XCTAssertEqual(authenticationStarts, 1)
+        if case .blocked = model.providerStage {
+            // A missing challenge never advances the wizard.
+        } else {
+            XCTFail("missing helper challenge must block")
+        }
+        let stageCalls = await coordinator.stageCalls()
+        let executionCalls = await coordinator.executionCalls()
+        XCTAssertEqual(stageCalls, 1)
+        XCTAssertEqual(executionCalls, 0)
+    }
+
     private func compositionSelectionState() throws -> InstallerWizardState {
         var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
         state.recordSelfUpdateCheck(.verifiedGitHubRelease(try makeRelease("1.2.3")))
@@ -191,7 +426,7 @@ final class InstallerWizardViewModelTests: XCTestCase {
         return state
     }
 
-    private func removalSelectionState() throws -> (
+    private func removalSelectionState(preservedForge: Bool = false) throws -> (
         InstallerWizardState, ManagedDeploymentInventory
     ) {
         var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
@@ -201,8 +436,9 @@ final class InstallerWizardViewModelTests: XCTestCase {
         let inventory = try ManagedDeploymentInventory(
             existing: [ManagedDeploymentTarget(
                 id: "deployment-prod", exists: true,
-                forgeInstanceID: "forge-prod",
+                forgeInstanceID: preservedForge ? nil : "forge-prod",
                 engineeringPlatformInstanceID: "ep-prod",
+                preservedForgeInstanceID: preservedForge ? "forge-prod" : nil,
                 installedCompositionID: "forge-ep-qualified",
                 installedCompositionManifestSHA256:
                     "sha256:" + String(repeating: "a", count: 64)
@@ -223,6 +459,28 @@ final class InstallerWizardViewModelTests: XCTestCase {
             }
         }
         XCTFail("The view model did not receive the removal review result")
+    }
+
+    private func waitForLifecycleReview(on model: InstallerWizardViewModel) async {
+        for _ in 0..<400 {
+            switch model.lifecycleReview {
+            case .prepared, .recovered, .completed, .recoveryPending, .blocked: return
+            case .idle, .loading, .executing:
+                try? await Task.sleep(nanoseconds: 2_000_000)
+            }
+        }
+        XCTFail("Lifecycle review did not settle")
+    }
+
+    private func waitForLifecycleExecution(on model: InstallerWizardViewModel) async {
+        for _ in 0..<400 {
+            switch model.lifecycleReview {
+            case .completed, .recoveryPending, .blocked: return
+            case .idle, .loading, .prepared, .executing, .recovered:
+                try? await Task.sleep(nanoseconds: 2_000_000)
+            }
+        }
+        XCTFail("Lifecycle execution did not settle")
     }
 
     private func waitForRemovalExecution(on model: InstallerWizardViewModel) async {
@@ -320,6 +578,86 @@ private actor WizardCoordinatorSpy: InstallerWizardCoordinator {
     func preparationCallCount() -> Int {
         preparationCalls
     }
+}
+
+private actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
+    let release: VerifiedInstallerRelease
+    private var staged = 0
+    private var executed = 0
+    private var authenticationStarts = 0
+
+    init(release: VerifiedInstallerRelease) { self.release = release }
+
+    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+        .rejected("not used")
+    }
+
+    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
+        .failed("not used")
+    }
+
+    func performProviderAction(
+        _ action: ProviderAction, for provider: ProviderID
+    ) async -> ProviderActionResult {
+        .failed(.coordinatorUnavailable)
+    }
+
+    func recheckInstallerBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> InstallerCurrencyCheckResult {
+        .current(release)
+    }
+
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        staged += 1
+        guard let receipt = try? ManagedInstallerReviewedProviderStageReceipt(
+            operationID: "gui-provider-stage",
+            stablePlanFingerprint: String(repeating: "a", count: 64),
+            providerTargetIDs: operation.enabledProviderRequirements.map(\.id)
+                .sorted { $0.rawValue < $1.rawValue }
+        ) else { return .unavailable(.executionFailed) }
+        return .prepared(receipt)
+    }
+
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
+        guard let targets = try? operation.enabledProviderRequirements.map({
+            try ManagedInstallerReviewedProviderReadback.Target(
+                id: $0.id, state: .authenticationRequired,
+                evidenceReference: "receipt:gui-provider-readback"
+            )
+        }).sorted(by: { $0.id.rawValue < $1.id.rawValue }),
+              let receipt = try? ManagedInstallerReviewedProviderReadback(
+                operationID: "gui-provider-stage",
+                stablePlanFingerprint: String(repeating: "a", count: 64),
+                targets: targets
+              ) else { return .unavailable(.executionFailed) }
+        return .observed(receipt)
+    }
+
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        if operation.enabledProviderRequirements.contains(where: { $0.id == providerTargetID }) {
+            authenticationStarts += 1
+        }
+        return nil
+    }
+
+    func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult {
+        executed += 1
+        return .failed(.executionFailed, stages: [])
+    }
+
+    func stageCalls() -> Int { staged }
+    func executionCalls() -> Int { executed }
+    func authenticationStartCount() -> Int { authenticationStarts }
 }
 
 private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
@@ -455,4 +793,163 @@ private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
 
     func reviewCalls() -> [ManagedInstallerProductRemovalReviewIntent] { intents }
     func executionCallCount() -> Int { executionCalls }
+}
+
+private actor LifecycleReviewGUICoordinator: InstallerWizardCoordinator {
+    let inventory: ManagedDeploymentInventory
+    let executionAvailable: Bool
+    private var reviewCount = 0
+    private var executionCount = 0
+
+    init(inventory: ManagedDeploymentInventory, executionAvailable: Bool = true) {
+        self.inventory = inventory
+        self.executionAvailable = executionAvailable
+    }
+
+    func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
+        .available(inventory)
+    }
+
+    func preparePreservedLifecycleReview(
+        _ intent: ManagedInstallerPreservedLifecycleReviewIntent
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        reviewCount += 1
+        do {
+            var review: [String: StrictJSONResourceValue] = [
+                "deployment_id": .string(intent.deploymentID),
+                "registry_revision": .integer("3"),
+                "registry_fingerprint": .string("sha256:" + String(repeating: "b", count: 64)),
+                "composition_id": .string(intent.installedCompositionIdentity),
+                "composition_digest": .string(intent.installedManifestSHA256),
+                "operation": .string(intent.operation),
+                "operation_id": .string(intent.operationID),
+                "component": .string(intent.component),
+                "instance_id": .string(intent.instanceID),
+                "artifact": .object([
+                    "version": .string("2.7.36"),
+                    "source_revision": .string(String(repeating: "e", count: 40)),
+                    "source": .string("https://example.invalid/forge.whl"),
+                    "digest": .string("sha256:" + String(repeating: "c", count: 64)),
+                    "qualification": .string("https://example.invalid/receipt"),
+                ]),
+                "previous_receipt_reference": .string("receipt:forge-prod"),
+                "preserve_operation_id": .null,
+                "preserve_receipt_digest": .null,
+                "historical_peer_reference": .string("receipt:pair-prod"),
+                "destructive_confirmation_required": .boolean(false),
+            ]
+            let unsigned = StrictSignedJSON.canonicalPayload(from: .object(review))
+            let digest = SHA256.hash(data: unsigned)
+                .map { String(format: "%02x", $0) }.joined()
+            review["review_fingerprint"] = .string("sha256:" + digest)
+            let data = StrictSignedJSON.canonicalPayload(from: .object([
+                "schema": .string(ManagedInstallerPreservedLifecycleReviewProposal.schema),
+                "intent_fingerprint": .string(intent.intentFingerprint),
+                "review": .object(review),
+            ]))
+            return .success(try ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                data, intent: intent
+            ))
+        } catch {
+            return .failure(.rejected)
+        }
+    }
+
+    func reviewCalls() -> Int { reviewCount }
+
+    func executeReviewedPreservedLifecycle(
+        _ session: ManagedInstallerPreservedLifecycleReviewSession
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        executionCount += 1
+        guard executionAvailable,
+              let request = try? ManagedInstallerPreservedLifecycleRequest(
+                intent: session.intent, proposal: session.proposal
+              ) else { return .failure(.rejected) }
+        let data = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPreservedLifecycleReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "operation_id": .string(request.intent.operationID),
+            "deployment_id": .string(request.intent.deploymentID),
+            "component": .string(request.intent.component),
+            "instance_id": .string(request.intent.instanceID),
+            "state": .string("COMPLETE"),
+            "receipt_digest": .string("sha256:" + String(repeating: "d", count: 64)),
+            "registry_revision": .integer("4"),
+        ]))
+        guard let receipt = try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+            data, request: request
+        ) else { return .failure(.rejected) }
+        return .success(receipt)
+    }
+
+    func executionCallCount() -> Int { executionCount }
+
+    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+        _ = currentVersion
+        return .rejected("unused")
+    }
+
+    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
+        _ = release
+        return .failed("unused")
+    }
+
+    func performProviderAction(
+        _ action: ProviderAction, for provider: ProviderID
+    ) async -> ProviderActionResult {
+        _ = action
+        _ = provider
+        return .failed(.coordinatorUnavailable)
+    }
+}
+
+private actor LifecycleRecoveryGUICoordinator: InstallerWizardCoordinator {
+    let completion: ManagedInstallerPreserveRecoveryCompletion
+    private var recorded: [String] = []
+
+    init(completion: ManagedInstallerPreserveRecoveryCompletion) {
+        self.completion = completion
+    }
+
+    func readTerminalPreserveRecovery(
+        deploymentID: String, component: String,
+        installerRelease: VerifiedInstallerRelease
+    ) async -> Result<
+        ManagedInstallerPreserveRecoveryCompletion,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        recorded.append("\(deploymentID):\(component)")
+        guard completion.intent.deploymentID == deploymentID,
+              completion.intent.component == component,
+              completion.intent.installerRelease == installerRelease else {
+            return .failure(.rejected)
+        }
+        return .success(completion)
+    }
+
+    func calls() -> [String] { recorded }
+
+    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+        _ = currentVersion
+        return .rejected("unused")
+    }
+
+    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
+        _ = release
+        return .failed("unused")
+    }
+
+    func performProviderAction(
+        _ action: ProviderAction, for provider: ProviderID
+    ) async -> ProviderActionResult {
+        _ = action
+        _ = provider
+        return .failed(.coordinatorUnavailable)
+    }
 }

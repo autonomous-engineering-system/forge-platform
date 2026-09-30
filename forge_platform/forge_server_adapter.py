@@ -16,6 +16,7 @@ from pathlib import Path
 import plistlib
 import pwd
 import re
+import stat
 import subprocess
 from typing import Mapping, Protocol, Sequence
 from urllib import request as urllib_request
@@ -30,11 +31,15 @@ from .component_operations import (
     QualifiedArtifact,
 )
 from .forge_update_intent import ForgeUpdateIntent, ForgeUpdateIntentStore
+from .qualified_forge_lifecycle import qualified_forge_238_update_selection
 
 
 FORGE_COMPONENT = "forge-runtime"
 FORGE_PROVIDER_ID = "codex-chatgpt-session"
 _FORGE_LIFECYCLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_FORGE_238_CONTROLLER_SOURCE = "e4b99a249845a547fd6b8e7e11d22467b2d0886d"
+_FORGE_238_CONTROLLER_SHA256 = "sha256:6a6bb4ade3db9d1e45ba64a0d928e91013109de3243e8e2dbccfaa04a7a455b4"
+_FORGE_238_RELEASE_RECEIPT_SHA256 = "sha256:7f8f4646a369ea565e52f8420df665acb64d032e5004e1b45ef7dc8427548c49"
 
 
 class ForgeServerAdapterError(RuntimeError):
@@ -262,6 +267,97 @@ class ForgeUpdateBinding:
             raise ValueError("Forge update intent root must be absolute")
 
 
+def _verified_forge_238_controller(binding: ForgeUpdateBinding) -> bool:
+    """Read the exact protected controller bytes without following path links."""
+    path = binding.updater_executable
+    if (
+        binding.controller_source != _FORGE_238_CONTROLLER_SOURCE
+        or binding.controller_sha256 != _FORGE_238_CONTROLLER_SHA256
+        or binding.qualification_receipt_sha256 != _FORGE_238_RELEASE_RECEIPT_SHA256
+    ):
+        return False
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            return False
+    descriptor = None
+    try:
+        parent = path.parent.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid not in {0, os.getuid()}
+            or parent.st_mode & 0o022
+        ):
+            return False
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_mode & 0o022
+            or metadata.st_uid not in {0, os.getuid()}
+        ):
+            return False
+        digest = sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        return "sha256:" + digest.hexdigest() == _FORGE_238_CONTROLLER_SHA256
+    except OSError:
+        return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _verified_forge_238_release_receipt(binding: ForgeUpdateBinding) -> bool:
+    """Re-read exact public terminal release evidence before product assessment/mutation."""
+    if binding.qualification_receipt_sha256 != _FORGE_238_RELEASE_RECEIPT_SHA256:
+        return False
+    path = binding.qualification_receipt
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            return False
+    descriptor = None
+    try:
+        parent = path.parent.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid not in {0, os.getuid()}
+            or parent.st_mode & 0o022
+        ):
+            return False
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_mode & 0o022
+            or before.st_uid not in {0, os.getuid()}
+            or not 0 < before.st_size <= 64 * 1_024
+        ):
+            return False
+        digest = sha256()
+        while chunk := os.read(descriptor, 64 * 1_024):
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        return (
+            before.st_dev == after.st_dev
+            and before.st_ino == after.st_ino
+            and before.st_size == after.st_size
+            and before.st_mtime_ns == after.st_mtime_ns
+            and before.st_ctime_ns == after.st_ctime_ns
+            and "sha256:" + digest.hexdigest() == _FORGE_238_RELEASE_RECEIPT_SHA256
+        )
+    except OSError:
+        return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 @dataclass(frozen=True)
 class ForgeUninstallBinding:
     runtime_id: str
@@ -306,6 +402,82 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self.update_binding = update_binding
         self.lifecycle_executable = lifecycle_executable
         self.uninstall_binding = uninstall_binding
+
+    @staticmethod
+    def read_peer_configuration_digest(
+        *,
+        forge_executable: Path,
+        target: ForgeServerTarget,
+        installed_version: str,
+        expected_binding_id: str,
+        expected_ep_consumer_id: str,
+        runner: ForgeCommandRunner | None = None,
+    ) -> str:
+        """Read the exact pairing digest through Forge's own read-only status CLI."""
+        if (
+            not isinstance(forge_executable, Path)
+            or not forge_executable.is_absolute()
+            or not isinstance(target, ForgeServerTarget)
+            or not isinstance(installed_version, str)
+            or not installed_version
+            or not isinstance(expected_binding_id, str)
+            or not expected_binding_id
+            or not isinstance(expected_ep_consumer_id, str)
+            or not expected_ep_consumer_id
+            or target.data_root.is_symlink()
+        ):
+            raise ForgeServerAdapterError("Forge peer status target is unsafe")
+        command = (
+            str(forge_executable), "--data-root", str(target.data_root),
+            "server", "status",
+        )
+        result = (runner or SubprocessForgeCommandRunner()).run(command)
+        if (
+            result.returncode != 0
+            or result.stderr.strip()
+            or not 0 < len(result.stdout) <= 64 * 1_024
+        ):
+            raise ForgeServerAdapterError("Forge peer status is unavailable")
+        def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            value: dict[str, object] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate Forge status field")
+                value[key] = item
+            return value
+        try:
+            status = json.loads(
+                result.stdout, object_pairs_hook=unique,
+                parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("nonfinite status")),
+            )
+        except (ValueError, TypeError) as error:
+            raise ForgeServerAdapterError("Forge peer status is invalid") from error
+        if (
+            not isinstance(status, dict)
+            or status.get("product_version") != installed_version
+            or status.get("data_root") != str(target.data_root)
+            or status.get("initialized") is not True
+            or status.get("instance_id") != target.instance_id
+            or not isinstance(status.get("runtime_status"), str)
+            or status["runtime_status"] in {"unavailable", "uninitialized", ""}
+        ):
+            raise ForgeServerAdapterError("Forge peer status changed its exact installed target")
+        peer = status.get("execution_host_peer")
+        if (
+            not isinstance(peer, dict)
+            or peer.get("status") != "CONFIGURED"
+            or peer.get("live_status") != "NOT_VERIFIED"
+            or peer.get("binding_id") != expected_binding_id
+            or peer.get("ep_consumer_id") != expected_ep_consumer_id
+            or isinstance(peer.get("configuration_revision"), bool)
+            or not isinstance(peer.get("configuration_revision"), int)
+            or peer["configuration_revision"] < 1
+            or peer.get("owning_forge_runtime_id") != target.instance_id
+            or not isinstance(peer.get("configuration_digest"), str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", peer["configuration_digest"]) is None
+        ):
+            raise ForgeServerAdapterError("Forge peer configuration is unavailable or ambiguous")
+        return peer["configuration_digest"]
 
     @staticmethod
     def prepare_instance(
@@ -368,6 +540,13 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         provider_config_home: Path,
         expected_digest: str | None = None,
     ) -> Mapping[str, object]:
+        for path in (codex_executable, provider_home, provider_config_home):
+            if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
+                raise ForgeServerAdapterError("Forge provider context path is not exact")
+        if expected_digest is not None and re.fullmatch(
+            r"sha256:[0-9a-f]{64}", expected_digest
+        ) is None:
+            raise ForgeServerAdapterError("Forge provider context expected digest is invalid")
         args = [
             "server", "provider-context", "configure",
             "--provider-id", FORGE_PROVIDER_ID,
@@ -378,7 +557,44 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         ]
         if expected_digest is not None:
             args += ["--expected-digest", expected_digest]
-        return self._run(*args)
+        configured = self._run(*args)
+        observed = self._run(
+            "server", "provider-context", "show", "--provider-id", FORGE_PROVIDER_ID
+        )
+        expected = {
+            "schema_version": "1.0",
+            "instance_id": self.target.instance_id,
+            "provider_id": FORGE_PROVIDER_ID,
+            "provider_type": "CODEX_CLI_CHATGPT_SESSION",
+            "executable_path": str(codex_executable),
+            "provider_home": str(provider_home),
+            "provider_config_home": str(provider_config_home),
+            "profile": None,
+        }
+        exact_fields = set(expected) | {
+            "configuration_revision", "created_at", "updated_at",
+            "configuration_digest",
+        }
+        if (
+            set(configured) != exact_fields
+            or configured != observed
+            or any(configured.get(key) != value for key, value in expected.items())
+            or isinstance(configured.get("configuration_revision"), bool)
+            or not isinstance(configured.get("configuration_revision"), int)
+            or configured["configuration_revision"] < 1
+            or any(
+                not isinstance(configured.get(key), str) or not configured[key]
+                for key in ("created_at", "updated_at")
+            )
+            or not isinstance(configured.get("configuration_digest"), str)
+            or re.fullmatch(
+                r"sha256:[0-9a-f]{64}", configured["configuration_digest"]
+            ) is None
+        ):
+            raise ForgeServerAdapterError(
+                "Forge provider context does not independently match the selected instance"
+            )
+        return observed
 
     def configure_ep_peer(
         self,
@@ -482,6 +698,8 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self._validate_request(request)
         if request.kind != "update":
             raise ForgeServerAdapterError("Forge update assessment requires update kind")
+        if request.artifact.version == "2.7.38":
+            return self._assess_external_238_update(request)
         binding = self.update_binding
         executable = self.lifecycle_executable
         wheel = self.staged_artifacts.get(request.artifact.digest)
@@ -549,6 +767,135 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             request.artifact.correlation,
             state,
             "forge-update-assess:" + digest,
+        )
+
+    def _external_238_request(
+        self, request: ComponentOperationRequest, binding: ForgeUpdateBinding,
+        wheel: Path, *, assessment_digest: str = "", assess_only: bool,
+    ) -> tuple[dict[str, str], tuple[str, ...]]:
+        selected = {
+            "operation_id": request.operation_id,
+            "version": request.artifact.version,
+            "product_source": request.artifact.source_revision,
+            "wheel": str(wheel),
+            "wheel_sha256": request.artifact.digest,
+            "qualification_receipt": str(binding.qualification_receipt),
+            "qualification_receipt_sha256": binding.qualification_receipt_sha256,
+            "controller_source": binding.controller_source,
+            "controller_sha256": binding.controller_sha256,
+            "data_root": str(self.target.data_root),
+            "runtime_root": str(binding.runtime_root),
+            "runtime_id": binding.runtime_id,
+            "installation_id": binding.installation_id,
+            "peer_configuration_digest": binding.peer_configuration_digest,
+            "resolver": str(binding.resolver),
+            "resolver_sha256": binding.resolver_sha256,
+            "existing_interpreter": str(binding.existing_interpreter),
+            "existing_version": binding.existing_version,
+            "base_python": str(binding.base_python),
+            "installed_source": self.installed_artifact.source_revision,
+            "installed_artifact_digest": self.installed_artifact.digest,
+            "assessment_digest": assessment_digest,
+        }
+        argv = (
+            str(binding.base_python), "-I", str(binding.updater_executable),
+            "--operation-id", request.operation_id,
+            "--version", request.artifact.version,
+            "--product-source", request.artifact.source_revision,
+            "--wheel", str(wheel),
+            "--wheel-sha256", request.artifact.digest,
+            "--qualification-receipt", str(binding.qualification_receipt),
+            "--qualification-receipt-sha256", binding.qualification_receipt_sha256,
+            "--controller-source", binding.controller_source,
+            "--controller-sha256", binding.controller_sha256,
+            "--data-root", str(self.target.data_root),
+            "--runtime-root", str(binding.runtime_root),
+            "--runtime-id", binding.runtime_id,
+            "--installation-id", binding.installation_id,
+            "--peer-configuration-digest", binding.peer_configuration_digest,
+            "--resolver", str(binding.resolver),
+            "--resolver-sha256", binding.resolver_sha256,
+            "--existing-interpreter", str(binding.existing_interpreter),
+            "--existing-version", binding.existing_version,
+            "--base-python", str(binding.base_python),
+            "--installed-source", self.installed_artifact.source_revision,
+            "--installed-artifact-digest", self.installed_artifact.digest,
+        )
+        return selected, argv + (("--assess-only",) if assess_only else (
+            "--assessment-digest", assessment_digest,
+        ))
+
+    def _assess_external_238_update(
+        self, request: ComponentOperationRequest,
+    ) -> ProductUpdateAssessment:
+        unavailable = ProductUpdateAssessment(
+            FORGE_COMPONENT, self.target.instance_id, request.artifact.correlation,
+            "UNKNOWN", "forge-update-assess:unavailable",
+        )
+        binding = self.update_binding
+        wheel = self.staged_artifacts.get(request.artifact.digest)
+        if (
+            binding is None or not isinstance(wheel, Path) or not wheel.is_absolute()
+            or not qualified_forge_238_update_selection(self.installed_artifact, request.artifact)
+            or not _verified_forge_238_controller(binding)
+            or not _verified_forge_238_release_receipt(binding)
+        ):
+            return unavailable
+        if binding.runtime_id != self.target.instance_id or binding.existing_version != self.installed_artifact.version:
+            raise ForgeServerAdapterError("Forge external controller installed target changed")
+        selected, argv = self._external_238_request(
+            request, binding, wheel, assess_only=True,
+        )
+        payload = self._json_result(self.runner.run(argv), "Forge external update assessment")
+        digest = payload.get("assessment_digest")
+        unsigned = dict(payload)
+        unsigned.pop("assessment_digest", None)
+        expected_selected = {
+            "runtime_id": binding.runtime_id,
+            "installation_id": binding.installation_id,
+            "version": self.installed_artifact.version,
+            "source_revision": self.installed_artifact.source_revision,
+            "artifact_digest": self.installed_artifact.digest,
+        }
+        expected_candidate = {
+            "version": request.artifact.version,
+            "source_revision": request.artifact.source_revision,
+            "artifact_digest": request.artifact.digest,
+        }
+        state = payload.get("state")
+        if (
+            set(payload) != {
+                "contract", "operation", "operation_id", "request_digest", "state",
+                "mutating", "selected_installation", "candidate", "controller",
+                "evidence", "reason_codes", "assessment_digest",
+            }
+            or payload.get("contract") != "forge-installed-update-assessment/v1"
+            or payload.get("operation") != "UPDATE_ASSESSMENT"
+            or payload.get("operation_id") != request.operation_id
+            or payload.get("request_digest") != _forge_product_digest({
+                key: value for key, value in selected.items() if key != "assessment_digest"
+            })
+            or payload.get("mutating") is not False
+            or payload.get("selected_installation") != expected_selected
+            or payload.get("candidate") != expected_candidate
+            or payload.get("controller") != {
+                "source_revision": binding.controller_source,
+                "artifact_digest": binding.controller_sha256,
+            }
+            or state not in {"UPDATE_AVAILABLE", "UP_TO_DATE", "INCOMPATIBLE", "UNKNOWN"}
+            or not isinstance(payload.get("evidence"), Mapping)
+            or not isinstance(payload.get("reason_codes"), list)
+            or not all(isinstance(reason, str) for reason in payload["reason_codes"])
+            or digest != _forge_product_digest(unsigned)
+        ):
+            raise ForgeServerAdapterError("Forge external assessment lacks exact product evidence")
+        if state == "UP_TO_DATE" and self.installed_artifact != request.artifact:
+            raise ForgeServerAdapterError("Forge external assessment current artifact changed")
+        if state == "UPDATE_AVAILABLE" and self.installed_artifact == request.artifact:
+            raise ForgeServerAdapterError("Forge external assessment selected artifact is already current")
+        return ProductUpdateAssessment(
+            FORGE_COMPONENT, self.target.instance_id, request.artifact.correlation,
+            state, "forge-update-assess:" + digest,
         )
 
     def execute(self, request: ComponentOperationRequest) -> ProductOperationReceipt:
@@ -656,10 +1003,15 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         intent: ForgeUpdateIntent,
     ) -> str:
         if intent.phase == "UPDATER_INVOKED":
+            if request.artifact.version == "2.7.38" and (
+                not _verified_forge_238_controller(binding)
+                or not _verified_forge_238_release_receipt(binding)
+            ):
+                raise ForgeServerAdapterError("Forge exact external update evidence changed before mutation")
             self.supervisor.stop(self.target)
             if self.supervisor.loaded(self.target):
                 raise ForgeServerAdapterError("Forge service remained loaded before product update")
-            receipt_reference = self._run_update(request)
+            receipt_reference = self._run_update(request, intent.assessment_reference)
             intent = store.advance(intent, "PRODUCT_COMPLETE", receipt_reference)
         if intent.phase == "PRODUCT_COMPLETE":
             self.supervisor.register(self.target, binding.resolver)
@@ -820,7 +1172,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         # after a crash; no installer-owned data cleanup is performed here.
         return self.execute(request)
 
-    def _run_update(self, request: ComponentOperationRequest) -> str:
+    def _run_update(self, request: ComponentOperationRequest, assessment_reference: str = "") -> str:
         binding = self.update_binding
         if binding is None:
             raise ForgeServerAdapterError("Forge qualified external updater binding is unavailable")
@@ -870,6 +1222,19 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             "--existing-version", binding.existing_version,
             "--base-python", str(binding.base_python),
         )
+        if request.artifact.version == "2.7.38":
+            if (
+                not qualified_forge_238_update_selection(self.installed_artifact, request.artifact)
+                or not _verified_forge_238_controller(binding)
+                or not _verified_forge_238_release_receipt(binding)
+                or not assessment_reference.startswith("forge-update-assess:sha256:")
+            ):
+                raise ForgeServerAdapterError("Forge exact 2.7.38 update authority is unavailable")
+            assessment_digest = assessment_reference.removeprefix("forge-update-assess:")
+            selected, argv = self._external_238_request(
+                request, binding, wheel, assessment_digest=assessment_digest,
+                assess_only=False,
+            )
         result = self.runner.run(argv)
         payload = self._json_result(result, "Forge installed updater")
         if (

@@ -9,6 +9,9 @@ public struct ManagedDeploymentTarget: Equatable, Hashable, Sendable, Identifiab
     public let exists: Bool
     public let forgeInstanceID: String?
     public let engineeringPlatformInstanceID: String?
+    /// Product-owned V3 instances remain claimed even while software is removed.
+    public let preservedForgeInstanceID: String?
+    public let preservedEngineeringPlatformInstanceID: String?
     /// Present only when a terminal managed-deployment record has bound an
     /// immutable composition after product readiness and Forge↔EP pairing.
     /// Legacy topology-only records deliberately expose nil here.
@@ -21,6 +24,8 @@ public struct ManagedDeploymentTarget: Equatable, Hashable, Sendable, Identifiab
         exists: Bool,
         forgeInstanceID: String? = nil,
         engineeringPlatformInstanceID: String? = nil,
+        preservedForgeInstanceID: String? = nil,
+        preservedEngineeringPlatformInstanceID: String? = nil,
         installedCompositionID: String? = nil,
         installedCompositionManifestSHA256: String? = nil
     ) throws {
@@ -41,12 +46,34 @@ public struct ManagedDeploymentTarget: Equatable, Hashable, Sendable, Identifiab
            !Self.isSafeIdentifier(engineeringPlatformInstanceID) {
             throw ManagedDeploymentTargetError.invalidProductInstance
         }
-        if exists && forgeInstanceID == nil && engineeringPlatformInstanceID == nil {
+        if let preservedForgeInstanceID,
+           !Self.isSafeIdentifier(preservedForgeInstanceID) {
+            throw ManagedDeploymentTargetError.invalidProductInstance
+        }
+        if let preservedEngineeringPlatformInstanceID,
+           !Self.isSafeIdentifier(preservedEngineeringPlatformInstanceID) {
+            throw ManagedDeploymentTargetError.invalidProductInstance
+        }
+        if forgeInstanceID != nil && preservedForgeInstanceID != nil
+            || engineeringPlatformInstanceID != nil
+                && preservedEngineeringPlatformInstanceID != nil {
+            throw ManagedDeploymentTargetError.invalidProductInstance
+        }
+        let allInstances = [
+            forgeInstanceID, engineeringPlatformInstanceID,
+            preservedForgeInstanceID, preservedEngineeringPlatformInstanceID,
+        ].compactMap { $0 }
+        if Set(allInstances).count != allInstances.count {
+            throw ManagedDeploymentTargetError.invalidProductInstance
+        }
+        if exists && allInstances.isEmpty {
             throw ManagedDeploymentTargetError.emptyExistingDeployment
         }
         if !exists && (
             forgeInstanceID != nil
                 || engineeringPlatformInstanceID != nil
+                || preservedForgeInstanceID != nil
+                || preservedEngineeringPlatformInstanceID != nil
                 || installedCompositionID != nil
                 || installedCompositionManifestSHA256 != nil
         ) {
@@ -70,6 +97,8 @@ public struct ManagedDeploymentTarget: Equatable, Hashable, Sendable, Identifiab
         self.exists = exists
         self.forgeInstanceID = forgeInstanceID
         self.engineeringPlatformInstanceID = engineeringPlatformInstanceID
+        self.preservedForgeInstanceID = preservedForgeInstanceID
+        self.preservedEngineeringPlatformInstanceID = preservedEngineeringPlatformInstanceID
         self.installedCompositionID = installedCompositionID
         self.installedCompositionManifestSHA256 = installedCompositionManifestSHA256
     }
@@ -146,13 +175,16 @@ public struct ManagedDeploymentInventory: Equatable, Sendable {
         guard existing.allSatisfy(\.exists) else {
             throw ManagedDeploymentInventoryError.invalidExistingDeployment
         }
-        let forgeInstances = existing.compactMap(\.forgeInstanceID)
+        let forgeInstances = existing.flatMap {
+            [$0.forgeInstanceID, $0.preservedForgeInstanceID].compactMap { $0 }
+        }
         guard Set(forgeInstances).count == forgeInstances.count else {
             throw ManagedDeploymentInventoryError.duplicateForgeInstanceIdentity
         }
-        let engineeringPlatformInstances = existing.compactMap(
-            \.engineeringPlatformInstanceID
-        )
+        let engineeringPlatformInstances = existing.flatMap {
+            [$0.engineeringPlatformInstanceID,
+             $0.preservedEngineeringPlatformInstanceID].compactMap { $0 }
+        }
         guard Set(engineeringPlatformInstances).count == engineeringPlatformInstances.count else {
             throw ManagedDeploymentInventoryError.duplicateEngineeringPlatformInstanceIdentity
         }

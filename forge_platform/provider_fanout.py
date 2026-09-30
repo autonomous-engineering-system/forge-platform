@@ -10,6 +10,7 @@ and verifies its own runtime/config/auth state independently.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Mapping, Protocol, Sequence
 
 from .universal_installer import ProviderReadback, ProviderRequirement
@@ -46,6 +47,7 @@ class ProviderTargetReceipt:
     evidence_reference: str
     executable_identity: str
     version: str
+    executable_digest: str | None = None
 
     def __post_init__(self) -> None:
         for value in (
@@ -54,6 +56,10 @@ class ProviderTargetReceipt:
         ):
             if not isinstance(value, str) or not value:
                 raise ValueError("provider target receipt is incomplete")
+        if self.executable_digest is not None and re.fullmatch(
+            r"sha256:[0-9a-f]{64}", self.executable_digest
+        ) is None:
+            raise ValueError("provider target receipt executable digest is invalid")
 
 
 @dataclass(frozen=True)
@@ -123,26 +129,52 @@ class ProviderFanoutCoordinator:
             observed_keys.add(requirement.key)
             by_provider.setdefault(requirement.identity, []).append(requirement)
 
+        # Check the complete selected topology before any human ceremony or
+        # target provisioning can begin. A missing later target must not leave
+        # an earlier provider partially bootstrapped.
+        for provider in sorted(by_provider):
+            if not callable(getattr(self.authenticators.get(provider), "authenticate", None)):
+                raise ProviderFanoutError(
+                    f"provider {provider} has no supported human authentication strategy"
+                )
+            for requirement in by_provider[provider]:
+                if not callable(getattr(
+                    self.targets.get(requirement.key), "provision_and_verify", None
+                )):
+                    raise ProviderFanoutError(
+                        f"provider target {requirement.key} has no provisioner"
+                    )
+
         receipts: list[ProviderFanoutReceipt] = []
         for provider in sorted(by_provider):
             group = tuple(sorted(by_provider[provider], key=lambda item: item.key))
-            authenticator = self.authenticators.get(provider)
-            if authenticator is None:
-                raise ProviderFanoutError(f"provider {provider} has no supported human authentication strategy")
+            authenticator = self.authenticators[provider]
             bootstrap = authenticator.authenticate(provider, group)
             if not isinstance(bootstrap, ProviderBootstrapHandle) or bootstrap.provider != provider:
                 raise ProviderFanoutError("provider authenticator returned an invalid bootstrap handle")
 
             target_receipts: list[ProviderTargetReceipt] = []
             for requirement in group:
-                provisioner = self.targets.get(requirement.key)
-                if provisioner is None:
-                    raise ProviderFanoutError(f"provider target {requirement.key} has no provisioner")
+                provisioner = self.targets[requirement.key]
                 readback = provisioner.provision_and_verify(requirement, bootstrap)
                 if not isinstance(readback, ProviderReadback) or readback.key != requirement.key:
                     raise ProviderFanoutError("provider target returned mismatched readback")
                 if readback.state != "VERIFIED" or readback.version is None or readback.executable_identity is None:
                     raise ProviderFanoutError(f"provider target {requirement.key} did not independently verify")
+                if (
+                    requirement.minimum_version is not None
+                    and readback.version < requirement.minimum_version
+                ):
+                    raise ProviderFanoutError(
+                        f"provider target {requirement.key} is below the required version"
+                    )
+                if requirement.runtime is not None and (
+                    readback.version != requirement.runtime.version
+                    or readback.executable_digest != requirement.runtime.executable_digest
+                ):
+                    raise ProviderFanoutError(
+                        f"provider target {requirement.key} differs from the selected runtime"
+                    )
                 target_receipts.append(ProviderTargetReceipt(
                     requirement.key,
                     provider,
@@ -150,6 +182,7 @@ class ProviderFanoutCoordinator:
                     readback.evidence_reference,
                     readback.executable_identity,
                     str(readback.version),
+                    readback.executable_digest,
                 ))
             receipts.append(ProviderFanoutReceipt(
                 provider,

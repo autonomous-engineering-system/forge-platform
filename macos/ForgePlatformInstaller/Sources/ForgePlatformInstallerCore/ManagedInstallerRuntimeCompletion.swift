@@ -34,7 +34,9 @@ public struct ManagedInstallerRuntimeCompletionReceipt: Equatable, Sendable {
                   stablePlan: stablePlan,
                   parentJournalRecord: runtimeAdmissionReceipt.parentJournalRecord,
                   providerRuntimeReceipt: runtimeAdmissionReceipt.providerRuntimeReceipt,
-                  managedPythonReceipt: runtimeAdmissionReceipt.managedPythonReceipt
+                  managedPythonReceipt: runtimeAdmissionReceipt.managedPythonReceipt,
+                  preproviderAccountReceipt:
+                    runtimeAdmissionReceipt.preproviderAccountReceipt
               ),
               expectedAdmission == runtimeAdmissionReceipt,
               let request = try? ManagedPythonRuntimeActivationRequest(
@@ -130,7 +132,9 @@ public struct ManagedInstallerRuntimeCompletionCoordinator: Sendable {
             stablePlan: stablePlan,
             parentJournalRecord: runtimeAdmissionReceipt.parentJournalRecord,
             providerRuntimeReceipt: runtimeAdmissionReceipt.providerRuntimeReceipt,
-            managedPythonReceipt: runtimeAdmissionReceipt.managedPythonReceipt
+            managedPythonReceipt: runtimeAdmissionReceipt.managedPythonReceipt,
+            preproviderAccountReceipt:
+                runtimeAdmissionReceipt.preproviderAccountReceipt
         ), expectedAdmission == runtimeAdmissionReceipt else {
             return .failure(.invalidRequest)
         }
