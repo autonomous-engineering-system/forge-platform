@@ -13,6 +13,21 @@ final class ManagedInstallerFreshInstallRuntimeTransactionHelperAssemblyTests: X
         XCTAssertTrue(calls.receivedExactReadback(readback))
     }
 
+    func testDistinctCreateTargetWithActivePythonAssemblesSameRuntimeTransaction()
+        async throws {
+        let fixture = try RuntimeTransactionAssemblyFixture(reuseActiveRuntime: true)
+        XCTAssertFalse(fixture.plan.deployment.exists)
+        XCTAssertEqual(fixture.plan.activationPlan.action, .noChange)
+        let calls = RuntimeTransactionAssemblyCalls()
+        let readback = RuntimeTransactionReadback()
+        let result = await fixture.assemble(calls: calls, readback: readback)
+        guard case .success = result else {
+            return XCTFail("Reused runtime must reach the existing transaction core")
+        }
+        XCTAssertEqual(calls.values(), ["preparation", "git", "activation", "terminal"])
+        XCTAssertTrue(calls.receivedExactReadback(readback))
+    }
+
     func testExistingOrUpdatedTargetFailsBeforeAnyFactory() async throws {
         for (exists, change) in [
             (true, ComponentChange.install),
@@ -118,7 +133,8 @@ private struct RuntimeTransactionAssemblyFixture {
     let plan: ManagedInstallerStablePlan
     let material: ManagedVerifiedCompositionMaterial
 
-    init(exists: Bool = false, forgeChange: ComponentChange = .install) throws {
+    init(exists: Bool = false, forgeChange: ComponentChange = .install,
+         reuseActiveRuntime: Bool = false) throws {
         let wheel = try PrepublicationWheelFixture()
         material = wheel.material
         let deployment = try ManagedDeploymentTarget(
@@ -129,10 +145,15 @@ private struct RuntimeTransactionAssemblyFixture {
         let activation = try ManagedPythonRuntimeActivationPlan(
             session: material.session, deployment: deployment,
             initialReadback: ManagedPythonRuntimeInstalledReadback(
-                activeRuntimeIdentitySHA256: nil,
-                activeRuntimeSlotIdentity: nil,
+                activeRuntimeIdentitySHA256: reuseActiveRuntime
+                    ? material.session.managedPythonRuntime.identitySHA256 : nil,
+                activeRuntimeSlotIdentity: reuseActiveRuntime
+                    ? ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+                        for: material.session.managedPythonRuntime.identitySHA256
+                    ) : nil,
                 retainedRuntimeIdentitySHA256s: [],
-                evidenceReference: "receipt:runtime-absent"
+                evidenceReference: reuseActiveRuntime
+                    ? "receipt:runtime-active" : "receipt:runtime-absent"
             )
         )
         plan = try managedInstallerTestStablePlan(
