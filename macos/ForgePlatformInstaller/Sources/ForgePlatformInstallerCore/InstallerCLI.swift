@@ -796,15 +796,8 @@ public struct InstallerCLIWorkflow: Sendable {
             return Self.blocked("De sessiespecifieke host- en toolcontrole is niet geslaagd.")
         }
 
-        let providerResult = await verifyProviders(
-            state: &state,
-            options: options
-        )
-        if let providerResult {
-            return providerResult
-        }
         guard state.advance() else {
-            return Self.blocked("Niet alle vereiste providertargets zijn geverifieerd.")
+            return Self.blocked("De providertargets konden niet uit de geverifieerde sessie worden afgeleid.")
         }
 
         let reviewResult = await coordinator.prepareCompositionReview(
@@ -857,8 +850,37 @@ public struct InstallerCLIWorkflow: Sendable {
         )
         switch currency {
         case .current:
-            guard state.recordPreMutationCurrencyCheck(currency),
-                  let operation = state.beginManagedDeploymentExecution() else {
+            guard state.recordPreMutationCurrencyCheck(currency) else {
+                return Self.blocked("De pre-mutation installercontrole kon geen uitvoeringsautoriteit vormen.")
+            }
+            if !state.enabledProvidersVerified {
+                guard let operation = state.reviewedProviderStageOperation() else {
+                    return Self.blocked("De beoordeelde providerfase is gewijzigd.")
+                }
+                switch await coordinator.stageReviewedProviders(operation) {
+                case .prepared(let receipt):
+                    let expected = state.enabledProviders.map(\.id)
+                        .sorted { $0.rawValue < $1.rawValue }
+                    guard receipt.providerTargetIDs == expected else {
+                        return Self.blocked("De providerfase gaf andere doelinstanties terug.")
+                    }
+                    return InstallerCLIResult(
+                        exitCode: .interactionRequired,
+                        status: "provider-authentication-required",
+                        message: "De gekozen provideromgevingen zijn voorbereid. Menselijke aanmelding en onafhankelijke verificatie per doelinstantie zijn vereist vóór productuitvoering.",
+                        details: [
+                            "deployment_id": deploymentID,
+                            "operation_id": receipt.operationID,
+                            "stable_plan_fingerprint": receipt.stablePlanFingerprint,
+                            "provider_targets": expected.map(\.rawValue).joined(separator: ","),
+                        ],
+                        records: Self.reviewRecords(state.composition)
+                    )
+                case .unavailable:
+                    return Self.blocked("De bevoorrechte helper kon de beoordeelde providerfase niet veilig voorbereiden.")
+                }
+            }
+            guard let operation = state.beginManagedDeploymentExecution() else {
                 return Self.blocked("De pre-mutation installercontrole kon geen uitvoeringsautoriteit vormen.")
             }
             let execution = await coordinator.executeReviewedManagedDeployment(operation)
@@ -917,72 +939,6 @@ public struct InstallerCLIWorkflow: Sendable {
             _ = state.recordPreMutationCurrencyCheck(currency)
             return Self.blocked("De installer kon vlak vóór mutatie niet opnieuw worden geverifieerd.")
         }
-    }
-
-    private func verifyProviders(
-        state: inout InstallerWizardState,
-        options: InstallerCLIOptions
-    ) async -> InstallerCLIResult? {
-        for targetID in state.enabledProviders.map(\.id) {
-            guard let progress = state.providers.first(where: { $0.id == targetID }) else {
-                return Self.blocked("Een providertarget verdween uit de geverifieerde sessie.")
-            }
-            guard state.requestProviderTargetAction(.install, for: targetID) else {
-                return Self.blocked("Providerinstallatie kon niet veilig worden gestart.")
-            }
-            let install = await coordinator.performProviderAction(
-                .install,
-                for: progress.requirement
-            )
-            state.applyProviderTargetActionResult(
-                install,
-                for: targetID,
-                action: .install
-            )
-            guard let installed = state.providers.first(where: { $0.id == targetID }) else {
-                return Self.blocked("Providerstatus ontbreekt na installatie.")
-            }
-            if installed.state.isVerified {
-                continue
-            }
-            guard case .authenticationRequired = installed.state else {
-                return InstallerCLIResult(
-                    exitCode: .executionFailed,
-                    status: "provider-failed",
-                    message: "Providerinstallatie of -verificatie is mislukt.",
-                    details: ["provider_target": targetID.rawValue]
-                )
-            }
-            if options.nonInteractive {
-                return InstallerCLIResult(
-                    exitCode: .interactionRequired,
-                    status: "provider-authentication-required",
-                    message: "Providerauthenticatie vereist een human login ceremony.",
-                    details: ["provider_target": targetID.rawValue]
-                )
-            }
-            guard state.requestProviderTargetAction(.authenticate, for: targetID) else {
-                return Self.blocked("Providerauthenticatie kon niet veilig worden gestart.")
-            }
-            let auth = await coordinator.performProviderAction(
-                .authenticate,
-                for: progress.requirement
-            )
-            state.applyProviderTargetActionResult(
-                auth,
-                for: targetID,
-                action: .authenticate
-            )
-            guard state.providers.first(where: { $0.id == targetID })?.isVerified == true else {
-                return InstallerCLIResult(
-                    exitCode: .executionFailed,
-                    status: "provider-verification-failed",
-                    message: "Provideraanmelding is niet als VERIFIED teruggelezen.",
-                    details: ["provider_target": targetID.rawValue]
-                )
-            }
-        }
-        return nil
     }
 
     private func handleRequiredUpdate(

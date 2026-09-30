@@ -362,7 +362,8 @@ struct ReleasedRouteFixture {
     let snapshot: ManagedInstallerReleasedRouteSnapshot
     let operation: ReviewedManagedDeploymentOperation
 
-    init(includeManagedGit: Bool = false, componentIdentity: String? = nil) throws {
+    init(includeManagedGit: Bool = false, componentIdentity: String? = nil,
+         providerRequirements: [ProviderRequirement] = []) throws {
         let managedTools: [ManagedToolRequirement]
         if includeManagedGit {
             managedTools = [ManagedToolRequirement(
@@ -399,7 +400,7 @@ struct ReleasedRouteFixture {
             productVirtualEnvironments: managedPythonTestVenvs.filter {
                 componentIdentity == nil || $0.componentIdentity == componentIdentity
             },
-            providerRequirements: [],
+            providerRequirements: providerRequirements,
             managedTools: managedTools
         )
         deployment = try ManagedDeploymentTarget(
@@ -483,6 +484,7 @@ struct ReleasedRouteFixture {
             deploymentExists: deployment.exists,
             inventoryEvidenceReference: inventory.evidenceReference,
             currentInstallerRelease: release,
+            enabledProviderRequirements: providerRequirements,
             components: review.components
         )
     }

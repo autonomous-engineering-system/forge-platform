@@ -104,6 +104,11 @@ public enum ManagedDeploymentExecutionResult: Equatable, Sendable {
     case updateRequired(VerifiedInstallerRelease)
 }
 
+public enum ManagedInstallerProviderStagePreparationResult: Equatable, Sendable {
+    case prepared(ManagedInstallerReviewedProviderStageReceipt)
+    case unavailable(InstallerOperationFailureCode)
+}
+
 /// Narrow collaborator injected into the trusted installer runtime. Product
 /// commands and credentials never cross into SwiftUI; only bounded domain
 /// projections do.
@@ -120,6 +125,18 @@ public protocol ManagedDeploymentRouteCoordinating: Sendable {
     func executeReviewedManagedDeployment(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedDeploymentExecutionResult
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult
+}
+
+public extension ManagedDeploymentRouteCoordinating {
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        _ = operation
+        return .unavailable(.coordinatorUnavailable)
+    }
 }
 
 public struct UnavailableManagedDeploymentRouteCoordinator: ManagedDeploymentRouteCoordinating {

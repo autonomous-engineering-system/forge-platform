@@ -1107,6 +1107,12 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         await managedDeploymentRouteCoordinator.executeReviewedManagedDeployment(operation)
     }
 
+    public func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        await managedDeploymentRouteCoordinator.stageReviewedProviders(operation)
+    }
+
     /// A composition session may cross into the wizard only after this runtime
     /// retained one exact current release record through mandatory startup
     /// enforcement.  The injected preparer supplies no new trust root here:

@@ -135,6 +135,63 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         XCTAssertNil(denied)
     }
 
+    func testReviewedProviderStageCrossesXPCOnlyForExactIntentAndReceipt() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let fixture = try ReleasedRouteFixture(providerRequirements: [provider])
+        let activation = try ManagedPythonRuntimeActivationPlan(
+            session: fixture.session, deployment: fixture.deployment,
+            initialReadback: fixture.snapshot.initialPythonRuntime
+        )
+        let plan = try ManagedInstallerStablePlan(
+            session: fixture.session, deployment: fixture.deployment,
+            activationPlan: activation, reviewedOperation: fixture.operation,
+            originalManagedToolActions: fixture.snapshot.managedToolActions
+        )
+        let receipt = try ManagedInstallerReviewedProviderStageReceipt(
+            operationID: plan.activationPlan.operationID,
+            stablePlanFingerprint: plan.fingerprint,
+            providerTargetIDs: [provider.id]
+        )
+        let admission = ManagedInstallerReviewedProviderStageAdmission(
+            loader: XPCExecutionPlanLoader(plan: plan),
+            stager: XPCProviderStageStager(receipt: receipt)
+        )
+        let handler = ManagedInstallerReleasedRouteXPCServiceHandler(
+            service: ReleasedRouteHelperService(snapshot: fixture.snapshot),
+            admission: nil,
+            registration: nil,
+            providerStaging: admission
+        )
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+        let malformed = await callProviderStage(handler, Data("{}".utf8))
+        XCTAssertNil(malformed)
+        let stagedReply = await callProviderStage(handler, intent.canonicalJSONData())
+        let response = try XCTUnwrap(stagedReply)
+        XCTAssertEqual(try ManagedInstallerReviewedProviderStageReceipt.decodeJSON(response),
+                       receipt)
+
+        let listener = MacOSManagedInstallerReleasedRouteXPCListener(
+            listener: .anonymous(),
+            callerIdentity: try ManagedInstallerProductOperationXPCCallerIdentity(
+                bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
+                teamIdentifier: "ZEML4LPXH4"
+            ),
+            serviceHandler: handler,
+            installCodeSigningRequirement: { _, _ in }
+        )
+        listener.activate()
+        defer { listener.invalidate() }
+        let transport = MacOSManagedInstallerReleasedRouteXPCTransport(endpoint: listener.endpoint)
+        let transported = try await transport.stageReviewedProviders(intent)
+        XCTAssertEqual(transported, receipt)
+        await transport.invalidate()
+        let unavailable = ManagedInstallerReleasedRouteXPCServiceHandler(
+            service: ReleasedRouteHelperService(snapshot: fixture.snapshot)
+        )
+        let denied = await callProviderStage(unavailable, intent.canonicalJSONData())
+        XCTAssertNil(denied)
+    }
+
     func testFileHelperDispatchesOnlyCanonicalReviewedIntentAndTypedReply()
         async throws {
         let fixture = try ReleasedRouteFixture()
@@ -689,6 +746,22 @@ private struct XPCExecutionRouteExecutor: ManagedInstallerStablePlanExecuting {
     }
 }
 
+private struct XPCProviderStageStager: ManagedInstallerStablePlanProviderStaging {
+    let receipt: ManagedInstallerReviewedProviderStageReceipt
+    func stage(stablePlan: ManagedInstallerStablePlan) async
+        -> ManagedInstallerReviewedProviderStageReceipt? {
+        receipt.matches(stablePlan) ? receipt : nil
+    }
+}
+
+private func callProviderStage(
+    _ service: ManagedInstallerReleasedRouteXPCService, _ data: Data
+) async -> Data? {
+    await withCheckedContinuation { continuation in
+        service.stageReviewedProviders(data) { continuation.resume(returning: $0) }
+    }
+}
+
 private actor ReleasedRouteHelperService: ManagedInstallerReleasedRouteHelperServing {
     private let snapshot: ManagedInstallerReleasedRouteSnapshot
     private let registryData: Data?
@@ -766,6 +839,13 @@ private final class RawReleasedRouteXPCService:
         reply(snapshotResponse)
     }
     func executeReviewedIntent(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        reply(nil)
+    }
+    func stageReviewedProviders(
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {

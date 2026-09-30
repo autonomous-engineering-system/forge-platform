@@ -1671,6 +1671,11 @@ public protocol InstallerWizardCoordinator: Sendable {
     func executeReviewedManagedDeployment(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedDeploymentExecutionResult
+    /// Stages selected component-owned provider runtimes under the reviewed
+    /// helper plan, without provider authentication or product execution.
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult
     /// Legacy targetless route retained for composition/v1 coordinators.
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult
     /// Target-aware route used by composition/v2. Existing coordinators inherit
@@ -1683,6 +1688,13 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        _ = operation
+        return .unavailable(.coordinatorUnavailable)
+    }
+
     func readTerminalPreserveRecovery(
         deploymentID: String, component: String,
         installerRelease: VerifiedInstallerRelease
