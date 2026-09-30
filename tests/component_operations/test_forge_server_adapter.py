@@ -181,6 +181,16 @@ class ForgeProductPeerStatusReadbackTests(unittest.TestCase):
             return value, runner
         value, runner = read(ForgeCommandResult(0, json.dumps(status), ''))
         self.assertEqual(value, digest)
+        generation_runner = StatusRunner(ForgeCommandResult(0, json.dumps(status), ''))
+        self.assertEqual(
+            ForgeServerProductAdapter.read_peer_configuration_generation(
+                forge_executable=root / 'venv/bin/forge', target=target,
+                installed_version='2.7.38', expected_binding_id='ep-a',
+                expected_ep_consumer_id='forge-consumer-a', runner=generation_runner,
+            ),
+            (1, digest),
+        )
+        self.assertEqual(len(generation_runner.calls), 1)
         self.assertEqual(runner.calls, [(
             str(root / 'venv/bin/forge'), '--data-root', str(target.data_root),
             'server', 'status',
@@ -204,6 +214,13 @@ class ForgeProductPeerStatusReadbackTests(unittest.TestCase):
                 altered[key] = wrong
                 with self.assertRaises(ForgeServerAdapterError):
                     read(ForgeCommandResult(0, json.dumps(altered), ''))
+                with self.assertRaises(ForgeServerAdapterError):
+                    ForgeServerProductAdapter.read_peer_configuration_generation(
+                        forge_executable=root / 'venv/bin/forge', target=target,
+                        installed_version='2.7.38', expected_binding_id='ep-a',
+                        expected_ep_consumer_id='forge-consumer-a',
+                        runner=StatusRunner(ForgeCommandResult(0, json.dumps(altered), '')),
+                    )
         for result in (
             ForgeCommandResult(1, json.dumps(status), ''),
             ForgeCommandResult(0, json.dumps(status), 'warning'),
