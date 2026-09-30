@@ -106,3 +106,16 @@ public struct ManagedInstallerPurgeRecoveryReceipt: Equatable, Sendable {
         return Self(receiptDigest: digest, registryRevision: revision, canonicalData: data)
     }
 }
+
+public struct ManagedInstallerPurgeRecoveryCompletion: Equatable, Sendable {
+    public let request: ManagedInstallerPurgeRecoveryRequest
+    public let receipt: ManagedInstallerPurgeRecoveryReceipt
+
+    public init(
+        request: ManagedInstallerPurgeRecoveryRequest,
+        receipt: ManagedInstallerPurgeRecoveryReceipt
+    ) {
+        self.request = request
+        self.receipt = receipt
+    }
+}

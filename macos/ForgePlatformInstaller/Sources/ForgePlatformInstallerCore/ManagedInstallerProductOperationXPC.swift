@@ -211,7 +211,8 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
     ManagedInstallerProductRemovalTransporting,
     ManagedInstallerPreservedLifecycleReviewTransporting,
     ManagedInstallerPreservedLifecycleTransporting,
-    ManagedInstallerPreserveRecoveryTransporting {
+    ManagedInstallerPreserveRecoveryTransporting,
+    ManagedInstallerPurgeRecoveryTransporting {
     public static let machServiceName =
         "com.autonomous-engineering-system.forge-platform-installer.helper.product-operations"
 
