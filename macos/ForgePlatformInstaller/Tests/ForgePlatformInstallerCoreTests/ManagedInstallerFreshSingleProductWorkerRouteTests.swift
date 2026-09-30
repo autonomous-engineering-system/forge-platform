@@ -207,6 +207,22 @@ final class ManagedInstallerFreshSingleProductWorkerRouteTests: XCTestCase {
             venvEvidence: Array(fixture.evidence.dropLast()),
             pairing: pairing, prior: nil
         ))
+        let forgePrior = try XCTUnwrap(
+            ManagedInstallerFreshSingleProductWorkerPublishingOperations
+                .priorComponentRoute(route, component: "forge-runtime")
+        )
+        let epPrior = try XCTUnwrap(
+            ManagedInstallerFreshSingleProductWorkerPublishingOperations
+                .priorComponentRoute(route, component: "engineering-platform-server")
+        )
+        XCTAssertEqual(forgePrior.instanceID, route.forgeInstanceID)
+        XCTAssertEqual(forgePrior.serviceAccount, route.forgeServiceAccount)
+        XCTAssertEqual(forgePrior.venvSlotName, route.forgeVenvSlotName)
+        XCTAssertEqual(epPrior.instanceID, route.engineeringPlatformInstanceID)
+        XCTAssertEqual(epPrior.serviceAccount, route.engineeringPlatformServiceAccount)
+        XCTAssertEqual(epPrior.venvSlotName, route.engineeringPlatformVenvSlotName)
+        XCTAssertNil(ManagedInstallerFreshSingleProductWorkerPublishingOperations
+            .priorComponentRoute(route, component: "unknown"))
     }
 
     private func builder() -> ManagedInstallerFreshSingleProductWorkerRouteBuilder {

@@ -8,6 +8,13 @@ enum ManagedInstallerFreshPriorWorkerVenvEvidenceFailure: Error, Equatable {
 /// The evidence is a recovery hint, not worker authority: the publisher must
 /// still reread each published venv and wheel from its physical slot.
 enum ManagedInstallerFreshPriorWorkerVenvEvidenceAdmission {
+    private struct PriorRouteComponent {
+        let deploymentID: String
+        let componentIdentity: String
+        let artifactSHA256: String
+        let venvSlotName: String?
+    }
+
     static func load(
         prior: ManagedInstallerProductWorkerAuthoritySnapshot?,
         registry: ManagedInstallerManagedDeploymentRegistrySnapshot,
@@ -17,13 +24,40 @@ enum ManagedInstallerFreshPriorWorkerVenvEvidenceAdmission {
                 ManagedInstallerFreshPriorWorkerVenvEvidenceFailure> {
         guard ManagedInstallerFreshPriorWorkerRegistryAdmission.accepts(
                 prior: prior, registry: registry, adding: deploymentID
-              ),
-              prior?.routes.allSatisfy({ $0.deploymentID == deploymentID }) ?? true
+              )
         else { return .failure(.rejected) }
-        let routes = (prior?.singleRoutes ?? [])
-            .filter { $0.deploymentID != deploymentID }
-            .sorted { $0.deploymentID < $1.deploymentID }
-        guard Set(routes.map(\.deploymentID)).count == routes.count else {
+        let singles = (prior?.singleRoutes ?? [])
+            .filter { $0.deploymentID != deploymentID }.map {
+                PriorRouteComponent(
+                    deploymentID: $0.deploymentID,
+                    componentIdentity: $0.componentIdentity,
+                    artifactSHA256: $0.artifactSHA256,
+                    venvSlotName: $0.venvSlotName
+                )
+            }
+        let paired = (prior?.routes ?? [])
+            .filter { $0.deploymentID != deploymentID }.flatMap { route in
+                [
+                    PriorRouteComponent(
+                        deploymentID: route.deploymentID,
+                        componentIdentity: "forge-runtime",
+                        artifactSHA256: route.forgeArtifactSHA256,
+                        venvSlotName: route.forgeVenvSlotName
+                    ),
+                    PriorRouteComponent(
+                        deploymentID: route.deploymentID,
+                        componentIdentity: "engineering-platform-server",
+                        artifactSHA256: route.engineeringPlatformArtifactSHA256,
+                        venvSlotName: route.engineeringPlatformVenvSlotName
+                    ),
+                ]
+            }
+        let routes = (singles + paired).sorted {
+            ($0.deploymentID, $0.componentIdentity)
+                < ($1.deploymentID, $1.componentIdentity)
+        }
+        let keys = routes.map { $0.deploymentID + "\u{1f}" + $0.componentIdentity }
+        guard Set(keys).count == keys.count else {
             return .failure(.rejected)
         }
         var evidence: [ManagedInstallerProductWorkerVenvPublicationEvidence] = []
