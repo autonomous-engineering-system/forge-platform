@@ -1,8 +1,8 @@
-"""Canonical native execution request for one reviewed PRESERVE transition.
+"""Canonical native execution request for reviewed preserved lifecycle work.
 
 The caller supplies only the public review already returned by the helper.
 Installed product paths, commands, service controls and credentials are absent.
-RESTORE and PURGE stay unavailable until their separate terminal gates exist.
+PURGE requires a separate exact-instance confirmation. RESTORE remains unavailable.
 """
 
 from __future__ import annotations
@@ -23,6 +23,9 @@ from .managed_preserved_lifecycle_proposal import (
 
 NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA = (
     "forge-platform.native-preserved-lifecycle-request/v1"
+)
+NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA = (
+    "forge-platform.native-preserved-lifecycle-request/v2"
 )
 NATIVE_PRESERVED_LIFECYCLE_RECEIPT_SCHEMA = (
     "forge-platform.native-preserved-lifecycle-receipt/v1"
@@ -68,14 +71,22 @@ class NativePreservedLifecycleRequest:
     intent: NativePreservedLifecycleReviewIntent
     review: ManagedPreservedLifecycleReview
     request_fingerprint: str
+    confirmed_instance_id: str | None = None
 
 
 def decode_native_preserved_lifecycle_request(raw: bytes) -> NativePreservedLifecycleRequest:
     try:
         payload = _read(raw, MAXIMUM_NATIVE_PRESERVED_LIFECYCLE_REQUEST_BYTES)
+        schema = payload.get("schema")
+        required = {"schema", "intent", "proposal", "request_fingerprint"}
+        if schema == NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA:
+            required.add("confirmed_instance_id")
         if (
-            set(payload) != {"schema", "intent", "proposal", "request_fingerprint"}
-            or payload["schema"] != NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA
+            set(payload) != required
+            or schema not in {
+                NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
+                NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
+            }
             or not isinstance(payload["intent"], dict)
             or not isinstance(payload["proposal"], dict)
             or not isinstance(payload["request_fingerprint"], str)
@@ -86,8 +97,13 @@ def decode_native_preserved_lifecycle_request(raw: bytes) -> NativePreservedLife
         if fingerprint != sha256(_canonical(unsigned)).hexdigest():
             raise ValueError("lifecycle request fingerprint changed")
         intent = decode_native_preserved_lifecycle_review_intent(_canonical(payload["intent"]))
-        if intent.operation != "PRESERVE":
-            raise ValueError("unimplemented lifecycle mutation is unavailable")
+        if (
+            schema == NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA
+            and intent.operation != "PRESERVE"
+            or schema == NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA
+            and intent.operation != "PURGE"
+        ):
+            raise ValueError("lifecycle request schema or mutation is unavailable")
         proposal_raw = _canonical(payload["proposal"])
         if len(proposal_raw) > MAXIMUM_NATIVE_PRESERVED_LIFECYCLE_REVIEW_PROPOSAL_BYTES:
             raise ValueError("lifecycle proposal exceeds bound")
@@ -97,9 +113,17 @@ def decode_native_preserved_lifecycle_request(raw: bytes) -> NativePreservedLife
         review_wire = dict(proposal["review"])
         review_wire["artifact"] = QualifiedArtifact(**review_wire["artifact"])
         review = ManagedPreservedLifecycleReview(**review_wire)
-        if review.destructive_confirmation_required or review.preserve_operation_id is not None:
-            raise ValueError("preserve request carries incompatible lifecycle authority")
-        return NativePreservedLifecycleRequest(intent, review, fingerprint)
+        confirmation = payload.get("confirmed_instance_id")
+        if schema == NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA:
+            if review.destructive_confirmation_required or review.preserve_operation_id is not None:
+                raise ValueError("preserve request carries incompatible lifecycle authority")
+        elif (
+            review.destructive_confirmation_required is not True
+            or confirmation != intent.instance_id
+            or confirmation != review.instance_id
+        ):
+            raise ValueError("purge confirmation does not name the reviewed instance")
+        return NativePreservedLifecycleRequest(intent, review, fingerprint, confirmation)
     except Exception as error:
         raise ManagedPreservedLifecycleRequestError(
             "preserved lifecycle execution request was rejected"

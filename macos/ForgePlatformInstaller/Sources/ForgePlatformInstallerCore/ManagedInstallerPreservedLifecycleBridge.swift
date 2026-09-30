@@ -266,21 +266,25 @@ public struct ManagedInstallerPreservedLifecycleReviewProposal: Equatable, Senda
     }
 }
 
-/// Exact reviewed execution intent; only PRESERVE is currently executable.
+/// Exact reviewed execution intent with explicit destructive PURGE confirmation.
 public struct ManagedInstallerPreservedLifecycleRequest: Equatable, Sendable {
     public static let schema = "forge-platform.native-preserved-lifecycle-request/v1"
+    public static let confirmedPurgeSchema = "forge-platform.native-preserved-lifecycle-request/v2"
     public static let maximumBytes = 40 * 1_024
 
     public let intent: ManagedInstallerPreservedLifecycleReviewIntent
     public let proposal: ManagedInstallerPreservedLifecycleReviewProposal
     public let requestFingerprint: String
+    public let confirmedInstanceID: String?
     private let canonicalData: Data
 
     public init(
         intent: ManagedInstallerPreservedLifecycleReviewIntent,
-        proposal: ManagedInstallerPreservedLifecycleReviewProposal
+        proposal: ManagedInstallerPreservedLifecycleReviewProposal,
+        confirmedInstanceID: String? = nil
     ) throws {
-        guard intent.operation == "PRESERVE",
+        guard (intent.operation == "PRESERVE" && confirmedInstanceID == nil)
+                || (intent.operation == "PURGE" && confirmedInstanceID == intent.instanceID),
               proposal.intentFingerprint == intent.intentFingerprint,
               proposal.operation == intent.operation,
               proposal.component == intent.component,
@@ -289,10 +293,14 @@ public struct ManagedInstallerPreservedLifecycleRequest: Equatable, Sendable {
               let proposalValue = try? Self.value(proposal.canonicalJSONData()) else {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
         }
-        let unsigned: [String: StrictJSONResourceValue] = [
-            "schema": .string(Self.schema), "intent": intentValue,
+        var unsigned: [String: StrictJSONResourceValue] = [
+            "schema": .string(intent.operation == "PURGE" ? Self.confirmedPurgeSchema : Self.schema),
+            "intent": intentValue,
             "proposal": proposalValue,
         ]
+        if let confirmedInstanceID {
+            unsigned["confirmed_instance_id"] = .string(confirmedInstanceID)
+        }
         let fingerprint = ManagedInstallerPreservedLifecycleReviewIntent.hash(
             StrictSignedJSON.canonicalPayload(from: .object(unsigned))
         )
@@ -304,6 +312,7 @@ public struct ManagedInstallerPreservedLifecycleRequest: Equatable, Sendable {
         }
         self.intent = intent
         self.proposal = proposal
+        self.confirmedInstanceID = confirmedInstanceID
         requestFingerprint = fingerprint
         canonicalData = data
     }
@@ -316,8 +325,13 @@ public struct ManagedInstallerPreservedLifecycleRequest: Equatable, Sendable {
         }
         let root = try value(data)
         guard let fields = root.objectValue,
-              Set(fields.keys) == Set(["schema", "intent", "proposal", "request_fingerprint"]),
-              fields["schema"]?.stringValue == schema,
+              let schema = fields["schema"]?.stringValue,
+              (schema == Self.schema && Set(fields.keys) == Set([
+                  "schema", "intent", "proposal", "request_fingerprint",
+              ])) || (schema == Self.confirmedPurgeSchema && Set(fields.keys) == Set([
+                  "schema", "intent", "proposal", "request_fingerprint",
+                  "confirmed_instance_id",
+              ])),
               let intentValue = fields["intent"],
               let proposalValue = fields["proposal"],
               let fingerprint = fields["request_fingerprint"]?.stringValue else {
@@ -329,7 +343,10 @@ public struct ManagedInstallerPreservedLifecycleRequest: Equatable, Sendable {
         let proposal = try ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
             StrictSignedJSON.canonicalPayload(from: proposalValue), intent: intent
         )
-        let request = try Self(intent: intent, proposal: proposal)
+        let request = try Self(
+            intent: intent, proposal: proposal,
+            confirmedInstanceID: fields["confirmed_instance_id"]?.stringValue
+        )
         guard request.requestFingerprint == fingerprint,
               request.canonicalJSONData() == data else {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
