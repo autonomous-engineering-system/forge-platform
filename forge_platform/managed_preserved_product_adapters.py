@@ -354,6 +354,51 @@ class EPPreservedProductAdapter:
         ):
             raise ManagedPreservedProductAdapterError("EP preserve terminal status changed")
 
+    def read_terminal_restore(
+        self, review: ManagedPreservedLifecycleReview, *,
+        receipt: Mapping[str, object], receipt_digest: str,
+    ) -> ProductPreservedLifecycleInvocation:
+        """Recheck an exact EP RESTORE receipt against fresh product status."""
+        if (
+            not isinstance(review, ManagedPreservedLifecycleReview)
+            or review.operation != "RESTORE"
+            or review.component != EP_COMPONENT
+            or review.instance_id != self.target.instance_id
+            or review.artifact != self.artifact
+            or not isinstance(review.preserve_operation_id, str)
+            or _ID.fullmatch(review.preserve_operation_id) is None
+            or not isinstance(receipt, Mapping)
+            or not isinstance(receipt_digest, str)
+            or _DIGEST.fullmatch(receipt_digest) is None
+            or receipt.get("receipt_sha256") != receipt_digest
+        ):
+            raise ManagedPreservedProductAdapterError("EP restore receipt selector changed")
+        observed = self.runner.run((
+            str(self.provisioner_executable), "lifecycle-status",
+            "--product-root", str(self.product_root),
+            "--launch-daemons-dir", str(self.launch_daemons_directory),
+            "--instance-id", self.target.instance_id,
+            "--operation-id", review.operation_id,
+        ))
+        status = _product_json(observed.returncode, observed.stdout)
+        try:
+            terminal = validate_terminal_preserved_lifecycle(
+                component=EP_COMPONENT, operation="RESTORE",
+                operation_id=review.operation_id,
+                instance_id=self.target.instance_id,
+                artifact=self.artifact,
+                request_digest=receipt.get("request_digest"),
+                receipt=receipt, status=status,
+                preserve_operation_id=review.preserve_operation_id,
+            )
+        except ProductPreservedLifecycleError as error:
+            raise ManagedPreservedProductAdapterError(
+                "EP restore terminal evidence changed"
+            ) from error
+        if terminal.receipt_digest != receipt_digest:
+            raise ManagedPreservedProductAdapterError("EP restore receipt digest changed")
+        return ProductPreservedLifecycleInvocation(terminal, receipt, status)
+
     def require_terminal_purge_status(
         self, review: ManagedPreservedLifecycleReview, *, receipt_digest: str,
     ) -> None:

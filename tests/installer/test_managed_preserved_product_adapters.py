@@ -418,6 +418,72 @@ class ManagedPreservedProductAdapterTests(unittest.TestCase):
             self.assertIn("--preserve-operation-id", runner.calls[0])
             self.assertEqual(runner.calls[0][runner.calls[0].index("--preserve-operation-id") + 1], "preserve-ep")
 
+    def test_ep_restore_recovery_rechecks_receipt_and_fresh_product_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, active, _ = _fixture()
+            artifact = _artifact(EP_COMPONENT)
+            preserved = ManagedPreservedDeployment(
+                active.deployment_id, 2, active.label, (),
+                composition_binding=active.composition_binding,
+                preserved_components=(ManagedPreservedComponentBinding(
+                    EP_COMPONENT, "ep-a", "receipt:ep-a", "preserve-ep",
+                    "sha256:" + "e" * 64, artifact.version,
+                    artifact.source_revision, artifact.digest,
+                ),),
+            )
+            review = prepare_preserved_lifecycle_review(
+                current=preserved, installed_manifest=manifest, operation="RESTORE",
+                operation_id="restore-ep", component=EP_COMPONENT, instance_id="ep-a",
+            )
+            receipt, status = _ep_evidence(
+                "RESTORE", "restore-ep", "ep-a", "preserve-ep",
+            )
+            runner = FakeRunner(ProductCommandResult, (
+                (0, _wire(status)),
+                (0, _wire(status | {"receipt_sha256": "sha256:" + "0" * 64})),
+                (0, _wire(status)),
+            ))
+            adapter = EPPreservedProductAdapter(
+                provisioner_executable=root / "ep-provisioner", product_root=root / "ep",
+                target=EPSystemInstanceTarget("ep-a", "EP A", "_ep", 8766),
+                artifact=artifact, staged_wheel=root / "ep.whl",
+                launch_daemons_directory=root / "daemons", runner=runner,
+            )
+            terminal = adapter.read_terminal_restore(
+                review, receipt=receipt, receipt_digest=receipt["receipt_sha256"],
+            )
+            self.assertEqual(terminal.terminal.operation, "RESTORE")
+            self.assertEqual(terminal.status, status)
+            with self.assertRaises(ManagedPreservedProductAdapterError):
+                adapter.read_terminal_restore(
+                    review, receipt=receipt, receipt_digest=receipt["receipt_sha256"],
+                )
+            changed = json.loads(_wire(receipt))
+            changed["evidence"]["restored_from_preserve_operation"] = "preserve-other"
+            changed["receipt_sha256"] = _receipt_digest(
+                EP_COMPONENT,
+                {key: value for key, value in changed.items() if key != "receipt_sha256"},
+            )
+            runner.results.clear()
+            runner.results.append((0, _wire(status | {
+                "receipt_sha256": changed["receipt_sha256"],
+            })))
+            with self.assertRaises(ManagedPreservedProductAdapterError):
+                adapter.read_terminal_restore(
+                    review, receipt=changed, receipt_digest=changed["receipt_sha256"],
+                )
+            self.assertEqual(len(runner.calls), 3)
+            with self.assertRaises(ManagedPreservedProductAdapterError):
+                adapter.read_terminal_restore(
+                    replace(review, instance_id="ep-other"), receipt=receipt,
+                    receipt_digest=receipt["receipt_sha256"],
+                )
+            with self.assertRaises(ManagedPreservedProductAdapterError):
+                adapter.read_terminal_restore(
+                    review, receipt=receipt, receipt_digest="sha256:" + "0" * 64,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
