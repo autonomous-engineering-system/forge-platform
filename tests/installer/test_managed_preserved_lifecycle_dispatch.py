@@ -56,7 +56,9 @@ from tests.installer import test_managed_deployments as deployment_helpers
 from tests.installer.test_managed_preserved_lifecycle_request import _request
 from tests.installer.test_managed_pairing_revocation import Revoker
 from tests.installer.test_managed_preserved_lifecycle_proposal import _wire
-from tests.installer.test_managed_preserved_product_adapters import FakeRunner, _ep_evidence
+from tests.installer.test_managed_preserved_product_adapters import (
+    FakeRunner, _ep_evidence, _forge_evidence,
+)
 from tests.installer.test_managed_preserved_lifecycle_proposal import _intent
 from forge_platform.managed_preserved_lifecycle_proposal import prepare_native_preserved_lifecycle_review
 from forge_platform.product_preserved_lifecycle import EP_CONTRACT
@@ -468,7 +470,7 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
             registry.create(sibling)
             sibling_bytes = (registry.root / "other-pair.json").read_bytes()
             request_bytes = _wire(_request(manifest, registry, "PURGE", "forge-a"))
-            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)[1]
+            _, runner, product_receipt = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)
             supervisor = preserve_helpers.Supervisor()
             revoker = Revoker(EPConsumerScope("forge-consumer", "forge-project"))
             with (
@@ -479,12 +481,22 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
                 first = service.execute_preserved_lifecycle(request_bytes)
                 self.assertEqual(service.execute_preserved_lifecycle(request_bytes), first)
                 recovery = self._purge_recovery_request(request_bytes)
+                _, status = _forge_evidence(
+                    "PURGE", "purge-a", "forge-a", "Install-A",
+                    product_receipt["request_digest"],
+                )
+                runner.results.append((0, json.dumps(status)))
                 recovered = service.read_terminal_purge_recovery(recovery)
                 self.assertEqual(
                     decode_native_purge_recovery_receipt(
                         recovered, request=decode_native_purge_recovery_request(recovery),
                     ).state, "COMPLETE",
                 )
+                runner.results.append((0, json.dumps({
+                    **status, "receipt_digest": "sha256:" + "0" * 64,
+                })))
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.read_terminal_purge_recovery(recovery)
                 revoker.state = "ACTIVE"
                 with self.assertRaises(ManagedProductOperationServiceError):
                     service.read_terminal_purge_recovery(recovery)
@@ -494,7 +506,10 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
             self.assertEqual(set(current.active_by_component), {"engineering-platform-server"})
             self.assertIsNone(current.peer_binding)
             self.assertEqual(revoker.calls, 1)
-            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(len(runner.calls), 4)
+            self.assertEqual(
+                sum(call[3:5] == ("server", "purge") for call in runner.calls), 1,
+            )
             self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
             self.assertEqual(currency.calls[0]["mutation"], "pairing-consumer-revoke")
             self.assertEqual(registry.load("other-pair"), sibling)

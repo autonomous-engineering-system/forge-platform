@@ -94,7 +94,7 @@ class ManagedPreservedLifecycleDispatcher:
 
     def require_terminal_paired_purge(
         self, review: ManagedPreservedLifecycleReview, *,
-        installed_manifest: CompositionManifest,
+        installed_manifest: CompositionManifest, receipt_digest: str,
     ) -> None:
         """Recheck the exact EP-owned revocation for read-only PURGE recovery."""
         if (
@@ -130,6 +130,10 @@ class ManagedPreservedLifecycleDispatcher:
                     config.pairing_binding.consumer_id,
                     config.pairing_binding.project_id,
                 )
+            or config.forge_lifecycle_executable is None
+            or config.forge_uninstall_binding is None
+            or config.forge_uninstall_binding.runtime_id != review.instance_id
+            or config.forge_installed_artifact != review.artifact
         ):
             raise ManagedPreservedLifecycleDispatchError("paired purge recovery inventory changed")
         ep_adapter = EngineeringPlatformSystemProvisionerAdapter(
@@ -152,6 +156,12 @@ class ManagedPreservedLifecycleDispatcher:
             ep_instance_id=config.engineering_platform_target.instance_id,
             revoker=revoker,
         )
+        ForgePreservedProductAdapter(
+            lifecycle_executable=config.forge_lifecycle_executable,
+            target=config.forge_target,
+            installation_id=config.forge_uninstall_binding.installation_id,
+            artifact=review.artifact,
+        ).require_terminal_purge_status(review, receipt_digest=receipt_digest)
 
     def dispatch(
         self, request: NativePreservedLifecycleRequest, *,

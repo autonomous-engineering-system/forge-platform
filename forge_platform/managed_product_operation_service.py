@@ -507,6 +507,7 @@ class ManagedProductOperationHelperService:
             if review.historical_peer_reference is not None:
                 self.preserved_dispatcher.require_terminal_paired_purge(
                     review, installed_manifest=manifest,
+                    receipt_digest=record.receipt_digest,
                 )
             response = encode_native_purge_recovery_receipt(request, record)
             if decode_native_purge_recovery_receipt(response, request=request) != record:
