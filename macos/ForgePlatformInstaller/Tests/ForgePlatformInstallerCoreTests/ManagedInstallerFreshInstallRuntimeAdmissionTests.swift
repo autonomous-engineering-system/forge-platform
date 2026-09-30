@@ -789,34 +789,6 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             wrongProduct.canonicalJSONData(), intent: intent,
             providerTargetID: requirement.id
         ))
-        let gate = EPRegistrationGateCoordinator(receipt: expectedProduct)
-        let registered = await ManagedInstallerEPProviderRegistrationGate.registerVerifiedTargets(
-            coordinator: gate, operation: fixture.plan.reviewedOperation,
-            readback: observed, requirements: [requirement]
-        )
-        XCTAssertTrue(registered)
-        let registeredCalls = await gate.registerCalls()
-        XCTAssertEqual(registeredCalls, 1)
-        let driftedObservation = try ManagedInstallerReviewedProviderReadback(
-            operationID: intent.operationID,
-            stablePlanFingerprint: intent.stablePlanFingerprint,
-            targets: [try .init(
-                id: requirement.id, state: .verified,
-                evidenceReference: "receipt:provider-observation-"
-                    + String(repeating: "c", count: 64)
-            )]
-        )
-        let driftedRegistration = await ManagedInstallerEPProviderRegistrationGate.registerVerifiedTargets(
-            coordinator: gate, operation: fixture.plan.reviewedOperation,
-            readback: driftedObservation, requirements: [requirement]
-        )
-        XCTAssertFalse(driftedRegistration)
-        let unavailableGate = EPRegistrationGateCoordinator(receipt: nil)
-        let unavailableRegistration = await ManagedInstallerEPProviderRegistrationGate.registerVerifiedTargets(
-            coordinator: unavailableGate, operation: fixture.plan.reviewedOperation,
-            readback: observed, requirements: [requirement]
-        )
-        XCTAssertFalse(unavailableRegistration)
         XCTAssertNil(ManagedInstallerEPProviderRegistrationReceipt.decode(
             expectedProduct.canonicalJSONData() + Data([0x0A]), request: request
         ))
@@ -1201,6 +1173,74 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                        fixture.preprovider.accounts[0].claim.instanceID)
     }
 
+    func testEPProviderRegistrationRunsOnlyAfterFreshWorkerAuthorityPublication()
+        async throws {
+        let base = try stagedProviderRequirement()
+        let requirement = ProviderRequirement(
+            provider: .codex, isRequired: true,
+            minimumVersion: base.minimumVersion,
+            credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer,
+            targetIdentity: "deployment-a", runtime: base.runtime
+        )
+        let fixture = try FreshRuntimeFixture(
+            providers: [requirement], components: ["engineering-platform-server"]
+        )
+        let receipt = try freshRuntimeTransactionReceipt(
+            fixture: fixture, includeAccounts: true
+        )
+        let authority = FreshSingleRouteAuthority()
+        let registrar = FreshPostPublicationEPRegistrar(
+            authority: authority, runtimeDigest: requirement.runtime!.executableSHA256
+        )
+        let downstream = FreshAccountProductDispatch()
+        let operations = singleRouteOperations(
+            fixture: fixture, authority: authority, downstream: downstream,
+            epRegistration: registrar
+        )
+        let result = await operations.executeProductOperations(
+            stablePlan: fixture.plan, runtimeTransactionReceipt: receipt
+        )
+        XCTAssertEqual(result, .failed(.executionFailed, stages: []))
+        XCTAssertEqual(authority.publications, 1)
+        let afterPublication = await registrar.calledAfterPublication()
+        XCTAssertTrue(afterPublication)
+        let dispatched = await downstream.calls()
+        XCTAssertEqual(dispatched, 1)
+
+        let blockedAuthority = FreshSingleRouteAuthority()
+        let blockedDownstream = FreshAccountProductDispatch()
+        let blocked = singleRouteOperations(
+            fixture: fixture, authority: blockedAuthority,
+            downstream: blockedDownstream
+        )
+        let blockedResult = await blocked.executeProductOperations(
+            stablePlan: fixture.plan, runtimeTransactionReceipt: receipt
+        )
+        XCTAssertEqual(blockedResult, .failed(.staleSession, stages: []))
+        XCTAssertEqual(blockedAuthority.publications, 1)
+        let blockedCalls = await blockedDownstream.calls()
+        XCTAssertEqual(blockedCalls, 0)
+
+        let driftedAuthority = FreshSingleRouteAuthority()
+        let driftedDownstream = FreshAccountProductDispatch()
+        let wrongReceipt = FreshPostPublicationEPRegistrar(
+            authority: driftedAuthority,
+            runtimeDigest: "sha256:" + String(repeating: "c", count: 64)
+        )
+        let drifted = singleRouteOperations(
+            fixture: fixture, authority: driftedAuthority,
+            downstream: driftedDownstream, epRegistration: wrongReceipt
+        )
+        let driftedResult = await drifted.executeProductOperations(
+            stablePlan: fixture.plan, runtimeTransactionReceipt: receipt
+        )
+        XCTAssertEqual(driftedResult, .failed(.executionFailed, stages: []))
+        XCTAssertEqual(driftedAuthority.publications, 1)
+        let driftedCalls = await driftedDownstream.calls()
+        XCTAssertEqual(driftedCalls, 0)
+    }
+
     func testSecondSingleProductRouteRereadsPriorBeforeDispatch() async throws {
         let fixture = try FreshRuntimeFixture(components: ["forge-runtime"])
         let prior = try priorSingleRoute(fixture: fixture)
@@ -1283,7 +1323,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         authority: FreshSingleRouteAuthority,
         downstream: FreshAccountProductDispatch,
         failure: String = "",
-        prior: FreshPriorSingleRouteFixture? = nil
+        prior: FreshPriorSingleRouteFixture? = nil,
+        epRegistration: (any ManagedInstallerFreshEPProviderRegistering)? = nil
     ) -> ManagedInstallerFreshSingleProductWorkerPublishingOperations {
         let admitted = ManagedInstallerHelperExecutionMaterial(
             material: fixture.material,
@@ -1315,9 +1356,10 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             },
             readerFactory: { _ in
                 FreshSingleRouteVenvReader(
-                    reference: "receipt:fresh-venv-forge-runtime"
+                    reference: "receipt:fresh-venv-"
+                        + fixture.plan.session.productVirtualEnvironments[0].componentIdentity
                 )
-            }, downstream: downstream
+            }, epProviderRegistration: epRegistration, downstream: downstream
         )
     }
 
@@ -2083,56 +2125,46 @@ private struct FreshRuntimeAccountReader: ManagedInstallerFreshProductAccountRea
     }
 }
 
-private actor EPRegistrationGateCoordinator: InstallerWizardCoordinator {
-    let receipt: ManagedInstallerEPProviderRegistrationReceipt?
-    private var calls = 0
+private actor FreshPostPublicationEPRegistrar:
+    ManagedInstallerFreshEPProviderRegistering {
+    let authority: FreshSingleRouteAuthority
+    let runtimeDigest: String
+    private var observedPublication = false
 
-    init(receipt: ManagedInstallerEPProviderRegistrationReceipt?) {
-        self.receipt = receipt
+    init(authority: FreshSingleRouteAuthority, runtimeDigest: String) {
+        self.authority = authority
+        self.runtimeDigest = runtimeDigest
     }
 
-    func registerCalls() -> Int { calls }
+    func calledAfterPublication() -> Bool { observedPublication }
 
-    func registerReviewedEPProvider(
-        _ operation: ReviewedManagedDeploymentOperation,
-        providerTargetID: ProviderTargetID
-    ) async -> ManagedInstallerEPProviderRegistrationReceipt? {
-        _ = operation
-        _ = providerTargetID
-        calls += 1
-        return receipt
-    }
-
-    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
-        _ = currentVersion
-        return .rejected("unavailable")
-    }
-
-    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
-        _ = release
-        return .failed("unavailable")
-    }
-
-    func recheckInstallerBeforeMutation(
-        currentVersion: InstallerVersion
-    ) async -> InstallerCurrencyCheckResult {
-        _ = currentVersion
-        return .failed("unavailable")
-    }
-
-    func executeReviewedManagedDeployment(
-        _ operation: ReviewedManagedDeploymentOperation
-    ) async -> ManagedDeploymentExecutionResult {
-        _ = operation
-        return .failed(.executionFailed, stages: [])
-    }
-
-    func performProviderAction(
-        _ action: ProviderAction, for provider: ProviderID
-    ) async -> ProviderActionResult {
-        _ = action
-        _ = provider
-        return .failed(.coordinatorUnavailable)
+    func register(canonicalIntent: Data, providerTargetID: ProviderTargetID) async
+        -> Data? {
+        guard let intent = try? ManagedInstallerReviewedExecutionIntent
+                .decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent,
+              let route = authority.snapshot?.singleRoutes.first(where: {
+                  $0.deploymentID == intent.deploymentID
+                      && $0.componentIdentity == "engineering-platform-server"
+              }),
+              authority.publications == 1,
+              providerTargetID.rawValue ==
+                "codex:engineering-platform-server:\(intent.deploymentID)"
+        else { return nil }
+        observedPublication = true
+        return ManagedInstallerEPProviderRegistrationReceipt(
+            operationID: intent.operationID,
+            stablePlanFingerprint: "sha256:" + intent.stablePlanFingerprint,
+            deploymentID: intent.deploymentID,
+            epInstanceID: route.instanceID,
+            provider: .codex,
+            providerTarget: "codex:engineering-platform-server:\(route.instanceID)",
+            runtimeDigest: runtimeDigest,
+            productEvidenceReference: "ep-provider-readback:sha256:"
+                + String(repeating: "b", count: 64),
+            physicalEvidenceReference: "receipt:provider-observation-"
+                + String(repeating: "a", count: 64)
+        ).canonicalJSONData()
     }
 }
 
