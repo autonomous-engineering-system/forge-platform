@@ -27,14 +27,21 @@ from tests.installer.test_managed_preserved_lifecycle_proposal import _intent, _
 from tests.installer.test_managed_product_operation_admission import installer_release
 
 
-def _request(manifest, registry, operation="PRESERVE", confirmation=None):
+def _request(
+    manifest, registry, operation="PRESERVE", confirmation=None,
+    component=None, instance_id=None,
+):
     intent = _intent(manifest, operation=operation)
+    if component is not None:
+        intent["component"] = component
+    if instance_id is not None:
+        intent["instance_id"] = instance_id
     if operation in {"PURGE", "RESTORE"}:
         intent["operation_id"] = "purge-a" if operation == "PURGE" else "restore-a"
-        intent["intent_fingerprint"] = sha256(_wire({
-            key: item for key, item in intent.items()
-            if key != "intent_fingerprint"
-        })).hexdigest()
+    intent["intent_fingerprint"] = sha256(_wire({
+        key: item for key, item in intent.items()
+        if key != "intent_fingerprint"
+    })).hexdigest()
     proposal = json.loads(prepare_native_preserved_lifecycle_review(
         _wire(intent), installed_manifest=manifest, registry=registry,
         current_installer_release=installer_release(),

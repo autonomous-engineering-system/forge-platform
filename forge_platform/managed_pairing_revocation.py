@@ -196,6 +196,81 @@ class ManagedPairingRevocationCoordinator:
         finally:
             os.close(descriptor)
 
+    def read_terminal(
+        self, *, operation_id: str, deployment_id: str,
+        reviewed_deployment_fingerprint: str, forge_instance_id: str,
+        ep_instance_id: str, revoker: EPConsumerRevoker,
+    ) -> PairingRevocationRecord:
+        """Read the same product-owned revocation after a preserved registry commit."""
+        if (
+            not isinstance(operation_id, str) or _OPERATION_ID.fullmatch(operation_id) is None
+            or not isinstance(deployment_id, str)
+            or _OPERATION_ID.fullmatch(deployment_id) is None
+            or not isinstance(reviewed_deployment_fingerprint, str)
+            or not reviewed_deployment_fingerprint.startswith("sha256:")
+            or len(reviewed_deployment_fingerprint) != 71
+            or any(c not in "0123456789abcdef" for c in reviewed_deployment_fingerprint[7:])
+            or self.scope_claims.get(deployment_id) != getattr(revoker, "scope", None)
+            or getattr(getattr(revoker, "provisioner", None), "target", None) is None
+            or revoker.provisioner.target.instance_id != ep_instance_id
+        ):
+            raise ManagedPairingRevocationError("terminal paired preserve selector changed")
+        try:
+            root = os.lstat(self.operations_root)
+            if (
+                not stat.S_ISDIR(root.st_mode)
+                or root.st_uid != self.expected_owner_uid
+                or stat.S_IMODE(root.st_mode) != 0o700
+            ):
+                raise ManagedPairingRevocationError("pairing revocation journal root is unsafe")
+            descriptor = os.open(
+                self.operations_root / f".{operation_id}.lock",
+                os.O_RDWR | os.O_NOFOLLOW,
+            )
+        except OSError as error:
+            raise ManagedPairingRevocationError("terminal pairing revocation is unavailable") from error
+        try:
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode) or info.st_uid != self.expected_owner_uid
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                raise ManagedPairingRevocationError("pairing revocation lock is unsafe")
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            record = _read(
+                self.operations_root / f"{operation_id}.json",
+                owner_uid=self.expected_owner_uid,
+            )
+            if (
+                record is None or record.state != "COMPLETE"
+                or record.operation_id != operation_id
+                or record.deployment_id != deployment_id
+                or record.reviewed_deployment_fingerprint != reviewed_deployment_fingerprint
+                or record.forge_instance_id != forge_instance_id
+                or record.ep_instance_id != ep_instance_id
+                or record.consumer_id != revoker.scope.consumer_id
+                or record.project_id != revoker.scope.project_id
+            ):
+                raise ManagedPairingRevocationError("terminal pairing revocation changed")
+            observed = revoker.status()
+            if (
+                observed.get("consumer_id") != record.consumer_id
+                or observed.get("project_id") != record.project_id
+                or observed.get("status") != "REVOKED"
+                or not observed.get("revoked_at")
+                or record.receipt_reference != "ep-consumer-revoke:" + _digest({
+                    "instance_id": record.ep_instance_id,
+                    "consumer_id": record.consumer_id,
+                    "project_id": record.project_id,
+                    "status": "REVOKED",
+                    "revoked_at": observed["revoked_at"],
+                })
+            ):
+                raise ManagedPairingRevocationError("terminal EP consumer readback changed")
+            return record
+        finally:
+            os.close(descriptor)
+
 
 def _digest(value: object) -> str:
     return "sha256:" + sha256(
