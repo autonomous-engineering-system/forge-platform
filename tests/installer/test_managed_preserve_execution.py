@@ -20,7 +20,7 @@ from forge_platform.managed_deployments import (
 from forge_platform.managed_preserve_execution import (
     ManagedPreserveExecutionCoordinator, ManagedPreserveExecutionError,
     ManagedPurgeExecutionCoordinator,
-    _write, read_terminal_preserve_evidence,
+    _write, read_terminal_preserve_evidence, read_terminal_purge_evidence,
 )
 from forge_platform.managed_preserved_lifecycle_plan import prepare_preserved_lifecycle_review
 from forge_platform.managed_preserved_product_adapters import (
@@ -69,6 +69,19 @@ class Supervisor:
 
 
 class ManagedPreserveExecutionTests(unittest.TestCase):
+    @staticmethod
+    def _read_terminal_purge(root, registry, review, manifest, revision):
+        return read_terminal_purge_evidence(
+            operations_root=root / "operations", registry=registry,
+            deployment_id=review.deployment_id, operation_id=review.operation_id,
+            component=review.component, instance_id=review.instance_id,
+            review_fingerprint=review.review_fingerprint,
+            expected_registry_revision=revision,
+            composition_id=manifest.composition_id,
+            manifest_digest=manifest.manifest_digest,
+            expected_owner_uid=os.getuid(),
+        )
+
     @staticmethod
     def _read_terminal(root, registry, review, manifest):
         return read_terminal_preserve_evidence(
@@ -231,7 +244,37 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
             journal = (root / "operations" / "purge-a.json").read_text()
             self.assertNotIn("data_root", journal)
             self.assertNotIn("Install-A", journal)
+            self.assertEqual(self._read_terminal_purge(
+                root, registry, review, manifest, result.registry_revision,
+            ), result)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                self._read_terminal_purge(
+                    root, registry, replace(review, instance_id="forge-b"),
+                    manifest, result.registry_revision,
+                )
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                self._read_terminal_purge(
+                    root, registry, review, manifest, result.registry_revision + 1,
+                )
+            journal_path = root / "operations" / "purge-a.json"
+            _write(journal_path, replace(result, state="COMMITTING"))
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                self._read_terminal_purge(
+                    root, registry, review, manifest, result.registry_revision,
+                )
+            _write(journal_path, result)
+            registry_lock = root / "registry" / ".registry.lock"
+            registry_lock.chmod(0o644)
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "lock is unsafe"):
+                self._read_terminal_purge(
+                    root, registry, review, manifest, result.registry_revision,
+                )
+            registry_lock.chmod(0o600)
             registry.create(replace(active, deployment_id="foreign"))
+            with self.assertRaisesRegex(ManagedPreserveExecutionError, "stale"):
+                self._read_terminal_purge(
+                    root, registry, review, manifest, result.registry_revision,
+                )
             with self.assertRaisesRegex(ManagedPreserveExecutionError, "terminal inventory"):
                 coordinator.purge(review, installed_manifest=manifest, adapter=adapter)
             self.assertEqual(len(runner.calls), 2)
@@ -242,6 +285,9 @@ class ManagedPreserveExecutionTests(unittest.TestCase):
             manifest, registry, active, review, _, _, coordinator = self._purge_state(root)
             adapter, _, _ = self._forge_purge_adapter(root)
             result = coordinator.purge(review, installed_manifest=manifest, adapter=adapter)
+            self.assertEqual(self._read_terminal_purge(
+                root, registry, review, manifest, result.registry_revision,
+            ), result)
             current = registry.load(active.deployment_id)
             self.assertEqual(current.revision, result.registry_revision)
             self.assertEqual(current.active_by_component[EP_COMPONENT],
