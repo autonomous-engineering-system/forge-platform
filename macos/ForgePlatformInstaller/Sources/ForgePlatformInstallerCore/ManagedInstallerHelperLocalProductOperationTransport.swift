@@ -9,7 +9,8 @@ public struct ManagedInstallerHelperLocalProductOperationTransport:
     ManagedInstallerProductRemovalTransporting,
     ManagedInstallerPreservedLifecycleReviewTransporting,
     ManagedInstallerPreservedLifecycleTransporting,
-    ManagedInstallerPreserveRecoveryTransporting, Sendable {
+    ManagedInstallerPreserveRecoveryTransporting,
+    ManagedInstallerPurgeRecoveryTransporting, Sendable {
     private let service: ManagedInstallerProductOperationXPCServiceHandler
 
     public init(executor: any ManagedInstallerProductOperationHelperExecuting) {

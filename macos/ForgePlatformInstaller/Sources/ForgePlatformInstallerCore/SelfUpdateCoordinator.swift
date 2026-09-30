@@ -553,6 +553,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         (any ManagedInstallerPreservedLifecycleTransporting)?
     private let preserveRecoveryTransport:
         (any ManagedInstallerPreserveRecoveryTransporting)?
+    private let purgeRecoveryTransport:
+        (any ManagedInstallerPurgeRecoveryTransporting)?
     private let preservedRegistryReadTransport:
         (any ManagedInstallerPreservedRegistryReading)?
     private var productMutationInFlight = false
@@ -598,6 +600,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             (any ManagedInstallerPreservedLifecycleTransporting)? = nil,
         preserveRecoveryTransport:
             (any ManagedInstallerPreserveRecoveryTransporting)? = nil,
+        purgeRecoveryTransport:
+            (any ManagedInstallerPurgeRecoveryTransporting)? = nil,
         preservedRegistryReadTransport:
             (any ManagedInstallerPreservedRegistryReading)? = nil
     ) {
@@ -616,6 +620,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.preservedLifecycleReviewTransport = preservedLifecycleReviewTransport
         self.preservedLifecycleTransport = preservedLifecycleTransport
         self.preserveRecoveryTransport = preserveRecoveryTransport
+        self.purgeRecoveryTransport = purgeRecoveryTransport
         self.preservedRegistryReadTransport = preservedRegistryReadTransport
     }
 
@@ -1059,6 +1064,60 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             }
             return .success(ManagedInstallerPreserveRecoveryCompletion(
                 intent: intent, receipt: receipt
+            ))
+        }
+    }
+
+    public func readTerminalPurgeRecovery(
+        _ request: ManagedInstallerPurgeRecoveryRequest,
+        installerRelease: VerifiedInstallerRelease
+    ) async -> Result<
+        ManagedInstallerPurgeRecoveryCompletion,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard !productMutationInFlight,
+              request.execution.intent.installerRelease == installerRelease,
+              let currentVerifiedReleaseRecord,
+              currentVerifiedReleaseRecord.release == installerRelease,
+              let purgeRecoveryTransport else {
+            return .failure(.rejected)
+        }
+        return await whileExclusivelyLocked(unavailable: { _ in .failure(.unavailable) }) {
+            guard case .available(let before) =
+                await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
+                  self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+                return .failure(.rejected)
+            }
+            switch await self.checkForUpdateWhileLocked(
+                currentVersion: installerRelease.version,
+                invalidateCompositionSession: false
+            ) {
+            case .verifiedGitHubRelease(let release)
+                where release == installerRelease: break
+            default: return .failure(.rejected)
+            }
+            guard self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord,
+                  self.checkedCurrentReleaseRecord == currentVerifiedReleaseRecord else {
+                return .failure(.rejected)
+            }
+            let bytes: Data
+            switch await purgeRecoveryTransport.readTerminalPurgeRecovery(
+                request.canonicalJSONData()
+            ) {
+            case .success(let response): bytes = response
+            case .failure(let failure): return .failure(failure)
+            }
+            guard let receipt = try? ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+                bytes, request: request
+            ), receipt.canonicalJSONData() == bytes,
+                  case .available(let after) =
+                    await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
+                  after == before,
+                  self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+                return .failure(.rejected)
+            }
+            return .success(ManagedInstallerPurgeRecoveryCompletion(
+                request: request, receipt: receipt
             ))
         }
     }

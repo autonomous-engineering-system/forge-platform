@@ -54,6 +54,92 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(inventoryReads, 4)
     }
 
+    func testReleasedRuntimeReadsExactPurgeProofAfterFinalRegistryDeletion() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try lifecycleIntent(release: record.release, operation: "PURGE")
+        let execution = try ManagedInstallerPreservedLifecycleRequest(
+            intent: intent, proposal: lifecycleProposal(intent),
+            confirmedInstanceID: intent.instanceID
+        )
+        let request = try ManagedInstallerPurgeRecoveryRequest(execution: execution)
+        let terminal = try ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+            purgeRecoveryReceipt(request), request: request
+        )
+        let gone = try purgeInventory(includeEP: false, after: true)
+        let route = LifecycleInventoryRouteSpy(inventories: [gone, gone])
+        let recovery = LifecyclePurgeRecoveryTransportSpy(reply: terminal.canonicalJSONData())
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(record)),
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            managedDeploymentRouteCoordinator: route,
+            purgeRecoveryTransport: recovery
+        )
+        _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+        let result = await coordinator.readTerminalPurgeRecovery(
+            request, installerRelease: record.release
+        )
+        XCTAssertEqual(result, .success(ManagedInstallerPurgeRecoveryCompletion(
+            request: request, receipt: terminal
+        )))
+        let calls = await recovery.calls()
+        let reads = await route.readCount()
+        XCTAssertEqual(calls, [request.canonicalJSONData()])
+        XCTAssertEqual(reads, 2)
+    }
+
+    func testReleasedRuntimePurgeRecoveryRejectsDriftAndForeignReceipt() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try lifecycleIntent(release: record.release, operation: "PURGE")
+        let execution = try ManagedInstallerPreservedLifecycleRequest(
+            intent: intent, proposal: lifecycleProposal(intent),
+            confirmedInstanceID: intent.instanceID
+        )
+        let request = try ManagedInstallerPurgeRecoveryRequest(execution: execution)
+        let gone = try purgeInventory(includeEP: false, after: true)
+        let present = try purgeInventory(includeEP: false, after: false)
+        for (inventories, response) in [
+            ([gone, present], purgeRecoveryReceipt(request)),
+            ([gone, gone], Data("{}".utf8)),
+        ] {
+            let recovery = LifecyclePurgeRecoveryTransportSpy(reply: response)
+            let coordinator = makeCoordinator(
+                feed: FeedSpy(result: .success(record)),
+                inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+                staging: StagingSpy(result: .success(try makeStagedAsset())),
+                managedDeploymentRouteCoordinator: LifecycleInventoryRouteSpy(
+                    inventories: inventories
+                ),
+                purgeRecoveryTransport: recovery
+            )
+            _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+            let outcome = await coordinator.readTerminalPurgeRecovery(
+                request, installerRelease: record.release
+            )
+            XCTAssertEqual(outcome, .failure(.rejected))
+        }
+    }
+
+    private func purgeRecoveryReceipt(_ request: ManagedInstallerPurgeRecoveryRequest) -> Data {
+        StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPurgeRecoveryReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "execution_request_fingerprint": .string(request.execution.requestFingerprint),
+            "record": .object([
+                "operation_id": .string(request.execution.intent.operationID),
+                "deployment_id": .string(request.execution.intent.deploymentID),
+                "review_fingerprint": .string(request.execution.proposal.reviewFingerprint),
+                "component": .string(request.execution.intent.component),
+                "instance_id": .string(request.execution.intent.instanceID),
+                "state": .string("COMPLETE"),
+                "receipt_digest": .string("sha256:" + String(repeating: "a", count: 64)),
+                "registry_revision": .integer("2"),
+            ]),
+        ]))
+    }
+
     func testReleasedRuntimeRecoveryRejectsStaleTargetAndForeignJournalEvidence() async throws {
         let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
         let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
@@ -1828,6 +1914,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             (any ManagedInstallerPreservedLifecycleTransporting)? = nil,
         preserveRecoveryTransport:
             (any ManagedInstallerPreserveRecoveryTransporting)? = nil,
+        purgeRecoveryTransport:
+            (any ManagedInstallerPurgeRecoveryTransporting)? = nil,
         preservedRegistryReadTransport:
             (any ManagedInstallerPreservedRegistryReading)? = nil
     ) -> VerifiedInstallerSelfUpdateCoordinator {
@@ -1847,6 +1935,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             preservedLifecycleReviewTransport: preservedLifecycleReviewTransport,
             preservedLifecycleTransport: preservedLifecycleTransport,
             preserveRecoveryTransport: preserveRecoveryTransport,
+            purgeRecoveryTransport: purgeRecoveryTransport,
             preservedRegistryReadTransport: preservedRegistryReadTransport
         )
     }
@@ -2158,6 +2247,19 @@ private actor LifecycleRecoveryTransportSpy: ManagedInstallerPreserveRecoveryTra
     private var requests: [Data] = []
     init(reply: Data) { self.reply = reply }
     func readTerminalPreserveRecovery(
+        _ canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        requests.append(canonicalRequest)
+        return .success(reply)
+    }
+    func calls() -> [Data] { requests }
+}
+
+private actor LifecyclePurgeRecoveryTransportSpy: ManagedInstallerPurgeRecoveryTransporting {
+    let reply: Data
+    private var requests: [Data] = []
+    init(reply: Data) { self.reply = reply }
+    func readTerminalPurgeRecovery(
         _ canonicalRequest: Data
     ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
         requests.append(canonicalRequest)

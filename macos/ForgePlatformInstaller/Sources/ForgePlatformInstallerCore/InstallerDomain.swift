@@ -1714,6 +1714,13 @@ public protocol InstallerWizardCoordinator: Sendable {
         ManagedInstallerPreserveRecoveryCompletion,
         ManagedInstallerProductOperationBridgeFailure
     >
+    func readTerminalPurgeRecovery(
+        _ request: ManagedInstallerPurgeRecoveryRequest,
+        installerRelease: VerifiedInstallerRelease
+    ) async -> Result<
+        ManagedInstallerPurgeRecoveryCompletion,
+        ManagedInstallerProductOperationBridgeFailure
+    >
     /// Executes only a previously reviewed exact helper proposal after a
     /// fresh installer currency and helper proposal check.
     func executeReviewedProductRemoval(
@@ -1805,6 +1812,18 @@ public extension InstallerWizardCoordinator {
     > {
         _ = deploymentID
         _ = component
+        _ = installerRelease
+        return .failure(.rejected)
+    }
+
+    func readTerminalPurgeRecovery(
+        _ request: ManagedInstallerPurgeRecoveryRequest,
+        installerRelease: VerifiedInstallerRelease
+    ) async -> Result<
+        ManagedInstallerPurgeRecoveryCompletion,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = request
         _ = installerRelease
         return .failure(.rejected)
     }
