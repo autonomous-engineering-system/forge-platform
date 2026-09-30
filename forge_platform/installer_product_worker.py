@@ -54,6 +54,10 @@ from .managed_product_operation_service import (
 )
 from .managed_product_wheel_worker import SCHEMA as PRODUCT_WHEEL_WORKER_SCHEMA
 from .managed_product_wheel_worker import execute_wheel_request
+from .managed_ep_provider_registration import (
+    SCHEMA as EP_PROVIDER_REGISTRATION_SCHEMA,
+    EPProviderRegistrationRequest,
+)
 from .product_worker_authority import ProductWorkerAuthorityLoader
 
 
@@ -112,6 +116,57 @@ def execute_product_request(
         or len(response) > MAXIMUM_NATIVE_PRODUCT_OPERATION_RECEIPT_BYTES
     ):
         raise InstallerProductWorkerUnavailable("product receipt is unavailable")
+    return response
+
+
+def execute_ep_provider_registration(
+    canonical_request: bytes,
+    *, service_loader: ServiceLoader = load_released_product_service,
+) -> bytes:
+    request = EPProviderRegistrationRequest.decode(canonical_request)
+    service = service_loader()
+    if not isinstance(service, ManagedProductOperationHelperService):
+        raise InstallerProductWorkerUnavailable("EP provider service is unavailable")
+    response = service.register_ep_provider(canonical_request)
+    if not isinstance(response, bytes) or not response or len(response) > 4 * 1024:
+        raise InstallerProductWorkerUnavailable("EP provider receipt is unavailable")
+    try:
+        payload = json.loads(
+            response, object_pairs_hook=_unique_object,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("non-finite JSON")),
+        )
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {
+                "schema", "operation_id", "stable_plan_fingerprint",
+                "deployment_id", "ep_instance_id", "provider",
+                "provider_target", "runtime_digest", "product_evidence_reference",
+                "physical_evidence_reference", "state",
+            }
+            or _canonical(payload) != response
+            or payload.get("schema") != "forge-platform.ep-provider-registration-receipt/v1"
+            or payload.get("operation_id") != request.operation_id
+            or payload.get("stable_plan_fingerprint") != request.stable_plan_fingerprint
+            or payload.get("deployment_id") != request.deployment_id
+            or payload.get("ep_instance_id") != request.ep_instance_id
+            or payload.get("provider") != request.provider
+            or payload.get("provider_target") != (
+                request.provider + ":engineering-platform-server:" + request.ep_instance_id
+            )
+            or not isinstance(payload.get("runtime_digest"), str)
+            or len(payload["runtime_digest"]) != 71
+            or not payload["runtime_digest"].startswith("sha256:")
+            or any(character not in "0123456789abcdef" for character in payload["runtime_digest"][7:])
+            or not isinstance(payload.get("product_evidence_reference"), str)
+            or not payload["product_evidence_reference"].startswith("ep-provider-readback:sha256:")
+            or len(payload["product_evidence_reference"]) != len("ep-provider-readback:sha256:") + 64
+            or any(character not in "0123456789abcdef" for character in payload["product_evidence_reference"][-64:])
+            or payload.get("physical_evidence_reference") != request.physical_evidence_reference
+            or payload.get("state") != "VERIFIED"
+        ):
+            raise ValueError("EP provider receipt identity changed")
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise InstallerProductWorkerUnavailable("EP provider receipt was rejected") from error
     return response
 
 
@@ -346,6 +401,8 @@ def run(
             envelope = None
         if isinstance(envelope, dict) and envelope.get("schema") == PRODUCT_WHEEL_WORKER_SCHEMA:
             response = execute_wheel_request(request)
+        elif isinstance(envelope, dict) and envelope.get("schema") == EP_PROVIDER_REGISTRATION_SCHEMA:
+            response = execute_ep_provider_registration(request, service_loader=service_loader)
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REVIEW_INTENT_SCHEMA:
             response = execute_removal_review_intent(request, service_loader=service_loader)
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVED_LIFECYCLE_REVIEW_INTENT_SCHEMA:
