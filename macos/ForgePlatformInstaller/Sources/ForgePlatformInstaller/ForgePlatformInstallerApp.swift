@@ -25,6 +25,8 @@ final class InstallerWizardViewModel: ObservableObject {
         case staging
         case prepared(ManagedInstallerReviewedProviderStageReceipt)
         case observed(ManagedInstallerReviewedProviderReadback)
+        case authenticating(ProviderTargetID)
+        case challenge(ManagedInstallerProviderAuthenticationChallengeResponse)
         case blocked(String)
     }
 
@@ -59,6 +61,7 @@ final class InstallerWizardViewModel: ObservableObject {
 
     var isProviderStageInFlight: Bool {
         if case .staging = providerStage { return true }
+        if case .authenticating = providerStage { return true }
         return false
     }
 
@@ -537,6 +540,49 @@ final class InstallerWizardViewModel: ObservableObject {
             return
         }
         _ = state.advance()
+    }
+
+    func beginReviewedProviderAuthentication(_ targetID: ProviderTargetID) {
+        guard state.step == .review,
+              case .observed(let readback) = providerStage,
+              readback.targets.contains(where: {
+                  $0.id == targetID && $0.state == .authenticationRequired
+              }),
+              !isProviderStageInFlight else { return }
+        providerStage = .authenticating(targetID)
+        let coordinator = coordinator
+        let currentVersion = state.currentInstallerVersion
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard self.state.beginPreMutationCurrencyCheck() else {
+                self.providerStage = .blocked("De installercontrole kon niet opnieuw starten.")
+                return
+            }
+            let currency = await coordinator.recheckInstallerBeforeMutation(
+                currentVersion: currentVersion
+            )
+            guard self.state.recordPreMutationCurrencyCheck(currency),
+                  let operation = self.state.reviewedProviderStageOperation()
+            else {
+                self.providerStage = .blocked(
+                    "De installer of het beoordeelde doel is gewijzigd. Bouw het plan opnieuw op."
+                )
+                return
+            }
+            let challenge = await coordinator.beginReviewedProviderAuthentication(
+                operation, providerTargetID: targetID
+            )
+            guard self.state.step == .review,
+                  self.state.reviewedProviderStageOperation() == operation,
+                  let challenge,
+                  challenge.providerTargetID == targetID.rawValue else {
+                self.providerStage = .blocked(
+                    "De beoordeelde aanmelding kon niet veilig worden gestart. Controleer het doel opnieuw."
+                )
+                return
+            }
+            self.providerStage = .challenge(challenge)
+        }
     }
 
     func goBack() {
@@ -1419,12 +1465,31 @@ private struct CompositionReviewScreen: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(readback.targets, id: \.id) { target in
                         Text("\(target.id.rawValue): \(target.state == .verified ? "VERIFIED" : "Aanmelding vereist")")
+                        if target.state == .authenticationRequired {
+                            Button("Start veilige aanmelding") {
+                                viewModel.beginReviewedProviderAuthentication(target.id)
+                            }
+                        }
                     }
                     if !readback.allVerified {
                         Text("Meld je aan in elke gekozen componentomgeving en controleer de status daarna opnieuw.")
                     }
                 }
                 .font(.callout)
+            case .authenticating(let targetID):
+                Label("Aanmelding voor \(targetID.rawValue) wordt gestart…",
+                      systemImage: "lock.shield")
+            case .challenge(let challenge):
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Meld \(challenge.providerTargetID) aan met deze eenmalige code:")
+                    Text(challenge.userCode)
+                        .font(.title3.monospaced().weight(.semibold))
+                        .textSelection(.enabled)
+                    Link("Open provider-aanmeldpagina",
+                         destination: challenge.verificationURL)
+                    Text("Kies daarna opnieuw Verder voor onafhankelijke verificatie.")
+                        .font(.caption)
+                }
             case .blocked(let reason):
                 FailureCallout(reason: reason)
             }

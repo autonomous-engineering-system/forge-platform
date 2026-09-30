@@ -34,6 +34,16 @@ struct ManagedInstallerProviderProbeAccount: Equatable, Sendable {
     let gid: gid_t
 }
 
+/// Ephemeral helper-only launch material, derived after an exact physical
+/// AUTHENTICATION_REQUIRED observation. No caller supplies these paths or UID.
+struct ManagedInstallerProviderAuthenticationTarget: Equatable, Sendable {
+    let provider: ProviderID
+    let account: ManagedInstallerProviderProbeAccount
+    let executableURL: URL
+    let providerHomeURL: URL
+    let priorEvidenceReference: String
+}
+
 struct MacOSManagedInstallerProviderProbeResult: Equatable, Sendable {
     let exitStatus: Int32
     let standardOutput: Data?
@@ -368,6 +378,80 @@ public struct MacOSManagedInstallerProviderHostInspector:
             stablePlanFingerprint: stablePlan.fingerprint,
             enabledProviderRequirements: stablePlan.enabledProviderRequirements
         ))
+    }
+
+    func prepareFreshAuthentication(
+        _ requirement: ProviderRequirement,
+        stablePlan: ManagedInstallerStablePlan
+    ) async -> ManagedInstallerProviderAuthenticationTarget? {
+        guard let claim = freshClaim, let freshAccountReader,
+              requirement.credentialScope == .component,
+              requirement.targetIdentity == stablePlan.deployment.id,
+              requirement.ownerComponent == .forgeRuntime
+                || requirement.ownerComponent == .engineeringPlatformServer,
+              let runtime = requirement.runtime,
+              case .success(let observed) = await inspectFreshProvider(
+                  requirement, stablePlan: stablePlan
+              ), observed.state == .authenticationRequired,
+              observed.executableSHA256 == runtime.executableSHA256,
+              case .success(let account?) = freshAccountReader
+                .readAccountSynchronously(claim),
+              account.matches(claim), account.uid != 0, account.gid != 0,
+              let owner = requirement.ownerComponent else { return nil }
+        let resolvedTarget = freshEPDeploymentID.map {
+            ManagedInstallerProductServiceAccountPlanner.instanceID(
+                deploymentID: $0,
+                componentIdentity: ProviderOwnerComponent.engineeringPlatformServer.rawValue
+            )
+        } ?? stablePlan.deployment.id
+        let layout = Layout(
+            rootDirectory: rootDirectory,
+            deploymentID: stablePlan.deployment.id,
+            owner: owner,
+            targetIdentity: resolvedTarget,
+            provider: requirement.provider,
+            runtime: runtime,
+            layoutKind: layoutKind
+        )
+        guard let executable = try? executableEvidence(for: layout),
+              executable.sha256 == runtime.executableSHA256,
+              executable.identity == observed.executableIdentity,
+              (try? validateProviderHome(
+                  for: layout,
+                  account: ManagedInstallerProviderProbeAccount(
+                      name: claim.accountName, uid: account.uid, gid: account.gid
+                  )
+              )) != nil,
+              case .success(let after?) = freshAccountReader
+                .readAccountSynchronously(claim), after == account else { return nil }
+        return ManagedInstallerProviderAuthenticationTarget(
+            provider: requirement.provider,
+            account: ManagedInstallerProviderProbeAccount(
+                name: claim.accountName, uid: account.uid, gid: account.gid
+            ),
+            executableURL: layout.executableURL,
+            providerHomeURL: layout.providerHomeURL,
+            priorEvidenceReference: observed.evidenceReference
+        )
+    }
+
+    static func prepareProductionAuthenticationTarget(
+        stablePlan: ManagedInstallerStablePlan,
+        requirement: ProviderRequirement
+    ) async -> ManagedInstallerProviderAuthenticationTarget? {
+        guard let inspectors = ManagedInstallerPostToolComponentProviderInspector
+            .productionInspectors(stablePlan: stablePlan) else { return nil }
+        switch requirement.ownerComponent {
+        case .forgeRuntime:
+            return await inspectors.forge.prepareFreshAuthentication(
+                requirement, stablePlan: stablePlan
+            )
+        case .engineeringPlatformServer:
+            return await inspectors.engineeringPlatform.prepareFreshAuthentication(
+                requirement, stablePlan: stablePlan
+            )
+        case .engineeringPlatformProjectAgent, .none: return nil
+        }
     }
 
     private struct InspectionContext {

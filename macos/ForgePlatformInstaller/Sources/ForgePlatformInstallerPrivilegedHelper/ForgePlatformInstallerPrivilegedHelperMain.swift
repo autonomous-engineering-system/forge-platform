@@ -77,6 +77,15 @@ final class UnavailableManagedInstallerPrivilegedHelperBackend:
         reply(nil)
     }
 
+    func beginReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        _ = providerTargetID
+        reply(nil)
+    }
+
     func registerReviewedSelection(
         _ canonicalSelection: Data,
         withReply reply: @escaping (Data?) -> Void

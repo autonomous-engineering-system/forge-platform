@@ -371,7 +371,7 @@ final class InstallerWizardViewModelTests: XCTestCase {
         model.advance()
         for _ in 0..<400 {
             switch model.providerStage {
-            case .observed, .blocked: break
+            case .observed, .blocked, .authenticating, .challenge: break
             case .idle, .staging, .prepared:
                 try? await Task.sleep(for: .milliseconds(5))
                 continue
@@ -385,6 +385,18 @@ final class InstallerWizardViewModelTests: XCTestCase {
         XCTAssertFalse(readback.allVerified)
         XCTAssertEqual(model.state.step, .review)
         XCTAssertFalse(model.state.enabledProvidersVerified)
+        model.beginReviewedProviderAuthentication(.codex)
+        for _ in 0..<400 {
+            if case .blocked = model.providerStage { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let authenticationStarts = await coordinator.authenticationStartCount()
+        XCTAssertEqual(authenticationStarts, 1)
+        if case .blocked = model.providerStage {
+            // A missing challenge never advances the wizard.
+        } else {
+            XCTFail("missing helper challenge must block")
+        }
         let stageCalls = await coordinator.stageCalls()
         let executionCalls = await coordinator.executionCalls()
         XCTAssertEqual(stageCalls, 1)
@@ -572,6 +584,7 @@ private actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
     let release: VerifiedInstallerRelease
     private var staged = 0
     private var executed = 0
+    private var authenticationStarts = 0
 
     init(release: VerifiedInstallerRelease) { self.release = release }
 
@@ -625,6 +638,16 @@ private actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
         return .observed(receipt)
     }
 
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        if operation.enabledProviderRequirements.contains(where: { $0.id == providerTargetID }) {
+            authenticationStarts += 1
+        }
+        return nil
+    }
+
     func executeReviewedManagedDeployment(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedDeploymentExecutionResult {
@@ -634,6 +657,7 @@ private actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
 
     func stageCalls() -> Int { staged }
     func executionCalls() -> Int { executed }
+    func authenticationStartCount() -> Int { authenticationStarts }
 }
 
 private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {

@@ -1712,6 +1712,10 @@ public protocol InstallerWizardCoordinator: Sendable {
     func readReviewedProviders(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedInstallerProviderReadbackResult
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse?
     /// Legacy targetless route retained for composition/v1 coordinators.
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult
     /// Target-aware route used by composition/v2. Existing coordinators inherit
@@ -1736,6 +1740,15 @@ public extension InstallerWizardCoordinator {
     ) async -> ManagedInstallerProviderReadbackResult {
         _ = operation
         return .unavailable(.coordinatorUnavailable)
+    }
+
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        _ = operation
+        _ = providerTargetID
+        return nil
     }
 
     func readTerminalPreserveRecovery(

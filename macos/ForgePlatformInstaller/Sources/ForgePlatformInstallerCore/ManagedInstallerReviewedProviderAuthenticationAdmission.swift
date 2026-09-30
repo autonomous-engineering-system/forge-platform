@@ -9,18 +9,30 @@ struct ManagedInstallerReviewedProviderAuthenticationContext: Equatable, Sendabl
     let priorEvidenceReference: String
 }
 
+struct ManagedInstallerReviewedProviderAuthenticationLaunchContext: Equatable, Sendable {
+    let reviewed: ManagedInstallerReviewedProviderAuthenticationContext
+    let physicalTarget: ManagedInstallerProviderAuthenticationTarget
+}
+
 /// Admits one authentication target from fresh helper-owned plan and physical
 /// status. Authentication cannot be started from a provider name alone, from
 /// pre-review GUI state, or from a stale/VERIFIED status. A later launcher must
 /// recheck material and currency immediately before its own OS mutation.
 struct ManagedInstallerReviewedProviderAuthenticationAdmission: Sendable {
+    typealias TargetPreparer = @Sendable (
+        ManagedInstallerStablePlan, ProviderRequirement
+    ) async -> ManagedInstallerProviderAuthenticationTarget?
+
     private let loader: any ManagedInstallerHelperOwnedStablePlanLoading
     private let reader: any ManagedInstallerStablePlanProviderReading
+    private let prepareTarget: TargetPreparer
 
     init(loader: any ManagedInstallerHelperOwnedStablePlanLoading,
-         reader: any ManagedInstallerStablePlanProviderReading) {
+         reader: any ManagedInstallerStablePlanProviderReading,
+         prepareTarget: @escaping TargetPreparer = { _, _ in nil }) {
         self.loader = loader
         self.reader = reader
+        self.prepareTarget = prepareTarget
     }
 
     static func whenReady(
@@ -28,7 +40,11 @@ struct ManagedInstallerReviewedProviderAuthenticationAdmission: Sendable {
         reader: (any ManagedInstallerStablePlanProviderReading)?
     ) -> Self? {
         guard let loader, let reader else { return nil }
-        return Self(loader: loader, reader: reader)
+        return Self(
+            loader: loader, reader: reader,
+            prepareTarget: MacOSManagedInstallerProviderHostInspector
+                .prepareProductionAuthenticationTarget
+        )
     }
 
     func admit(canonicalIntent: Data, providerTargetID: ProviderTargetID) async
@@ -57,6 +73,31 @@ struct ManagedInstallerReviewedProviderAuthenticationAdmission: Sendable {
         return ManagedInstallerReviewedProviderAuthenticationContext(
             stablePlan: refreshed, requirement: requirement,
             priorEvidenceReference: target.evidenceReference
+        )
+    }
+
+    func admitLaunchTarget(
+        canonicalIntent: Data, providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerReviewedProviderAuthenticationLaunchContext? {
+        guard let reviewed = await admit(
+            canonicalIntent: canonicalIntent, providerTargetID: providerTargetID
+        ),
+              let target = await prepareTarget(
+                  reviewed.stablePlan, reviewed.requirement
+              ),
+              target.provider == reviewed.requirement.provider,
+              target.priorEvidenceReference == reviewed.priorEvidenceReference,
+              let intent = try? ManagedInstallerReviewedExecutionIntent
+                .decodeJSON(canonicalIntent),
+              let after = try? await loader.loadStablePlan(for: intent),
+              after == reviewed.stablePlan, intent.matches(after),
+              let physical = await reader.read(stablePlan: after),
+              physical.matches(after),
+              let same = physical.targets.first(where: { $0.id == providerTargetID }),
+              same.state == .authenticationRequired,
+              same.evidenceReference == target.priorEvidenceReference else { return nil }
+        return ManagedInstallerReviewedProviderAuthenticationLaunchContext(
+            reviewed: reviewed, physicalTarget: target
         )
     }
 }

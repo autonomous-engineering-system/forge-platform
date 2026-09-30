@@ -258,6 +258,64 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         XCTAssertNil(denied)
     }
 
+    func testProviderAuthenticationChallengeCrossesOnlyExactReviewedXPCRequest()
+        async throws {
+        let fixture = try ReleasedRouteFixture()
+        let activation = try ManagedPythonRuntimeActivationPlan(
+            session: fixture.session, deployment: fixture.deployment,
+            initialReadback: fixture.snapshot.initialPythonRuntime
+        )
+        let plan = try ManagedInstallerStablePlan(
+            session: fixture.session, deployment: fixture.deployment,
+            activationPlan: activation, reviewedOperation: fixture.operation,
+            originalManagedToolActions: fixture.snapshot.managedToolActions
+        )
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+        let target = try XCTUnwrap(ProviderTargetID(
+            rawValue: "codex:forge-runtime:deployment-a"
+        ))
+        let device = try XCTUnwrap(ManagedInstallerProviderDeviceChallenge.parse(
+            provider: .codex,
+            output: Data("https://auth.openai.com/codex/device\nEnter this one-time code ABCD-EF12".utf8)
+        ))
+        let response = ManagedInstallerProviderAuthenticationChallengeResponse(
+            intent: intent, targetID: target, challenge: device
+        )
+        let service = FileManagedInstallerReleasedRouteXPCService(
+            rootDirectory: URL(fileURLWithPath: "/private/tmp", isDirectory: true),
+            expectedOwner: geteuid(),
+            providerAuthentication: XPCProviderAuthenticationStarter(
+                intent: intent, target: target, response: response
+            )
+        )
+        let malformedAuthentication = await callProviderAuthentication(
+            service, Data("{}".utf8), target.rawValue
+        )
+        XCTAssertNil(malformedAuthentication)
+        let exact = await callProviderAuthentication(
+            service, intent.canonicalJSONData(), target.rawValue
+        )
+        XCTAssertEqual(exact, response.canonicalJSONData())
+        let listener = MacOSManagedInstallerReleasedRouteXPCListener(
+            listener: .anonymous(),
+            callerIdentity: try ManagedInstallerProductOperationXPCCallerIdentity(
+                bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
+                teamIdentifier: "ZEML4LPXH4"
+            ), serviceHandler: service,
+            installCodeSigningRequirement: { _, _ in }
+        )
+        listener.activate()
+        defer { listener.invalidate() }
+        let transport = MacOSManagedInstallerReleasedRouteXPCTransport(
+            endpoint: listener.endpoint
+        )
+        let forwarded = try await transport.beginReviewedProviderAuthentication(
+            intent, providerTargetID: target
+        )
+        XCTAssertEqual(forwarded, response)
+        await transport.invalidate()
+    }
+
     func testInventoryCodecRejectsCrossDeploymentInstanceReuse() throws {
         let inventory = try ManagedDeploymentInventory(
             existing: [
@@ -896,6 +954,14 @@ private final class RawReleasedRouteXPCService:
         _ = canonicalIntent
         reply(nil)
     }
+    func beginReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        _ = providerTargetID
+        reply(nil)
+    }
     func registerReviewedSelection(
         _ canonicalSelection: Data,
         withReply reply: @escaping (Data?) -> Void
@@ -922,6 +988,30 @@ private func callInventory(
 ) async -> Data? {
     await withCheckedContinuation { continuation in
         service.loadManagedDeploymentInventory { continuation.resume(returning: $0) }
+    }
+}
+
+private struct XPCProviderAuthenticationStarter:
+    ManagedInstallerReviewedProviderAuthenticationStarting {
+    let intent: ManagedInstallerReviewedExecutionIntent
+    let target: ProviderTargetID
+    let response: ManagedInstallerProviderAuthenticationChallengeResponse
+
+    func begin(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data? {
+        guard canonicalIntent == intent.canonicalJSONData(),
+              providerTargetID == target else { return nil }
+        return response.canonicalJSONData()
+    }
+}
+
+private func callProviderAuthentication(
+    _ service: ManagedInstallerReleasedRouteXPCService,
+    _ canonicalIntent: Data, _ providerTargetID: String
+) async -> Data? {
+    await withCheckedContinuation { continuation in
+        service.beginReviewedProviderAuthentication(
+            canonicalIntent, providerTargetID: providerTargetID
+        ) { continuation.resume(returning: $0) }
     }
 }
 

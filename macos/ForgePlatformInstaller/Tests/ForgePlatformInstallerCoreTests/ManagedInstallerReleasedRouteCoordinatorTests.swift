@@ -2,6 +2,48 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
+    func testAuthenticationStartUsesFreshExactReviewedProviderTarget() async throws {
+        let runtime = try ProviderRuntimeRequirement(
+            version: InstallerVersion("2.70.0"), archiveKind: .zip,
+            artifactURL: "https://artifacts.example.test/codex.zip",
+            artifactSHA256: "sha256:" + String(repeating: "a", count: 64),
+            executableRelativePath: "bin/codex",
+            executableSHA256: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let provider = ProviderRequirement(
+            provider: .codex, isRequired: true, credentialScope: .component,
+            ownerComponent: .forgeRuntime,
+            targetIdentity: "released-route-deployment", runtime: runtime
+        )
+        let fixture = try ReleasedRouteFixture(providerRequirements: [provider])
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        let beforeReview = await coordinator.beginReviewedProviderAuthentication(
+            fixture.operation, providerTargetID: provider.id
+        )
+        XCTAssertNil(beforeReview)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        guard case .prepared(let plan) = await coordinator.prepareStablePlan(
+            for: fixture.operation
+        ) else { return XCTFail("reviewed plan missing") }
+        let challenge = await coordinator.beginReviewedProviderAuthentication(
+            fixture.operation, providerTargetID: provider.id
+        )
+        XCTAssertEqual(challenge?.providerTargetID, provider.id.rawValue)
+        XCTAssertEqual(challenge?.userCode, "ABCD-EF12")
+        let authenticationIntents = await loader.authenticationIntents()
+        XCTAssertEqual(authenticationIntents, [
+            try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+        ])
+        await loader.setFailure(true)
+        let stale = await coordinator.beginReviewedProviderAuthentication(
+            fixture.operation, providerTargetID: provider.id
+        )
+        XCTAssertNil(stale)
+    }
+
     func testProviderReadbackUsesFreshExactReviewedPlanAndTarget() async throws {
         let provider = ProviderRequirement(provider: .codex, isRequired: true)
         let fixture = try ReleasedRouteFixture(providerRequirements: [provider])
@@ -292,6 +334,7 @@ private actor ExecutionRouteLoader:
     ManagedInstallerReleasedRouteSnapshotLoading,
     ManagedInstallerReviewedExecutionIntentSending,
     ManagedInstallerReviewedProviderReadbackIntentSending,
+    ManagedInstallerReviewedProviderAuthenticationIntentSending,
     ManagedInstallerReviewedSelectionRegistering {
     let snapshot: ManagedInstallerReleasedRouteSnapshot
     private var failing = false
@@ -299,6 +342,7 @@ private actor ExecutionRouteLoader:
     private var sent: [ManagedInstallerReviewedExecutionIntent] = []
     private var registered: [ManagedInstallerReviewedSelection] = []
     private var readbackRequests: [ManagedInstallerReviewedExecutionIntent] = []
+    private var authenticationRequests: [ManagedInstallerReviewedExecutionIntent] = []
 
     init(snapshot: ManagedInstallerReleasedRouteSnapshot) { self.snapshot = snapshot }
     func setFailure(_ value: Bool) { failing = value }
@@ -307,6 +351,9 @@ private actor ExecutionRouteLoader:
     func registeredSelections() -> [ManagedInstallerReviewedSelection] { registered }
     func readbackIntents() -> [ManagedInstallerReviewedExecutionIntent] {
         readbackRequests
+    }
+    func authenticationIntents() -> [ManagedInstallerReviewedExecutionIntent] {
+        authenticationRequests
     }
 
     func registerReviewedSelection(
@@ -349,6 +396,23 @@ private actor ExecutionRouteLoader:
                 try .init(id: $0.id, state: .authenticationRequired,
                           evidenceReference: "receipt:route-provider-readback")
             }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
+        )
+    }
+
+    func beginReviewedProviderAuthentication(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerProviderAuthenticationChallengeResponse {
+        authenticationRequests.append(intent)
+        guard snapshot.session.providerRequirements.contains(where: {
+            $0.id == providerTargetID
+        }),
+              let challenge = ManagedInstallerProviderDeviceChallenge.parse(
+                provider: .codex,
+                output: Data("https://auth.openai.com/codex/device\nEnter this one-time code ABCD-EF12".utf8)
+              ) else { throw TestFailure.failed }
+        return ManagedInstallerProviderAuthenticationChallengeResponse(
+            intent: intent, targetID: providerTargetID, challenge: challenge
         )
     }
 }
