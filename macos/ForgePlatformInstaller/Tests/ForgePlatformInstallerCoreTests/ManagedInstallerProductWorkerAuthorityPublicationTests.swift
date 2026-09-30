@@ -332,11 +332,36 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
         )
         XCTAssertEqual(publisher.publishProductWorkerAuthority(snapshot), .success(receipt))
         XCTAssertEqual(publisher.publishProductWorkerAuthority(snapshot), .success(receipt))
+        let runtime = root.appendingPathComponent("products/forge/")
+            .appendingPathComponent(try XCTUnwrap(snapshot.routes.first).forgeInstanceID)
+        var runtimeDetails = stat()
+        XCTAssertEqual(lstat(runtime.path, &runtimeDetails), 0)
+        XCTAssertEqual(runtimeDetails.st_mode & mode_t(0o7777), mode_t(0o700))
+        XCTAssertEqual(runtimeDetails.st_uid, geteuid())
         let file = root.appendingPathComponent(receipt.fileName)
         XCTAssertEqual(try Data(contentsOf: file), expected)
         var details = stat()
         XCTAssertEqual(lstat(file.path, &details), 0)
         XCTAssertEqual(details.st_mode & mode_t(0o7777), mode_t(0o600))
+    }
+
+    func testForgeRuntimeRootMustBePrivateAndCannotFollowASymlink() throws {
+        let (snapshot, _) = try fixture()
+        let (parent, root, publisher) = try preparedPublisher()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let runtime = root.appendingPathComponent("products/forge/")
+            .appendingPathComponent(try XCTUnwrap(snapshot.routes.first).forgeInstanceID)
+        XCTAssertNoThrow(try publisher.publishProductWorkerAuthority(snapshot).get())
+        XCTAssertEqual(chmod(runtime.path, 0o755), 0)
+        XCTAssertEqual(publisher.publishProductWorkerAuthority(snapshot), .failure(.unavailable))
+
+        try FileManager.default.removeItem(at: runtime)
+        let outside = parent.appendingPathComponent("outside-runtime", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+        XCTAssertEqual(chmod(outside.path, 0o700), 0)
+        try FileManager.default.createSymbolicLink(at: runtime, withDestinationURL: outside)
+        XCTAssertEqual(publisher.publishProductWorkerAuthority(snapshot), .failure(.unavailable))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
 
     func testChangedAuthorityRequiresExactExistingDigest() throws {
