@@ -158,6 +158,57 @@ final class ManagedInstallerFreshSingleProductWorkerRouteTests: XCTestCase {
             .isAvailableOnLoopback(port))
     }
 
+    func testPairedRouteBindsBothExactAccountsVenvsAndPairing() throws {
+        let fixture = try makePairedFixture()
+        let pairing = try ManagedInstallerProductWorkerPairingAuthority(
+            bindingID: "binding-pair", consumerID: "consumer-pair",
+            hostID: "host-pair", projectID: "project-pair",
+            repositoryID: "repository-pair",
+            repositoryIdentity: "repository-identity-pair",
+            credentialReference: "keychain://pairing-pair",
+            operatorID: "operator-pair"
+        )
+        let builder = ManagedInstallerFreshPairedProductWorkerRouteBuilder(
+            ports: .init(probe: SingleRoutePortProbe(available: true))
+        )
+        let snapshot = try XCTUnwrap(builder.build(
+            plan: fixture.plan, material: fixture.material,
+            accounts: fixture.accounts, activation: fixture.activation,
+            venvEvidence: fixture.evidence, pairing: pairing, prior: nil
+        ))
+        let route = try XCTUnwrap(snapshot.routes.first)
+        XCTAssertTrue(snapshot.singleRoutes.isEmpty)
+        XCTAssertEqual(route.pairing, pairing)
+        XCTAssertEqual(route.forgeInstanceID, fixture.accounts.first {
+            $0.claim.componentIdentity == "forge-runtime"
+        }?.claim.instanceID)
+        XCTAssertEqual(route.engineeringPlatformInstanceID, fixture.accounts.first {
+            $0.claim.componentIdentity == "engineering-platform-server"
+        }?.claim.instanceID)
+        XCTAssertNotEqual(route.forgeBindPort, route.engineeringPlatformBindPort)
+        XCTAssertEqual(Set([
+            route.forgeVenvSlotName, route.engineeringPlatformVenvSlotName,
+        ].compactMap { $0 }), Set(fixture.evidence.map {
+            MacOSManagedPythonProductVenvSlotLayout.slotName(for: $0.request)
+        }))
+        XCTAssertEqual(builder.build(
+            plan: fixture.plan, material: fixture.material,
+            accounts: fixture.accounts, activation: fixture.activation,
+            venvEvidence: fixture.evidence, pairing: pairing, prior: snapshot
+        ), snapshot)
+        XCTAssertNil(builder.build(
+            plan: fixture.plan, material: fixture.material,
+            accounts: Array(fixture.accounts.dropLast()), activation: fixture.activation,
+            venvEvidence: fixture.evidence, pairing: pairing, prior: nil
+        ))
+        XCTAssertNil(builder.build(
+            plan: fixture.plan, material: fixture.material,
+            accounts: fixture.accounts, activation: fixture.activation,
+            venvEvidence: Array(fixture.evidence.dropLast()),
+            pairing: pairing, prior: nil
+        ))
+    }
+
     private func builder() -> ManagedInstallerFreshSingleProductWorkerRouteBuilder {
         .init(ports: .init(probe: SingleRoutePortProbe(available: true)))
     }
@@ -218,6 +269,77 @@ final class ManagedInstallerFreshSingleProductWorkerRouteTests: XCTestCase {
                 "receipt:runtime-preparation", "receipt:runtime-slot",
             ],
             productVenvEvidenceReferences: [component: receipt.evidenceReference],
+            activationEvidenceReference: "receipt:activation",
+            finalReadbackEvidenceReference: "receipt:active-runtime", state: .ready
+        )
+        return (plan, wheel.material, accounts, activation, evidence)
+    }
+
+    private func makePairedFixture() throws -> (
+        plan: ManagedInstallerStablePlan,
+        material: ManagedVerifiedCompositionMaterial,
+        accounts: [ManagedInstallerProductServiceAccountReadback],
+        activation: ManagedPythonRuntimeActivationReceipt,
+        evidence: [ManagedInstallerProductWorkerVenvPublicationEvidence]
+    ) {
+        let wheel = try PrepublicationWheelFixture(
+            includeProductVenvs: true,
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+        let plan = try planFor(wheel, components: [
+            componentDiff("forge-runtime", digest: wheel.artifactDigest),
+            componentDiff("engineering-platform-server",
+                          digest: "sha256:" + String(repeating: "c", count: 64)),
+        ])
+        let claims = try ManagedInstallerProductServiceAccountPlanner().plan(
+            stablePlan: plan, material: wheel.material
+        ).get()
+        let accounts = claims.enumerated().map { index, claim in
+            ManagedInstallerProductServiceAccountReadback(
+                claim: claim, uid: uid_t(602 + index), gid: gid_t(602 + index),
+                evidenceReference: "receipt:account-\(index)"
+            )
+        }
+        let evidence = try plan.session.productVirtualEnvironments.map { environment in
+            let request = ManagedPythonProductVenvMutationRequest(
+                operationID: plan.activationPlan.operationID,
+                deploymentID: plan.deployment.id, environment: environment,
+                runtimeSlotIdentity: plan.activationPlan.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: "receipt:runtime-slot"
+            )
+            let reference = "receipt:venv-\(environment.componentIdentity)"
+            let receipt = try ManagedPythonProductVenvReceipt(
+                operationID: request.operationID,
+                deploymentID: request.deploymentID,
+                componentIdentity: request.componentIdentity,
+                venvIdentity: request.venvIdentity,
+                runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+                runtimeSlotIdentity: request.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: request.runtimeSlotEvidenceReference,
+                state: .ready, evidenceReference: reference
+            )
+            return ManagedInstallerProductWorkerVenvPublicationEvidence(
+                request: request, activationReceipt: receipt,
+                wheelBindingEvidence: "sha256:" + String(repeating: "a", count: 64)
+            )
+        }
+        let activation = try ManagedPythonRuntimeActivationReceipt(
+            operationID: plan.activationPlan.operationID,
+            sessionID: plan.session.sessionID,
+            deploymentID: plan.deployment.id,
+            runtimeIdentitySHA256: plan.activationPlan.runtimeIdentitySHA256,
+            runtimeSlotIdentity: plan.activationPlan.runtimeSlotIdentity,
+            rollbackRuntimeIdentitySHA256: plan.activationPlan.rollbackRuntimeIdentitySHA256,
+            assetEvidenceReferences: ManagedPythonRuntimeAssetKind.allCases.map {
+                _ in "receipt:runtime-asset"
+            },
+            preparationEvidenceReferences: [
+                "receipt:runtime-preparation", "receipt:runtime-slot",
+            ],
+            productVenvEvidenceReferences: Dictionary(uniqueKeysWithValues:
+                evidence.map {
+                    ($0.request.componentIdentity, $0.activationReceipt.evidenceReference)
+                }),
             activationEvidenceReference: "receipt:activation",
             finalReadbackEvidenceReference: "receipt:active-runtime", state: .ready
         )

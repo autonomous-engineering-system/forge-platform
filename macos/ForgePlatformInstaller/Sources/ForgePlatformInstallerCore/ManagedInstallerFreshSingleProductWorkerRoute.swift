@@ -149,3 +149,107 @@ struct ManagedInstallerFreshSingleProductWorkerRouteBuilder: Sendable {
         return snapshot
     }
 }
+
+/// Builds the existing two-product worker route from receipt-bound identities.
+/// The pairing binding must come from a separate helper-owned, product-qualified
+/// source; this builder never guesses a consumer or credential reference.
+struct ManagedInstallerFreshPairedProductWorkerRouteBuilder: Sendable {
+    private let ports: ManagedInstallerFreshProductWorkerPortAllocator
+
+    init(ports: ManagedInstallerFreshProductWorkerPortAllocator) {
+        self.ports = ports
+    }
+
+    func build(
+        plan: ManagedInstallerStablePlan,
+        material: ManagedVerifiedCompositionMaterial,
+        accounts: [ManagedInstallerProductServiceAccountReadback],
+        activation: ManagedPythonRuntimeActivationReceipt,
+        venvEvidence: [ManagedInstallerProductWorkerVenvPublicationEvidence],
+        pairing: ManagedInstallerProductWorkerPairingAuthority,
+        prior: ManagedInstallerProductWorkerAuthoritySnapshot?
+    ) -> ManagedInstallerProductWorkerAuthoritySnapshot? {
+        guard plan.reviewedOperation.components.count == 2,
+              accounts.count == 2, venvEvidence.count == 2,
+              Set(accounts.map(\.claim.componentIdentity))
+                == Set(["forge-runtime", "engineering-platform-server"]),
+              Set(venvEvidence.map(\.request.componentIdentity))
+                == Set(["forge-runtime", "engineering-platform-server"]),
+              let forge = accounts.first(where: {
+                  $0.claim.componentIdentity == "forge-runtime"
+              })?.claim,
+              let ep = accounts.first(where: {
+                  $0.claim.componentIdentity == "engineering-platform-server"
+              })?.claim,
+              let forgeVenv = venvEvidence.first(where: {
+                  $0.request.componentIdentity == "forge-runtime"
+              })?.request,
+              let epVenv = venvEvidence.first(where: {
+                  $0.request.componentIdentity == "engineering-platform-server"
+              })?.request,
+              forge.instanceID != ep.instanceID,
+              forge.accountName != ep.accountName,
+              prior?.singleRoutes.contains(where: {
+                  $0.deploymentID == plan.deployment.id
+              }) != true,
+              let release = ManagedInstallerProductWorkerReleaseBinding.workerRelease(
+                  for: plan.reviewedOperation.currentInstallerRelease
+              ),
+              let manifest = try? ManagedInstallerProductWorkerManifestAuthority(
+                  digest: plan.session.manifestSHA256,
+                  canonicalPayload: material.manifestBytes
+              ) else { return nil }
+        let existing = prior?.routes.first(where: {
+            $0.deploymentID == plan.deployment.id
+        })
+        let priorPairs = prior?.routes ?? []
+        let priorSingles = prior?.singleRoutes ?? []
+        let otherPorts = Set(priorPairs.filter {
+            $0.deploymentID != plan.deployment.id
+        }.flatMap { [$0.forgeBindPort, $0.engineeringPlatformBindPort] }
+            + priorSingles.map(\.bindPort))
+        guard let forgePort = ports.allocate(
+            instanceID: forge.instanceID, excluded: otherPorts,
+            existing: existing?.forgeBindPort
+        ), let epPort = ports.allocate(
+            instanceID: ep.instanceID, excluded: otherPorts.union([forgePort]),
+            existing: existing?.engineeringPlatformBindPort
+        ) else { return nil }
+        let route = try? ManagedInstallerProductWorkerRouteAuthority(
+            deploymentID: plan.deployment.id,
+            forgeInstanceID: forge.instanceID,
+            forgeInstallationID: forge.instanceID,
+            forgeServiceAccount: forge.accountName,
+            forgeBindPort: forgePort,
+            forgeArtifactSHA256: forge.productArtifactSHA256,
+            engineeringPlatformArtifactSHA256: ep.productArtifactSHA256,
+            engineeringPlatformInstanceID: ep.instanceID,
+            engineeringPlatformDisplayLabel: plan.deployment.label
+                ?? plan.deployment.id,
+            engineeringPlatformServiceAccount: ep.accountName,
+            engineeringPlatformBindPort: epPort,
+            pairing: pairing,
+            forgeVenvSlotName: MacOSManagedPythonProductVenvSlotLayout.slotName(
+                for: forgeVenv
+            ),
+            engineeringPlatformVenvSlotName:
+                MacOSManagedPythonProductVenvSlotLayout.slotName(for: epVenv)
+        )
+        guard let route, existing == nil || existing == route else { return nil }
+        let candidates = prior?.candidateManifests ?? []
+        guard let snapshot = try? ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: release,
+            candidateManifests: candidates.contains(manifest)
+                ? candidates : candidates + [manifest],
+            installedManifests: prior?.installedManifests ?? [],
+            routes: priorPairs.filter { $0.deploymentID != plan.deployment.id }
+                + [route],
+            singleRoutes: priorSingles
+        ), ManagedInstallerFreshProductWorkerAuthorityAdmission.accepts(
+            plan: plan, material: material, snapshot: snapshot,
+            priorAuthority: prior, accounts: accounts,
+            activation: activation, venvEvidence: venvEvidence
+        ) else { return nil }
+        return snapshot
+    }
+}
