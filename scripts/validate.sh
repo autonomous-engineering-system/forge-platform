@@ -44,6 +44,7 @@ python3 tests/installer/test_installer_release_trust.py
 python3 tests/installer/test_installer_release_provenance.py
 python3 tests/installer/test_prepare_offline_installer_resources.py
 python3 tests/installer/test_forge_update_resources.py
+python3 tests/installer/test_forge_update_binding_provider.py
 python3 -m unittest tests.installer.test_managed_product_wheel_inspection
 python3 -m unittest tests.installer.test_managed_product_wheel_materialization
 python3 -m unittest tests.installer.test_managed_product_wheel_readback
