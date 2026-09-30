@@ -221,6 +221,17 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
             home: "/private/tmp"
         )
         XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(
+            harmlessAuthentication, expectedParent: Darwin.getppid() + 1
+        ), 78)
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(
+            harmlessAuthentication, parentIsCurrent: { false },
+            privateProcessGroup: {
+                XCTFail("no group check after parent loss"); return true
+            },
+            capturedStreams: { XCTFail("no stream check after parent loss"); return true },
+            monitorParent: { _ in XCTFail("no monitor after parent loss") }
+        ), 78)
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(
             harmlessAuthentication, privateProcessGroup: { false },
             capturedStreams: { XCTFail("no stream read without private group"); return true },
             monitorParent: { _ in XCTFail("no monitor on rejection") }

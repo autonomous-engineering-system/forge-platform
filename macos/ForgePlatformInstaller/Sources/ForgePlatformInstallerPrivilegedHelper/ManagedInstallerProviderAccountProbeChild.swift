@@ -109,12 +109,13 @@ enum ManagedInstallerProviderAccountProbeChild {
     }
 
     static func run(_ arguments: [String]) -> Int32 {
-        run(arguments,
+        let expectedParent = Darwin.getppid()
+        return run(arguments,
             allowedRoot: FileManagedInstallerReleasedRouteXPCService.productionRoot,
             effectiveUID: { Darwin.geteuid() },
             verifyAccount: matchingLocalAccount,
             dropPrivileges: dropPrivileges,
-            launch: launch)
+            launch: { launch($0, expectedParent: expectedParent) })
     }
 
     static func run(
@@ -144,10 +145,17 @@ enum ManagedInstallerProviderAccountProbeChild {
     }
 
     static func launch(_ request: Request) -> Int32 {
-        launch(request,
+        launch(request, expectedParent: Darwin.getppid())
+    }
+
+    static func launch(_ request: Request, expectedParent: pid_t) -> Int32 {
+        return launch(request,
+               parentIsCurrent: {
+                   expectedParent > 1 && Darwin.getppid() == expectedParent
+               },
                privateProcessGroup: { Darwin.getpgrp() == Darwin.getpid() },
                capturedStreams: standardStreamsArePipes,
-               monitorParent: monitorParent)
+               monitorParent: { monitorParent(expectedParent, providerPID: $0) })
     }
 
     static func standardStreamsArePipes() -> Bool {
@@ -161,6 +169,7 @@ enum ManagedInstallerProviderAccountProbeChild {
 
     static func launch(
         _ request: Request,
+        parentIsCurrent: () -> Bool = { true },
         privateProcessGroup: () -> Bool,
         capturedStreams: () -> Bool,
         monitorParent: (pid_t) -> Void
@@ -174,7 +183,8 @@ enum ManagedInstallerProviderAccountProbeChild {
             // Authentication may wait for a human. A caller must own this
             // private process group and capture both streams in pipes. Never
             // let a device code fall through to launchd or terminal logs.
-            guard privateProcessGroup(), capturedStreams() else { return 78 }
+            guard parentIsCurrent(), privateProcessGroup(),
+                  capturedStreams() else { return 78 }
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: request.executable)
@@ -198,13 +208,14 @@ enum ManagedInstallerProviderAccountProbeChild {
         return process.terminationStatus
     }
 
-    private static func monitorParent(_ providerPID: pid_t) {
-        let parent = Darwin.getppid()
+    private static func monitorParent(
+        _ expectedParent: pid_t, providerPID: pid_t
+    ) {
         DispatchQueue.global(qos: .utility).async {
             while true {
                 Darwin.sleep(1)
                 _ = stopOrphanedProvider(
-                    expectedParent: parent, observedParent: Darwin.getppid(),
+                    expectedParent: expectedParent, observedParent: Darwin.getppid(),
                     processGroup: Darwin.getpgrp(), providerPID: providerPID,
                     signal: { _ = Darwin.kill($0, SIGKILL) },
                     terminate: { Darwin._exit(78) }
