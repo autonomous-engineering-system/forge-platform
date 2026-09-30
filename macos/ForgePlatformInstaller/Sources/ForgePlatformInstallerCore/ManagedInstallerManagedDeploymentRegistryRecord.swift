@@ -283,6 +283,9 @@ public struct ManagedInstallerManagedDeploymentRegistryRecord:
                 || (version == "2.7.38"
                 && source == "0a3d6e35b01da93bb5a674ae7795558655c16c7d"
                 && digest == "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8")
+                || (version == "2.7.39"
+                && source == "ebc43dc12da27353f85c991a26da9852aa790f05"
+                && digest == "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1")
         case "engineering-platform-server":
             return (version == "2.3.104"
                 && source == "cfce69892278ee2b6c14412c171f5f33596acb0e"
