@@ -268,12 +268,113 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         }
     }
 
+    func testReleasedRuntimePurgeFinalDeploymentRequiresExactConfirmationAndAbsence() async throws {
+        let releaseRecord = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try lifecycleIntent(release: releaseRecord.release, operation: "PURGE")
+        let proposal = try lifecycleProposal(intent)
+        let before = try purgeInventory(includeEP: false, after: false)
+        let after = try purgeInventory(includeEP: false, after: true)
+        let session = ManagedInstallerPreservedLifecycleReviewSession(
+            inventory: before, target: before.existing[0],
+            inventoryEvidenceReference: before.evidenceReference,
+            intent: intent, proposal: proposal
+        )
+        let request = try ManagedInstallerPreservedLifecycleRequest(
+            intent: intent, proposal: proposal, confirmedInstanceID: "forge-one"
+        )
+        let receipt = try ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+            lifecycleReceipt(request), request: request
+        )
+        let route = LifecycleInventoryRouteSpy(inventories: [before, before, after, after])
+        let registry = LifecycleRegistryReadSpy(record: try purgeRegistryRecord(
+            includeEP: false, after: false
+        ))
+        let execution = LifecycleExecutionTransportSpy(reply: receipt.canonicalJSONData())
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(releaseRecord)),
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            managedDeploymentRouteCoordinator: route,
+            preservedLifecycleReviewTransport:
+                LifecycleReviewTransportSpy(reply: proposal.canonicalJSONData()),
+            preservedLifecycleTransport: execution,
+            preservedRegistryReadTransport: registry
+        )
+        _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+        let missingConfirmation = await coordinator.executeReviewedPreservedLifecycle(session)
+        XCTAssertEqual(missingConfirmation, .failure(.rejected))
+        let wrongConfirmation = await coordinator.executeReviewedPreservedLifecycle(
+            session, confirmedInstanceID: "forge-b"
+        )
+        XCTAssertEqual(wrongConfirmation, .failure(.rejected))
+        let rejectedCalls = await execution.calls()
+        XCTAssertTrue(rejectedCalls.isEmpty)
+        let confirmedResult = await coordinator.executeReviewedPreservedLifecycle(
+            session, confirmedInstanceID: "forge-one"
+        )
+        XCTAssertEqual(confirmedResult, .success(receipt))
+        let registryCalls = await registry.calls()
+        XCTAssertEqual(registryCalls, ["deployment-one"])
+        let inventoryReads = await route.readCount()
+        XCTAssertEqual(inventoryReads, 4)
+    }
+
+    func testReleasedRuntimePurgeComponentRetainsExactSiblingReceipt() async throws {
+        let releaseRecord = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try lifecycleIntent(release: releaseRecord.release, operation: "PURGE")
+        let proposal = try lifecycleProposal(intent)
+        let before = try purgeInventory(includeEP: true, after: false)
+        let after = try purgeInventory(includeEP: true, after: true)
+        let session = ManagedInstallerPreservedLifecycleReviewSession(
+            inventory: before, target: before.existing[0],
+            inventoryEvidenceReference: before.evidenceReference,
+            intent: intent, proposal: proposal
+        )
+        let request = try ManagedInstallerPreservedLifecycleRequest(
+            intent: intent, proposal: proposal, confirmedInstanceID: "forge-one"
+        )
+        let receipt = try ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+            lifecycleReceipt(request), request: request
+        )
+        for siblingReceipt in ["receipt:ep-one", "receipt:foreign"] {
+            let route = LifecycleInventoryRouteSpy(inventories: [before, before, after, after])
+            let registry = LifecycleRegistryReadSpy(records: [
+                try purgeRegistryRecord(includeEP: true, after: false),
+                try purgeRegistryRecord(
+                    includeEP: true, after: true, otherReceipt: siblingReceipt
+                ),
+            ])
+            let execution = LifecycleExecutionTransportSpy(reply: receipt.canonicalJSONData())
+            let coordinator = makeCoordinator(
+                feed: FeedSpy(result: .success(releaseRecord)),
+                inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+                staging: StagingSpy(result: .success(try makeStagedAsset())),
+                managedDeploymentRouteCoordinator: route,
+                preservedLifecycleReviewTransport:
+                    LifecycleReviewTransportSpy(reply: proposal.canonicalJSONData()),
+                preservedLifecycleTransport: execution,
+                preservedRegistryReadTransport: registry
+            )
+            _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+            let result = await coordinator.executeReviewedPreservedLifecycle(
+                session, confirmedInstanceID: "forge-one"
+            )
+            XCTAssertEqual(result, siblingReceipt == "receipt:ep-one"
+                ? .success(receipt) : .failure(.rejected))
+            let registryCalls = await registry.calls()
+            XCTAssertEqual(registryCalls, ["deployment-one", "deployment-one"])
+        }
+    }
+
     private func lifecycleIntent(
-        release: VerifiedInstallerRelease
+        release: VerifiedInstallerRelease, operation: String = "PRESERVE"
     ) throws -> ManagedInstallerPreservedLifecycleReviewIntent {
         try ManagedInstallerPreservedLifecycleReviewIntent(
-            operationID: "preserve-one", deploymentID: "deployment-one",
-            operation: "PRESERVE", component: "forge-runtime", instanceID: "forge-one",
+            operationID: operation == "PURGE" ? "purge-one" : "preserve-one",
+            deploymentID: "deployment-one", operation: operation,
+            component: "forge-runtime", instanceID: "forge-one",
             installedCompositionIdentity: "forge-qualified",
             installedManifestSHA256: "sha256:" + String(repeating: "a", count: 64),
             installerRelease: release
@@ -316,7 +417,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             "previous_receipt_reference": .string("receipt:forge-one"),
             "preserve_operation_id": .null, "preserve_receipt_digest": .null,
             "historical_peer_reference": .null,
-            "destructive_confirmation_required": .boolean(false),
+            "destructive_confirmation_required": .boolean(intent.operation == "PURGE"),
         ]
         let digest = SHA256.hash(data: StrictSignedJSON.canonicalPayload(from: .object(review)))
             .map { String(format: "%02x", $0) }.joined()
@@ -376,6 +477,65 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
                 receiptDigest: receiptDigest,
                 revision: revision
             ), expectedDeploymentID: "deployment-one"
+        )
+    }
+
+    private func purgeInventory(includeEP: Bool, after: Bool) throws
+        -> ManagedDeploymentInventory {
+        let existing: [ManagedDeploymentTarget]
+        if after && !includeEP {
+            existing = []
+        } else {
+            existing = [try ManagedDeploymentTarget(
+                id: "deployment-one", exists: true,
+                forgeInstanceID: after ? nil : "forge-one",
+                engineeringPlatformInstanceID: includeEP ? "ep-one" : nil,
+                installedCompositionID: "forge-qualified",
+                installedCompositionManifestSHA256:
+                    "sha256:" + String(repeating: "a", count: 64)
+            )]
+        }
+        return try ManagedDeploymentInventory(
+            existing: existing,
+            createCandidate: ManagedDeploymentTarget(id: "new", exists: false),
+            evidenceReference: after ? "registry:purged" : "registry:pre"
+        )
+    }
+
+    private func purgeRegistryRecord(includeEP: Bool, after: Bool,
+                                     otherReceipt: String = "receipt:ep-one") throws
+        -> ManagedInstallerManagedDeploymentRegistryRecord {
+        var components: [StrictJSONResourceValue] = []
+        if !after {
+            components.append(.object([
+                "component": .string("forge-runtime"),
+                "instance_id": .string("forge-one"),
+                "receipt_reference": .string("receipt:forge-one"),
+            ]))
+        }
+        if includeEP {
+            components.append(.object([
+                "component": .string("engineering-platform-server"),
+                "instance_id": .string("ep-one"),
+                "receipt_reference": .string(otherReceipt),
+            ]))
+        }
+        let fields: [String: StrictJSONResourceValue] = [
+            "schema": .string("forge-platform.managed-deployment/v2"),
+            "deployment_id": .string("deployment-one"),
+            "revision": .integer(after ? "2" : "1"),
+            "label": .null,
+            "components": .array(components),
+            "peer_binding": .null,
+            "composition_binding": .object([
+                "composition_id": .string("forge-qualified"),
+                "manifest_digest": .string("sha256:" + String(repeating: "a", count: 64)),
+                "receipt_reference": .string("receipt:composition-one"),
+            ]),
+        ]
+        return try ManagedInstallerManagedDeploymentRegistryRecord.decode(
+            StrictSignedJSON.canonicalPayload(from: .object(fields)) + Data([0x0A]),
+            expectedDeploymentID: "deployment-one"
         )
     }
 
@@ -1907,14 +2067,22 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
 
 
 private actor LifecycleRegistryReadSpy: ManagedInstallerPreservedRegistryReading {
-    let record: ManagedInstallerManagedDeploymentRegistryRecord
+    private var records: [ManagedInstallerManagedDeploymentRegistryRecord]
     private var requests: [String] = []
-    init(record: ManagedInstallerManagedDeploymentRegistryRecord) { self.record = record }
+    init(record: ManagedInstallerManagedDeploymentRegistryRecord) {
+        records = [record]
+    }
+    init(records: [ManagedInstallerManagedDeploymentRegistryRecord]) {
+        self.records = records
+    }
     func loadManagedDeploymentRegistryRecord(
         deploymentID: String
     ) async throws -> ManagedInstallerManagedDeploymentRegistryRecord {
         requests.append(deploymentID)
-        return record
+        guard !records.isEmpty else {
+            throw ManagedInstallerManagedDeploymentRegistryRecordFailure.invalidRecord
+        }
+        return records.count == 1 ? records[0] : records.removeFirst()
     }
     func calls() -> [String] { requests }
 }

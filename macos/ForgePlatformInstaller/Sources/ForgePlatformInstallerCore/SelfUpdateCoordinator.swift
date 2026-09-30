@@ -791,11 +791,23 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         ManagedInstallerPreservedLifecycleReceipt,
         ManagedInstallerProductOperationBridgeFailure
     > {
+        await executeReviewedPreservedLifecycle(session, confirmedInstanceID: nil)
+    }
+
+    public func executeReviewedPreservedLifecycle(
+        _ session: ManagedInstallerPreservedLifecycleReviewSession,
+        confirmedInstanceID: String?
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
         guard !productMutationInFlight,
               let preservedLifecycleReviewTransport,
               let preservedLifecycleTransport,
               let preservedRegistryReadTransport,
-              session.intent.operation == "PRESERVE",
+              (session.intent.operation == "PRESERVE" && confirmedInstanceID == nil
+                || session.intent.operation == "PURGE"
+                    && confirmedInstanceID == session.intent.instanceID),
               session.inventoryEvidenceReference == session.inventory.evidenceReference,
               session.inventory.existing.contains(session.target),
               let currentVerifiedReleaseRecord,
@@ -812,7 +824,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                   session.proposal.canonicalJSONData(), intent: session.intent
               )) == session.proposal,
               let request = try? ManagedInstallerPreservedLifecycleRequest(
-                  intent: session.intent, proposal: session.proposal
+                  intent: session.intent, proposal: session.proposal,
+                  confirmedInstanceID: confirmedInstanceID
               ) else {
             return .failure(.rejected)
         }
@@ -826,6 +839,16 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                 before == session.inventory,
                 self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
                 return .failure(.rejected)
+            }
+            var beforePurgeRegistry: ManagedInstallerManagedDeploymentRegistryRecord?
+            if session.intent.operation == "PURGE" {
+                guard let current = try? await preservedRegistryReadTransport
+                    .loadManagedDeploymentRegistryRecord(deploymentID: session.target.id),
+                      current.target == session.target,
+                      current.revision == session.proposal.registryRevision else {
+                    return .failure(.rejected)
+                }
+                beforePurgeRegistry = current
             }
             switch await self.checkForUpdateWhileLocked(
                 currentVersion: session.intent.installerRelease.version,
@@ -869,36 +892,84 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                   case .available(let after) =
                     await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
                   after.existing.filter({ $0.id != session.target.id })
-                    == before.existing.filter({ $0.id != session.target.id }),
-                  let updated = after.existing.first(where: { $0.id == session.target.id }),
-                  let expected = try? ManagedDeploymentTarget(
-                    id: session.target.id, label: session.target.label, exists: true,
-                    forgeInstanceID: session.intent.component == "forge-runtime"
-                        ? nil : session.target.forgeInstanceID,
-                    engineeringPlatformInstanceID:
-                        session.intent.component == "engineering-platform-server"
-                            ? nil : session.target.engineeringPlatformInstanceID,
-                    preservedForgeInstanceID: session.intent.component == "forge-runtime"
-                        ? session.intent.instanceID : session.target.preservedForgeInstanceID,
-                    preservedEngineeringPlatformInstanceID:
-                        session.intent.component == "engineering-platform-server"
-                            ? session.intent.instanceID
-                            : session.target.preservedEngineeringPlatformInstanceID,
-                    installedCompositionID: session.target.installedCompositionID,
-                    installedCompositionManifestSHA256:
-                        session.target.installedCompositionManifestSHA256
-                  ), updated == expected,
-                  let registry = try? await preservedRegistryReadTransport
-                    .loadManagedDeploymentRegistryRecord(deploymentID: session.target.id),
-                  registry.target == expected,
-                  registry.revision == receipt.registryRevision,
-                  let preserved = registry.preservedComponents[session.intent.component],
-                  preserved.instanceID == session.intent.instanceID,
-                  preserved.preserveOperationID == session.intent.operationID,
-                  preserved.preserveReceiptDigest == receipt.receiptDigest,
-                  case .available(let finalInventory) =
-                    await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
-                  finalInventory == after else {
+                    == before.existing.filter({ $0.id != session.target.id }) else {
+                return .failure(.rejected)
+            }
+            if session.intent.operation == "PRESERVE" {
+                guard let updated = after.existing.first(where: { $0.id == session.target.id }),
+                      let expected = try? ManagedDeploymentTarget(
+                        id: session.target.id, label: session.target.label, exists: true,
+                        forgeInstanceID: session.intent.component == "forge-runtime"
+                            ? nil : session.target.forgeInstanceID,
+                        engineeringPlatformInstanceID:
+                            session.intent.component == "engineering-platform-server"
+                                ? nil : session.target.engineeringPlatformInstanceID,
+                        preservedForgeInstanceID: session.intent.component == "forge-runtime"
+                            ? session.intent.instanceID : session.target.preservedForgeInstanceID,
+                        preservedEngineeringPlatformInstanceID:
+                            session.intent.component == "engineering-platform-server"
+                                ? session.intent.instanceID
+                                : session.target.preservedEngineeringPlatformInstanceID,
+                        installedCompositionID: session.target.installedCompositionID,
+                        installedCompositionManifestSHA256:
+                            session.target.installedCompositionManifestSHA256
+                      ), updated == expected,
+                      let registry = try? await preservedRegistryReadTransport
+                        .loadManagedDeploymentRegistryRecord(deploymentID: session.target.id),
+                      registry.target == expected,
+                      registry.revision == receipt.registryRevision,
+                      let preserved = registry.preservedComponents[session.intent.component],
+                      preserved.instanceID == session.intent.instanceID,
+                      preserved.preserveOperationID == session.intent.operationID,
+                      preserved.preserveReceiptDigest == receipt.receiptDigest else {
+                    return .failure(.rejected)
+                }
+            } else {
+                guard let beforePurgeRegistry else { return .failure(.rejected) }
+                let otherComponent = session.intent.component == "forge-runtime"
+                    ? "engineering-platform-server" : "forge-runtime"
+                let forge = session.intent.component == "forge-runtime"
+                    ? nil : session.target.forgeInstanceID
+                let ep = session.intent.component == "engineering-platform-server"
+                    ? nil : session.target.engineeringPlatformInstanceID
+                let preservedForge = session.intent.component == "forge-runtime"
+                    ? nil : session.target.preservedForgeInstanceID
+                let preservedEP = session.intent.component == "engineering-platform-server"
+                    ? nil : session.target.preservedEngineeringPlatformInstanceID
+                if [forge, ep, preservedForge, preservedEP].compactMap({ $0 }).isEmpty {
+                    guard !after.existing.contains(where: { $0.id == session.target.id }),
+                          receipt.registryRevision == beforePurgeRegistry.revision + 1 else {
+                        return .failure(.rejected)
+                    }
+                } else {
+                    guard let expected = try? ManagedDeploymentTarget(
+                        id: session.target.id, label: session.target.label, exists: true,
+                        forgeInstanceID: forge, engineeringPlatformInstanceID: ep,
+                        preservedForgeInstanceID: preservedForge,
+                        preservedEngineeringPlatformInstanceID: preservedEP,
+                        installedCompositionID: session.target.installedCompositionID,
+                        installedCompositionManifestSHA256:
+                            session.target.installedCompositionManifestSHA256
+                    ), after.existing.first(where: { $0.id == session.target.id }) == expected,
+                          let registry = try? await preservedRegistryReadTransport
+                            .loadManagedDeploymentRegistryRecord(deploymentID: session.target.id),
+                          registry.target == expected,
+                          registry.revision == receipt.registryRevision,
+                          registry.revision == beforePurgeRegistry.revision + 1,
+                          registry.componentReceiptReferences[session.intent.component] == nil,
+                          registry.preservedComponents[session.intent.component] == nil,
+                          registry.componentReceiptReferences[otherComponent]
+                            == beforePurgeRegistry.componentReceiptReferences[otherComponent],
+                          registry.preservedComponents[otherComponent]
+                            == beforePurgeRegistry.preservedComponents[otherComponent] else {
+                        return .failure(.rejected)
+                    }
+                }
+            }
+            guard case .available(let finalInventory) =
+                await self.managedDeploymentRouteCoordinator.prepareManagedDeploymentInventory(),
+                  finalInventory == after,
+                  self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
                 return .failure(.rejected)
             }
             return .success(receipt)
