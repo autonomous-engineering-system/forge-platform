@@ -193,6 +193,29 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
             self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
             self.assertEqual(len(currency.calls), 4)
 
+    def test_restore_wire_reaches_helper_but_remains_fail_closed_before_service_continuation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, currency, _, service = self._service(root)
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_adapter(root)[1]
+            supervisor = preserve_helpers.Supervisor()
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+            ):
+                service.execute_preserved_lifecycle(_wire(_request(manifest, registry)))
+                preserved = registry.load("reviewed-pair")
+                restore = _wire(_request(manifest, registry, "RESTORE"))
+                self.assertEqual(decode_native_preserved_lifecycle_request(restore).review.operation, "RESTORE")
+                calls_before = (len(runner.calls), len(supervisor.calls), len(currency.calls))
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.execute_preserved_lifecycle(restore)
+                self.assertEqual(
+                    (len(runner.calls), len(supervisor.calls), len(currency.calls)),
+                    calls_before,
+                )
+                self.assertEqual(registry.load("reviewed-pair"), preserved)
+
     def test_worker_reads_exact_terminal_recovery_without_repeating_product_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

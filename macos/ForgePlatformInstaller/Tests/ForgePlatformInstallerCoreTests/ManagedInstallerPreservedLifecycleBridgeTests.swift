@@ -271,15 +271,22 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         XCTAssertEqual(terminal.canonicalJSONData(), receipt(request))
     }
 
-    func testOtherLifecycleCanBeReviewedButNotDispatched() throws {
-        for operation in ["RESTORE", "PURGE"] {
-            let selected = try intent(operation)
-            let proposal = try fixture(selected)
-            XCTAssertEqual(proposal.operation, operation)
-            XCTAssertThrowsError(try ManagedInstallerPreservedLifecycleRequest(
-                intent: selected, proposal: proposal
-            ))
-        }
+    func testRestoreRequestBindsPreserveEvidenceAndPurgeStillNeedsConfirmation() throws {
+        let selected = try intent("RESTORE")
+        let proposal = try fixture(selected)
+        let request = try ManagedInstallerPreservedLifecycleRequest(
+            intent: selected, proposal: proposal
+        )
+        XCTAssertEqual(
+            try ManagedInstallerPreservedLifecycleRequest.decodeJSON(request.canonicalJSONData()),
+            request
+        )
+        XCTAssertTrue(String(decoding: request.canonicalJSONData(), as: UTF8.self)
+            .contains(ManagedInstallerPreservedLifecycleRequest.restoreSchema))
+        let purge = try intent("PURGE")
+        XCTAssertThrowsError(try ManagedInstallerPreservedLifecycleRequest(
+            intent: purge, proposal: fixture(purge)
+        ))
     }
 
     func testPurgeRequestRequiresExactDestructiveTargetConfirmation() throws {

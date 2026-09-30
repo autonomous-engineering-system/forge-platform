@@ -2,7 +2,9 @@
 
 The caller supplies only the public review already returned by the helper.
 Installed product paths, commands, service controls and credentials are absent.
-PURGE requires a separate exact-instance confirmation. RESTORE remains unavailable.
+PURGE requires a separate exact-instance confirmation. RESTORE requests retain
+their exact prior PRESERVE operation and receipt binding; the dispatcher must
+still prove service, provider and pairing readiness before committing.
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA = (
 )
 NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA = (
     "forge-platform.native-preserved-lifecycle-request/v2"
+)
+NATIVE_RESTORE_REQUEST_SCHEMA = (
+    "forge-platform.native-preserved-lifecycle-request/v3"
 )
 NATIVE_PRESERVED_LIFECYCLE_RECEIPT_SCHEMA = (
     "forge-platform.native-preserved-lifecycle-receipt/v1"
@@ -86,6 +91,7 @@ def decode_native_preserved_lifecycle_request(raw: bytes) -> NativePreservedLife
             or schema not in {
                 NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
                 NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
+                NATIVE_RESTORE_REQUEST_SCHEMA,
             }
             or not isinstance(payload["intent"], dict)
             or not isinstance(payload["proposal"], dict)
@@ -102,6 +108,8 @@ def decode_native_preserved_lifecycle_request(raw: bytes) -> NativePreservedLife
             and intent.operation != "PRESERVE"
             or schema == NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA
             and intent.operation != "PURGE"
+            or schema == NATIVE_RESTORE_REQUEST_SCHEMA
+            and intent.operation != "RESTORE"
         ):
             raise ValueError("lifecycle request schema or mutation is unavailable")
         proposal_raw = _canonical(payload["proposal"])
@@ -117,6 +125,14 @@ def decode_native_preserved_lifecycle_request(raw: bytes) -> NativePreservedLife
         if schema == NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA:
             if review.destructive_confirmation_required or review.preserve_operation_id is not None:
                 raise ValueError("preserve request carries incompatible lifecycle authority")
+        elif schema == NATIVE_RESTORE_REQUEST_SCHEMA:
+            if (
+                review.destructive_confirmation_required
+                or confirmation is not None
+                or review.preserve_operation_id is None
+                or review.preserve_receipt_digest is None
+            ):
+                raise ValueError("restore request lacks exact preserve authority")
         elif (
             review.destructive_confirmation_required is not True
             or confirmation != intent.instance_id

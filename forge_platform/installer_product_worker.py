@@ -30,6 +30,7 @@ from .managed_preserved_lifecycle_request import (
     NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
     MAXIMUM_NATIVE_PRESERVED_LIFECYCLE_RECEIPT_BYTES,
     NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
+    NATIVE_RESTORE_REQUEST_SCHEMA,
     decode_native_preserved_lifecycle_receipt,
     decode_native_preserved_lifecycle_request,
 )
@@ -354,6 +355,7 @@ def run(
         elif isinstance(envelope, dict) and envelope.get("schema") in {
             NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
             NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
+            NATIVE_RESTORE_REQUEST_SCHEMA,
         }:
             response = execute_preserved_lifecycle_request(
                 request, service_loader=service_loader,

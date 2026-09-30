@@ -270,6 +270,7 @@ public struct ManagedInstallerPreservedLifecycleReviewProposal: Equatable, Senda
 public struct ManagedInstallerPreservedLifecycleRequest: Equatable, Sendable {
     public static let schema = "forge-platform.native-preserved-lifecycle-request/v1"
     public static let confirmedPurgeSchema = "forge-platform.native-preserved-lifecycle-request/v2"
+    public static let restoreSchema = "forge-platform.native-preserved-lifecycle-request/v3"
     public static let maximumBytes = 40 * 1_024
 
     public let intent: ManagedInstallerPreservedLifecycleReviewIntent
@@ -283,7 +284,10 @@ public struct ManagedInstallerPreservedLifecycleRequest: Equatable, Sendable {
         proposal: ManagedInstallerPreservedLifecycleReviewProposal,
         confirmedInstanceID: String? = nil
     ) throws {
-        guard (intent.operation == "PRESERVE" && confirmedInstanceID == nil)
+        guard (intent.operation == "PRESERVE" && confirmedInstanceID == nil
+                    && !proposal.hasPreserveEvidence)
+                || (intent.operation == "RESTORE" && confirmedInstanceID == nil
+                    && proposal.hasPreserveEvidence)
                 || (intent.operation == "PURGE" && confirmedInstanceID == intent.instanceID),
               proposal.intentFingerprint == intent.intentFingerprint,
               proposal.operation == intent.operation,
@@ -294,7 +298,10 @@ public struct ManagedInstallerPreservedLifecycleRequest: Equatable, Sendable {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
         }
         var unsigned: [String: StrictJSONResourceValue] = [
-            "schema": .string(intent.operation == "PURGE" ? Self.confirmedPurgeSchema : Self.schema),
+            "schema": .string(
+                intent.operation == "PURGE" ? Self.confirmedPurgeSchema
+                    : intent.operation == "RESTORE" ? Self.restoreSchema : Self.schema
+            ),
             "intent": intentValue,
             "proposal": proposalValue,
         ]
@@ -326,7 +333,7 @@ public struct ManagedInstallerPreservedLifecycleRequest: Equatable, Sendable {
         let root = try value(data)
         guard let fields = root.objectValue,
               let schema = fields["schema"]?.stringValue,
-              (schema == Self.schema && Set(fields.keys) == Set([
+              ((schema == Self.schema || schema == Self.restoreSchema) && Set(fields.keys) == Set([
                   "schema", "intent", "proposal", "request_fingerprint",
               ])) || (schema == Self.confirmedPurgeSchema && Set(fields.keys) == Set([
                   "schema", "intent", "proposal", "request_fingerprint",
