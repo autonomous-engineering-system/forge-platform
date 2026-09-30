@@ -49,8 +49,9 @@ def decode_native_purge_recovery_request(raw: bytes) -> NativePurgeRecoveryReque
             execution.intent.operation != "PURGE"
             or execution.confirmed_instance_id != execution.review.instance_id
             or execution.review.historical_peer_reference is not None
+                and execution.review.component != "forge-runtime"
         ):
-            raise ValueError("only unpaired confirmed PURGE can be recovered")
+            raise ValueError("confirmed PURGE recovery target is unsupported")
         return NativePurgeRecoveryRequest(execution, fingerprint)
     except Exception as error:
         raise ManagedPurgeRecoveryError("purge recovery request was rejected") from error

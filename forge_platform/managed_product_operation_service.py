@@ -504,6 +504,10 @@ class ManagedProductOperationHelperService:
                 manifest_digest=manifest.manifest_digest,
                 expected_owner_uid=self.preserved_dispatcher.expected_owner_uid,
             )
+            if review.historical_peer_reference is not None:
+                self.preserved_dispatcher.require_terminal_paired_purge(
+                    review, installed_manifest=manifest,
+                )
             response = encode_native_purge_recovery_receipt(request, record)
             if decode_native_purge_recovery_receipt(response, request=request) != record:
                 raise ValueError("terminal purge recovery response changed")

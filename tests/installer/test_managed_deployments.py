@@ -303,7 +303,7 @@ class ManagedDeploymentTests(unittest.TestCase):
                 status=purge_status,
             )
             registry.create(paired)
-            with self.assertRaisesRegex(ManagedDeploymentError, "pairing changed"):
+            with self.assertRaisesRegex(ManagedDeploymentError, "lacks EP consumer revocation"):
                 registry.commit_purged(deployment_id="paired", **args)
             self.assertEqual(registry.load("paired"), paired)
             registry.remove("paired", expected_revision=1)

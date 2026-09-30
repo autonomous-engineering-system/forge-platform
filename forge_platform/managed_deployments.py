@@ -12,6 +12,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import fcntl
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -544,6 +545,7 @@ class ManagedDeploymentRegistry:
         artifact: QualifiedArtifact, installed_manifest: CompositionManifest,
         request_digest: str, receipt: Mapping[str, object],
         status: Mapping[str, object],
+        pairing_revocation: object | None = None,
     ) -> ManagedDeployment | None:
         """Release only one product-proven instance claim after exact PURGE.
 
@@ -580,10 +582,37 @@ class ManagedDeploymentRegistry:
                 or (current.composition_binding.composition_id,
                     current.composition_binding.manifest_digest)
                     != (installed_manifest.composition_id, installed_manifest.manifest_digest)
-                or current.peer_binding is not None
-                or getattr(current, "historical_peer_binding", None) is not None
             ):
                 raise ManagedDeploymentError("purge provenance or pairing changed")
+            peer = current.peer_binding or getattr(current, "historical_peer_binding", None)
+            if peer is None:
+                if pairing_revocation is not None:
+                    raise ManagedDeploymentError("unpaired purge carried pairing proof")
+            else:
+                from .managed_pairing_revocation import PairingRevocationRecord
+                if (
+                    component != "forge-runtime"
+                    or current.peer_binding is None
+                    or pairing_revocation is None
+                    or not isinstance(pairing_revocation, PairingRevocationRecord)
+                    or pairing_revocation.state != "COMPLETE"
+                    or pairing_revocation.operation_id != operation_id
+                    or pairing_revocation.deployment_id != deployment_id
+                    or pairing_revocation.reviewed_deployment_fingerprint !=
+                        "sha256:" + sha256(json.dumps(
+                            asdict(current), sort_keys=True, separators=(",", ":"),
+                            allow_nan=False,
+                        ).encode("utf-8")).hexdigest()
+                    or pairing_revocation.forge_instance_id != instance_id
+                    or pairing_revocation.ep_instance_id != peer.ep_instance_id
+                    or peer.forge_instance_id != instance_id
+                    or not isinstance(pairing_revocation.receipt_reference, str)
+                    or re.fullmatch(
+                        r"ep-consumer-revoke:sha256:[0-9a-f]{64}",
+                        pairing_revocation.receipt_reference,
+                    ) is None
+                ):
+                    raise ManagedDeploymentError("paired purge lacks EP consumer revocation")
             active = current.active_by_component.get(component)
             preserved = current.preserved_by_component.get(component)
             target = active or preserved

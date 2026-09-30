@@ -20,7 +20,9 @@ from .managed_preserve_execution import (
     ManagedPurgeExecutionCoordinator,
 )
 from .managed_preserved_lifecycle_request import NativePreservedLifecycleRequest
-from .managed_preserved_lifecycle_plan import require_current_preserved_lifecycle_review
+from .managed_preserved_lifecycle_plan import (
+    ManagedPreservedLifecycleReview, require_current_preserved_lifecycle_review,
+)
 from .managed_preserved_product_adapters import (
     EPPreservedProductAdapter, ForgePreservedProductAdapter,
 )
@@ -90,6 +92,67 @@ class ManagedPreservedLifecycleDispatcher:
             ) if scopes else None
         )
 
+    def require_terminal_paired_purge(
+        self, review: ManagedPreservedLifecycleReview, *,
+        installed_manifest: CompositionManifest,
+    ) -> None:
+        """Recheck the exact EP-owned revocation for read-only PURGE recovery."""
+        if (
+            not isinstance(review, ManagedPreservedLifecycleReview)
+            or review.operation != "PURGE"
+            or review.component != FORGE_COMPONENT
+            or review.historical_peer_reference is None
+            or not isinstance(installed_manifest, CompositionManifest)
+            or (review.composition_id, review.composition_digest) !=
+                (installed_manifest.composition_id, installed_manifest.manifest_digest)
+        ):
+            raise ManagedPreservedLifecycleDispatchError("paired purge recovery selector changed")
+        config = self.configurations.get(review.deployment_id)
+        current = self.registry.load(review.deployment_id)
+        if (
+            not isinstance(config, ReleasedManagedProductRouteConfiguration)
+            or self.pairing_revocation is None
+            or current is None
+            or current.revision != review.registry_revision + 1
+            or current.peer_binding is not None
+            or getattr(current, "historical_peer_binding", None) is not None
+            or set(current.active_by_component) != {EP_COMPONENT}
+            or current.preserved_by_component
+            or current.active_by_component[EP_COMPONENT].instance_id
+                != config.engineering_platform_target.instance_id
+            or config.forge_target.instance_id != review.instance_id
+            or current.composition_binding is None
+            or (current.composition_binding.composition_id,
+                current.composition_binding.manifest_digest) !=
+                (review.composition_id, review.composition_digest)
+            or self.pairing_revocation.scope_claims.get(review.deployment_id) !=
+                EPConsumerScope(
+                    config.pairing_binding.consumer_id,
+                    config.pairing_binding.project_id,
+                )
+        ):
+            raise ManagedPreservedLifecycleDispatchError("paired purge recovery inventory changed")
+        ep_adapter = EngineeringPlatformSystemProvisionerAdapter(
+            provisioner_executable=config.engineering_platform_provisioner,
+            product_root=config.engineering_platform_product_root,
+            target=config.engineering_platform_target,
+            staged_artifacts=config.staged_artifacts,
+        )
+        revoker = EPConsumerRevocationAdapter(
+            provisioner=ep_adapter,
+            scope=self.pairing_revocation.scope_claims[review.deployment_id],
+            expected_artifact=config.engineering_platform_installed_artifact,
+            expected_owner_uid=self.expected_owner_uid,
+        )
+        self.pairing_revocation.read_terminal(
+            operation_id=review.operation_id,
+            deployment_id=review.deployment_id,
+            reviewed_deployment_fingerprint=review.registry_fingerprint,
+            forge_instance_id=review.instance_id,
+            ep_instance_id=config.engineering_platform_target.instance_id,
+            revoker=revoker,
+        )
+
     def dispatch(
         self, request: NativePreservedLifecycleRequest, *,
         installed_manifest: CompositionManifest,
@@ -116,8 +179,9 @@ class ManagedPreservedLifecycleDispatcher:
             if current is not None else None
         )
         if peer is not None and (
-            request.review.operation != "PRESERVE"
+            request.review.operation not in {"PRESERVE", "PURGE"}
             or request.review.component != FORGE_COMPONENT
+            or request.review.operation == "PURGE" and current.peer_binding is None
         ):
             raise ManagedPreservedLifecycleDispatchError(
                 "paired lifecycle requires product-owned consumer revocation"
@@ -205,7 +269,7 @@ class ManagedPreservedLifecycleDispatcher:
         )
         execute = coordinator.purge if request.review.operation == "PURGE" else coordinator.preserve
         pairing_proof = None
-        if peer is not None:
+        if peer is not None or request.review.historical_peer_reference is not None:
             if (
                 not isinstance(config, ReleasedManagedProductRouteConfiguration)
                 or self.pairing_revocation is None
@@ -214,8 +278,10 @@ class ManagedPreservedLifecycleDispatcher:
                         config.pairing_binding.consumer_id,
                         config.pairing_binding.project_id,
                     )
-                or config.engineering_platform_target.instance_id != peer.ep_instance_id
-                or config.forge_target.instance_id != peer.forge_instance_id
+                or peer is not None and (
+                    config.engineering_platform_target.instance_id != peer.ep_instance_id
+                    or config.forge_target.instance_id != peer.forge_instance_id
+                )
                 or artifacts.get(EP_COMPONENT) != config.engineering_platform_installed_artifact
             ):
                 raise ManagedPreservedLifecycleDispatchError("paired preserve scope changed")
@@ -256,25 +322,34 @@ class ManagedPreservedLifecycleDispatcher:
                     reviewed_current=current, revoker=revoker,
                 )
             else:
-                preserved = current.preserved_by_component.get(FORGE_COMPONENT)
-                if (
-                    preserved is None
-                    or preserved.instance_id != request.review.instance_id
-                    or preserved.preserve_operation_id != request.review.operation_id
+                if request.review.operation == "PRESERVE":
+                    preserved = current.preserved_by_component.get(FORGE_COMPONENT)
+                    if (
+                        preserved is None
+                        or preserved.instance_id != request.review.instance_id
+                        or preserved.preserve_operation_id != request.review.operation_id
+                    ):
+                        raise ManagedPreservedLifecycleDispatchError(
+                            "paired preserve replay lost its exact inventory"
+                        )
+                elif (
+                    current.active_by_component.get(EP_COMPONENT) is None
+                    or current.active_by_component[EP_COMPONENT].instance_id
+                        != config.engineering_platform_target.instance_id
                 ):
                     raise ManagedPreservedLifecycleDispatchError(
-                        "paired preserve replay lost its exact inventory"
+                        "paired purge replay lost its exact EP instance"
                     )
                 pairing_proof = self.pairing_revocation.read_terminal(
                     operation_id=request.review.operation_id,
                     deployment_id=request.review.deployment_id,
                     reviewed_deployment_fingerprint=request.review.registry_fingerprint,
-                    forge_instance_id=peer.forge_instance_id,
-                    ep_instance_id=peer.ep_instance_id, revoker=revoker,
+                    forge_instance_id=config.forge_target.instance_id,
+                    ep_instance_id=config.engineering_platform_target.instance_id,
+                    revoker=revoker,
                 )
         return execute(
             request.review, installed_manifest=installed_manifest,
             adapter=adapter,
-            **({"pairing_revocation": pairing_proof}
-               if request.review.operation == "PRESERVE" else {}),
+            pairing_revocation=pairing_proof,
         )
