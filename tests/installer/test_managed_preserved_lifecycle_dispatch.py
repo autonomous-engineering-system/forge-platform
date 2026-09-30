@@ -84,10 +84,19 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
         return _wire(payload)
 
     @staticmethod
-    def _recovery_request(manifest):
+    def _recovery_request(manifest, *, component=None, instance_id=None):
+        intent = _intent(manifest)
+        if component is not None:
+            intent["component"] = component
+        if instance_id is not None:
+            intent["instance_id"] = instance_id
+        intent["intent_fingerprint"] = sha256(_wire({
+            key: value for key, value in intent.items()
+            if key != "intent_fingerprint"
+        })).hexdigest()
         payload = {
             "schema": NATIVE_PRESERVE_RECOVERY_REQUEST_SCHEMA,
-            "intent": _intent(manifest),
+            "intent": intent,
         }
         payload["request_fingerprint"] = sha256(_wire(payload)).hexdigest()
         return _wire(payload)
@@ -333,27 +342,108 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
             ):
                 service.execute_preserved_lifecycle(mutation)
             current = registry.load("reviewed-pair")
-            output = io.BytesIO()
-            self.assertEqual(run(
-                io.BytesIO(recovery), output, service_loader=lambda: service,
-            ), 0)
-            terminal = decode_native_preserve_recovery_receipt(
-                output.getvalue(), request=decoded,
+            _, _, receipt = preserve_helpers.ManagedPreserveExecutionTests._forge_adapter(root)
+            _, status = _forge_evidence(
+                "PRESERVE", "preserve-a", "forge-a", "Install-A",
+                receipt["request_digest"],
             )
-            self.assertEqual(terminal.state, "COMPLETE")
-            self.assertEqual(terminal.registry_revision, current.revision)
-            self.assertEqual(terminal.receipt_digest,
-                             current.preserved_by_component["forge-runtime"].preserve_receipt_digest)
-            self.assertEqual(read_terminal_preserve_recovery_request(
-                recovery, service_loader=lambda: service,
-            ), output.getvalue())
-            self.assertEqual(len(runner.calls), 2)
+            runner.results.extend((
+                (0, json.dumps(status)), (0, json.dumps(status)),
+                (0, json.dumps(status | {"receipt_digest": "sha256:" + "0" * 64})),
+            ))
+            output = io.BytesIO()
+            with patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner):
+                self.assertEqual(run(
+                    io.BytesIO(recovery), output, service_loader=lambda: service,
+                ), 0)
+                terminal = decode_native_preserve_recovery_receipt(
+                    output.getvalue(), request=decoded,
+                )
+                self.assertEqual(terminal.state, "COMPLETE")
+                self.assertEqual(terminal.registry_revision, current.revision)
+                self.assertEqual(terminal.receipt_digest,
+                                 current.preserved_by_component["forge-runtime"].preserve_receipt_digest)
+                self.assertEqual(read_terminal_preserve_recovery_request(
+                    recovery, service_loader=lambda: service,
+                ), output.getvalue())
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.read_terminal_preserve_recovery(recovery)
+            self.assertEqual(len(runner.calls), 5)
             self.assertEqual(registry.load("reviewed-pair"), current)
             with patch.object(service, "read_terminal_preserve_recovery", return_value=b"{}"):
                 with self.assertRaises(InstallerProductWorkerUnavailable):
                     read_terminal_preserve_recovery_request(
                         recovery, service_loader=lambda: service,
                     )
+
+    def test_ep_preserve_recovery_requires_exact_live_product_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, _, service = self._service(root)
+            component = "engineering-platform-server"
+            mutation = _wire(_request(
+                manifest, registry, component=component, instance_id="ep-a",
+            ))
+            recovery = self._recovery_request(
+                manifest, component=component, instance_id="ep-a",
+            )
+            receipt, status = _ep_evidence("PRESERVE", "preserve-a", "ep-a")
+            outer = {
+                "contract": EP_CONTRACT, "result": "COMPLETE",
+                "instance_id": "ep-a", "receipt": receipt,
+            }
+            runner = FakeRunner(ProductCommandResult, (
+                (0, json.dumps(outer)), (0, json.dumps(status)),
+                (0, json.dumps(status)),
+                (0, json.dumps(status | {"receipt_sha256": "sha256:" + "0" * 64})),
+            ))
+            with patch(
+                "forge_platform.managed_preserved_product_adapters.SubprocessProductCommandRunner",
+                return_value=runner,
+            ):
+                service.execute_preserved_lifecycle(mutation)
+                terminal = registry.load("reviewed-pair")
+                decoded = decode_native_preserve_recovery_request(recovery)
+                result = decode_native_preserve_recovery_receipt(
+                    service.read_terminal_preserve_recovery(recovery), request=decoded,
+                )
+                self.assertEqual(result.receipt_digest,
+                                 terminal.preserved_by_component[component].preserve_receipt_digest)
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.read_terminal_preserve_recovery(recovery)
+            self.assertEqual(len(runner.calls), 4)
+            self.assertEqual(registry.load("reviewed-pair"), terminal)
+
+    def test_paired_preserve_recovery_rechecks_ep_consumer_revocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, _, service = self._service(root, paired=True)
+            mutation = _wire(_request(manifest, registry))
+            recovery = self._recovery_request(manifest)
+            revoker = Revoker(EPConsumerScope("forge-consumer", "forge-project"))
+            _, runner, receipt = preserve_helpers.ManagedPreserveExecutionTests._forge_adapter(root)
+            _, status = _forge_evidence(
+                "PRESERVE", "preserve-a", "forge-a", "Install-A",
+                receipt["request_digest"],
+            )
+            runner.results.extend(((0, json.dumps(status)),))
+            with (
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.EPConsumerRevocationAdapter", return_value=revoker),
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=preserve_helpers.Supervisor()),
+            ):
+                service.execute_preserved_lifecycle(mutation)
+                terminal = registry.load("reviewed-pair")
+                decoded = decode_native_preserve_recovery_request(recovery)
+                result = decode_native_preserve_recovery_receipt(
+                    service.read_terminal_preserve_recovery(recovery), request=decoded,
+                )
+                self.assertEqual(result.registry_revision, terminal.revision)
+                revoker.state = "ACTIVE"
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.read_terminal_preserve_recovery(recovery)
+            self.assertEqual(len(runner.calls), 3)
+            self.assertEqual(registry.load("reviewed-pair"), terminal)
 
     def test_recovery_codec_rejects_substitution_noncanonical_and_nonterminal(self):
         manifest, _, _ = _fixture()
