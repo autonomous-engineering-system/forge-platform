@@ -79,11 +79,12 @@ test -d "$APP" || fail unsigned-app-missing
 python3 - "$APP" <<'PY' || fail unsigned-forge-update-resources-invalid
 from pathlib import Path
 import sys
-from forge_platform.forge_update_resources import read_forge_update_resources
+from forge_platform.forge_update_resources import read_forge_239_update_resources, read_forge_update_resources
 
 app = Path(sys.argv[1])
 worker = app / "Contents/Resources/forge-platform-product-worker.pyz"
 read_forge_update_resources(worker)
+read_forge_239_update_resources(worker)
 PY
 for binary in ForgePlatformInstaller forge-platform-installer; do
   test -x "$APP/Contents/MacOS/$binary" || fail unsigned-binary-missing

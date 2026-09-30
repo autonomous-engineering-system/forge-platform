@@ -23,6 +23,8 @@ fail() {
 [[ -n "${FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE:-}" ]] || fail catalog-trust-resource-required
 [[ -n "${FORGE_PLATFORM_FORGE_UPDATE_CONTROLLER:-}" ]] || fail forge-controller-required
 [[ -n "${FORGE_PLATFORM_FORGE_RELEASE_COMPLETE_RECEIPT:-}" ]] || fail forge-release-receipt-required
+[[ -n "${FORGE_PLATFORM_FORGE_239_UPDATE_CONTROLLER:-}" ]] || fail forge-239-controller-required
+[[ -n "${FORGE_PLATFORM_FORGE_239_RELEASE_COMPLETE_RECEIPT:-}" ]] || fail forge-239-release-receipt-required
 [[ -n "${FORGE_PLATFORM_OFFLINE_RELEASE_ROOT:-}" ]] || fail offline-release-root-required
 [[ -n "${RELEASE_SEQUENCE:-}" && "$RELEASE_SEQUENCE" =~ ^[1-9][0-9]*$ ]] || fail release-sequence-required
 
@@ -111,6 +113,8 @@ python3 scripts/package_macos_installer_app.py \
   --product-worker "$product_worker" \
   --forge-update-controller "$FORGE_PLATFORM_FORGE_UPDATE_CONTROLLER" \
   --forge-release-complete-receipt "$FORGE_PLATFORM_FORGE_RELEASE_COMPLETE_RECEIPT" \
+  --forge-239-update-controller "$FORGE_PLATFORM_FORGE_239_UPDATE_CONTROLLER" \
+  --forge-239-release-complete-receipt "$FORGE_PLATFORM_FORGE_239_RELEASE_COMPLETE_RECEIPT" \
   --sealed-release-trust-resource "$FORGE_PLATFORM_RELEASE_TRUST_RESOURCE" \
   --sealed-release-provenance-resource "$provenance" \
   --sealed-composition-catalog-trust-resource "$FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE" \
@@ -121,11 +125,12 @@ python3 scripts/package_macos_installer_app.py \
 python3 - "$app" <<'PY' || fail forge-update-resources-not-packaged
 from pathlib import Path
 import sys
-from forge_platform.forge_update_resources import read_forge_update_resources
+from forge_platform.forge_update_resources import read_forge_239_update_resources, read_forge_update_resources
 
 app = Path(sys.argv[1])
 worker = app / "Contents/Resources/forge-platform-product-worker.pyz"
 read_forge_update_resources(worker)
+read_forge_239_update_resources(worker)
 PY
 
 # Resolve exactly one reviewed Developer ID identity from public certificate metadata.
