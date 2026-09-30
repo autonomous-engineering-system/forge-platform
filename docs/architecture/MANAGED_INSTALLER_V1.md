@@ -270,10 +270,12 @@ product data or manufactures replacement lifecycle evidence. After interruption,
 it reloads product status and resumes the same product operation before any
 service or registry continuation.
 
-For an active or historical Forge↔EP pairing, the current PRESERVE executor
-fails before journal creation, service quiescence or product mutation. A paired
-PRESERVE route requires exact product-owned EP consumer revocation evidence
-bound to the reviewed operation before this gate can be lifted.
+For a paired Forge PRESERVE, the helper first durably binds the reviewed exact
+deployment and Forge/EP instances to EP's product-owned consumer revocation.
+It requires terminal EP status before quiescing Forge, and a replay reads the
+same revocation journal and EP status before accepting the preserved registry
+record. A second deployment is not a cleanup target. Paired EP PRESERVE remains
+fail-closed until Forge's peer disposition has a qualified product-owned route.
 
 Preserved configuration and provider bytes remain product-owned, but preserved
 authentication is never `VERIFIED`. Restore must run fresh provider readback and,

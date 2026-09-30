@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+import os
 from pathlib import Path
+import stat
 from types import MappingProxyType
 from typing import Iterable
 
 from .forge_server_adapter import ForgeServerTarget, MacOSForgeLaunchDaemonSupervisor
+from .engineering_platform_system_adapter import EngineeringPlatformSystemProvisionerAdapter
+from .ep_consumer_revocation import EPConsumerRevocationAdapter, EPConsumerScope
+from .managed_deployments import ManagedDeploymentPlanner
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
+from .managed_pairing_revocation import ManagedPairingRevocationCoordinator
 from .managed_preserve_execution import (
     ManagedPreserveExecutionCoordinator, ManagedPreserveExecutionRecord,
     ManagedPurgeExecutionCoordinator,
 )
 from .managed_preserved_lifecycle_request import NativePreservedLifecycleRequest
+from .managed_preserved_lifecycle_plan import require_current_preserved_lifecycle_review
 from .managed_preserved_product_adapters import (
     EPPreservedProductAdapter, ForgePreservedProductAdapter,
 )
@@ -60,11 +68,27 @@ class ManagedPreservedLifecycleDispatcher:
                 ))
         if len(claims) != len(set(claims)):
             raise ValueError("lifecycle product routes share an instance")
+        scopes = {
+            item.deployment_id: EPConsumerScope(
+                item.pairing_binding.consumer_id, item.pairing_binding.project_id,
+            )
+            for item in configs
+            if isinstance(item, ReleasedManagedProductRouteConfiguration)
+        }
+        if len(scopes) != len(set(scopes.values())):
+            raise ValueError("lifecycle routes share an EP consumer scope")
         self.registry = coordinator.registry
         self.currency_guard = coordinator.currency_guard
         self.operations_root = coordinator.operations_root / "preserved-lifecycle"
         self.expected_owner_uid = expected_owner_uid
         self.configurations = MappingProxyType({item.deployment_id: item for item in configs})
+        self.pairing_revocation = (
+            ManagedPairingRevocationCoordinator(
+                operations_root=self.operations_root / "ep-consumer-revocation",
+                registry=self.registry, currency_guard=self.currency_guard,
+                scope_claims=scopes, expected_owner_uid=expected_owner_uid,
+            ) if scopes else None
+        )
 
     def dispatch(
         self, request: NativePreservedLifecycleRequest, *,
@@ -87,9 +111,13 @@ class ManagedPreservedLifecycleDispatcher:
         current = self.registry.load(request.review.deployment_id)
         if current is None and request.review.operation != "PURGE":
             raise ManagedPreservedLifecycleDispatchError("reviewed deployment is unavailable")
-        if current is not None and (
-            current.peer_binding is not None
-            or getattr(current, "historical_peer_binding", None) is not None
+        peer = (
+            current.peer_binding or getattr(current, "historical_peer_binding", None)
+            if current is not None else None
+        )
+        if peer is not None and (
+            request.review.operation != "PRESERVE"
+            or request.review.component != FORGE_COMPONENT
         ):
             raise ManagedPreservedLifecycleDispatchError(
                 "paired lifecycle requires product-owned consumer revocation"
@@ -176,7 +204,77 @@ class ManagedPreservedLifecycleDispatcher:
             expected_owner_uid=self.expected_owner_uid,
         )
         execute = coordinator.purge if request.review.operation == "PURGE" else coordinator.preserve
+        pairing_proof = None
+        if peer is not None:
+            if (
+                not isinstance(config, ReleasedManagedProductRouteConfiguration)
+                or self.pairing_revocation is None
+                or self.pairing_revocation.scope_claims.get(request.review.deployment_id)
+                    != EPConsumerScope(
+                        config.pairing_binding.consumer_id,
+                        config.pairing_binding.project_id,
+                    )
+                or config.engineering_platform_target.instance_id != peer.ep_instance_id
+                or config.forge_target.instance_id != peer.forge_instance_id
+                or artifacts.get(EP_COMPONENT) != config.engineering_platform_installed_artifact
+            ):
+                raise ManagedPreservedLifecycleDispatchError("paired preserve scope changed")
+            ep_adapter = EngineeringPlatformSystemProvisionerAdapter(
+                provisioner_executable=config.engineering_platform_provisioner,
+                product_root=config.engineering_platform_product_root,
+                target=config.engineering_platform_target,
+                staged_artifacts=config.staged_artifacts,
+            )
+            revoker = EPConsumerRevocationAdapter(
+                provisioner=ep_adapter,
+                scope=self.pairing_revocation.scope_claims[request.review.deployment_id],
+                expected_artifact=config.engineering_platform_installed_artifact,
+                expected_owner_uid=self.expected_owner_uid,
+            )
+            self.operations_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            root_info = os.lstat(self.operations_root)
+            if (
+                not stat.S_ISDIR(root_info.st_mode)
+                or root_info.st_uid != self.expected_owner_uid
+                or stat.S_IMODE(root_info.st_mode) != 0o700
+            ):
+                raise ManagedPreservedLifecycleDispatchError(
+                    "paired preserve journal root is unsafe"
+                )
+            if current.peer_binding is not None:
+                require_current_preserved_lifecycle_review(
+                    request.review, current=current, installed_manifest=installed_manifest,
+                )
+                desired = replace(
+                    current,
+                    components=(current.active_by_component[EP_COMPONENT],),
+                    peer_binding=None,
+                )
+                plan = ManagedDeploymentPlanner.plan(current, desired)
+                pairing_proof = self.pairing_revocation.revoke(
+                    request.review.operation_id, plan,
+                    reviewed_current=current, revoker=revoker,
+                )
+            else:
+                preserved = current.preserved_by_component.get(FORGE_COMPONENT)
+                if (
+                    preserved is None
+                    or preserved.instance_id != request.review.instance_id
+                    or preserved.preserve_operation_id != request.review.operation_id
+                ):
+                    raise ManagedPreservedLifecycleDispatchError(
+                        "paired preserve replay lost its exact inventory"
+                    )
+                pairing_proof = self.pairing_revocation.read_terminal(
+                    operation_id=request.review.operation_id,
+                    deployment_id=request.review.deployment_id,
+                    reviewed_deployment_fingerprint=request.review.registry_fingerprint,
+                    forge_instance_id=peer.forge_instance_id,
+                    ep_instance_id=peer.ep_instance_id, revoker=revoker,
+                )
         return execute(
             request.review, installed_manifest=installed_manifest,
             adapter=adapter,
+            **({"pairing_revocation": pairing_proof}
+               if request.review.operation == "PRESERVE" else {}),
         )

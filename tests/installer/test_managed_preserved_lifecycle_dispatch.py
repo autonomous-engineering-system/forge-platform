@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from forge_platform.engineering_platform_system_adapter import EPSystemInstanceTarget
 from forge_platform.engineering_platform_system_adapter import ProductCommandResult
+from forge_platform.ep_consumer_revocation import EPConsumerScope
 from forge_platform.forge_ep_pairing_executor import ForgeEPProductPairingBinding
 from forge_platform.forge_server_adapter import ForgeServerTarget, ForgeUninstallBinding
 from forge_platform.installer_product_worker import (
@@ -53,6 +54,7 @@ from tests.installer import test_managed_preserve_execution as preserve_helpers
 from tests.installer.test_managed_preserved_lifecycle_plan import _fixture
 from tests.installer import test_managed_deployments as deployment_helpers
 from tests.installer.test_managed_preserved_lifecycle_request import _request
+from tests.installer.test_managed_pairing_revocation import Revoker
 from tests.installer.test_managed_preserved_lifecycle_proposal import _wire
 from tests.installer.test_managed_preserved_product_adapters import FakeRunner, _ep_evidence
 from tests.installer.test_managed_preserved_lifecycle_proposal import _intent
@@ -147,26 +149,123 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
         )
         return manifest, registry, currency, config, service
 
-    def test_paired_worker_route_fails_before_journal_service_or_product_mutation(self):
+    def test_paired_forge_preserve_revokes_exact_ep_consumer_and_replays(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             manifest, registry, currency, _, service = self._service(root, paired=True)
+            original = registry.load("reviewed-pair")
+            other = replace(
+                original, deployment_id="other-pair",
+                components=tuple(replace(
+                    item, instance_id=item.instance_id.replace("-a", "-b"),
+                    receipt_reference=item.receipt_reference.replace("-a", "-b"),
+                ) for item in original.components),
+                peer_binding=replace(
+                    original.peer_binding, forge_instance_id="forge-b",
+                    ep_instance_id="ep-b", receipt_reference="receipt:pair-b",
+                ),
+            )
+            registry.create(other)
+            other_bytes = (registry.root / "other-pair.json").read_bytes()
             request_bytes = _wire(_request(manifest, registry))
             supervisor = preserve_helpers.Supervisor()
             runner = preserve_helpers.ManagedPreserveExecutionTests._forge_adapter(root)[1]
+            revoker = Revoker(EPConsumerScope("forge-consumer", "forge-project"))
             with (
                 patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
                 patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
-                self.assertRaises(ManagedProductOperationServiceError) as failure,
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.EPConsumerRevocationAdapter", return_value=revoker),
             ):
-                service.execute_preserved_lifecycle(request_bytes)
+                first = service.execute_preserved_lifecycle(request_bytes)
+                current = registry.load("reviewed-pair")
+                self.assertEqual(current.revision, 2)
+                self.assertEqual(current.historical_peer_binding.forge_instance_id, "forge-a")
+                self.assertEqual(current.preserved_by_component[FORGE_COMPONENT].instance_id, "forge-a")
+                self.assertEqual(current.active_by_component["engineering-platform-server"].instance_id, "ep-a")
+                self.assertEqual(service.execute_preserved_lifecycle(request_bytes), first)
+            self.assertEqual(revoker.calls, 1)
+            self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
+            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(currency.calls[0]["mutation"], "pairing-consumer-revoke")
+            self.assertEqual(registry.load("other-pair"), other)
+            self.assertEqual((registry.root / "other-pair.json").read_bytes(), other_bytes)
+
+    def test_paired_preserve_resumes_same_revocation_after_product_interruption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, _, service = self._service(root, paired=True)
+            request = _wire(_request(manifest, registry))
+            revoker = Revoker(EPConsumerScope("forge-consumer", "forge-project"))
+            revoker.interrupt = True
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_adapter(root)[1]
+            supervisor = preserve_helpers.Supervisor()
+            with (
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.EPConsumerRevocationAdapter", return_value=revoker),
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+            ):
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.execute_preserved_lifecycle(request)
+                self.assertEqual(registry.load("reviewed-pair").revision, 1)
+                self.assertFalse((root / "operations/preserved-lifecycle/preserve-a.json").exists())
+                self.assertEqual(runner.calls, [])
+                self.assertEqual(supervisor.calls, [])
+                self.assertEqual(revoker.state, "REVOKED")
+                service.execute_preserved_lifecycle(request)
+                self.assertEqual(registry.load("reviewed-pair").revision, 2)
+                self.assertEqual(revoker.calls, 1)
+
+    def test_paired_ep_preserve_and_revocation_replay_drift_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, _, service = self._service(root, paired=True)
+            ep = _wire(_request(
+                manifest, registry, component="engineering-platform-server",
+                instance_id="ep-a",
+            ))
+            with self.assertRaises(ManagedProductOperationServiceError) as failure:
+                service.execute_preserved_lifecycle(ep)
             self.assertIsInstance(failure.exception.__cause__, ManagedPreservedLifecycleDispatchError)
-            self.assertIn("consumer revocation", str(failure.exception.__cause__))
-            self.assertEqual(registry.load("reviewed-pair").revision, 1)
             self.assertFalse((root / "operations").exists())
+
+            forge = _wire(_request(manifest, registry))
+            revoker = Revoker(EPConsumerScope("forge-consumer", "forge-project"))
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_adapter(root)[1]
+            supervisor = preserve_helpers.Supervisor()
+            with (
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.EPConsumerRevocationAdapter", return_value=revoker),
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+            ):
+                service.execute_preserved_lifecycle(forge)
+                terminal = registry.load("reviewed-pair")
+                calls = (len(runner.calls), len(supervisor.calls))
+                revoker.state = "ACTIVE"
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.execute_preserved_lifecycle(forge)
+                self.assertEqual(registry.load("reviewed-pair"), terminal)
+                self.assertEqual((len(runner.calls), len(supervisor.calls)), calls)
+
+    def test_paired_preserve_wrong_ep_consumer_scope_fails_before_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, currency, _, service = self._service(root, paired=True)
+            request = _wire(_request(manifest, registry))
+            wrong = Revoker(EPConsumerScope("other-consumer", "other-project"))
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_adapter(root)[1]
+            supervisor = preserve_helpers.Supervisor()
+            with (
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.EPConsumerRevocationAdapter", return_value=wrong),
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+                self.assertRaises(ManagedProductOperationServiceError),
+            ):
+                service.execute_preserved_lifecycle(request)
+            self.assertEqual(wrong.calls, 0)
+            self.assertEqual(registry.load("reviewed-pair").revision, 1)
             self.assertEqual(currency.calls, [])
-            self.assertEqual(supervisor.calls, [])
             self.assertEqual(runner.calls, [])
+            self.assertEqual(supervisor.calls, [])
 
     def test_released_worker_executes_exact_review_and_replays_without_product_mutation(self):
         with tempfile.TemporaryDirectory() as directory:

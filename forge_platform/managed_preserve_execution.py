@@ -23,6 +23,7 @@ from .managed_deployments import (
     ManagedDeployment, ManagedDeploymentRegistry,
 )
 from .managed_install_flow import InstallerMutationCurrencyGuard
+from .managed_pairing_revocation import PairingRevocationRecord
 from .managed_preserved_lifecycle_plan import (
     ManagedPreservedLifecycleReview, require_current_preserved_lifecycle_review,
 )
@@ -376,9 +377,39 @@ class ManagedPreserveExecutionCoordinator:
             operation_id=review.operation_id,
         )
 
+    @staticmethod
+    def _require_pairing_proof(
+        current: ManagedDeployment, review: ManagedPreservedLifecycleReview,
+        proof: PairingRevocationRecord | None,
+    ) -> None:
+        peer = current.peer_binding or getattr(current, "historical_peer_binding", None)
+        if peer is None:
+            if proof is not None:
+                raise ManagedPreserveExecutionError("unpaired preserve carried pairing authority")
+            return
+        if (
+            review.component != FORGE_COMPONENT
+            or proof is None or proof.state != "COMPLETE"
+            or proof.operation_id != review.operation_id
+            or proof.deployment_id != review.deployment_id
+            or proof.reviewed_deployment_fingerprint != review.registry_fingerprint
+            or proof.forge_instance_id != review.instance_id
+            or proof.ep_instance_id != peer.ep_instance_id
+            or peer.forge_instance_id != review.instance_id
+            or peer.receipt_reference != review.historical_peer_reference
+            or not isinstance(proof.receipt_reference, str)
+            or re.fullmatch(r"ep-consumer-revoke:sha256:[0-9a-f]{64}", proof.receipt_reference) is None
+            or current.peer_binding is None
+                and current.preserved_by_component.get(FORGE_COMPONENT) is None
+        ):
+            raise ManagedPreserveExecutionError(
+                "paired preserve lacks exact product-owned consumer revocation"
+            )
+
     def preserve(
         self, review: ManagedPreservedLifecycleReview, *,
         installed_manifest: CompositionManifest, adapter: PreservedProductAdapter,
+        pairing_revocation: PairingRevocationRecord | None = None,
     ) -> ManagedPreserveExecutionRecord:
         if (
             not isinstance(review, ManagedPreservedLifecycleReview)
@@ -401,8 +432,7 @@ class ManagedPreserveExecutionCoordinator:
         current = self.registry.load(review.deployment_id)
         if current is None:
             raise ManagedPreserveExecutionError("reviewed preserve deployment is unavailable")
-        if current.peer_binding is not None or getattr(current, "historical_peer_binding", None) is not None:
-            raise ManagedPreserveExecutionError("paired preserve requires product-owned consumer revocation")
+        self._require_pairing_proof(current, review, pairing_revocation)
         root = self.operations_root
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         info = os.lstat(root)
@@ -422,13 +452,16 @@ class ManagedPreserveExecutionCoordinator:
             ):
                 raise ManagedPreserveExecutionError("preserve lock is unsafe")
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return self._locked_preserve(path, review, installed_manifest, adapter)
+            return self._locked_preserve(
+                path, review, installed_manifest, adapter, pairing_revocation,
+            )
         finally:
             os.close(lock)
 
     def _locked_preserve(
         self, path: Path, review: ManagedPreservedLifecycleReview,
         manifest: CompositionManifest, adapter: PreservedProductAdapter,
+        pairing_revocation: PairingRevocationRecord | None,
     ) -> ManagedPreserveExecutionRecord:
         intended = ManagedPreserveExecutionRecord(
             review.operation_id, review.deployment_id, review.review_fingerprint,
@@ -442,8 +475,7 @@ class ManagedPreserveExecutionCoordinator:
         current = self.registry.load(review.deployment_id)
         if current is None:
             raise ManagedPreserveExecutionError("reviewed preserve deployment is unavailable")
-        if current.peer_binding is not None or getattr(current, "historical_peer_binding", None) is not None:
-            raise ManagedPreserveExecutionError("paired preserve requires product-owned consumer revocation")
+        self._require_pairing_proof(current, review, pairing_revocation)
         preserved = current.preserved_by_component.get(review.component)
         if preserved is not None:
             if (

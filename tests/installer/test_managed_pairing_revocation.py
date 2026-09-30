@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+from hashlib import sha256
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -15,7 +18,13 @@ from forge_platform.managed_pairing_revocation import (
 )
 
 
-RECEIPT = "ep-consumer-revoke:sha256:" + "a" * 64
+RECEIPT = "ep-consumer-revoke:sha256:" + sha256(json.dumps({
+    "instance_id": "ep-a",
+    "consumer_id": "consumer-a",
+    "project_id": "project-a",
+    "status": "REVOKED",
+    "revoked_at": "2026-09-27T00:00:00Z",
+}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class Guard:
@@ -51,14 +60,24 @@ class Revoker:
         }
 
     def revoke(self):
-        if self.state == "REVOKED":
-            return RECEIPT
-        self.calls += 1
-        self.state = "REVOKED"
-        if self.interrupt:
-            self.interrupt = False
-            raise RuntimeError("interrupted after product mutation")
-        return "wrong-receipt" if self.bad_receipt else RECEIPT
+        if self.state != "REVOKED":
+            self.calls += 1
+            self.state = "REVOKED"
+            if self.interrupt:
+                self.interrupt = False
+                raise RuntimeError("interrupted after product mutation")
+        if self.bad_receipt:
+            return "wrong-receipt"
+        evidence = {
+            "instance_id": self.provisioner.target.instance_id,
+            "consumer_id": self.scope.consumer_id,
+            "project_id": self.scope.project_id,
+            "status": "REVOKED",
+            "revoked_at": "2026-09-27T00:00:00Z",
+        }
+        return "ep-consumer-revoke:sha256:" + sha256(json.dumps(
+            evidence, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
 
 
 class ManagedPairingRevocationTests(unittest.TestCase):
@@ -132,6 +151,29 @@ class ManagedPairingRevocationTests(unittest.TestCase):
         self.assertEqual(result.ep_instance_id, "ep-a")
         self.assertEqual(result.state, "COMPLETE")
         self.assertEqual(self.registry.load("deployment-a"), self.current)
+
+    def test_terminal_readback_binds_original_review_scope_and_revoked_status(self):
+        self.run_revoke(self.component_plan, operation="preserve-a")
+        fingerprint = "sha256:" + sha256(json.dumps(
+            asdict(self.current), sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        selected = dict(
+            operation_id="preserve-a", deployment_id="deployment-a",
+            reviewed_deployment_fingerprint=fingerprint,
+            forge_instance_id="forge-a", ep_instance_id="ep-a", revoker=self.revoker,
+        )
+        self.assertEqual(self.coordinator.read_terminal(**selected).state, "COMPLETE")
+        for changed in (
+            selected | {"forge_instance_id": "forge-b"},
+            selected | {"reviewed_deployment_fingerprint": "sha256:" + "b" * 64},
+            selected | {"operation_id": "preserve-b"},
+            selected | {"revoker": Revoker(self.other_scope)},
+        ):
+            with self.assertRaises(ManagedPairingRevocationError):
+                self.coordinator.read_terminal(**changed)
+        self.revoker.state = "ACTIVE"
+        with self.assertRaises(ManagedPairingRevocationError):
+            self.coordinator.read_terminal(**selected)
 
     def test_interrupted_after_product_revoke_resumes_same_intent(self):
         self.revoker.interrupt = True
