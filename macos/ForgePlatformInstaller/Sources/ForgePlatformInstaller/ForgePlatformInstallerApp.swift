@@ -346,8 +346,31 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func executeReviewedPreserve(operationID: String, reviewFingerprint: String) {
+        executeReviewedLifecycle(
+            operationID: operationID, reviewFingerprint: reviewFingerprint,
+            operation: "PRESERVE", confirmedInstanceID: nil
+        )
+    }
+
+    func executeReviewedPurge(
+        operationID: String, reviewFingerprint: String,
+        confirmedInstanceID: String
+    ) {
+        executeReviewedLifecycle(
+            operationID: operationID, reviewFingerprint: reviewFingerprint,
+            operation: "PURGE", confirmedInstanceID: confirmedInstanceID
+        )
+    }
+
+    private func executeReviewedLifecycle(
+        operationID: String, reviewFingerprint: String,
+        operation: String, confirmedInstanceID: String?
+    ) {
         guard case .prepared(let session) = lifecycleReview,
-              session.intent.operation == "PRESERVE",
+              session.intent.operation == operation,
+              (operation == "PRESERVE" && confirmedInstanceID == nil
+                || operation == "PURGE"
+                    && confirmedInstanceID == session.intent.instanceID),
               !isLifecycleReviewRequestInFlight,
               !isLifecycleExecutionInFlight,
               !isRemovalExecutionInFlight,
@@ -362,7 +385,11 @@ final class InstallerWizardViewModel: ObservableObject {
         lifecycleReview = .executing(session)
         let coordinator = coordinator
         Task { @MainActor [weak self] in
-            let result = await coordinator.executeReviewedPreservedLifecycle(session)
+            let result = operation == "PURGE"
+                ? await coordinator.executeReviewedPreservedLifecycle(
+                    session, confirmedInstanceID: confirmedInstanceID
+                  )
+                : await coordinator.executeReviewedPreservedLifecycle(session)
             guard let self else { return }
             self.isLifecycleExecutionInFlight = false
             guard self.state.step == .deployment,
@@ -380,7 +407,8 @@ final class InstallerWizardViewModel: ObservableObject {
                 self.lifecycleReview = .recoveryPending(session)
             case .success(let receipt):
                 guard let request = try? ManagedInstallerPreservedLifecycleRequest(
-                    intent: session.intent, proposal: session.proposal
+                    intent: session.intent, proposal: session.proposal,
+                    confirmedInstanceID: confirmedInstanceID
                 ),
                       (try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
                         receipt.canonicalJSONData(), request: request
@@ -846,6 +874,12 @@ private struct ManagedDeploymentSelectionScreen: View {
     @State private var preserveOperationID = ""
     @State private var preserveReviewFingerprint = ""
     @State private var preserveSummary = ""
+    @State private var confirmingPurge = false
+    @State private var purgeOperationID = ""
+    @State private var purgeReviewFingerprint = ""
+    @State private var purgeExpectedInstanceID = ""
+    @State private var purgeConfirmedInstanceID = ""
+    @State private var purgeSummary = ""
 
     var body: some View {
         ScreenHeader(
@@ -1061,12 +1095,12 @@ private struct ManagedDeploymentSelectionScreen: View {
                 case .loading:
                     ProgressView("Exacte lifecycle-review wordt gelezen…")
                 case .executing:
-                    ProgressView("Product-eigen PRESERVE en registry-readback worden uitgevoerd…")
+                    ProgressView("Product-eigen lifecycleactie en registry-readback worden uitgevoerd…")
                 case .recoveryPending(let session):
-                    Text("Terminal bewijs ontbreekt voor operation \(session.operationID). Inventariseer opnieuw en verifieer het bewaarbewijs.")
+                    Text("Terminal bewijs ontbreekt voor \(session.intent.operation) operation \(session.operationID). Inventariseer opnieuw en hervat dezelfde operation ID na een verse review.")
                         .font(.caption.monospaced())
                 case .completed(let session, let receipt):
-                    Label("PRESERVE en exact registry-readback zijn terminaal bevestigd.",
+                    Label("\(session.intent.operation) en exact registry-readback zijn terminaal bevestigd.",
                           systemImage: "checkmark.seal.fill")
                         .foregroundStyle(.green)
                     Text("Operation ID: \(session.operationID)")
@@ -1098,6 +1132,31 @@ private struct ManagedDeploymentSelectionScreen: View {
                         }
                         .disabled(viewModel.isLifecycleExecutionInFlight
                             || viewModel.isRemovalExecutionInFlight)
+                    } else if session.intent.operation == "PURGE" {
+                        Button("Bevestig definitief wissen", role: .destructive) {
+                            purgeOperationID = session.operationID
+                            purgeReviewFingerprint = session.reviewFingerprint
+                            purgeExpectedInstanceID = session.intent.instanceID
+                            purgeConfirmedInstanceID = ""
+                            purgeSummary = "Deployment \(session.intent.deploymentID), component \(session.intent.component), exact instance \(session.intent.instanceID), registerrevisie \(session.proposal.registryRevision), operation \(session.operationID), review-fingerprint \(session.reviewFingerprint). Typ het instance-ID om definitief wissen te bevestigen."
+                            confirmingPurge = true
+                        }
+                        .disabled(viewModel.isLifecycleExecutionInFlight
+                            || viewModel.isRemovalExecutionInFlight)
+                        .alert("Bevestig definitief wissen", isPresented: $confirmingPurge) {
+                            TextField("Exact instance-ID", text: $purgeConfirmedInstanceID)
+                            Button("Wis definitief", role: .destructive) {
+                                viewModel.executeReviewedPurge(
+                                    operationID: purgeOperationID,
+                                    reviewFingerprint: purgeReviewFingerprint,
+                                    confirmedInstanceID: purgeConfirmedInstanceID
+                                )
+                            }
+                            .disabled(purgeConfirmedInstanceID != purgeExpectedInstanceID)
+                            Button("Annuleer", role: .cancel) {}
+                        } message: {
+                            Text(purgeSummary)
+                        }
                     }
                 case .recovered(let completion):
                     Text("PRESERVE terminaal bevestigd voor \(completion.intent.component)")
