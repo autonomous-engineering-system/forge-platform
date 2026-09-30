@@ -10,7 +10,7 @@ migration instructions.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import fcntl
 from hashlib import sha256
 import json
@@ -613,6 +613,18 @@ class ManagedDeploymentRegistry:
                     ) is None
                 ):
                     raise ManagedDeploymentError("paired purge lacks EP consumer revocation")
+                ep = current.active_by_component.get("engineering-platform-server")
+                if ep is None:
+                    raise ManagedDeploymentError("paired purge lost its EP component")
+                desired = replace(current, components=(ep,), peer_binding=None)
+                plan = ManagedDeploymentPlanner.plan(current, desired)
+                if pairing_revocation.plan_fingerprint != "sha256:" + sha256(
+                    json.dumps(
+                        asdict(plan), sort_keys=True, separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                ).hexdigest():
+                    raise ManagedDeploymentError("paired purge removal plan changed")
             active = current.active_by_component.get(component)
             preserved = current.preserved_by_component.get(component)
             target = active or preserved

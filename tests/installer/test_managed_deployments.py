@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
+from hashlib import sha256
 import json
 from pathlib import Path
 import tempfile
@@ -24,6 +25,7 @@ from forge_platform.managed_deployments import (
     ManagedPreservedComponentBinding,
 )
 from forge_platform.product_preserved_lifecycle import FORGE_COMPONENT, EP_COMPONENT
+from forge_platform.managed_pairing_revocation import PairingRevocationRecord
 from tests.installer.test_product_preserved_lifecycle import (
     _REQUEST, _artifact, _receipt_digest, _terminal,
 )
@@ -305,6 +307,18 @@ class ManagedDeploymentTests(unittest.TestCase):
             registry.create(paired)
             with self.assertRaisesRegex(ManagedDeploymentError, "lacks EP consumer revocation"):
                 registry.commit_purged(deployment_id="paired", **args)
+            reviewed_fingerprint = "sha256:" + sha256(json.dumps(
+                asdict(paired), sort_keys=True, separators=(",", ":"),
+            ).encode()).hexdigest()
+            wrong_plan = PairingRevocationRecord(
+                "purge-a", "paired", "sha256:" + "0" * 64,
+                reviewed_fingerprint, "forge-a", "ep-a", "consumer-a",
+                "project-a", "COMPLETE", "ep-consumer-revoke:sha256:" + "1" * 64,
+            )
+            with self.assertRaisesRegex(ManagedDeploymentError, "removal plan changed"):
+                registry.commit_purged(
+                    deployment_id="paired", pairing_revocation=wrong_plan, **args,
+                )
             self.assertEqual(registry.load("paired"), paired)
             registry.remove("paired", expected_revision=1)
             registry.create(unpaired)
