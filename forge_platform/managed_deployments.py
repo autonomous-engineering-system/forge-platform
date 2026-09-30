@@ -20,7 +20,7 @@ import re
 import tempfile
 from typing import Iterator, Mapping
 
-from .component_operations import QualifiedArtifact
+from .component_operations import ProductInstallationReadback, QualifiedArtifact
 from .composition_identity import require_composition_identity
 from .product_preserved_lifecycle import (
     ProductPreservedLifecycleError,
@@ -571,6 +571,121 @@ class ManagedDeploymentRegistry:
                 historical_peer_binding=(
                     getattr(current, "historical_peer_binding", None) or current.peer_binding
                 ),
+            )
+            self._assert_instances_unclaimed(candidate, excluding=deployment_id)
+            self._write(candidate)
+            return candidate
+
+    def commit_ep_restored(
+        self, *, deployment_id: str, expected_revision: int,
+        instance_id: str, operation_id: str, preserve_operation_id: str,
+        artifact: QualifiedArtifact, installed_manifest: CompositionManifest,
+        receipt: Mapping[str, object], status: Mapping[str, object],
+        readback: ProductInstallationReadback,
+    ) -> ManagedDeployment:
+        """CAS an EP-only RESTORE after owning lifecycle and fresh readiness proof.
+
+        The caller must obtain readback from the sealed EP adapter after provider
+        reverification and repair. No service or product mutation occurs here.
+        """
+        component = "engineering-platform-server"
+        _safe_id(deployment_id, "restored deployment_id")
+        if not isinstance(installed_manifest, CompositionManifest):
+            raise ManagedDeploymentError("restore composition authority is unavailable")
+        try:
+            terminal = validate_terminal_preserved_lifecycle(
+                component=component, operation="RESTORE",
+                operation_id=operation_id, instance_id=instance_id,
+                artifact=artifact, request_digest=receipt.get("request_digest"),
+                receipt=receipt, status=status,
+                preserve_operation_id=preserve_operation_id,
+            )
+        except (AttributeError, ProductPreservedLifecycleError) as error:
+            raise ManagedDeploymentError("owning EP restore evidence is invalid") from error
+        selected = [
+            item.artifact for item in installed_manifest.components
+            if item.identity == component
+        ]
+        if selected != [artifact]:
+            raise ManagedDeploymentError("restored EP artifact is outside installed composition")
+        if (
+            not isinstance(readback, ProductInstallationReadback)
+            or readback.component != component
+            or readback.installation_identity != instance_id
+            or readback.selected_instance_identity != instance_id
+            or not isinstance(readback.selected_server_identity, str)
+            or not readback.selected_server_identity
+            or readback.artifact != artifact.correlation
+            or readback.state != "ACTIVE"
+            or readback.health_state != "HEALTHY"
+            or readback.inventory_coverage != "MACHINE_WIDE"
+            or readback.conflict_state != "NONE"
+            or re.fullmatch(r"ep-inventory:[0-9a-f]{64}", readback.evidence_reference) is None
+            or not isinstance(readback.health_evidence_reference, str)
+            or re.fullmatch(r"ep-status:[0-9a-f]{64}", readback.health_evidence_reference) is None
+        ):
+            raise ManagedDeploymentError("restored EP provider/readiness proof is unavailable")
+        reference_payload = {
+            "deployment_id": deployment_id,
+            "instance_id": instance_id,
+            "operation_id": operation_id,
+            "preserve_operation_id": preserve_operation_id,
+            "restore_receipt_digest": terminal.receipt_digest,
+            "composition_id": installed_manifest.composition_id,
+            "manifest_digest": installed_manifest.manifest_digest,
+            "inventory_reference": readback.evidence_reference,
+            "readiness_reference": readback.health_evidence_reference,
+        }
+        reference = "receipt:restore-" + sha256(json.dumps(
+            reference_payload, sort_keys=True, separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")).hexdigest()
+        with self._lock():
+            current = self.load(deployment_id)
+            if current is None or current.composition_binding is None:
+                raise ManagedDeploymentError("restored deployment is unavailable")
+            if (
+                current.composition_binding.composition_id != installed_manifest.composition_id
+                or current.composition_binding.manifest_digest != installed_manifest.manifest_digest
+            ):
+                raise ManagedDeploymentError("restore composition changed")
+            if current.revision == expected_revision + 1:
+                active = current.active_by_component.get(component)
+                if (
+                    current.schema != MANAGED_DEPLOYMENT_SCHEMA_V2
+                    or set(current.active_by_component) != {component}
+                    or current.preserved_by_component
+                    or current.peer_binding is not None
+                    or active is None or active.instance_id != instance_id
+                    or active.receipt_reference != reference
+                ):
+                    raise ManagedDeploymentError("restore replay identity changed")
+                return current
+            if (
+                current.revision != expected_revision
+                or current.schema != MANAGED_DEPLOYMENT_SCHEMA_V3
+                or current.components
+                or set(current.preserved_by_component) != {component}
+                or current.peer_binding is not None
+                or current.historical_peer_binding is not None
+            ):
+                raise ManagedDeploymentError("reviewed EP restore target changed")
+            preserved = current.preserved_by_component[component]
+            if (
+                preserved.instance_id != instance_id
+                or preserved.preserve_operation_id != preserve_operation_id
+                or (preserved.version, preserved.source_revision,
+                    preserved.artifact_digest) !=
+                    (artifact.version, artifact.source_revision, artifact.digest)
+            ):
+                raise ManagedDeploymentError("preserved EP restore authority changed")
+            candidate = ManagedDeployment(
+                deployment_id=current.deployment_id,
+                revision=current.revision + 1,
+                label=current.label,
+                components=(ManagedComponentBinding(component, instance_id, reference),),
+                schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
+                composition_binding=current.composition_binding,
             )
             self._assert_instances_unclaimed(candidate, excluding=deployment_id)
             self._write(candidate)

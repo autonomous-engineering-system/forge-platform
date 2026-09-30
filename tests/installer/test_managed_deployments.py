@@ -12,6 +12,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from forge_platform.component_operations import ProductInstallationReadback
 from forge_platform.managed_deployments import (
     MANAGED_DEPLOYMENT_SCHEMA_V2,
     MANAGED_DEPLOYMENT_SCHEMA_V3,
@@ -29,6 +30,7 @@ from forge_platform.managed_pairing_revocation import PairingRevocationRecord
 from tests.installer.test_product_preserved_lifecycle import (
     _REQUEST, _artifact, _receipt_digest, _terminal,
 )
+from tests.installer.test_managed_preserved_product_adapters import _ep_evidence
 from tests.installer.test_released_product_routes import verified_forge_ep_selection
 from tests.installer.test_universal_installer import current_context
 
@@ -58,6 +60,125 @@ def deployment(
 
 
 class ManagedDeploymentTests(unittest.TestCase):
+    def test_ep_only_restore_commit_requires_owning_terminal_and_fresh_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ManagedDeploymentRegistry(Path(directory).resolve())
+            artifact = _artifact(EP_COMPONENT)
+            base = verified_forge_ep_selection(current_context()).manifest
+            manifest = replace(
+                base, manifest_digest="sha256:" + "d" * 64,
+                components=tuple(
+                    replace(item, artifact=artifact) if item.identity == EP_COMPONENT
+                    else item for item in base.components
+                ),
+            )
+            composition = ManagedCompositionBinding(
+                manifest.composition_id, manifest.manifest_digest,
+                "receipt:restore-composition",
+            )
+            selected = ManagedDeployment(
+                "selected", 1, "Selected", (
+                    ManagedComponentBinding(EP_COMPONENT, "ep-a", "receipt:ep-original"),
+                ), schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
+                composition_binding=composition,
+            )
+            sibling = ManagedDeployment(
+                "sibling", 1, "Sibling", (
+                    ManagedComponentBinding(EP_COMPONENT, "ep-b", "receipt:ep-other"),
+                ), schema=MANAGED_DEPLOYMENT_SCHEMA_V2,
+                composition_binding=composition,
+            )
+            registry.create(selected)
+            registry.create(sibling)
+            sibling_bytes = (registry.root / "sibling.json").read_bytes()
+            preserve_receipt, preserve_status = self._preserve_evidence(
+                EP_COMPONENT, "ep-a", "preserve-ep",
+            )
+            preserved = registry.commit_preserved(
+                deployment_id="selected", expected_revision=1,
+                component=EP_COMPONENT, instance_id="ep-a",
+                operation_id="preserve-ep", artifact=artifact,
+                installed_manifest=manifest, request_digest=_REQUEST,
+                receipt=preserve_receipt, status=preserve_status,
+            )
+            restore_receipt, restore_status = _ep_evidence(
+                "RESTORE", "restore-ep", "ep-a", "preserve-ep",
+            )
+            readback = ProductInstallationReadback(
+                EP_COMPONENT, "ep-a", "ACTIVE", "ep-runtime:a", "ep-executable:a",
+                "org.ep.a", "ep-a", artifact.correlation, "HEALTHY",
+                "MACHINE_WIDE", "NONE", "ep-inventory:" + "a" * 64,
+                "ep-status:" + "b" * 64,
+            )
+            common = dict(
+                deployment_id="selected", expected_revision=preserved.revision,
+                instance_id="ep-a", operation_id="restore-ep",
+                preserve_operation_id="preserve-ep", artifact=artifact,
+                installed_manifest=manifest, receipt=restore_receipt,
+                status=restore_status, readback=readback,
+            )
+            for changed in (
+                {"readback": replace(readback, state="UNHEALTHY", health_state="UNHEALTHY")},
+                {"readback": replace(readback, installation_identity="ep-b")},
+                {"readback": replace(readback, selected_server_identity=None)},
+                {"status": restore_status | {"lifecycle_state": "PURGED"}},
+                {"preserve_operation_id": "preserve-other"},
+                {"expected_revision": 1},
+            ):
+                with self.assertRaises(ManagedDeploymentError):
+                    registry.commit_ep_restored(**(common | changed))
+                self.assertEqual(registry.load("selected"), preserved)
+            restored = registry.commit_ep_restored(**common)
+            self.assertEqual(restored.schema, MANAGED_DEPLOYMENT_SCHEMA_V2)
+            self.assertEqual(restored.revision, preserved.revision + 1)
+            self.assertEqual(set(restored.active_by_component), {EP_COMPONENT})
+            self.assertEqual(restored.active_by_component[EP_COMPONENT].instance_id, "ep-a")
+            self.assertTrue(restored.active_by_component[EP_COMPONENT].receipt_reference.startswith("receipt:restore-"))
+            self.assertEqual(registry.commit_ep_restored(**common), restored)
+            with self.assertRaises(ManagedDeploymentError):
+                registry.commit_ep_restored(**(common | {"readback": replace(
+                    readback, health_evidence_reference="ep-status:" + "c" * 64,
+                )}))
+            self.assertEqual(registry.load("sibling"), sibling)
+            self.assertEqual((registry.root / "sibling.json").read_bytes(), sibling_bytes)
+
+            paired = ManagedDeployment(
+                "paired", 1, "Paired", (
+                    ManagedComponentBinding(FORGE_COMPONENT, "forge-paired", "receipt:forge-paired"),
+                    ManagedComponentBinding(EP_COMPONENT, "ep-paired", "receipt:ep-paired"),
+                ), ManagedPeerBinding("forge-paired", "ep-paired", "receipt:pair-paired"),
+                MANAGED_DEPLOYMENT_SCHEMA_V2, composition,
+            )
+            registry.create(paired)
+            pair_receipt, pair_status = self._preserve_evidence(
+                EP_COMPONENT, "ep-paired", "preserve-paired",
+            )
+            paired_preserved = registry.commit_preserved(
+                deployment_id="paired", expected_revision=1,
+                component=EP_COMPONENT, instance_id="ep-paired",
+                operation_id="preserve-paired", artifact=artifact,
+                installed_manifest=manifest, request_digest=_REQUEST,
+                receipt=pair_receipt, status=pair_status,
+            )
+            pair_restore_receipt, pair_restore_status = _ep_evidence(
+                "RESTORE", "restore-paired", "ep-paired", "preserve-paired",
+            )
+            with self.assertRaisesRegex(ManagedDeploymentError, "reviewed EP restore target changed"):
+                registry.commit_ep_restored(**(common | {
+                    "deployment_id": "paired",
+                    "expected_revision": paired_preserved.revision,
+                    "instance_id": "ep-paired",
+                    "operation_id": "restore-paired",
+                    "preserve_operation_id": "preserve-paired",
+                    "receipt": pair_restore_receipt,
+                    "status": pair_restore_status,
+                    "readback": replace(
+                        readback, installation_identity="ep-paired",
+                        selected_instance_identity="ep-paired",
+                    ),
+                }))
+            self.assertEqual(registry.load("paired"), paired_preserved)
+
     def test_preserved_forge_installation_identity_accepts_product_opaque_case(self) -> None:
         artifact = _artifact(FORGE_COMPONENT)
         preserved = ManagedPreservedComponentBinding(
