@@ -196,7 +196,7 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
                 self.assertEqual(service.execute_preserved_lifecycle(request_bytes), first)
             self.assertEqual(revoker.calls, 1)
             self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
-            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(len(runner.calls), 3)
             self.assertEqual(currency.calls[0]["mutation"], "pairing-consumer-revoke")
             self.assertEqual(registry.load("other-pair"), other)
             self.assertEqual((registry.root / "other-pair.json").read_bytes(), other_bytes)
@@ -299,7 +299,7 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
                 self.assertEqual(execute_preserved_lifecycle_request(
                     request_bytes, service_loader=lambda: service,
                 ), response)
-            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(len(runner.calls), 3)
             self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
             self.assertEqual(len(currency.calls), 4)
 
@@ -540,7 +540,7 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
                 ), output.getvalue())
             current = registry.load("reviewed-pair")
             self.assertEqual(set(current.active_by_component), {"engineering-platform-server"})
-            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(len(runner.calls), 3)
             self.assertEqual([call[0] for call in supervisor.calls].count("remove"), 1)
             self.assertTrue(all(call["mutation"] == "PURGE" for call in currency.calls))
 
@@ -596,7 +596,7 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
             self.assertEqual(set(current.active_by_component), {"engineering-platform-server"})
             self.assertIsNone(current.peer_binding)
             self.assertEqual(revoker.calls, 1)
-            self.assertEqual(len(runner.calls), 4)
+            self.assertEqual(len(runner.calls), 5)
             self.assertEqual(
                 sum(call[3:5] == ("server", "purge") for call in runner.calls), 1,
             )
@@ -802,7 +802,7 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
                 self.assertEqual(execute_preserved_lifecycle_request(
                     request_bytes, service_loader=lambda: service,
                 ), receipt)
-            self.assertEqual(len(runner.calls), 2)
+            self.assertEqual(len(runner.calls), 3)
 
     def test_final_component_purge_recovery_reads_exact_terminal_without_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
