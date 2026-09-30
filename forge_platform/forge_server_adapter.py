@@ -494,7 +494,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         return binding
 
     @staticmethod
-    def read_peer_configuration_digest(
+    def read_peer_configuration_generation(
         *,
         forge_executable: Path,
         target: ForgeServerTarget,
@@ -502,8 +502,8 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         expected_binding_id: str,
         expected_ep_consumer_id: str,
         runner: ForgeCommandRunner | None = None,
-    ) -> str:
-        """Read the exact pairing digest through Forge's own read-only status CLI."""
+    ) -> tuple[int, str]:
+        """Read the exact pairing generation through Forge's own status CLI."""
         if (
             not isinstance(forge_executable, Path)
             or not forge_executable.is_absolute()
@@ -567,7 +567,24 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             or re.fullmatch(r"sha256:[0-9a-f]{64}", peer["configuration_digest"]) is None
         ):
             raise ForgeServerAdapterError("Forge peer configuration is unavailable or ambiguous")
-        return peer["configuration_digest"]
+        return peer["configuration_revision"], peer["configuration_digest"]
+
+    @staticmethod
+    def read_peer_configuration_digest(
+        *, forge_executable: Path, target: ForgeServerTarget,
+        installed_version: str, expected_binding_id: str,
+        expected_ep_consumer_id: str,
+        runner: ForgeCommandRunner | None = None,
+    ) -> str:
+        """Preserve the exact digest projection for the published update path."""
+        _, digest = ForgeServerProductAdapter.read_peer_configuration_generation(
+            forge_executable=forge_executable, target=target,
+            installed_version=installed_version,
+            expected_binding_id=expected_binding_id,
+            expected_ep_consumer_id=expected_ep_consumer_id,
+            runner=runner,
+        )
+        return digest
 
     @staticmethod
     def prepare_instance(
