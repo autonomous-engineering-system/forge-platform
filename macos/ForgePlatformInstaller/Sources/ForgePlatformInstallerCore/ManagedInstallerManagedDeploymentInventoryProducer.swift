@@ -25,8 +25,10 @@ public protocol ManagedInstallerManagedDeploymentCreateCandidateLoading: Sendabl
 }
 
 /// Projects a stable Python-owned registry readback into the native selection
-/// inventory. Two independent reads surround candidate loading and must agree
-/// before a selection can be reviewed. The evidence binds both sources.
+/// inventory. If the private create candidate was consumed by a terminal
+/// product-proven registry commit before a crash, the helper rotates it once
+/// before publishing another selection. Two independent registry reads must
+/// agree; the evidence binds the final candidate and registry state.
 public struct ManagedInstallerManagedDeploymentInventoryProducer: Sendable {
     private let registry: any ManagedInstallerManagedDeploymentRegistrySnapshotLoading
     private let candidate: any ManagedInstallerManagedDeploymentCreateCandidateLoading
@@ -48,7 +50,26 @@ public struct ManagedInstallerManagedDeploymentInventoryProducer: Sendable {
               CompositionCatalogValidation.isTaggedSHA256(
                 String(first.evidenceReference.dropFirst("registry:".count))
               ) else { return .failure(.registryUnavailable) }
-        guard let candidateID = candidate.loadCreateCandidateID(),
+        guard let storedCandidateID = candidate.loadCreateCandidateID() else {
+            return .failure(.candidateUnavailable)
+        }
+        let candidateID: String
+        if let consumed = first.records.first(where: {
+            $0.target.id == storedCandidateID
+        }) {
+            guard consumed.compositionReceiptReference != nil,
+                  let rotator = candidate as?
+                    any ManagedInstallerTerminalCreateCandidateRotating,
+                  case .success(let next) = rotator.rotateAfterTerminalCreate(
+                      consumedDeploymentID: storedCandidateID, registry: registry
+                  ), next != storedCandidateID else {
+                return .failure(.staleState)
+            }
+            candidateID = next
+        } else {
+            candidateID = storedCandidateID
+        }
+        guard
               let target = try? ManagedDeploymentTarget(
                 id: candidateID, label: "Nieuwe deployment", exists: false
               ) else { return .failure(.candidateUnavailable) }
