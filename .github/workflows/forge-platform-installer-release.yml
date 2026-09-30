@@ -200,6 +200,12 @@ jobs:
           curl --fail --location --silent --show-error --retry 3 --max-time 60 \
             --output release-input/forge-release-complete-2.7.38.json \
             https://github.com/pcvantol/forge/releases/download/forge-v2.7.38/forge-release-complete-2.7.38-0a3d6e35b01da93bb5a674ae7795558655c16c7d.json
+          curl --fail --location --silent --show-error --retry 3 --max-time 60 \
+            --output release-input/forge-update-controller-2.7.39.py \
+            https://raw.githubusercontent.com/pcvantol/forge/ebc43dc12da27353f85c991a26da9852aa790f05/scripts/update_installed_forge.py
+          curl --fail --location --silent --show-error --retry 3 --max-time 60 \
+            --output release-input/forge-release-complete-2.7.39.json \
+            https://github.com/pcvantol/forge/releases/download/forge-v2.7.39/forge-release-complete-2.7.39-ebc43dc12da27353f85c991a26da9852aa790f05.json
           python3 scripts/prepare_offline_installer_resources.py \
             --release-trust-resource release-trust/ForgePlatformInstallerReleaseTrust.json \
             --catalog-trust-resource release-trust/ForgePlatformInstallerCompositionCatalogTrust.json \
@@ -215,6 +221,8 @@ jobs:
             --product-worker release-input/forge-platform-product-worker.pyz \
             --forge-update-controller release-input/forge-update-controller.py \
             --forge-release-complete-receipt release-input/forge-release-complete-2.7.38.json \
+            --forge-239-update-controller release-input/forge-update-controller-2.7.39.py \
+            --forge-239-release-complete-receipt release-input/forge-release-complete-2.7.39.json \
             --output release-input/ForgePlatformInstaller.app \
             --bundle-identifier "$BUNDLE_IDENTIFIER" \
             --sealed-release-trust-resource release-trust/ForgePlatformInstallerReleaseTrust.json \
@@ -227,14 +235,19 @@ jobs:
           test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-platform-product-worker.pyz
           test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-update-controller.py
           test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-release-complete-2.7.38.json
+          test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-update-controller-2.7.39.py
+          test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-release-complete-2.7.39.json
           python3 - <<'PY'
           from pathlib import Path
-          from forge_platform.forge_update_resources import read_forge_update_resources
+          from forge_platform.forge_update_resources import read_forge_239_update_resources, read_forge_update_resources
 
           worker = Path("release-input/ForgePlatformInstaller.app/Contents/Resources/forge-platform-product-worker.pyz").resolve()
           resources = read_forge_update_resources(worker)
           assert resources.controller.name == "forge-update-controller.py"
           assert resources.release_receipt.name == "forge-release-complete-2.7.38.json"
+          new_resources = read_forge_239_update_resources(worker)
+          assert new_resources.controller.name == "forge-update-controller-2.7.39.py"
+          assert new_resources.release_receipt.name == "forge-release-complete-2.7.39.json"
           PY
           test -f release-input/ForgePlatformInstaller.app/Contents/Library/LaunchDaemons/com.autonomous-engineering-system.forge-platform-installer.helper.plist
           ARCHIVE="$ASSET_PREFIX$ARCHITECTURE.zip"

@@ -82,6 +82,32 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
             self.workflow.index("scripts/package_macos_installer_archive.py"),
         )
 
+    def test_239_published_resources_are_required_on_every_release_path(self) -> None:
+        source = "ebc43dc12da27353f85c991a26da9852aa790f05"
+        self.assertIn(
+            f"raw.githubusercontent.com/pcvantol/forge/{source}/scripts/update_installed_forge.py",
+            self.workflow,
+        )
+        self.assertIn(f"forge-release-complete-2.7.39-{source}.json", self.workflow)
+        self.assertIn("--forge-239-update-controller release-input/forge-update-controller-2.7.39.py", self.workflow)
+        self.assertIn("--forge-239-release-complete-receipt release-input/forge-release-complete-2.7.39.json", self.workflow)
+        for script in (self.workflow, self.offline_release, self.local_release):
+            self.assertIn("read_forge_239_update_resources(worker)", script)
+        self.assertLess(
+            self.workflow.index("read_forge_239_update_resources(worker)"),
+            self.workflow.index("scripts/package_macos_installer_archive.py"),
+        )
+        self.assertLess(
+            self.offline_release.index("read_forge_239_update_resources(worker)"),
+            self.offline_release.index("codesign --force"),
+        )
+        self.assertLess(
+            self.local_release.index("read_forge_239_update_resources(worker)"),
+            self.local_release.index("codesign --force"),
+        )
+        for name in ("FORGE_PLATFORM_FORGE_239_UPDATE_CONTROLLER", "FORGE_PLATFORM_FORGE_239_RELEASE_COMPLETE_RECEIPT"):
+            self.assertIn(name, self.offline_release)
+
     def test_protected_environment_emits_only_exact_non_secret_authorization(self) -> None:
         authorization = self.workflow.split("  authorize-local-signing:\n", 1)[1]
         self.assertIn("environment:\n      name: forge-platform-installer-signing", authorization)
