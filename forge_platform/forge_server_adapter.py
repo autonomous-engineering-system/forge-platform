@@ -758,12 +758,10 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
 
         return self._run("execution-host", "preflight")
 
-    def detach_ep_peer(
+    def _peer_detach_request(
         self, *, operation_id: str, binding_id: str, revision: int,
         configuration_digest: str, operator_id: str,
-    ) -> Mapping[str, object]:
-        """Delegate exact durable detach to Forge and verify its independent status."""
-
+    ) -> dict[str, object]:
         if not (
             self.installed_artifact.version == "2.7.39"
             and qualified_forge_lifecycle_artifact(self.installed_artifact)
@@ -777,7 +775,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             and re.fullmatch(r"sha256:[0-9a-f]{64}", configuration_digest)
         ):
             raise ForgeServerAdapterError("Forge peer detach authority is invalid")
-        request = {
+        return {
             "contract": "forge-ep-peer-detach/v1",
             "operation_id": operation_id,
             "instance_id": self.target.instance_id,
@@ -786,16 +784,15 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             "expected_digest": configuration_digest,
             "operator_reference": sha256(operator_id.encode()).hexdigest()[:16],
         }
+
+    @staticmethod
+    def _validate_peer_detach_status(
+        request: Mapping[str, object], status: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        receipt = status.get("receipt")
+        if not isinstance(receipt, Mapping):
+            raise ForgeServerAdapterError("Forge peer detach receipt changed")
         request_digest = _digest_json(request)
-        receipt = self._run(
-            "execution-host", "detach",
-            "--operation-id", operation_id,
-            "--instance-id", self.target.instance_id,
-            "--expected-binding-id", binding_id,
-            "--expected-revision", str(revision),
-            "--expected-digest", configuration_digest,
-            "--operator-id", operator_id,
-        )
         expected_receipt_fields = set(request) | {
             "request_digest", "state", "local_peer_state",
             "remote_consumer_revoke", "next_configuration_revision",
@@ -810,28 +807,67 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             or receipt.get("state") != "COMPLETE"
             or receipt.get("local_peer_state") != "DETACHED"
             or receipt.get("remote_consumer_revoke") != "NOT_ASSERTED"
-            or receipt.get("next_configuration_revision") != revision + 1
+            or receipt.get("next_configuration_revision") != request["expected_revision"] + 1
             or not isinstance(receipt.get("completed_at"), str)
             or not receipt["completed_at"]
             or receipt.get("receipt_digest") != _digest_json(unsigned)
         ):
             raise ForgeServerAdapterError("Forge peer detach receipt changed")
-        status = self._run(
-            "execution-host", "detach-status", "--operation-id", operation_id,
-        )
         if (
             set(status) != {
                 "contract", "operation_id", "instance_id", "request_digest",
                 "phase", "current_peer_status", "receipt",
             }
             or status.get("contract") != request["contract"]
-            or status.get("operation_id") != operation_id
-            or status.get("instance_id") != self.target.instance_id
+            or status.get("operation_id") != request["operation_id"]
+            or status.get("instance_id") != request["instance_id"]
             or status.get("request_digest") != request_digest
             or status.get("phase") != "COMPLETE"
             or status.get("current_peer_status") != "DETACHED"
             or status.get("receipt") != receipt
         ):
+            raise ForgeServerAdapterError("Forge peer detach terminal status changed")
+        return status
+
+    def read_detach_ep_peer(
+        self, *, operation_id: str, binding_id: str, revision: int,
+        configuration_digest: str, operator_id: str,
+    ) -> Mapping[str, object]:
+        """Read exact terminal Forge detach without invoking the mutation route."""
+
+        request = self._peer_detach_request(
+            operation_id=operation_id, binding_id=binding_id, revision=revision,
+            configuration_digest=configuration_digest, operator_id=operator_id,
+        )
+        status = self._run(
+            "execution-host", "detach-status", "--operation-id", operation_id,
+        )
+        return self._validate_peer_detach_status(request, status)
+
+    def detach_ep_peer(
+        self, *, operation_id: str, binding_id: str, revision: int,
+        configuration_digest: str, operator_id: str,
+    ) -> Mapping[str, object]:
+        """Delegate exact durable detach to Forge and verify independent status."""
+
+        self._peer_detach_request(
+            operation_id=operation_id, binding_id=binding_id, revision=revision,
+            configuration_digest=configuration_digest, operator_id=operator_id,
+        )
+        receipt = self._run(
+            "execution-host", "detach",
+            "--operation-id", operation_id,
+            "--instance-id", self.target.instance_id,
+            "--expected-binding-id", binding_id,
+            "--expected-revision", str(revision),
+            "--expected-digest", configuration_digest,
+            "--operator-id", operator_id,
+        )
+        status = self.read_detach_ep_peer(
+            operation_id=operation_id, binding_id=binding_id, revision=revision,
+            configuration_digest=configuration_digest, operator_id=operator_id,
+        )
+        if status["receipt"] != receipt:
             raise ForgeServerAdapterError("Forge peer detach terminal status changed")
         return status
 

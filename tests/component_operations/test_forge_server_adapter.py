@@ -433,6 +433,34 @@ class ForgeServerAdapterTests(unittest.TestCase):
         self.assertEqual(detach(), status)
         self.assertEqual(len(runner.calls), 4)
         self.assertEqual(runner.calls[0][3:5], ("execution-host", "detach"))
+        readback = adapter.read_detach_ep_peer(
+            operation_id="detach-1", binding_id="binding-1", revision=2,
+            configuration_digest=digest, operator_id="operator-1",
+        )
+        self.assertEqual(readback, status)
+        self.assertEqual(len(runner.calls), 5)
+        self.assertEqual(runner.calls[-1][3:5], ("execution-host", "detach-status"))
+        for selector in (
+            {"binding_id": "binding-other"}, {"revision": 3},
+            {"configuration_digest": "sha256:" + "b" * 64},
+            {"operator_id": "operator-other"},
+        ):
+            request = {
+                "operation_id": "detach-1", "binding_id": "binding-1",
+                "revision": 2, "configuration_digest": digest,
+                "operator_id": "operator-1",
+            } | selector
+            with self.subTest(selector=selector), self.assertRaisesRegex(
+                ForgeServerAdapterError, "receipt changed"
+            ):
+                adapter.read_detach_ep_peer(**request)
+        count = len(runner.calls)
+        with self.assertRaisesRegex(ForgeServerAdapterError, "authority is invalid"):
+            adapter.read_detach_ep_peer(
+                operation_id="detach-1", binding_id="binding-1", revision=True,
+                configuration_digest=digest, operator_id="operator-1",
+            )
+        self.assertEqual(len(runner.calls), count)
         for changed in (
             {"instance_id": "forge-other"},
             {"remote_consumer_revoke": "REVOKED"},
