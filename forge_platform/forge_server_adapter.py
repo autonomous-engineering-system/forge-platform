@@ -271,6 +271,20 @@ class ForgeUpdateBinding:
         ):
             raise ValueError("Forge update intent root must be absolute")
 
+    def durable_snapshot(self) -> tuple[tuple[str, str], ...]:
+        """Freeze every helper-owned update input across worker restarts."""
+        if self.intent_root is None:
+            raise ForgeServerAdapterError("Forge durable update intent root is unavailable")
+        return tuple(sorted(
+            (name, str(getattr(self, name))) for name in (
+                "updater_executable", "qualification_receipt",
+                "qualification_receipt_sha256", "controller_source", "controller_sha256",
+                "resolver", "resolver_sha256", "runtime_root", "runtime_id",
+                "installation_id", "peer_configuration_digest", "existing_interpreter",
+                "existing_version", "base_python", "intent_root",
+            )
+        ))
+
 
 def _verified_forge_238_controller(binding: ForgeUpdateBinding) -> bool:
     """Read the exact protected controller bytes without following path links."""
@@ -1000,7 +1014,12 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             raise ForgeServerAdapterError("Forge durable update binding changed or is unavailable")
         store = ForgeUpdateIntentStore(binding.intent_root)
         existing = store.read(request.operation_id)
+        binding_snapshot = (
+            binding.durable_snapshot() if request.artifact.version == "2.7.39" else None
+        )
         if existing is not None:
+            if existing.binding_snapshot != binding_snapshot:
+                raise ForgeServerAdapterError("Forge update retry changed the durable product binding")
             if existing.assessment_reference != reviewed_assessment:
                 raise ForgeServerAdapterError("Forge update retry changed reviewed assessment evidence")
             if (
@@ -1017,6 +1036,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
                 request.operation_id, request.fingerprint(), self.target.instance_id,
                 existing.installed_artifact, request.artifact.digest,
                 existing.assessment_reference,
+                binding_snapshot=binding_snapshot,
             )
             if not existing.same_selection(selected):
                 raise ForgeServerAdapterError("Forge update retry changed the exact operation selection")
@@ -1044,6 +1064,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             request.operation_id, request.fingerprint(), self.target.instance_id,
             self.installed_artifact.digest, request.artifact.digest,
             assessment.evidence_reference,
+            binding_snapshot=binding_snapshot,
         )
         intent = store.prepare(intended)
         if intent.assessment_reference != assessment.evidence_reference:
@@ -1060,6 +1081,10 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         store: ForgeUpdateIntentStore,
         intent: ForgeUpdateIntent,
     ) -> str:
+        if request.artifact.version == "2.7.39" and (
+            intent.binding_snapshot != binding.durable_snapshot()
+        ):
+            raise ForgeServerAdapterError("Forge update resume changed the durable product binding")
         if intent.phase == "UPDATER_INVOKED":
             if request.artifact.version in {"2.7.38", "2.7.39"} and not (
                 _verified_published_update_resources(binding, request.artifact.version)
