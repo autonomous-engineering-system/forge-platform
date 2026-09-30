@@ -642,6 +642,22 @@ final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
             XCTAssertThrowsError(try binding(invalid, "project"), invalid)
             XCTAssertThrowsError(try binding("consumer", invalid), invalid)
         }
+        XCTAssertNoThrow(try ManagedInstallerProductWorkerPairingAuthority(
+            bindingID: "binding", consumerID: "consumer", hostID: "host",
+            projectID: "project", repositoryID: "1repo_name.test",
+            repositoryIdentity: "owner:repository",
+            credentialReference: "keychain://forge.ep/consumer",
+            operatorID: "operator"
+        ))
+        for invalid in ["ab", "Repository", "repo/path"] {
+            XCTAssertThrowsError(try ManagedInstallerProductWorkerPairingAuthority(
+                bindingID: "binding", consumerID: "consumer", hostID: "host",
+                projectID: "project", repositoryID: invalid,
+                repositoryIdentity: "owner:repository",
+                credentialReference: "keychain://forge.ep/consumer",
+                operatorID: "operator"
+            ), invalid)
+        }
     }
 
     private func preparedPublisher() throws -> (

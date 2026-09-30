@@ -69,11 +69,18 @@ final class ManagedInstallerReviewedSelectionTests: XCTestCase {
                 projectID: project, repositoryID: "repository",
                 repositoryIdentity: "owner:repository"
             ), project)
-            XCTAssertThrowsError(try ManagedInstallerReviewedPairingTarget(
-                projectID: "project", repositoryID: project,
-                repositoryIdentity: "owner:repository"
-            ), project)
         }
+        for repository in ["Repo", "ab", "repo/other", "repo other",
+                           String(repeating: "a", count: 129)] {
+            XCTAssertThrowsError(try ManagedInstallerReviewedPairingTarget(
+                projectID: "project", repositoryID: repository,
+                repositoryIdentity: "owner:repository"
+            ), repository)
+        }
+        XCTAssertNoThrow(try ManagedInstallerReviewedPairingTarget(
+            projectID: "project", repositoryID: "1repo_name.test",
+            repositoryIdentity: "owner:repository"
+        ))
         for identity in ["", "/tmp/repository", "owner/repository",
                          "owner repository", String(repeating: "a", count: 257)] {
             XCTAssertThrowsError(try ManagedInstallerReviewedPairingTarget(

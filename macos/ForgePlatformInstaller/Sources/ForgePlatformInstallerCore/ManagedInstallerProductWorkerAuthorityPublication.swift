@@ -169,6 +169,7 @@ struct ManagedInstallerProductWorkerPairingAuthority: Equatable, Sendable {
         guard identifiers.allSatisfy(Self.isPairingIdentity),
               ManagedInstallerReviewedPairingTarget.isEPIdentifier(consumerID),
               ManagedInstallerReviewedPairingTarget.isEPIdentifier(projectID),
+              ManagedInstallerReviewedPairingTarget.isEPRepositoryID(repositoryID),
               Self.isCanonicalKeychainReference(credentialReference)
         else {
             throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority

@@ -1458,7 +1458,7 @@ private struct CompositionReviewScreen: View {
                             Text("Beoordeeld: \(target.projectID) / \(target.repositoryID) / \(target.repositoryIdentity)")
                                 .textSelection(.enabled)
                         } else {
-                            Text("Vereist: kleine letters, cijfers en streepjes voor EP-ID’s; geen paden of geheimen.")
+                            Text("Project: kleine letters, cijfers en streepjes. Repository: 3–128 kleine letters, cijfers, punten, underscores of streepjes. Geen paden of geheimen.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

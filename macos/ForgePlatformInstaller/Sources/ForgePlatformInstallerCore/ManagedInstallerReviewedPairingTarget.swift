@@ -14,7 +14,7 @@ public struct ManagedInstallerReviewedPairingTarget: Equatable, Sendable {
         repositoryIdentity: String
     ) throws {
         guard Self.isEPIdentifier(projectID),
-              Self.isEPIdentifier(repositoryID),
+              Self.isEPRepositoryID(repositoryID),
               Self.isForgeRepositoryIdentity(repositoryIdentity) else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
         }
@@ -31,6 +31,21 @@ public struct ManagedInstallerReviewedPairingTarget: Equatable, Sendable {
         }
         return value.utf8.dropFirst().allSatisfy {
             (97...122).contains($0) || (48...57).contains($0) || $0 == 45
+        }
+    }
+
+    /// EP's declared repository attachment uses a distinct identifier
+    /// grammar: 3...128 lowercase ASCII characters, digits, dots, underscores
+    /// and dashes, with a lowercase letter or digit first.
+    static func isEPRepositoryID(_ value: String) -> Bool {
+        guard (3...128).contains(value.utf8.count),
+              let first = value.utf8.first,
+              (97...122).contains(first) || (48...57).contains(first) else {
+            return false
+        }
+        return value.utf8.dropFirst().allSatisfy {
+            (97...122).contains($0) || (48...57).contains($0)
+                || [45, 46, 95].contains($0)
         }
     }
 
