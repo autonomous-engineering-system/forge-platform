@@ -1,4 +1,5 @@
 import CryptoKit
+import SwiftUI
 import XCTest
 @testable import ForgePlatformInstaller
 @testable import ForgePlatformInstallerCore
@@ -87,6 +88,108 @@ final class InstallerWizardViewModelTests: XCTestCase {
         )
         let duplicateCalls = await coordinator.executionCallCount()
         XCTAssertEqual(duplicateCalls, 1)
+    }
+
+    func testGUIExecutesOnlyExactConfirmedPurgeThroughSharedCoordinator() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = LifecycleReviewGUICoordinator(inventory: inventory)
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.prepareLifecycleReview(operation: "PURGE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .prepared(let session) = model.lifecycleReview else {
+            return XCTFail("Expected exact read-only PURGE proposal")
+        }
+        model.executeReviewedPurge(
+            operationID: session.operationID,
+            reviewFingerprint: session.reviewFingerprint,
+            confirmedInstanceID: "forge-other"
+        )
+        model.executeReviewedPurge(
+            operationID: session.operationID,
+            reviewFingerprint: "sha256:" + String(repeating: "a", count: 64),
+            confirmedInstanceID: "forge-prod"
+        )
+        model.executeReviewedPreserve(
+            operationID: session.operationID,
+            reviewFingerprint: session.reviewFingerprint
+        )
+        let deniedCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(deniedCalls, 0)
+        model.executeReviewedPurge(
+            operationID: session.operationID,
+            reviewFingerprint: session.reviewFingerprint,
+            confirmedInstanceID: "forge-prod"
+        )
+        await waitForLifecycleExecution(on: model)
+        guard case .completed(let completedSession, let receipt) = model.lifecycleReview else {
+            return XCTFail("Only exact terminal PURGE receipt should complete")
+        }
+        XCTAssertEqual(completedSession.intent.operation, "PURGE")
+        XCTAssertEqual(receipt.registryRevision, 4)
+        let acceptedCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(acceptedCalls, 1)
+    }
+
+    func testGUIKeepsPurgeFailurePendingWithoutTerminalPass() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = LifecycleReviewGUICoordinator(
+            inventory: inventory, executionAvailable: false
+        )
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.prepareLifecycleReview(operation: "PURGE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .prepared(let session) = model.lifecycleReview else {
+            return XCTFail("Expected exact proposal")
+        }
+        model.executeReviewedPurge(
+            operationID: session.operationID,
+            reviewFingerprint: session.reviewFingerprint,
+            confirmedInstanceID: "forge-prod"
+        )
+        await waitForLifecycleExecution(on: model)
+        guard case .recoveryPending(let pending) = model.lifecycleReview else {
+            return XCTFail("Missing terminal PURGE receipt must remain pending")
+        }
+        XCTAssertEqual(pending.operationID, session.operationID)
+    }
+
+    func testGUIRendersReviewedPurgeWithExactTargetConfirmation() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = LifecycleReviewGUICoordinator(inventory: inventory)
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.prepareLifecycleReview(operation: "PURGE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .prepared = model.lifecycleReview else {
+            return XCTFail("Expected exact proposal")
+        }
+        let renderer = ImageRenderer(content: InstallerWizardView(viewModel: model)
+            .frame(width: 960, height: 680))
+        renderer.scale = 1
+        let image = try XCTUnwrap(renderer.nsImage)
+        XCTAssertGreaterThan(image.size.width, 0)
+        XCTAssertNotNil(image.tiffRepresentation)
+    }
+
+    func testGUIRejectsPurgeReceiptBoundToAnotherOperation() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = LifecycleReviewGUICoordinator(
+            inventory: inventory, mismatchedReceipt: true
+        )
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.prepareLifecycleReview(operation: "PURGE", component: "forge-runtime")
+        await waitForLifecycleReview(on: model)
+        guard case .prepared(let session) = model.lifecycleReview else {
+            return XCTFail("Expected exact proposal")
+        }
+        model.executeReviewedPurge(
+            operationID: session.operationID,
+            reviewFingerprint: session.reviewFingerprint,
+            confirmedInstanceID: "forge-prod"
+        )
+        await waitForLifecycleExecution(on: model)
+        guard case .blocked = model.lifecycleReview else {
+            return XCTFail("Foreign product receipt must never claim PURGE complete")
+        }
     }
 
     func testGUIKeepsPreserveFailurePendingWithoutTerminalPass() async throws {
@@ -798,12 +901,18 @@ private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
 private actor LifecycleReviewGUICoordinator: InstallerWizardCoordinator {
     let inventory: ManagedDeploymentInventory
     let executionAvailable: Bool
+    let mismatchedReceipt: Bool
     private var reviewCount = 0
     private var executionCount = 0
 
-    init(inventory: ManagedDeploymentInventory, executionAvailable: Bool = true) {
+    init(
+        inventory: ManagedDeploymentInventory,
+        executionAvailable: Bool = true,
+        mismatchedReceipt: Bool = false
+    ) {
         self.inventory = inventory
         self.executionAvailable = executionAvailable
+        self.mismatchedReceipt = mismatchedReceipt
     }
 
     func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
@@ -839,7 +948,7 @@ private actor LifecycleReviewGUICoordinator: InstallerWizardCoordinator {
                 "preserve_operation_id": .null,
                 "preserve_receipt_digest": .null,
                 "historical_peer_reference": .string("receipt:pair-prod"),
-                "destructive_confirmation_required": .boolean(false),
+                "destructive_confirmation_required": .boolean(intent.operation == "PURGE"),
             ]
             let unsigned = StrictSignedJSON.canonicalPayload(from: .object(review))
             let digest = SHA256.hash(data: unsigned)
@@ -871,6 +980,55 @@ private actor LifecycleReviewGUICoordinator: InstallerWizardCoordinator {
               let request = try? ManagedInstallerPreservedLifecycleRequest(
                 intent: session.intent, proposal: session.proposal
               ) else { return .failure(.rejected) }
+        let data = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPreservedLifecycleReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "operation_id": .string(request.intent.operationID),
+            "deployment_id": .string(request.intent.deploymentID),
+            "component": .string(request.intent.component),
+            "instance_id": .string(request.intent.instanceID),
+            "state": .string("COMPLETE"),
+            "receipt_digest": .string("sha256:" + String(repeating: "d", count: 64)),
+            "registry_revision": .integer("4"),
+        ]))
+        guard let receipt = try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
+            data, request: request
+        ) else { return .failure(.rejected) }
+        return .success(receipt)
+    }
+
+    func executeReviewedPreservedLifecycle(
+        _ session: ManagedInstallerPreservedLifecycleReviewSession,
+        confirmedInstanceID: String?
+    ) async -> Result<
+        ManagedInstallerPreservedLifecycleReceipt,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        executionCount += 1
+        guard executionAvailable,
+              let reviewedRequest = try? ManagedInstallerPreservedLifecycleRequest(
+                intent: session.intent, proposal: session.proposal,
+                confirmedInstanceID: confirmedInstanceID
+              ) else { return .failure(.rejected) }
+        var request = reviewedRequest
+        if mismatchedReceipt {
+            guard let foreignIntent = try? ManagedInstallerPreservedLifecycleReviewIntent(
+                operationID: "foreign-operation",
+                deploymentID: session.intent.deploymentID,
+                operation: "PURGE", component: session.intent.component,
+                instanceID: session.intent.instanceID,
+                installedCompositionIdentity: session.intent.installedCompositionIdentity,
+                installedManifestSHA256: session.intent.installedManifestSHA256,
+                installerRelease: session.intent.installerRelease
+            ),
+                  case .success(let foreignProposal) =
+                    await preparePreservedLifecycleReview(foreignIntent),
+                  let foreignRequest = try? ManagedInstallerPreservedLifecycleRequest(
+                    intent: foreignIntent, proposal: foreignProposal,
+                    confirmedInstanceID: confirmedInstanceID
+                  ) else { return .failure(.rejected) }
+            request = foreignRequest
+        }
         let data = StrictSignedJSON.canonicalPayload(from: .object([
             "schema": .string(ManagedInstallerPreservedLifecycleReceipt.schema),
             "request_fingerprint": .string(request.requestFingerprint),
