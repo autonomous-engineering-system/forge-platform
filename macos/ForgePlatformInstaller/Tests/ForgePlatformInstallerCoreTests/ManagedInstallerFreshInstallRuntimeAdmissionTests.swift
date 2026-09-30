@@ -267,6 +267,132 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         ))
     }
 
+    func testReviewedProviderStageReceiptAndHelperAdmissionAreExact() async throws {
+        let requirement = try stagedProviderRequirement()
+        let fixture = try FreshRuntimeFixture(providers: [requirement])
+        let events = FreshRuntimeEvents()
+        let runtime = ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
+            material: fixture.material,
+            materialAdmission: FreshRuntimeMaterialAdmission(
+                result: .success(fixture.material), events: events
+            ),
+            preprovider: FreshRuntimePreprovider(
+                result: .success(fixture.preprovider), events: events
+            ),
+            providers: FreshRuntimeProviderBuilder(
+                provider: FreshRuntimeProvider(
+                    result: .success(try XCTUnwrap(fixture.provider)), events: events
+                ), events: events
+            ),
+            providerProbeAccess: FreshRuntimeProbeAccess(events: events),
+            managedPython: FreshRuntimePython(result: .success(fixture.python), events: events)
+        )
+        let admitted = ManagedInstallerHelperExecutionMaterial(
+            material: fixture.material,
+            currentRelease: fixture.plan.reviewedOperation.currentInstallerRelease
+        )
+        let material = FreshSingleRouteMaterial(admitted: admitted, failSecondRead: false)
+        let stager = ManagedInstallerHelperFreshProviderStager(
+            material: material,
+            currency: FreshSingleRouteCurrency(release: admitted.currentRelease, fail: false),
+            runtimeFactory: { _, _ in runtime }
+        )
+        let staged = await stager.stage(stablePlan: fixture.plan)
+        let receipt = try XCTUnwrap(staged)
+        XCTAssertTrue(receipt.matches(fixture.plan))
+        XCTAssertEqual(receipt.providerTargetIDs, [requirement.id])
+        XCTAssertEqual(try ManagedInstallerReviewedProviderStageReceipt.decodeJSON(
+            receipt.canonicalJSONData()
+        ), receipt)
+        XCTAssertEqual(events.values, [
+            "material", "preprovider", "provider-build", "provider", "provider-access",
+        ])
+        XCTAssertFalse(events.values.contains("python"))
+
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: fixture.plan)
+        let admission = ManagedInstallerReviewedProviderStageAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.plan),
+            stager: ProviderStageReceiptStager(receipt: receipt)
+        )
+        let stagedReply = await admission.stage(canonicalIntent: intent.canonicalJSONData())
+        let reply = try XCTUnwrap(stagedReply)
+        XCTAssertEqual(try ManagedInstallerReviewedProviderStageReceipt.decodeJSON(reply), receipt)
+        let invalid = await admission.stage(canonicalIntent: Data("{}".utf8))
+        XCTAssertNil(invalid)
+        let noncanonical = await admission.stage(
+            canonicalIntent: Data(" ".utf8) + intent.canonicalJSONData()
+        )
+        XCTAssertNil(noncanonical)
+        XCTAssertThrowsError(try ManagedInstallerReviewedProviderStageReceipt.decodeJSON(
+            receipt.canonicalJSONData() + Data([0x0A])
+        ))
+        XCTAssertThrowsError(try ManagedInstallerReviewedProviderStageReceipt(
+            operationID: receipt.operationID,
+            stablePlanFingerprint: receipt.stablePlanFingerprint,
+            providerTargetIDs: [requirement.id, requirement.id]
+        ))
+    }
+
+    func testReviewedProviderStageFailsClosedOnMaterialOrCurrencyDrift() async throws {
+        let requirement = try stagedProviderRequirement()
+        let fixture = try FreshRuntimeFixture(providers: [requirement])
+        let admitted = ManagedInstallerHelperExecutionMaterial(
+            material: fixture.material,
+            currentRelease: fixture.plan.reviewedOperation.currentInstallerRelease
+        )
+        let events = FreshRuntimeEvents()
+        let runtime = ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
+            material: fixture.material,
+            materialAdmission: FreshRuntimeMaterialAdmission(
+                result: .success(fixture.material), events: events
+            ),
+            preprovider: FreshRuntimePreprovider(
+                result: .success(fixture.preprovider), events: events
+            ),
+            providers: FreshRuntimeProviderBuilder(
+                provider: FreshRuntimeProvider(
+                    result: .success(try XCTUnwrap(fixture.provider)), events: events
+                ), events: events
+            ),
+            providerProbeAccess: FreshRuntimeProbeAccess(events: events),
+            managedPython: FreshRuntimePython(result: .success(fixture.python), events: events)
+        )
+        let unavailable = ManagedInstallerHelperFreshProviderStager(
+            material: FreshSingleRouteMaterial(admitted: admitted, failSecondRead: true),
+            currency: FreshSingleRouteCurrency(release: admitted.currentRelease, fail: false),
+            runtimeFactory: { _, _ in runtime }
+        )
+        let drifted = await unavailable.stage(stablePlan: fixture.plan)
+        XCTAssertNil(drifted)
+        XCTAssertTrue(events.values.isEmpty)
+        let stale = ManagedInstallerHelperFreshProviderStager(
+            material: FreshSingleRouteMaterial(admitted: admitted, failSecondRead: false),
+            currency: FreshSingleRouteCurrency(release: admitted.currentRelease, fail: true),
+            runtimeFactory: { _, _ in XCTFail("Stale release precedes mutation"); return nil }
+        )
+        let staleResult = await stale.stage(stablePlan: fixture.plan)
+        XCTAssertNil(staleResult)
+        let receipt = try ManagedInstallerReviewedProviderStageReceipt(
+            operationID: fixture.plan.activationPlan.operationID,
+            stablePlanFingerprint: fixture.plan.fingerprint,
+            providerTargetIDs: [requirement.id]
+        )
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: fixture.plan)
+        let crossed = ManagedInstallerReviewedProviderStageAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.plan),
+            stager: ProviderStageReceiptStager(receipt: try .init(
+                operationID: receipt.operationID,
+                stablePlanFingerprint: String(repeating: "d", count: 64),
+                providerTargetIDs: receipt.providerTargetIDs
+            ))
+        )
+        let crossedResult = await crossed.stage(canonicalIntent: intent.canonicalJSONData())
+        XCTAssertNil(crossedResult)
+        XCTAssertNil(ManagedInstallerReviewedProviderStageAdmission.whenReady(
+            loader: nil, stager: ProviderStageReceiptStager(receipt: receipt)
+        ))
+    }
+
     func testFailedPreproviderOrProviderStopsNextBoundary() async throws {
         let fixture = try FreshRuntimeFixture()
         let events = FreshRuntimeEvents()
@@ -1104,6 +1230,39 @@ private struct FreshRuntimeFixture {
             overrideSession: material.session,
             overrideDeployment: wheel.deployment
         ).preparation
+    }
+}
+
+private func stagedProviderRequirement() throws -> ProviderRequirement {
+    let runtime = try ProviderRuntimeRequirement(
+        version: InstallerVersion("1.2.3"), archiveKind: .tarGzip,
+        artifactURL: "https://example.invalid/codex.tar.gz",
+        artifactSHA256: "sha256:" + String(repeating: "a", count: 64),
+        executableRelativePath: "bin/codex",
+        executableSHA256: "sha256:" + String(repeating: "b", count: 64)
+    )
+    return ProviderRequirement(
+        provider: .codex, isRequired: true, minimumVersion: runtime.version,
+        credentialScope: .component, ownerComponent: .forgeRuntime,
+        targetIdentity: "deployment-a", runtime: runtime
+    )
+}
+
+private struct ProviderStagePlanLoader: ManagedInstallerHelperOwnedStablePlanLoading {
+    let plan: ManagedInstallerStablePlan
+    func loadStablePlan(for intent: ManagedInstallerReviewedExecutionIntent) async throws
+        -> ManagedInstallerStablePlan {
+        _ = intent
+        return plan
+    }
+}
+
+private struct ProviderStageReceiptStager: ManagedInstallerStablePlanProviderStaging {
+    let receipt: ManagedInstallerReviewedProviderStageReceipt
+    func stage(stablePlan: ManagedInstallerStablePlan) async
+        -> ManagedInstallerReviewedProviderStageReceipt? {
+        _ = stablePlan
+        return receipt
     }
 }
 

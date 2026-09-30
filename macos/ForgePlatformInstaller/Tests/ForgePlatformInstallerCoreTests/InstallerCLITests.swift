@@ -439,12 +439,15 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(result.exitCode, .interactionRequired)
         XCTAssertEqual(result.status, "provider-authentication-required")
         let providerActions1 = await coordinator.providerActions()
-        XCTAssertEqual(providerActions1, [.install])
+        XCTAssertTrue(providerActions1.isEmpty)
+        let stageCalls1 = await coordinator.stageCallCount()
+        XCTAssertEqual(stageCalls1, 1)
+        XCTAssertEqual(result.details["provider_targets"], provider.id.rawValue)
         let executionCalls3 = await coordinator.executionCallCount()
         XCTAssertEqual(executionCalls3, 0)
     }
 
-    func testInteractiveProviderCeremonyMustEndVerifiedBeforeReview() async throws {
+    func testInteractiveProviderStageStillRequiresHumanAuthentication() async throws {
         let provider = ProviderRequirement(provider: .codex, isRequired: true)
         let coordinator = CLIWizardCoordinator(
             session: try session(providers: [provider]),
@@ -461,9 +464,14 @@ final class InstallerCLITests: XCTestCase {
                 return true
             }
         )
-        XCTAssertEqual(result.exitCode, .success)
+        XCTAssertEqual(result.exitCode, .interactionRequired)
+        XCTAssertEqual(result.status, "provider-authentication-required")
         let providerActions2 = await coordinator.providerActions()
-        XCTAssertEqual(providerActions2, [.install, .authenticate])
+        XCTAssertTrue(providerActions2.isEmpty)
+        let stageCalls2 = await coordinator.stageCallCount()
+        let executionCalls2 = await coordinator.executionCallCount()
+        XCTAssertEqual(stageCalls2, 1)
+        XCTAssertEqual(executionCalls2, 0)
     }
 
     func testNewInstallerAfterReviewNeverExecutesOldSessionAndCanHandoffWhenAuthorized() async throws {
@@ -620,6 +628,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private var handoffs = 0
     private var inventories = 0
     private var removals = 0
+    private var stages = 0
 
     init(
         session: VerifiedCompositionSessionPlan,
@@ -904,6 +913,20 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         return execution
     }
 
+    func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        recordedCalls.append("provider-stage")
+        stages += 1
+        guard let receipt = try? ManagedInstallerReviewedProviderStageReceipt(
+            operationID: "cli-provider-stage",
+            stablePlanFingerprint: String(repeating: "a", count: 64),
+            providerTargetIDs: operation.enabledProviderRequirements.map(\.id)
+                .sorted { $0.rawValue < $1.rawValue }
+        ) else { return .unavailable(.executionFailed) }
+        return .prepared(receipt)
+    }
+
     func performProviderAction(
         _ action: ProviderAction,
         for provider: ProviderID
@@ -932,4 +955,5 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     func handoffCallCount() -> Int { handoffs }
     func inventoryCallCount() -> Int { inventories }
     func removalCallCount() -> Int { removals }
+    func stageCallCount() -> Int { stages }
 }

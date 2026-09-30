@@ -20,6 +20,13 @@ struct ForgePlatformInstallerApp: App {
 /// runtime selection, venv handling, or service mutation.
 @MainActor
 final class InstallerWizardViewModel: ObservableObject {
+    enum ProviderStageState {
+        case idle
+        case staging
+        case prepared(ManagedInstallerReviewedProviderStageReceipt)
+        case blocked(String)
+    }
+
     enum RemovalReviewState {
         case idle
         case loading
@@ -47,6 +54,12 @@ final class InstallerWizardViewModel: ObservableObject {
     @Published private(set) var state: InstallerWizardState
     @Published private(set) var removalReview: RemovalReviewState = .idle
     @Published private(set) var lifecycleReview: LifecycleReviewState = .idle
+    @Published private(set) var providerStage: ProviderStageState = .idle
+
+    var isProviderStageInFlight: Bool {
+        if case .staging = providerStage { return true }
+        return false
+    }
 
     private let coordinator: any InstallerWizardCoordinator
     @Published private(set) var isPreflightRequestInFlight = false
@@ -428,6 +441,7 @@ final class InstallerWizardViewModel: ObservableObject {
             return
         }
         isReviewRequestInFlight = true
+        providerStage = .idle
         let coordinator = coordinator
         Task { @MainActor [weak self] in
             let result = await coordinator.prepareCompositionReview(
@@ -441,7 +455,9 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func setProviderSelected(_ target: ProviderTargetID, isSelected: Bool) {
-        _ = state.setProviderTargetSelected(target, isSelected: isSelected)
+        if state.setProviderTargetSelected(target, isSelected: isSelected) {
+            providerStage = .idle
+        }
     }
 
     func performProviderAction(_ action: ProviderAction, target: ProviderTargetID) {
@@ -457,11 +473,14 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func setCompositionAcknowledged(_ acknowledged: Bool) {
-        _ = state.setCompositionAcknowledged(acknowledged)
+        if state.setCompositionAcknowledged(acknowledged) {
+            providerStage = .idle
+        }
     }
 
     func advance() {
         if state.step == .review {
+            guard !isExecutionRequestInFlight, !isProviderStageInFlight else { return }
             guard state.beginPreMutationCurrencyCheck() else { return }
             let currentVersion = state.currentInstallerVersion
             let coordinator = coordinator
@@ -470,8 +489,32 @@ final class InstallerWizardViewModel: ObservableObject {
                 let result = await coordinator.recheckInstallerBeforeMutation(
                     currentVersion: currentVersion
                 )
-                if self.state.recordPreMutationCurrencyCheck(result),
-                   let operation = self.state.beginManagedDeploymentExecution() {
+                guard self.state.recordPreMutationCurrencyCheck(result) else { return }
+                if !self.state.enabledProvidersVerified {
+                    guard let operation = self.state.reviewedProviderStageOperation() else {
+                        self.providerStage = .blocked("Het beoordeelde providerplan is gewijzigd. Bouw het wijzigingsplan opnieuw op.")
+                        return
+                    }
+                    self.providerStage = .staging
+                    let staged = await coordinator.stageReviewedProviders(operation)
+                    guard self.state.step == .review,
+                          self.state.reviewedProviderStageOperation() == operation else {
+                        self.providerStage = .blocked("De doelinstantie of review is gewijzigd. Bouw het wijzigingsplan opnieuw op.")
+                        return
+                    }
+                    switch staged {
+                    case .prepared(let receipt):
+                        let expected = self.state.enabledProviders.map(\.id)
+                            .sorted { $0.rawValue < $1.rawValue }
+                        self.providerStage = receipt.providerTargetIDs == expected
+                            ? .prepared(receipt)
+                            : .blocked("De helper gaf andere providertargets terug.")
+                    case .unavailable:
+                        self.providerStage = .blocked("De helper kon de beoordeelde provideromgevingen niet voorbereiden.")
+                    }
+                    return
+                }
+                if let operation = self.state.beginManagedDeploymentExecution() {
                     self.isExecutionRequestInFlight = true
                     let execution = await coordinator.executeReviewedManagedDeployment(operation)
                     _ = self.state.recordManagedDeploymentExecution(execution, for: operation)
@@ -484,7 +527,7 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func goBack() {
-        guard !isRemovalExecutionInFlight else { return }
+        guard !isRemovalExecutionInFlight, !isProviderStageInFlight else { return }
         _ = state.goBack()
         resetRemovalReview()
     }
@@ -581,7 +624,9 @@ struct InstallerWizardView: View {
         case .review:
             return viewModel.state.preMutationCurrency.isChecking
                 ? "Installer opnieuw controleren…"
-                : "Controleer en voer uit"
+                : (viewModel.state.enabledProvidersVerified
+                    ? "Controleer en voer uit"
+                    : "Controleer en bereid providers voor")
         case .execution:
             return "Naar samenvatting"
         default:
@@ -592,6 +637,8 @@ struct InstallerWizardView: View {
     private var primaryActionDisabled: Bool {
         if viewModel.state.step == .review {
             return !viewModel.state.canBeginPreMutationCurrencyCheck
+                || viewModel.isExecutionRequestInFlight
+                || viewModel.isProviderStageInFlight
         }
         return !viewModel.state.canAdvance
     }
@@ -1335,6 +1382,21 @@ private struct CompositionReviewScreen: View {
                 .font(.caption)
                 .foregroundStyle(.green)
             case .failed(let reason):
+                FailureCallout(reason: reason)
+            }
+
+            switch viewModel.providerStage {
+            case .idle:
+                EmptyView()
+            case .staging:
+                Label("De helper bereidt de beoordeelde provideromgevingen voor…", systemImage: "gearshape")
+            case .prepared(let receipt):
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Provideromgevingen voorbereid voor \(receipt.providerTargetIDs.map(\.rawValue).joined(separator: ", ")).")
+                    Text("Menselijke aanmelding en onafhankelijke verificatie per doelinstantie zijn nog vereist.")
+                }
+                .font(.callout)
+            case .blocked(let reason):
                 FailureCallout(reason: reason)
             }
         }

@@ -238,4 +238,30 @@ public actor ManagedInstallerReleasedRouteCoordinator:
             return .failed(.staleSession, stages: [])
         }
     }
+
+    public func stageReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderStagePreparationResult {
+        guard !operation.deploymentExists,
+              !operation.enabledProviderRequirements.isEmpty,
+              let sender = loader as? any ManagedInstallerReviewedProviderStageIntentSending,
+              let registrar = loader as? any ManagedInstallerReviewedSelectionRegistering
+        else { return .unavailable(.coordinatorUnavailable) }
+        switch await prepareStablePlan(for: operation) {
+        case .prepared(let plan) where plan.reviewedOperation == operation:
+            do {
+                let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+                try await registrar.registerReviewedSelection(
+                    ManagedInstallerReviewedSelection(stablePlan: plan)
+                )
+                let receipt = try await sender.stageReviewedProviders(intent)
+                guard receipt.matches(plan) else { return .unavailable(.staleSession) }
+                return .prepared(receipt)
+            } catch {
+                return .unavailable(.coordinatorUnavailable)
+            }
+        case .prepared, .unavailable:
+            return .unavailable(.staleSession)
+        }
+    }
 }
