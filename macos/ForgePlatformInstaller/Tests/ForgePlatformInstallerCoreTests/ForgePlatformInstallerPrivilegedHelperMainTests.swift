@@ -25,6 +25,68 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
         XCTAssertEqual(request.environment["GH_CONFIG_DIR"], arguments[8])
         XCTAssertEqual(request.environment["HOME"], arguments[8])
 
+        var authentication = arguments
+        authentication[1] = ManagedInstallerProviderAccountProbeChild.authenticationFlag
+        authentication[6] = "authentication-login"
+        let authenticationRequest = try XCTUnwrap(
+            ManagedInstallerProviderAccountProbeChild.parse(
+                authentication, allowedRoot: root
+            )
+        )
+        XCTAssertEqual(authenticationRequest.arguments, [
+            "auth", "login", "--web", "--hostname", "github.com",
+            "--git-protocol", "https", "--skip-ssh-key",
+        ])
+        XCTAssertEqual(authenticationRequest.environment["GH_CONFIG_DIR"],
+                       arguments[8])
+        XCTAssertEqual(authenticationRequest.environment["BROWSER"], "/usr/bin/true")
+        XCTAssertEqual(authenticationRequest.environment["NO_COLOR"], "1")
+        XCTAssertNil(authenticationRequest.environment["CODEX_HOME"])
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.run(
+            authentication, allowedRoot: root, effectiveUID: { 0 },
+            verifyAccount: { $0 == authenticationRequest },
+            dropPrivileges: { $0 == authenticationRequest },
+            launch: { $0 == authenticationRequest ? 0 : 78 }
+        ), 0)
+        var wrongMode = authentication
+        wrongMode[1] = ManagedInstallerProviderAccountProbeChild.flag
+        XCTAssertNil(ManagedInstallerProviderAccountProbeChild.parse(
+            wrongMode, allowedRoot: root
+        ))
+        var codexAuthentication = authentication
+        codexAuthentication[5] = "codex"
+        codexAuthentication[7] = root.appendingPathComponent(
+            "products/engineering-platform/instances/fpi-one/providers/codex/"
+                + "runtime/bin/codex"
+        ).path
+        codexAuthentication[8] = root.appendingPathComponent(
+            "products/engineering-platform/instances/fpi-one/providers/codex/home"
+        ).path
+        let codexRequest = try XCTUnwrap(
+            ManagedInstallerProviderAccountProbeChild.parse(
+                codexAuthentication, allowedRoot: root
+            )
+        )
+        XCTAssertEqual(codexRequest.arguments, ["login", "--device-auth"])
+        XCTAssertEqual(codexRequest.environment["CODEX_HOME"],
+                       codexAuthentication[8])
+        XCTAssertNil(codexRequest.environment["GH_CONFIG_DIR"])
+        var codexStatus = codexAuthentication
+        codexStatus[1] = ManagedInstallerProviderAccountProbeChild.flag
+        codexStatus[6] = "authentication-status"
+        let codexStatusRequest = try XCTUnwrap(
+            ManagedInstallerProviderAccountProbeChild.parse(
+                codexStatus, allowedRoot: root
+            )
+        )
+        XCTAssertEqual(codexStatusRequest.arguments, ["login", "status"])
+        XCTAssertEqual(codexStatusRequest.environment["CODEX_HOME"], codexStatus[8])
+        wrongMode = arguments
+        wrongMode[1] = ManagedInstallerProviderAccountProbeChild.authenticationFlag
+        XCTAssertNil(ManagedInstallerProviderAccountProbeChild.parse(
+            wrongMode, allowedRoot: root
+        ))
+
         let forge = root.appendingPathComponent(
             "provider-contexts/deployments/deployment-one/providers/forge-runtime/"
                 + "fpi-two/github-cli", isDirectory: true
@@ -36,6 +98,12 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
         XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.parse(
             versioned, allowedRoot: root
         )?.arguments, ["--version"])
+        versioned[1] = ManagedInstallerProviderAccountProbeChild.authenticationFlag
+        versioned[6] = "authentication-login"
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.parse(
+            versioned, allowedRoot: root
+        )?.arguments, ["auth", "login", "--web", "--hostname", "github.com",
+                       "--git-protocol", "https", "--skip-ssh-key"])
 
         for (index, value) in [
             (2, "_fpi_foreign"), (3, "0"), (4, "020"),
@@ -53,6 +121,23 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
         traversal[7] = provider.appendingPathComponent("../runtime/bin/gh").path
         XCTAssertNil(ManagedInstallerProviderAccountProbeChild.parse(
             traversal, allowedRoot: root
+        ))
+        var wrongHome = arguments
+        wrongHome[8] = provider.appendingPathComponent("home").path
+        XCTAssertNil(ManagedInstallerProviderAccountProbeChild.parse(
+            wrongHome, allowedRoot: root
+        ))
+        var crossedProvider = arguments
+        crossedProvider[7] = root.appendingPathComponent(
+            "products/engineering-platform/instances/fpi-one/providers/other/runtime/bin/gh"
+        ).path
+        XCTAssertNil(ManagedInstallerProviderAccountProbeChild.parse(
+            crossedProvider, allowedRoot: root
+        ))
+        var wrongBinary = arguments
+        wrongBinary[7] = provider.appendingPathComponent("runtime/bin/codex").path
+        XCTAssertNil(ManagedInstallerProviderAccountProbeChild.parse(
+            wrongBinary, allowedRoot: root
         ))
 
         XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.run(
@@ -88,6 +173,94 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
             currentAccount
         ))
         XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(currentAccount), 0)
+        let relativeExecutable = ManagedInstallerProviderAccountProbeChild.Request(
+            accountName: currentAccount.accountName, uid: currentAccount.uid,
+            gid: currentAccount.gid, provider: "codex", probe: "version",
+            executable: "relative/true", home: "/private/tmp"
+        )
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(
+            relativeExecutable
+        ), 78)
+        let sharedHomeExecutable = ManagedInstallerProviderAccountProbeChild.Request(
+            accountName: currentAccount.accountName, uid: currentAccount.uid,
+            gid: currentAccount.gid, provider: "codex", probe: "version",
+            executable: "/private/tmp", home: "/private/tmp"
+        )
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(
+            sharedHomeExecutable
+        ), 78)
+        let rootHome = ManagedInstallerProviderAccountProbeChild.Request(
+            accountName: currentAccount.accountName, uid: currentAccount.uid,
+            gid: currentAccount.gid, provider: "codex", probe: "version",
+            executable: "/usr/bin/true", home: "/"
+        )
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(rootHome), 78)
+        let rootExecutable = ManagedInstallerProviderAccountProbeChild.Request(
+            accountName: currentAccount.accountName, uid: currentAccount.uid,
+            gid: currentAccount.gid, provider: "codex", probe: "version",
+            executable: "/", home: "/private/tmp"
+        )
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(
+            rootExecutable
+        ), 78)
+        let invalidAuthentication = ManagedInstallerProviderAccountProbeChild.Request(
+            accountName: currentAccount.accountName, uid: currentAccount.uid,
+            gid: currentAccount.gid, provider: "unknown",
+            probe: "authentication-login", executable: "/usr/bin/true",
+            home: "/private/tmp"
+        )
+        XCTAssertTrue(invalidAuthentication.arguments.isEmpty)
+        XCTAssertTrue(invalidAuthentication.environment.isEmpty)
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(
+            invalidAuthentication
+        ), 78)
+        let harmlessAuthentication = ManagedInstallerProviderAccountProbeChild.Request(
+            accountName: currentAccount.accountName, uid: currentAccount.uid,
+            gid: currentAccount.gid, provider: "codex",
+            probe: "authentication-login", executable: "/usr/bin/true",
+            home: "/private/tmp"
+        )
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(
+            harmlessAuthentication, privateProcessGroup: { false },
+            capturedStreams: { XCTFail("no stream read without private group"); return true },
+            monitorParent: { _ in XCTFail("no monitor on rejection") }
+        ), 78)
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(
+            harmlessAuthentication, privateProcessGroup: { true },
+            capturedStreams: { false },
+            monitorParent: { _ in XCTFail("no monitor on rejection") }
+        ), 78)
+        var monitoredPID: pid_t?
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(
+            harmlessAuthentication, privateProcessGroup: { true },
+            capturedStreams: { true },
+            monitorParent: { monitoredPID = $0 }
+        ), 0)
+        XCTAssertNotNil(monitoredPID)
+        _ = ManagedInstallerProviderAccountProbeChild.standardStreamsArePipes()
+        let absentExecutable = ManagedInstallerProviderAccountProbeChild.Request(
+            accountName: harmlessAuthentication.accountName,
+            uid: harmlessAuthentication.uid, gid: harmlessAuthentication.gid,
+            provider: "codex", probe: "authentication-login",
+            executable: "/private/tmp/provider-auth-child-absent-executable",
+            home: "/private/tmp"
+        )
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(
+            absentExecutable, privateProcessGroup: { true },
+            capturedStreams: { true },
+            monitorParent: { _ in XCTFail("no monitor for absent executable") }
+        ), 78)
+        let signalScript = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fpi-probe-signal-\(UUID().uuidString)")
+        try Data("#!/bin/sh\nkill -TERM $$\n".utf8).write(to: signalScript)
+        defer { try? FileManager.default.removeItem(at: signalScript) }
+        XCTAssertEqual(Darwin.chmod(signalScript.path, 0o700), 0)
+        let signalled = ManagedInstallerProviderAccountProbeChild.Request(
+            accountName: currentAccount.accountName, uid: currentAccount.uid,
+            gid: currentAccount.gid, provider: "codex", probe: "version",
+            executable: signalScript.path, home: "/private/tmp"
+        )
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.launch(signalled), 70)
     }
 
     func testProcessContractAndProductionRuntimeAreFixed() throws {
@@ -102,6 +275,35 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
         XCTAssertNoThrow(try MacOSManagedInstallerPrivilegedHelperRuntime(
             prepareStateRoot: {}
         ))
+    }
+
+    func testOrphanedProviderStopsOnlyAfterParentIsLost() {
+        var signals: [pid_t] = []
+        var terminated = false
+        let signal: (pid_t) -> Void = { signals.append($0) }
+        let terminate = { terminated = true }
+
+        XCTAssertFalse(ManagedInstallerProviderAccountProbeChild.stopOrphanedProvider(
+            expectedParent: 400, observedParent: 400, processGroup: 500,
+            providerPID: 600, signal: signal, terminate: terminate
+        ))
+        XCTAssertFalse(ManagedInstallerProviderAccountProbeChild.stopOrphanedProvider(
+            expectedParent: 400, observedParent: 1, processGroup: 0,
+            providerPID: 600, signal: signal, terminate: terminate
+        ))
+        XCTAssertFalse(ManagedInstallerProviderAccountProbeChild.stopOrphanedProvider(
+            expectedParent: 0, observedParent: 1, processGroup: 500,
+            providerPID: 600, signal: signal, terminate: terminate
+        ))
+        XCTAssertTrue(signals.isEmpty)
+        XCTAssertFalse(terminated)
+
+        XCTAssertTrue(ManagedInstallerProviderAccountProbeChild.stopOrphanedProvider(
+            expectedParent: 400, observedParent: 1, processGroup: 500,
+            providerPID: 600, signal: signal, terminate: terminate
+        ))
+        XCTAssertEqual(signals, [-500, 600])
+        XCTAssertTrue(terminated)
     }
 
     func testProductionRuntimeFailsClosedWhenPrivateStateRootIsUnavailable() {

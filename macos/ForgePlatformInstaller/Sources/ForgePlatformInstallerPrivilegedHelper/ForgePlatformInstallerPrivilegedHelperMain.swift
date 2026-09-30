@@ -187,8 +187,9 @@ public enum ForgePlatformInstallerPrivilegedHelperMain {
     }
 
     public static func main() {
-        if CommandLine.arguments.dropFirst().first
-            == ManagedInstallerProviderAccountProbeChild.flag {
+        if [ManagedInstallerProviderAccountProbeChild.flag,
+            ManagedInstallerProviderAccountProbeChild.authenticationFlag]
+            .contains(CommandLine.arguments.dropFirst().first ?? "") {
             Darwin.exit(ManagedInstallerProviderAccountProbeChild.run(CommandLine.arguments))
         }
         let status = run(

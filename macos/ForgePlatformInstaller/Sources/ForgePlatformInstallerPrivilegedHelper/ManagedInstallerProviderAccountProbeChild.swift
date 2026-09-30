@@ -3,10 +3,12 @@ import Foundation
 import ForgePlatformInstallerCore
 
 /// A second invocation of the signed helper drops to one previously reviewed
-/// product account before executing a fixed provider status command. This
-/// process has no XPC listener and accepts no mutation operation.
+/// product account before a fixed status or human device-login command. It has
+/// no XPC listener. Its parent must admit the exact reviewed target, own the
+/// private process group and enforce the login session deadline.
 enum ManagedInstallerProviderAccountProbeChild {
     static let flag = "--provider-account-probe"
+    static let authenticationFlag = "--provider-account-auth"
 
     struct Request: Equatable {
         let accountName: String
@@ -17,6 +19,8 @@ enum ManagedInstallerProviderAccountProbeChild {
         let executable: String
         let home: String
 
+        var isAuthentication: Bool { probe == "authentication-login" }
+
         var arguments: [String] {
             switch (provider, probe) {
             case ("codex", "version"), ("github-cli", "version"):
@@ -25,11 +29,23 @@ enum ManagedInstallerProviderAccountProbeChild {
                 return ["login", "status"]
             case ("github-cli", "authentication-status"):
                 return ["auth", "status", "--hostname", "github.com"]
+            case ("codex", "authentication-login"),
+                 ("github-cli", "authentication-login"):
+                return ManagedInstallerProviderDeviceAuthenticationCommand
+                    .fixedArguments(for: provider == "codex" ? .codex : .githubCLI)
             default: return []
             }
         }
 
         var environment: [String: String] {
+            if isAuthentication {
+                guard let id = ProviderID(rawValue: provider) else { return [:] }
+                return ManagedInstallerProviderDeviceAuthenticationCommand
+                    .fixedEnvironment(
+                        for: id,
+                        componentHome: URL(fileURLWithPath: home, isDirectory: true)
+                    )
+            }
             var values = [
                 "HOME": home, "LANG": "C", "LC_ALL": "C",
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -40,7 +56,8 @@ enum ManagedInstallerProviderAccountProbeChild {
     }
 
     static func parse(_ arguments: [String], allowedRoot: URL) -> Request? {
-        guard arguments.count == 9, arguments[1] == flag,
+        guard arguments.count == 9,
+              arguments[1] == flag || arguments[1] == authenticationFlag,
               let uid = uid_t(arguments[3]), uid != 0,
               let gid = gid_t(arguments[4]), gid != 0,
               String(uid) == arguments[3], String(gid) == arguments[4],
@@ -49,7 +66,10 @@ enum ManagedInstallerProviderAccountProbeChild {
                   (48...57).contains($0) || (97...102).contains($0)
               }),
               ["codex", "github-cli"].contains(arguments[5]),
-              ["version", "authentication-status"].contains(arguments[6]),
+              ((arguments[1] == flag
+                && ["version", "authentication-status"].contains(arguments[6]))
+                || (arguments[1] == authenticationFlag
+                    && arguments[6] == "authentication-login")),
               allowedRoot.isFileURL, allowedRoot.baseURL == nil,
               allowedRoot.path.hasPrefix("/"), allowedRoot.path != "/",
               Self.safePath(arguments[7], below: allowedRoot),
@@ -124,16 +144,87 @@ enum ManagedInstallerProviderAccountProbeChild {
     }
 
     static func launch(_ request: Request) -> Int32 {
+        launch(request,
+               privateProcessGroup: { Darwin.getpgrp() == Darwin.getpid() },
+               capturedStreams: standardStreamsArePipes,
+               monitorParent: monitorParent)
+    }
+
+    static func standardStreamsArePipes() -> Bool {
+        var output = stat()
+        var errors = stat()
+        return Darwin.fstat(STDOUT_FILENO, &output) == 0
+            && Darwin.fstat(STDERR_FILENO, &errors) == 0
+            && (output.st_mode & mode_t(S_IFMT)) == mode_t(S_IFIFO)
+            && (errors.st_mode & mode_t(S_IFMT)) == mode_t(S_IFIFO)
+    }
+
+    static func launch(
+        _ request: Request,
+        privateProcessGroup: () -> Bool,
+        capturedStreams: () -> Bool,
+        monitorParent: (pid_t) -> Void
+    ) -> Int32 {
+        guard !request.arguments.isEmpty,
+              request.environment["HOME"] == request.home,
+              request.executable.hasPrefix("/"), request.home.hasPrefix("/"),
+              request.executable != "/", request.home != "/",
+              request.executable != request.home else { return 78 }
+        if request.isAuthentication {
+            // Authentication may wait for a human. A caller must own this
+            // private process group and capture both streams in pipes. Never
+            // let a device code fall through to launchd or terminal logs.
+            guard privateProcessGroup(), capturedStreams() else { return 78 }
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: request.executable)
         process.arguments = request.arguments
         process.environment = request.environment
-        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        if request.isAuthentication {
+            // The parent helper captures this pipe only until one bounded
+            // device challenge is parsed, then drains without journaling it.
+            process.standardError = FileHandle.standardError
+        } else {
+            process.standardError = FileHandle.nullDevice
+        }
         do { try process.run() }
         catch { return 78 }
+        if request.isAuthentication {
+            monitorParent(process.processIdentifier)
+        }
         process.waitUntilExit()
         guard process.terminationReason == .exit else { return 70 }
         return process.terminationStatus
+    }
+
+    private static func monitorParent(_ providerPID: pid_t) {
+        let parent = Darwin.getppid()
+        DispatchQueue.global(qos: .utility).async {
+            while true {
+                Darwin.sleep(1)
+                _ = stopOrphanedProvider(
+                    expectedParent: parent, observedParent: Darwin.getppid(),
+                    processGroup: Darwin.getpgrp(), providerPID: providerPID,
+                    signal: { _ = Darwin.kill($0, SIGKILL) },
+                    terminate: { Darwin._exit(78) }
+                )
+            }
+        }
+    }
+
+    @discardableResult
+    static func stopOrphanedProvider(
+        expectedParent: pid_t, observedParent: pid_t,
+        processGroup: pid_t, providerPID: pid_t,
+        signal: (pid_t) -> Void, terminate: () -> Void
+    ) -> Bool {
+        guard expectedParent > 0, observedParent != expectedParent,
+              processGroup > 0, providerPID > 0 else { return false }
+        signal(-processGroup)
+        signal(providerPID)
+        terminate()
+        return true
     }
 
     static func matchingLocalAccount(_ request: Request) -> Bool {
