@@ -35,6 +35,7 @@ from .product_preserved_lifecycle import (
     EP_COMPONENT,
     EP_CONTRACT,
     FORGE_COMPONENT,
+    FORGE_CONTRACT,
     ProductPreservedLifecycleError,
     ProductPreservedLifecycleTerminal,
     frozen_preserved_release,
@@ -139,6 +140,52 @@ class ForgePreservedProductAdapter:
         self.installation_id = installation_id
         self.artifact = artifact
         self.runner = runner or SubprocessForgeCommandRunner()
+
+    def require_terminal_purge_status(
+        self, review: ManagedPreservedLifecycleReview, *, receipt_digest: str,
+    ) -> None:
+        """Read the owning tombstone without reinvoking the destructive operation."""
+        if (
+            not isinstance(review, ManagedPreservedLifecycleReview)
+            or review.operation != "PURGE"
+            or review.component != FORGE_COMPONENT
+            or review.instance_id != self.target.instance_id
+            or review.artifact.correlation != self.artifact.correlation
+            or not isinstance(receipt_digest, str)
+            or _DIGEST.fullmatch(receipt_digest) is None
+        ):
+            raise ManagedPreservedProductAdapterError("Forge purge readback selector changed")
+        request = {
+            "operation_id": review.operation_id,
+            "instance_id": self.target.instance_id,
+            "runtime_id": self.target.instance_id,
+            "installation_id": self.installation_id,
+            "installed_version": self.artifact.version,
+            "installed_source": self.artifact.source_revision,
+            "installed_artifact_digest": self.artifact.digest,
+            "data_root": str(self.target.data_root),
+            "instances_root": str(self.target.instances_root),
+        }
+        observed = self.runner.run((
+            str(self.lifecycle_executable), "server", "lifecycle-status",
+            "--operation-id", review.operation_id,
+            "--instances-root", str(self.target.instances_root),
+            "--instance-id", self.target.instance_id,
+        ))
+        status = _product_json(observed.returncode, observed.stdout)
+        if (
+            status.get("contract") != FORGE_CONTRACT
+            or status.get("operation") != "PURGE"
+            or status.get("operation_id") != review.operation_id
+            or status.get("instance_id") != self.target.instance_id
+            or status.get("phase") != "COMPLETE"
+            or status.get("state") != "COMPLETE"
+            or status.get("lifecycle_state") != "PURGED"
+            or status.get("restorable") is not False
+            or status.get("request_digest") != _forge_product_digest(request)
+            or status.get("receipt_digest") != receipt_digest
+        ):
+            raise ManagedPreservedProductAdapterError("Forge purge terminal status changed")
 
     def invoke(
         self, review: ManagedPreservedLifecycleReview, *,

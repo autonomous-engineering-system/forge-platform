@@ -556,6 +556,7 @@ class ManagedPurgeExecutionCoordinator(ManagedPreserveExecutionCoordinator):
     def purge(
         self, review: ManagedPreservedLifecycleReview, *,
         installed_manifest: CompositionManifest, adapter: PreservedProductAdapter,
+        pairing_revocation: PairingRevocationRecord | None = None,
     ) -> ManagedPreserveExecutionRecord:
         if (
             not isinstance(review, ManagedPreservedLifecycleReview)
@@ -600,13 +601,16 @@ class ManagedPurgeExecutionCoordinator(ManagedPreserveExecutionCoordinator):
             ):
                 raise ManagedPreserveExecutionError("purge lock is unsafe")
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return self._locked_purge(path, review, installed_manifest, adapter)
+            return self._locked_purge(
+                path, review, installed_manifest, adapter, pairing_revocation,
+            )
         finally:
             os.close(lock)
 
     def _locked_purge(
         self, path: Path, review: ManagedPreservedLifecycleReview,
         manifest: CompositionManifest, adapter: PreservedProductAdapter,
+        pairing_revocation: PairingRevocationRecord | None,
     ) -> ManagedPreserveExecutionRecord:
         intended = ManagedPreserveExecutionRecord(
             review.operation_id, review.deployment_id, review.review_fingerprint,
@@ -618,12 +622,29 @@ class ManagedPurgeExecutionCoordinator(ManagedPreserveExecutionCoordinator):
         ) != intended:
             raise ManagedPreserveExecutionError("purge operation identity changed")
         current = self.registry.load(review.deployment_id)
+        if current is not None and current.peer_binding is not None:
+            self._require_pairing_proof(current, review, pairing_revocation)
+        elif review.historical_peer_reference is not None:
+            if (
+                current is None
+                or getattr(current, "historical_peer_binding", None) is not None
+                or pairing_revocation is None
+                or pairing_revocation.state != "COMPLETE"
+                or pairing_revocation.operation_id != review.operation_id
+                or pairing_revocation.deployment_id != review.deployment_id
+                or pairing_revocation.reviewed_deployment_fingerprint != review.registry_fingerprint
+                or pairing_revocation.forge_instance_id != review.instance_id
+                or current.active_by_component.get(EP_COMPONENT) is None
+                or current.active_by_component[EP_COMPONENT].instance_id != pairing_revocation.ep_instance_id
+            ):
+                raise ManagedPreserveExecutionError("paired purge replay lost EP proof")
+        elif pairing_revocation is not None:
+            raise ManagedPreserveExecutionError("unpaired purge carried pairing proof")
         if current is None or review.component not in (
             set(current.active_by_component) | set(current.preserved_by_component)
         ):
             if (
-                review.historical_peer_reference is not None
-                or existing is None or existing.state not in {"COMMITTING", "COMPLETE"}
+                existing is None or existing.state not in {"COMMITTING", "COMPLETE"}
                 or existing.receipt_digest is None
                 or existing.registry_revision != review.registry_revision + 1
                 or current is not None and (
@@ -649,7 +670,7 @@ class ManagedPurgeExecutionCoordinator(ManagedPreserveExecutionCoordinator):
             complete = replace(existing, state="COMPLETE")
             _write(path, complete)
             return complete
-        if current.peer_binding is not None or getattr(current, "historical_peer_binding", None) is not None:
+        if getattr(current, "historical_peer_binding", None) is not None:
             raise ManagedPreserveExecutionError("paired purge requires product-owned consumer revocation")
         if existing is not None and existing.state == "COMPLETE":
             raise ManagedPreserveExecutionError("completed purge regained its inventory")
@@ -704,6 +725,7 @@ class ManagedPurgeExecutionCoordinator(ManagedPreserveExecutionCoordinator):
             installed_manifest=manifest,
             request_digest=evidence.receipt["request_digest"],
             receipt=evidence.receipt, status=evidence.status,
+            pairing_revocation=pairing_revocation,
         )
         if committed is not None and committed.revision != committing.registry_revision:
             raise ManagedPreserveExecutionError("purge registry revision changed")
