@@ -610,6 +610,109 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         ))
     }
 
+    func testHumanProviderCompletionNeedsSuccessfulChildAndChangedPhysicalVerification()
+        async throws {
+        let requirement = try stagedProviderRequirement()
+        let fixture = try FreshRuntimeFixture(providers: [requirement])
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: fixture.plan)
+        let prior = try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: [try .init(id: requirement.id, state: .authenticationRequired,
+                                evidenceReference: "receipt:physical-before")]
+        )
+        let verified = try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: [try .init(id: requirement.id, state: .verified,
+                                evidenceReference: "receipt:physical-after")]
+        )
+        let unchanged = try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: [try .init(id: requirement.id, state: .verified,
+                                evidenceReference: "receipt:physical-before")]
+        )
+        let reader = ProviderAuthMutableStatusReader(status: prior)
+        let physical = ManagedInstallerProviderAuthenticationTarget(
+            provider: .codex,
+            account: ManagedInstallerProviderProbeAccount(
+                name: "_fpi_" + String(repeating: "a", count: 20), uid: 501, gid: 20
+            ),
+            executableURL: URL(fileURLWithPath: "/private/provider/runtime/bin/codex"),
+            providerHomeURL: URL(fileURLWithPath: "/private/provider/home"),
+            priorEvidenceReference: "receipt:physical-before"
+        )
+        let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.plan), reader: reader,
+            prepareTarget: { _, _ in physical }
+        )
+        let starter = ManagedInstallerReviewedProviderAuthenticationStart(
+            admission: admission, makeSession: { _ in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                process.arguments = ["-c", "printf 'https://auth.openai.com/codex/device\\n"
+                    + "Enter this one-time code ABCD-EF12\\n'; /bin/sleep 0.1; exit 0"]
+                return ManagedInstallerProviderAuthenticationSession(
+                    provider: .codex, process: process
+                )
+            }
+        )
+        let bytes = intent.canonicalJSONData()
+        let challenge = await starter.begin(
+            canonicalIntent: bytes, providerTargetID: requirement.id
+        )
+        XCTAssertNotNil(challenge)
+        let before = await starter.finish(
+            canonicalIntent: bytes, providerTargetID: requirement.id
+        )
+        XCTAssertNil(before)
+        await reader.set(unchanged)
+        let sameEvidence = await starter.finish(
+            canonicalIntent: bytes, providerTargetID: requirement.id
+        )
+        XCTAssertNil(sameEvidence)
+        await reader.set(verified)
+        var completed: Data?
+        for _ in 0..<20 {
+            completed = await starter.finish(
+                canonicalIntent: bytes, providerTargetID: requirement.id
+            )
+            if completed != nil { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(completed, verified.canonicalJSONData())
+        let repeatCompletion = await starter.finish(
+            canonicalIntent: bytes, providerTargetID: requirement.id
+        )
+        XCTAssertNil(repeatCompletion)
+
+        await reader.set(prior)
+        let failedChild = ManagedInstallerReviewedProviderAuthenticationStart(
+            admission: admission, makeSession: { _ in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                process.arguments = ["-c", "printf 'https://auth.openai.com/codex/device\\n"
+                    + "Enter this one-time code ABCD-EF12\\n'; /bin/sleep 0.1; exit 1"]
+                return ManagedInstallerProviderAuthenticationSession(
+                    provider: .codex, process: process
+                )
+            }
+        )
+        let failedChallenge = await failedChild.begin(
+            canonicalIntent: bytes, providerTargetID: requirement.id
+        )
+        XCTAssertNotNil(failedChallenge)
+        await reader.set(verified)
+        for _ in 0..<20 {
+            try await Task.sleep(for: .milliseconds(20))
+            let rejected = await failedChild.finish(
+                canonicalIntent: bytes, providerTargetID: requirement.id
+            )
+            XCTAssertNil(rejected)
+        }
+    }
+
     func testFailedPreproviderOrProviderStopsNextBoundary() async throws {
         let fixture = try FreshRuntimeFixture()
         let events = FreshRuntimeEvents()
@@ -1476,6 +1579,17 @@ private struct ProviderStagePlanLoader: ManagedInstallerHelperOwnedStablePlanLoa
 
 private struct ProviderAuthStatusReader: ManagedInstallerStablePlanProviderReading {
     let status: ManagedInstallerReviewedProviderReadback
+    func read(stablePlan: ManagedInstallerStablePlan) async
+        -> ManagedInstallerReviewedProviderReadback? {
+        _ = stablePlan
+        return status
+    }
+}
+
+private actor ProviderAuthMutableStatusReader: ManagedInstallerStablePlanProviderReading {
+    private var status: ManagedInstallerReviewedProviderReadback
+    init(status: ManagedInstallerReviewedProviderReadback) { self.status = status }
+    func set(_ value: ManagedInstallerReviewedProviderReadback) { status = value }
     func read(stablePlan: ManagedInstallerStablePlan) async
         -> ManagedInstallerReviewedProviderReadback? {
         _ = stablePlan

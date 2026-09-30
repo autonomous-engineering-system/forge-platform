@@ -100,4 +100,25 @@ struct ManagedInstallerReviewedProviderAuthenticationAdmission: Sendable {
             reviewed: reviewed, physicalTarget: target
         )
     }
+
+    func verifyCompletion(
+        canonicalIntent: Data, providerTargetID: ProviderTargetID,
+        original: ManagedInstallerReviewedProviderAuthenticationContext
+    ) async -> ManagedInstallerReviewedProviderReadback? {
+        guard let intent = try? ManagedInstallerReviewedExecutionIntent
+                .decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent,
+              intent.matches(original.stablePlan),
+              original.requirement.id == providerTargetID,
+              let trusted = try? await loader.loadStablePlan(for: intent),
+              trusted == original.stablePlan,
+              let observed = await reader.read(stablePlan: trusted),
+              observed.matches(trusted),
+              let target = observed.targets.first(where: { $0.id == providerTargetID }),
+              target.state == .verified,
+              target.evidenceReference != original.priorEvidenceReference,
+              let after = try? await loader.loadStablePlan(for: intent),
+              after == trusted else { return nil }
+        return observed
+    }
 }

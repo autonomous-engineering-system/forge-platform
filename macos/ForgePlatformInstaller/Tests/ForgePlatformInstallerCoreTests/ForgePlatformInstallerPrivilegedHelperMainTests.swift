@@ -401,8 +401,11 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
         backend.beginReviewedProviderAuthentication(
             request, providerTargetID: "codex:forge-runtime:deployment-one"
         ) { responses.append($0) }
+        backend.finishReviewedProviderAuthentication(
+            request, providerTargetID: "codex:forge-runtime:deployment-one"
+        ) { responses.append($0) }
 
-        XCTAssertEqual(responses.count, 9)
+        XCTAssertEqual(responses.count, 10)
         XCTAssertTrue(responses.allSatisfy { $0 == nil })
     }
 

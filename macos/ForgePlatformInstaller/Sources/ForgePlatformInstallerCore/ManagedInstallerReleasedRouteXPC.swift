@@ -783,6 +783,32 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         }
     }
 
+    public func finishReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let providerAuthentication,
+              let targetID = ProviderTargetID(rawValue: providerTargetID),
+              let intent = try? ManagedInstallerReviewedExecutionIntent
+                .decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            guard let bytes = await providerAuthentication.finish(
+                canonicalIntent: canonicalIntent, providerTargetID: targetID
+            ), let receipt = try? ManagedInstallerReviewedProviderReadback.decodeJSON(bytes),
+               receipt.operationID == intent.operationID,
+               receipt.stablePlanFingerprint == intent.stablePlanFingerprint,
+               receipt.targets.contains(where: {
+                   $0.id == targetID && $0.state == .verified
+               }) else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
+    }
+
     public func registerReviewedSelection(
         _ canonicalSelection: Data,
         withReply reply: @escaping (Data?) -> Void
@@ -960,6 +986,10 @@ public protocol ManagedInstallerReviewedProviderAuthenticationIntentSending: Sen
         _ intent: ManagedInstallerReviewedExecutionIntent,
         providerTargetID: ProviderTargetID
     ) async throws -> ManagedInstallerProviderAuthenticationChallengeResponse
+    func finishReviewedProviderAuthentication(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerReviewedProviderReadback
 }
 
 public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
@@ -991,6 +1021,10 @@ public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
         withReply reply: @escaping (Data?) -> Void
     )
     func beginReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    )
+    func finishReviewedProviderAuthentication(
         _ canonicalIntent: Data, providerTargetID: String,
         withReply reply: @escaping (Data?) -> Void
     )
@@ -1131,6 +1165,25 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
             throw ManagedInstallerReleasedRouteXPCFailure.rejected
         }
         return response
+    }
+
+    public func finishReviewedProviderAuthentication(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerReviewedProviderReadback {
+        let data = try await call { service, reply in
+            service.finishReviewedProviderAuthentication(
+                intent.canonicalJSONData(), providerTargetID: providerTargetID.rawValue,
+                withReply: reply
+            )
+        }
+        let receipt = try ManagedInstallerReviewedProviderReadback.decodeJSON(data)
+        guard receipt.operationID == intent.operationID,
+              receipt.stablePlanFingerprint == intent.stablePlanFingerprint,
+              receipt.targets.contains(where: {
+                  $0.id == providerTargetID && $0.state == .verified
+              }) else { throw ManagedInstallerReleasedRouteXPCFailure.rejected }
+        return receipt
     }
 
     public func registerReviewedSelection(
@@ -1320,6 +1373,15 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
     }
 
     public func beginReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        _ = providerTargetID
+        reply(nil)
+    }
+
+    public func finishReviewedProviderAuthentication(
         _ canonicalIntent: Data, providerTargetID: String,
         withReply reply: @escaping (Data?) -> Void
     ) {

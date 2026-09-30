@@ -281,11 +281,18 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         let response = ManagedInstallerProviderAuthenticationChallengeResponse(
             intent: intent, targetID: target, challenge: device
         )
+        let completed = try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: [try .init(id: target, state: .verified,
+                                evidenceReference: "receipt:physical-completion")]
+        )
         let service = FileManagedInstallerReleasedRouteXPCService(
             rootDirectory: URL(fileURLWithPath: "/private/tmp", isDirectory: true),
             expectedOwner: geteuid(),
             providerAuthentication: XPCProviderAuthenticationStarter(
-                intent: intent, target: target, response: response
+                intent: intent, target: target, response: response,
+                completion: completed
             )
         )
         let malformedAuthentication = await callProviderAuthentication(
@@ -296,6 +303,14 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             service, intent.canonicalJSONData(), target.rawValue
         )
         XCTAssertEqual(exact, response.canonicalJSONData())
+        let malformedCompletion = await callProviderAuthenticationCompletion(
+            service, Data("{}".utf8), target.rawValue
+        )
+        XCTAssertNil(malformedCompletion)
+        let exactCompletion = await callProviderAuthenticationCompletion(
+            service, intent.canonicalJSONData(), target.rawValue
+        )
+        XCTAssertEqual(exactCompletion, completed.canonicalJSONData())
         let listener = MacOSManagedInstallerReleasedRouteXPCListener(
             listener: .anonymous(),
             callerIdentity: try ManagedInstallerProductOperationXPCCallerIdentity(
@@ -313,6 +328,10 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             intent, providerTargetID: target
         )
         XCTAssertEqual(forwarded, response)
+        let finished = try await transport.finishReviewedProviderAuthentication(
+            intent, providerTargetID: target
+        )
+        XCTAssertEqual(finished, completed)
         await transport.invalidate()
     }
 
@@ -962,6 +981,14 @@ private final class RawReleasedRouteXPCService:
         _ = providerTargetID
         reply(nil)
     }
+    func finishReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        _ = providerTargetID
+        reply(nil)
+    }
     func registerReviewedSelection(
         _ canonicalSelection: Data,
         withReply reply: @escaping (Data?) -> Void
@@ -996,11 +1023,29 @@ private struct XPCProviderAuthenticationStarter:
     let intent: ManagedInstallerReviewedExecutionIntent
     let target: ProviderTargetID
     let response: ManagedInstallerProviderAuthenticationChallengeResponse
+    let completion: ManagedInstallerReviewedProviderReadback
 
     func begin(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data? {
         guard canonicalIntent == intent.canonicalJSONData(),
               providerTargetID == target else { return nil }
         return response.canonicalJSONData()
+    }
+
+    func finish(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data? {
+        guard canonicalIntent == intent.canonicalJSONData(),
+              providerTargetID == target else { return nil }
+        return completion.canonicalJSONData()
+    }
+}
+
+private func callProviderAuthenticationCompletion(
+    _ service: ManagedInstallerReleasedRouteXPCService,
+    _ canonicalIntent: Data, _ providerTargetID: String
+) async -> Data? {
+    await withCheckedContinuation { continuation in
+        service.finishReviewedProviderAuthentication(
+            canonicalIntent, providerTargetID: providerTargetID
+        ) { continuation.resume(returning: $0) }
     }
 }
 

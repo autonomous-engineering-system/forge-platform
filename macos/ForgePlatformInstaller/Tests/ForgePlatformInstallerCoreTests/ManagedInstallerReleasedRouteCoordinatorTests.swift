@@ -462,6 +462,15 @@ private actor ExecutionRouteLoader:
             intent: intent, targetID: providerTargetID, challenge: challenge
         )
     }
+
+    func finishReviewedProviderAuthentication(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerReviewedProviderReadback {
+        _ = intent
+        _ = providerTargetID
+        throw TestFailure.failed
+    }
 }
 
 private actor ReleasedRouteLoader: ManagedInstallerReleasedRouteSnapshotLoading {
