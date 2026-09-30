@@ -441,7 +441,9 @@ final class InstallerCLITests: XCTestCase {
         let providerActions1 = await coordinator.providerActions()
         XCTAssertTrue(providerActions1.isEmpty)
         let stageCalls1 = await coordinator.stageCallCount()
+        let readCalls1 = await coordinator.providerReadCount()
         XCTAssertEqual(stageCalls1, 1)
+        XCTAssertEqual(readCalls1, 1)
         XCTAssertEqual(result.details["provider_targets"], provider.id.rawValue)
         let executionCalls3 = await coordinator.executionCallCount()
         XCTAssertEqual(executionCalls3, 0)
@@ -472,6 +474,27 @@ final class InstallerCLITests: XCTestCase {
         let executionCalls2 = await coordinator.executionCallCount()
         XCTAssertEqual(stageCalls2, 1)
         XCTAssertEqual(executionCalls2, 0)
+    }
+
+    func testVerifiedProviderReadbackNeedsFreshCurrencyBeforeProductExecution() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let coordinator = CLIWizardCoordinator(
+            session: try session(providers: [provider])
+        )
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        ).applyDeployment(
+            "new", options: InstallerCLIOptions(nonInteractive: true, assumeYes: true),
+            confirm: { _ in XCTFail("Automation authority must not prompt"); return false }
+        )
+        XCTAssertEqual(result.exitCode, .success)
+        let calls = await coordinator.calls()
+        XCTAssertEqual(calls, [
+            "inventory", "session", "preflight", "review", "currency",
+            "provider-stage", "provider-readback", "currency", "execute",
+        ])
+        let providerActions = await coordinator.providerActions()
+        XCTAssertTrue(providerActions.isEmpty)
     }
 
     func testNewInstallerAfterReviewNeverExecutesOldSessionAndCanHandoffWhenAuthorized() async throws {
@@ -629,6 +652,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private var inventories = 0
     private var removals = 0
     private var stages = 0
+    private var providerReads = 0
 
     init(
         session: VerifiedCompositionSessionPlan,
@@ -927,6 +951,27 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         return .prepared(receipt)
     }
 
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
+        recordedCalls.append("provider-readback")
+        providerReads += 1
+        let targets = try? operation.enabledProviderRequirements.map {
+            try ManagedInstallerReviewedProviderReadback.Target(
+                id: $0.id,
+                state: providerAuthenticationRequired
+                    ? .authenticationRequired : .verified,
+                evidenceReference: "receipt:cli-provider-readback"
+            )
+        }.sorted { $0.id.rawValue < $1.id.rawValue }
+        guard let targets, let receipt = try? ManagedInstallerReviewedProviderReadback(
+            operationID: "cli-provider-stage",
+            stablePlanFingerprint: String(repeating: "a", count: 64),
+            targets: targets
+        ) else { return .unavailable(.executionFailed) }
+        return .observed(receipt)
+    }
+
     func performProviderAction(
         _ action: ProviderAction,
         for provider: ProviderID
@@ -956,4 +1001,5 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     func inventoryCallCount() -> Int { inventories }
     func removalCallCount() -> Int { removals }
     func stageCallCount() -> Int { stages }
+    func providerReadCount() -> Int { providerReads }
 }

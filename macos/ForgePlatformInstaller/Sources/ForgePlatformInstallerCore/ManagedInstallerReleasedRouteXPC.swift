@@ -549,6 +549,13 @@ protocol ManagedInstallerHelperReviewedProviderStaging: Sendable {
 extension ManagedInstallerReviewedProviderStageAdmission:
     ManagedInstallerHelperReviewedProviderStaging {}
 
+protocol ManagedInstallerHelperReviewedProviderReading: Sendable {
+    func read(canonicalIntent: Data) async -> Data?
+}
+
+extension ManagedInstallerReviewedProviderReadbackAdmission:
+    ManagedInstallerHelperReviewedProviderReading {}
+
 /// XPC backend over helper-owned route evidence. The app can select
 /// only a correlation request; file names are derived inside the helper and
 /// every document is read through a private root descriptor without following
@@ -571,6 +578,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     private let registration: ManagedInstallerHelperReviewedSelectionRegistration?
     private let execution: (any ManagedInstallerHelperReviewedIntentExecuting)?
     private let providerStaging: (any ManagedInstallerHelperReviewedProviderStaging)?
+    private let providerReadback: (any ManagedInstallerHelperReviewedProviderReading)?
     private let freshSnapshotProducer: (any ManagedInstallerReleasedRouteFreshSnapshotProducing)?
     private let requiresFreshSnapshotPublication: Bool
 
@@ -595,6 +603,10 @@ public final class FileManagedInstallerReleasedRouteXPCService:
             providerStaging: ManagedInstallerReviewedProviderStageAdmission.whenReady(
                 loader: registration,
                 stager: ManagedInstallerHelperFreshProviderStager.production()
+            ),
+            providerReadback: ManagedInstallerReviewedProviderReadbackAdmission.whenReady(
+                loader: registration,
+                reader: ManagedInstallerHelperFreshProviderReader.production()
             )
         )
     }
@@ -608,7 +620,8 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         freshSnapshotProducer: (any ManagedInstallerReleasedRouteFreshSnapshotProducing)? = nil,
         requiresFreshSnapshotPublication: Bool = false,
         execution: (any ManagedInstallerHelperReviewedIntentExecuting)? = nil,
-        providerStaging: (any ManagedInstallerHelperReviewedProviderStaging)? = nil
+        providerStaging: (any ManagedInstallerHelperReviewedProviderStaging)? = nil,
+        providerReadback: (any ManagedInstallerHelperReviewedProviderReading)? = nil
     ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
@@ -619,6 +632,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         self.requiresFreshSnapshotPublication = requiresFreshSnapshotPublication
         self.execution = execution
         self.providerStaging = providerStaging
+        self.providerReadback = providerReadback
         super.init()
     }
 
@@ -709,6 +723,28 @@ public final class FileManagedInstallerReleasedRouteXPCService:
             guard let bytes = await providerStaging.stage(canonicalIntent: canonicalIntent),
                   let receipt = try? ManagedInstallerReviewedProviderStageReceipt
                     .decodeJSON(bytes),
+                  receipt.operationID == intent.operationID,
+                  receipt.stablePlanFingerprint == intent.stablePlanFingerprint
+            else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
+    }
+
+    public func readReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let providerReadback,
+              let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
+                  canonicalIntent
+              ), intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            guard let bytes = await providerReadback.read(canonicalIntent: canonicalIntent),
+                  let receipt = try? ManagedInstallerReviewedProviderReadback.decodeJSON(bytes),
                   receipt.operationID == intent.operationID,
                   receipt.stablePlanFingerprint == intent.stablePlanFingerprint
             else { gate.complete(nil); return }
@@ -882,6 +918,12 @@ public protocol ManagedInstallerReviewedProviderStageIntentSending: Sendable {
     ) async throws -> ManagedInstallerReviewedProviderStageReceipt
 }
 
+public protocol ManagedInstallerReviewedProviderReadbackIntentSending: Sendable {
+    func readReviewedProviders(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedInstallerReviewedProviderReadback
+}
+
 public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
     func registerReviewedSelection(
         _ selection: ManagedInstallerReviewedSelection
@@ -906,6 +948,10 @@ public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     )
+    func readReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
     func registerReviewedSelection(
         _ canonicalSelection: Data,
         withReply reply: @escaping (Data?) -> Void
@@ -916,6 +962,7 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     ManagedInstallerReleasedRouteSnapshotLoading,
     ManagedInstallerReviewedExecutionIntentSending,
     ManagedInstallerReviewedProviderStageIntentSending,
+    ManagedInstallerReviewedProviderReadbackIntentSending,
     ManagedInstallerReviewedSelectionRegistering,
     ManagedInstallerPreservedRegistryReading {
     public static let machServiceName =
@@ -1011,6 +1058,20 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
         return receipt
     }
 
+    public func readReviewedProviders(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedInstallerReviewedProviderReadback {
+        let data = try await call { service, reply in
+            service.readReviewedProviders(intent.canonicalJSONData(), withReply: reply)
+        }
+        let receipt = try ManagedInstallerReviewedProviderReadback.decodeJSON(data)
+        guard receipt.operationID == intent.operationID,
+              receipt.stablePlanFingerprint == intent.stablePlanFingerprint else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+        return receipt
+    }
+
     public func registerReviewedSelection(
         _ selection: ManagedInstallerReviewedSelection
     ) async throws {
@@ -1054,6 +1115,7 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
     private let admission: ManagedInstallerReviewedExecutionAdmission?
     private let registration: ManagedInstallerHelperReviewedSelectionRegistration?
     private let providerStaging: ManagedInstallerReviewedProviderStageAdmission?
+    private let providerReadback: ManagedInstallerReviewedProviderReadbackAdmission?
 
     public init(
         service: any ManagedInstallerReleasedRouteHelperServing,
@@ -1063,6 +1125,7 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
         self.admission = admission
         registration = nil
         providerStaging = nil
+        providerReadback = nil
         super.init()
     }
 
@@ -1070,12 +1133,14 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
         service: any ManagedInstallerReleasedRouteHelperServing,
         admission: ManagedInstallerReviewedExecutionAdmission?,
         registration: ManagedInstallerHelperReviewedSelectionRegistration?,
-        providerStaging: ManagedInstallerReviewedProviderStageAdmission? = nil
+        providerStaging: ManagedInstallerReviewedProviderStageAdmission? = nil,
+        providerReadback: ManagedInstallerReviewedProviderReadbackAdmission? = nil
     ) {
         self.service = service
         self.admission = admission
         self.registration = registration
         self.providerStaging = providerStaging
+        self.providerReadback = providerReadback
         super.init()
     }
 
@@ -1164,6 +1229,28 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
             guard let bytes = await providerStaging.stage(canonicalIntent: canonicalIntent),
                   let receipt = try? ManagedInstallerReviewedProviderStageReceipt
                     .decodeJSON(bytes),
+                  receipt.operationID == intent.operationID,
+                  receipt.stablePlanFingerprint == intent.stablePlanFingerprint
+            else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
+    }
+
+    public func readReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let providerReadback,
+              let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
+                  canonicalIntent
+              ), intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            guard let bytes = await providerReadback.read(canonicalIntent: canonicalIntent),
+                  let receipt = try? ManagedInstallerReviewedProviderReadback.decodeJSON(bytes),
                   receipt.operationID == intent.operationID,
                   receipt.stablePlanFingerprint == intent.stablePlanFingerprint
             else { gate.complete(nil); return }

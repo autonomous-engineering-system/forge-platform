@@ -156,11 +156,22 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             loader: XPCExecutionPlanLoader(plan: plan),
             stager: XPCProviderStageStager(receipt: receipt)
         )
+        let physical = try ManagedInstallerReviewedProviderReadback(
+            operationID: plan.activationPlan.operationID,
+            stablePlanFingerprint: plan.fingerprint,
+            targets: [.init(id: provider.id, state: .authenticationRequired,
+                            evidenceReference: "receipt:xpc-provider-status")]
+        )
+        let readbackAdmission = ManagedInstallerReviewedProviderReadbackAdmission(
+            loader: XPCExecutionPlanLoader(plan: plan),
+            reader: XPCProviderReadbackReader(receipt: physical)
+        )
         let handler = ManagedInstallerReleasedRouteXPCServiceHandler(
             service: ReleasedRouteHelperService(snapshot: fixture.snapshot),
             admission: nil,
             registration: nil,
-            providerStaging: admission
+            providerStaging: admission,
+            providerReadback: readbackAdmission
         )
         let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
         let malformed = await callProviderStage(handler, Data("{}".utf8))
@@ -169,6 +180,10 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         let response = try XCTUnwrap(stagedReply)
         XCTAssertEqual(try ManagedInstallerReviewedProviderStageReceipt.decodeJSON(response),
                        receipt)
+        let physicalReply = await callProviderReadback(handler, intent.canonicalJSONData())
+        XCTAssertEqual(try ManagedInstallerReviewedProviderReadback.decodeJSON(
+            XCTUnwrap(physicalReply)
+        ), physical)
 
         let listener = MacOSManagedInstallerReleasedRouteXPCListener(
             listener: .anonymous(),
@@ -184,12 +199,18 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         let transport = MacOSManagedInstallerReleasedRouteXPCTransport(endpoint: listener.endpoint)
         let transported = try await transport.stageReviewedProviders(intent)
         XCTAssertEqual(transported, receipt)
+        let transportedReadback = try await transport.readReviewedProviders(intent)
+        XCTAssertEqual(transportedReadback, physical)
         await transport.invalidate()
         let unavailable = ManagedInstallerReleasedRouteXPCServiceHandler(
             service: ReleasedRouteHelperService(snapshot: fixture.snapshot)
         )
         let denied = await callProviderStage(unavailable, intent.canonicalJSONData())
         XCTAssertNil(denied)
+        let deniedReadback = await callProviderReadback(
+            unavailable, intent.canonicalJSONData()
+        )
+        XCTAssertNil(deniedReadback)
     }
 
     func testFileHelperDispatchesOnlyCanonicalReviewedIntentAndTypedReply()
@@ -754,11 +775,27 @@ private struct XPCProviderStageStager: ManagedInstallerStablePlanProviderStaging
     }
 }
 
+private struct XPCProviderReadbackReader: ManagedInstallerStablePlanProviderReading {
+    let receipt: ManagedInstallerReviewedProviderReadback
+    func read(stablePlan: ManagedInstallerStablePlan) async
+        -> ManagedInstallerReviewedProviderReadback? {
+        receipt.matches(stablePlan) ? receipt : nil
+    }
+}
+
 private func callProviderStage(
     _ service: ManagedInstallerReleasedRouteXPCService, _ data: Data
 ) async -> Data? {
     await withCheckedContinuation { continuation in
         service.stageReviewedProviders(data) { continuation.resume(returning: $0) }
+    }
+}
+
+private func callProviderReadback(
+    _ service: ManagedInstallerReleasedRouteXPCService, _ data: Data
+) async -> Data? {
+    await withCheckedContinuation { continuation in
+        service.readReviewedProviders(data) { continuation.resume(returning: $0) }
     }
 }
 
@@ -846,6 +883,13 @@ private final class RawReleasedRouteXPCService:
         reply(nil)
     }
     func stageReviewedProviders(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        reply(nil)
+    }
+    func readReviewedProviders(
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {

@@ -341,6 +341,49 @@ public struct MacOSManagedInstallerProviderHostInspector:
         ManagedInstallerProviderHostReadback,
         ManagedPythonRuntimeTerminalReceiptFailure
     > {
+        await inspectProvider(requirement, context: .init(
+            operationID: request.operationID,
+            deploymentID: request.deploymentID,
+            stablePlanFingerprint: request.stablePlanFingerprint,
+            enabledProviderRequirements: request.enabledProviderRequirements
+        ))
+    }
+
+    /// Pre-product provider verification shares the same physical inspector
+    /// and exact account/home checks as the terminal post-tool gate.
+    func inspectFreshProvider(
+        _ requirement: ProviderRequirement,
+        stablePlan: ManagedInstallerStablePlan
+    ) async -> Result<
+        ManagedInstallerProviderHostReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    > {
+        guard !stablePlan.deployment.exists,
+              !stablePlan.enabledProviderRequirements.isEmpty else {
+            return .failure(.rejected)
+        }
+        return await inspectProvider(requirement, context: .init(
+            operationID: stablePlan.activationPlan.operationID,
+            deploymentID: stablePlan.deployment.id,
+            stablePlanFingerprint: stablePlan.fingerprint,
+            enabledProviderRequirements: stablePlan.enabledProviderRequirements
+        ))
+    }
+
+    private struct InspectionContext {
+        let operationID: String
+        let deploymentID: String
+        let stablePlanFingerprint: String
+        let enabledProviderRequirements: [ProviderRequirement]
+    }
+
+    private func inspectProvider(
+        _ requirement: ProviderRequirement,
+        context request: InspectionContext
+    ) async -> Result<
+        ManagedInstallerProviderHostReadback,
+        ManagedPythonRuntimeTerminalReceiptFailure
+    > {
         guard request.enabledProviderRequirements.contains(requirement),
               requirement.credentialScope == .component,
               let owner = requirement.ownerComponent,
@@ -531,7 +574,7 @@ public struct MacOSManagedInstallerProviderHostInspector:
 
     private func readback(
         requirement: ProviderRequirement,
-        request: ManagedInstallerPostToolHostObservationRequest,
+        request: InspectionContext,
         state: ManagedInstallerProviderHostReadback.State,
         version: InstallerVersion?,
         evidence: ExecutableEvidence?
@@ -746,7 +789,7 @@ public struct MacOSManagedInstallerProviderHostInspector:
 
     private static func evidenceReference(
         requirement: ProviderRequirement,
-        request: ManagedInstallerPostToolHostObservationRequest,
+        request: InspectionContext,
         state: ManagedInstallerProviderHostReadback.State,
         version: InstallerVersion?,
         evidence: ExecutableEvidence?

@@ -1470,6 +1470,33 @@ public struct InstallerWizardState: Equatable, Sendable {
         applyProviderTargetActionResult(result, for: matches[0].id, action: action)
     }
 
+    /// UI progress from the helper's independent physical readback. The
+    /// reviewed stage and readback must identify one unchanged operation and
+    /// every exact provider target. Product execution still rechecks currency
+    /// and provider readiness inside the helper.
+    @discardableResult
+    public mutating func recordReviewedProviderReadback(
+        _ readback: ManagedInstallerReviewedProviderReadback,
+        after stage: ManagedInstallerReviewedProviderStageReceipt,
+        for operation: ReviewedManagedDeploymentOperation
+    ) -> Bool {
+        guard reviewedProviderStageOperation() == operation,
+              readback.operationID == stage.operationID,
+              readback.stablePlanFingerprint == stage.stablePlanFingerprint,
+              readback.targets.map(\.id) == stage.providerTargetIDs,
+              stage.providerTargetIDs == enabledProviders.map(\.id)
+                .sorted(by: { $0.rawValue < $1.rawValue }) else { return false }
+        for target in readback.targets {
+            guard let index = providers.firstIndex(where: { $0.id == target.id }) else {
+                return false
+            }
+            providers[index].state = target.state == .verified
+                ? .verified : .authenticationRequired
+        }
+        preMutationCurrency = .pending
+        return true
+    }
+
     /// Review acknowledgement precedes helper-owned provider preparation for
     /// a fresh install. It does not grant product execution: that still needs
     /// independently verified providers and fresh currency.
@@ -1676,6 +1703,9 @@ public protocol InstallerWizardCoordinator: Sendable {
     func stageReviewedProviders(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedInstallerProviderStagePreparationResult
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult
     /// Legacy targetless route retained for composition/v1 coordinators.
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult
     /// Target-aware route used by composition/v2. Existing coordinators inherit
@@ -1691,6 +1721,13 @@ public extension InstallerWizardCoordinator {
     func stageReviewedProviders(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedInstallerProviderStagePreparationResult {
+        _ = operation
+        return .unavailable(.coordinatorUnavailable)
+    }
+
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
         _ = operation
         return .unavailable(.coordinatorUnavailable)
     }

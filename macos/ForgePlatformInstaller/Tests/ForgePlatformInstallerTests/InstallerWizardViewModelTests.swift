@@ -371,17 +371,18 @@ final class InstallerWizardViewModelTests: XCTestCase {
         model.advance()
         for _ in 0..<400 {
             switch model.providerStage {
-            case .prepared, .blocked: break
-            case .idle, .staging:
+            case .observed, .blocked: break
+            case .idle, .staging, .prepared:
                 try? await Task.sleep(for: .milliseconds(5))
                 continue
             }
             break
         }
-        guard case .prepared(let receipt) = model.providerStage else {
-            return XCTFail("Provider stage must return only bounded helper preparation")
+        guard case .observed(let readback) = model.providerStage else {
+            return XCTFail("Provider stage must be followed by physical readback")
         }
-        XCTAssertEqual(receipt.providerTargetIDs, [.codex])
+        XCTAssertEqual(readback.targets.map(\.id), [.codex])
+        XCTAssertFalse(readback.allVerified)
         XCTAssertEqual(model.state.step, .review)
         XCTAssertFalse(model.state.enabledProvidersVerified)
         let stageCalls = await coordinator.stageCalls()
@@ -605,6 +606,23 @@ private actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
                 .sorted { $0.rawValue < $1.rawValue }
         ) else { return .unavailable(.executionFailed) }
         return .prepared(receipt)
+    }
+
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
+        guard let targets = try? operation.enabledProviderRequirements.map({
+            try ManagedInstallerReviewedProviderReadback.Target(
+                id: $0.id, state: .authenticationRequired,
+                evidenceReference: "receipt:gui-provider-readback"
+            )
+        }).sorted(by: { $0.id.rawValue < $1.id.rawValue }),
+              let receipt = try? ManagedInstallerReviewedProviderReadback(
+                operationID: "gui-provider-stage",
+                stablePlanFingerprint: String(repeating: "a", count: 64),
+                targets: targets
+              ) else { return .unavailable(.executionFailed) }
+        return .observed(receipt)
     }
 
     func executeReviewedManagedDeployment(

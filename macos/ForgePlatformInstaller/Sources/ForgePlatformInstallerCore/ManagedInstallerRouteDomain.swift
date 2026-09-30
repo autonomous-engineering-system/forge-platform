@@ -109,6 +109,11 @@ public enum ManagedInstallerProviderStagePreparationResult: Equatable, Sendable 
     case unavailable(InstallerOperationFailureCode)
 }
 
+public enum ManagedInstallerProviderReadbackResult: Equatable, Sendable {
+    case observed(ManagedInstallerReviewedProviderReadback)
+    case unavailable(InstallerOperationFailureCode)
+}
+
 /// Narrow collaborator injected into the trusted installer runtime. Product
 /// commands and credentials never cross into SwiftUI; only bounded domain
 /// projections do.
@@ -128,12 +133,22 @@ public protocol ManagedDeploymentRouteCoordinating: Sendable {
     func stageReviewedProviders(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedInstallerProviderStagePreparationResult
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult
 }
 
 public extension ManagedDeploymentRouteCoordinating {
     func stageReviewedProviders(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedInstallerProviderStagePreparationResult {
+        _ = operation
+        return .unavailable(.coordinatorUnavailable)
+    }
+
+    func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
         _ = operation
         return .unavailable(.coordinatorUnavailable)
     }

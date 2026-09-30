@@ -24,6 +24,7 @@ final class InstallerWizardViewModel: ObservableObject {
         case idle
         case staging
         case prepared(ManagedInstallerReviewedProviderStageReceipt)
+        case observed(ManagedInstallerReviewedProviderReadback)
         case blocked(String)
     }
 
@@ -469,6 +470,7 @@ final class InstallerWizardViewModel: ObservableObject {
         Task { @MainActor [weak self] in
             let result = await coordinator.performProviderAction(action, for: requirement)
             self?.state.applyProviderTargetActionResult(result, for: target, action: action)
+            self?.providerStage = .idle
         }
     }
 
@@ -506,9 +508,20 @@ final class InstallerWizardViewModel: ObservableObject {
                     case .prepared(let receipt):
                         let expected = self.state.enabledProviders.map(\.id)
                             .sorted { $0.rawValue < $1.rawValue }
-                        self.providerStage = receipt.providerTargetIDs == expected
-                            ? .prepared(receipt)
-                            : .blocked("De helper gaf andere providertargets terug.")
+                        guard receipt.providerTargetIDs == expected else {
+                            self.providerStage = .blocked("De helper gaf andere providertargets terug.")
+                            return
+                        }
+                        self.providerStage = .prepared(receipt)
+                        switch await coordinator.readReviewedProviders(operation) {
+                        case .observed(let readback):
+                            self.providerStage = self.state.recordReviewedProviderReadback(
+                                readback, after: receipt, for: operation
+                            ) ? .observed(readback)
+                                : .blocked("De providerstatus past niet bij het beoordeelde doel.")
+                        case .unavailable:
+                            self.providerStage = .blocked("De helper kon de providerstatus niet onafhankelijk teruglezen.")
+                        }
                     case .unavailable:
                         self.providerStage = .blocked("De helper kon de beoordeelde provideromgevingen niet voorbereiden.")
                     }
@@ -528,7 +541,9 @@ final class InstallerWizardViewModel: ObservableObject {
 
     func goBack() {
         guard !isRemovalExecutionInFlight, !isProviderStageInFlight else { return }
-        _ = state.goBack()
+        if state.goBack() {
+            providerStage = .idle
+        }
         resetRemovalReview()
     }
 }
@@ -1394,6 +1409,16 @@ private struct CompositionReviewScreen: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Provideromgevingen voorbereid voor \(receipt.providerTargetIDs.map(\.rawValue).joined(separator: ", ")).")
                     Text("Menselijke aanmelding en onafhankelijke verificatie per doelinstantie zijn nog vereist.")
+                }
+                .font(.callout)
+            case .observed(let readback):
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(readback.targets, id: \.id) { target in
+                        Text("\(target.id.rawValue): \(target.state == .verified ? "VERIFIED" : "Aanmelding vereist")")
+                    }
+                    if !readback.allVerified {
+                        Text("Meld je aan in elke gekozen componentomgeving en controleer de status daarna opnieuw.")
+                    }
                 }
                 .font(.callout)
             case .blocked(let reason):

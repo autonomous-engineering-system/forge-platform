@@ -864,18 +864,51 @@ public struct InstallerCLIWorkflow: Sendable {
                     guard receipt.providerTargetIDs == expected else {
                         return Self.blocked("De providerfase gaf andere doelinstanties terug.")
                     }
-                    return InstallerCLIResult(
-                        exitCode: .interactionRequired,
-                        status: "provider-authentication-required",
-                        message: "De gekozen provideromgevingen zijn voorbereid. Menselijke aanmelding en onafhankelijke verificatie per doelinstantie zijn vereist vóór productuitvoering.",
-                        details: [
-                            "deployment_id": deploymentID,
-                            "operation_id": receipt.operationID,
-                            "stable_plan_fingerprint": receipt.stablePlanFingerprint,
-                            "provider_targets": expected.map(\.rawValue).joined(separator: ","),
-                        ],
-                        records: Self.reviewRecords(state.composition)
+                    guard case .observed(let readback) = await coordinator
+                        .readReviewedProviders(operation),
+                          state.recordReviewedProviderReadback(
+                              readback, after: receipt, for: operation
+                          ) else {
+                        return Self.blocked("De helper kon de exacte providerstatus niet onafhankelijk teruglezen.")
+                    }
+                    if !readback.allVerified {
+                        return InstallerCLIResult(
+                            exitCode: .interactionRequired,
+                            status: "provider-authentication-required",
+                            message: "De gekozen provideromgevingen zijn voorbereid. Menselijke aanmelding en onafhankelijke verificatie per doelinstantie zijn vereist vóór productuitvoering.",
+                            details: [
+                                "deployment_id": deploymentID,
+                                "operation_id": receipt.operationID,
+                                "stable_plan_fingerprint": receipt.stablePlanFingerprint,
+                                "provider_targets": expected.map(\.rawValue).joined(separator: ","),
+                            ],
+                            records: readback.targets.map { [
+                                "provider_target": $0.id.rawValue,
+                                "state": $0.state.rawValue,
+                                "evidence_reference": $0.evidenceReference,
+                            ] }
+                        )
+                    }
+                    guard state.beginPreMutationCurrencyCheck() else {
+                        return Self.blocked("De providercontrole kon geen nieuwe installercontrole starten.")
+                    }
+                    let afterProviders = await coordinator.recheckInstallerBeforeMutation(
+                        currentVersion: state.currentInstallerVersion
                     )
+                    switch afterProviders {
+                    case .current:
+                        guard state.recordPreMutationCurrencyCheck(afterProviders) else {
+                            return Self.blocked("Installer-release wijzigde na providerverificatie.")
+                        }
+                    case .updateRequired(let release):
+                        _ = state.recordPreMutationCurrencyCheck(afterProviders)
+                        return await handleRequiredUpdate(
+                            release, options: options, confirm: confirm
+                        )
+                    case .failed:
+                        _ = state.recordPreMutationCurrencyCheck(afterProviders)
+                        return Self.blocked("Installer-release kon na providerverificatie niet opnieuw worden gecontroleerd.")
+                    }
                 case .unavailable:
                     return Self.blocked("De bevoorrechte helper kon de beoordeelde providerfase niet veilig voorbereiden.")
                 }

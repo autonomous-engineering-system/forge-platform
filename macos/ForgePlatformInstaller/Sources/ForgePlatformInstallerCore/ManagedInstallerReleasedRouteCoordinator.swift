@@ -264,4 +264,26 @@ public actor ManagedInstallerReleasedRouteCoordinator:
             return .unavailable(.staleSession)
         }
     }
+
+    public func readReviewedProviders(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedInstallerProviderReadbackResult {
+        guard !operation.deploymentExists,
+              !operation.enabledProviderRequirements.isEmpty,
+              let sender = loader as? any ManagedInstallerReviewedProviderReadbackIntentSending
+        else { return .unavailable(.coordinatorUnavailable) }
+        switch await prepareStablePlan(for: operation) {
+        case .prepared(let plan) where plan.reviewedOperation == operation:
+            do {
+                let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+                let receipt = try await sender.readReviewedProviders(intent)
+                guard receipt.matches(plan) else { return .unavailable(.staleSession) }
+                return .observed(receipt)
+            } catch {
+                return .unavailable(.coordinatorUnavailable)
+            }
+        case .prepared, .unavailable:
+            return .unavailable(.staleSession)
+        }
+    }
 }
