@@ -286,6 +286,12 @@ class ForgeUpdateBinding:
         ))
 
 
+class ForgeUpdateBindingProvider(Protocol):
+    """Resolve one helper-owned binding for the exact reviewed operation."""
+
+    def resolve(self, request: ComponentOperationRequest) -> ForgeUpdateBinding: ...
+
+
 def _verified_forge_238_controller(binding: ForgeUpdateBinding) -> bool:
     """Read the exact protected controller bytes without following path links."""
     return _verified_external_controller(
@@ -449,6 +455,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         runner: ForgeCommandRunner | None = None,
         readiness_probe: ForgeReadinessProbe | None = None,
         update_binding: ForgeUpdateBinding | None = None,
+        update_binding_provider: ForgeUpdateBindingProvider | None = None,
         lifecycle_executable: Path | None = None,
         uninstall_binding: ForgeUninstallBinding | None = None,
     ) -> None:
@@ -464,8 +471,26 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self.runner = runner or SubprocessForgeCommandRunner()
         self.readiness_probe = readiness_probe or ForgeHTTPReadinessProbe()
         self.update_binding = update_binding
+        if update_binding is not None and update_binding_provider is not None:
+            raise ValueError("Forge update binding authorities are ambiguous")
+        if update_binding_provider is not None and not callable(
+            getattr(update_binding_provider, "resolve", None)
+        ):
+            raise TypeError("Forge update binding provider is invalid")
+        self.update_binding_provider = update_binding_provider
         self.lifecycle_executable = lifecycle_executable
         self.uninstall_binding = uninstall_binding
+
+    def _binding_for(self, request: ComponentOperationRequest) -> ForgeUpdateBinding | None:
+        if self.update_binding_provider is None:
+            return self.update_binding
+        binding = self.update_binding_provider.resolve(request)
+        if not isinstance(binding, ForgeUpdateBinding) or (
+            binding.runtime_id != self.target.instance_id
+            or binding.existing_version != self.installed_artifact.version
+        ):
+            raise ForgeServerAdapterError("Forge update provider changed the selected instance")
+        return binding
 
     @staticmethod
     def read_peer_configuration_digest(
@@ -764,7 +789,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             raise ForgeServerAdapterError("Forge update assessment requires update kind")
         if request.artifact.version in {"2.7.38", "2.7.39"}:
             return self._assess_external_published_update(request)
-        binding = self.update_binding
+        binding = self._binding_for(request)
         executable = self.lifecycle_executable
         wheel = self.staged_artifacts.get(request.artifact.digest)
         if binding is None or executable is None or not isinstance(wheel, Path) or not wheel.is_absolute():
@@ -896,7 +921,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             FORGE_COMPONENT, self.target.instance_id, request.artifact.correlation,
             "UNKNOWN", "forge-update-assess:unavailable",
         )
-        binding = self.update_binding
+        binding = self._binding_for(request)
         wheel = self.staged_artifacts.get(request.artifact.digest)
         if request.artifact.version == "2.7.38":
             selected = qualified_forge_238_update_selection
@@ -1006,7 +1031,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             or re.fullmatch(r"[0-9a-f]{64}", reviewed_assessment.removeprefix("forge-update-assess:sha256:")) is None
         ):
             raise ForgeServerAdapterError("Forge update lacks reviewed product assessment evidence")
-        binding = self.update_binding
+        binding = self._binding_for(request)
         if (
             binding is None or binding.intent_root is None
             or binding.runtime_id != self.target.instance_id
@@ -1093,7 +1118,9 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             self.supervisor.stop(self.target)
             if self.supervisor.loaded(self.target):
                 raise ForgeServerAdapterError("Forge service remained loaded before product update")
-            receipt_reference = self._run_update(request, intent.assessment_reference)
+            receipt_reference = self._run_update(
+                request, intent.assessment_reference, binding=binding
+            )
             intent = store.advance(intent, "PRODUCT_COMPLETE", receipt_reference)
         if intent.phase == "PRODUCT_COMPLETE":
             self.supervisor.register(self.target, binding.resolver)
@@ -1254,8 +1281,12 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         # after a crash; no installer-owned data cleanup is performed here.
         return self.execute(request)
 
-    def _run_update(self, request: ComponentOperationRequest, assessment_reference: str = "") -> str:
-        binding = self.update_binding
+    def _run_update(
+        self, request: ComponentOperationRequest, assessment_reference: str = "",
+        *, binding: ForgeUpdateBinding | None = None,
+    ) -> str:
+        if binding is None:
+            binding = self._binding_for(request)
         if binding is None:
             raise ForgeServerAdapterError("Forge qualified external updater binding is unavailable")
         wheel = self.staged_artifacts.get(request.artifact.digest)
