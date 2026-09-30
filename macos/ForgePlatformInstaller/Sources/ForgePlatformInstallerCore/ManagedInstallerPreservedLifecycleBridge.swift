@@ -127,7 +127,7 @@ public struct ManagedInstallerPreservedLifecycleReviewIntent: Equatable, Sendabl
         )
     }
 
-    static func isID(_ value: String) -> Bool {
+    public static func isID(_ value: String) -> Bool {
         guard (1...128).contains(value.utf8.count),
               let first = value.utf8.first,
               (48...57).contains(first) || (97...122).contains(first) else { return false }

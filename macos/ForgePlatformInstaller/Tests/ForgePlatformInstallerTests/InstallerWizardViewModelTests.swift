@@ -271,6 +271,102 @@ final class InstallerWizardViewModelTests: XCTestCase {
             return XCTFail("Missing terminal proof must remain blocked")
         }
     }
+
+    func testGUIPurgeRecoveryWorksWithoutSelectedOrExistingDeployment() async throws {
+        let (selectedState, inventory) = try removalSelectionState(includeEP: false)
+        let reviewCoordinator = LifecycleReviewGUICoordinator(
+            inventory: inventory, historicalPeer: false
+        )
+        let reviewModel = InstallerWizardViewModel(
+            state: selectedState, coordinator: reviewCoordinator
+        )
+        reviewModel.prepareLifecycleReview(operation: "PURGE", component: "forge-runtime")
+        await waitForLifecycleReview(on: reviewModel)
+        guard case .prepared(let session) = reviewModel.lifecycleReview else {
+            return XCTFail("Exact reviewed PURGE fixture unavailable")
+        }
+        let execution = try ManagedInstallerPreservedLifecycleRequest(
+            intent: session.intent, proposal: session.proposal,
+            confirmedInstanceID: session.intent.instanceID
+        )
+        let request = try ManagedInstallerPurgeRecoveryRequest(execution: execution)
+        let receiptBytes = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPurgeRecoveryReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "execution_request_fingerprint": .string(execution.requestFingerprint),
+            "record": .object([
+                "operation_id": .string(session.intent.operationID),
+                "deployment_id": .string(session.intent.deploymentID),
+                "review_fingerprint": .string(session.proposal.reviewFingerprint),
+                "component": .string(session.intent.component),
+                "instance_id": .string(session.intent.instanceID),
+                "state": .string("COMPLETE"),
+                "receipt_digest": .string("sha256:" + String(repeating: "d", count: 64)),
+                "registry_revision": .integer("4"),
+            ]),
+        ]))
+        let receipt = try ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+            receiptBytes, request: request
+        )
+        var gone = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
+        gone.recordSelfUpdateCheck(.verifiedGitHubRelease(try makeRelease("1.2.3")))
+        XCTAssertTrue(gone.advance())
+        XCTAssertTrue(gone.beginManagedDeploymentInventory())
+        let empty = try ManagedDeploymentInventory(
+            existing: [], createCandidate: ManagedDeploymentTarget(
+                id: "deployment-new", exists: false
+            ), evidenceReference: "sha256:" + String(repeating: "b", count: 64)
+        )
+        XCTAssertTrue(gone.recordManagedDeploymentInventory(.available(empty)))
+        let coordinator = PurgeRecoveryGUICoordinator(completion: .init(
+            request: request, receipt: receipt
+        ))
+        let model = InstallerWizardViewModel(state: gone, coordinator: coordinator)
+        model.recoverTerminalPurge(
+            deploymentID: session.intent.deploymentID,
+            operationID: session.intent.operationID
+        )
+        await waitForPurgeRecovery(on: model)
+        guard case .recovered(let completion) = model.purgeRecovery else {
+            return XCTFail("Exact terminal PURGE proof should be visible after deletion")
+        }
+        XCTAssertEqual(completion.request, request)
+        XCTAssertEqual(completion.receipt, receipt)
+        XCTAssertFalse(model.isPurgeRecoveryInFlight)
+        let renderer = ImageRenderer(content: InstallerWizardView(viewModel: model)
+            .frame(width: 960, height: 680))
+        renderer.scale = 1
+        XCTAssertNotNil(try XCTUnwrap(renderer.nsImage).tiffRepresentation)
+        let initialCalls = await coordinator.calls()
+        XCTAssertEqual(initialCalls, 1)
+
+        model.recoverTerminalPurge(deploymentID: "bad/path", operationID: session.operationID)
+        let invalidCalls = await coordinator.calls()
+        XCTAssertEqual(invalidCalls, 1)
+        model.recoverTerminalPurge(deploymentID: "other", operationID: session.operationID)
+        await waitForPurgeRecovery(on: model)
+        guard case .blocked = model.purgeRecovery else {
+            return XCTFail("Foreign deployment must not reuse terminal proof")
+        }
+        model.recoverTerminalPurge(
+            deploymentID: session.intent.deploymentID, operationID: "other"
+        )
+        await waitForPurgeRecovery(on: model)
+        guard case .blocked = model.purgeRecovery else {
+            return XCTFail("Foreign operation must not reuse terminal proof")
+        }
+        let missing = InstallerWizardViewModel(
+            state: gone, coordinator: UnavailableInstallerWizardCoordinator()
+        )
+        missing.recoverTerminalPurge(
+            deploymentID: session.intent.deploymentID,
+            operationID: session.intent.operationID
+        )
+        await waitForPurgeRecovery(on: missing)
+        guard case .blocked = missing.purgeRecovery else {
+            return XCTFail("Unavailable helper proof must fail closed")
+        }
+    }
     func testSelectedPairedDeploymentShowsReadOnlyForgeRemovalProposal() async throws {
         let (state, inventory) = try removalSelectionState()
         let coordinator = RemovalReviewGUICoordinator(inventory: inventory)
@@ -529,7 +625,9 @@ final class InstallerWizardViewModelTests: XCTestCase {
         return state
     }
 
-    private func removalSelectionState(preservedForge: Bool = false) throws -> (
+    private func removalSelectionState(
+        preservedForge: Bool = false, includeEP: Bool = true
+    ) throws -> (
         InstallerWizardState, ManagedDeploymentInventory
     ) {
         var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
@@ -540,7 +638,7 @@ final class InstallerWizardViewModelTests: XCTestCase {
             existing: [ManagedDeploymentTarget(
                 id: "deployment-prod", exists: true,
                 forgeInstanceID: preservedForge ? nil : "forge-prod",
-                engineeringPlatformInstanceID: "ep-prod",
+                engineeringPlatformInstanceID: includeEP ? "ep-prod" : nil,
                 preservedForgeInstanceID: preservedForge ? "forge-prod" : nil,
                 installedCompositionID: "forge-ep-qualified",
                 installedCompositionManifestSHA256:
@@ -573,6 +671,16 @@ final class InstallerWizardViewModelTests: XCTestCase {
             }
         }
         XCTFail("Lifecycle review did not settle")
+    }
+
+    private func waitForPurgeRecovery(on model: InstallerWizardViewModel) async {
+        for _ in 0..<400 {
+            switch model.purgeRecovery {
+            case .recovered, .blocked: return
+            case .idle, .loading: try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        XCTFail("PURGE recovery did not settle")
     }
 
     private func waitForLifecycleExecution(on model: InstallerWizardViewModel) async {
@@ -902,17 +1010,20 @@ private actor LifecycleReviewGUICoordinator: InstallerWizardCoordinator {
     let inventory: ManagedDeploymentInventory
     let executionAvailable: Bool
     let mismatchedReceipt: Bool
+    let historicalPeer: Bool
     private var reviewCount = 0
     private var executionCount = 0
 
     init(
         inventory: ManagedDeploymentInventory,
         executionAvailable: Bool = true,
-        mismatchedReceipt: Bool = false
+        mismatchedReceipt: Bool = false,
+        historicalPeer: Bool = true
     ) {
         self.inventory = inventory
         self.executionAvailable = executionAvailable
         self.mismatchedReceipt = mismatchedReceipt
+        self.historicalPeer = historicalPeer
     }
 
     func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
@@ -947,7 +1058,8 @@ private actor LifecycleReviewGUICoordinator: InstallerWizardCoordinator {
                 "previous_receipt_reference": .string("receipt:forge-prod"),
                 "preserve_operation_id": .null,
                 "preserve_receipt_digest": .null,
-                "historical_peer_reference": .string("receipt:pair-prod"),
+                "historical_peer_reference": historicalPeer
+                    ? .string("receipt:pair-prod") : .null,
                 "destructive_confirmation_required": .boolean(intent.operation == "PURGE"),
             ]
             let unsigned = StrictSignedJSON.canonicalPayload(from: .object(review))
@@ -1092,6 +1204,49 @@ private actor LifecycleRecoveryGUICoordinator: InstallerWizardCoordinator {
     }
 
     func calls() -> [String] { recorded }
+
+    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+        _ = currentVersion
+        return .rejected("unused")
+    }
+
+    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
+        _ = release
+        return .failed("unused")
+    }
+
+    func performProviderAction(
+        _ action: ProviderAction, for provider: ProviderID
+    ) async -> ProviderActionResult {
+        _ = action
+        _ = provider
+        return .failed(.coordinatorUnavailable)
+    }
+}
+
+private actor PurgeRecoveryGUICoordinator: InstallerWizardCoordinator {
+    let completion: ManagedInstallerPurgeRecoveryCompletion
+    private var readCount = 0
+
+    init(completion: ManagedInstallerPurgeRecoveryCompletion) {
+        self.completion = completion
+    }
+
+    func readTerminalPurgeRecovery(
+        deploymentID: String, operationID: String,
+        installerRelease: VerifiedInstallerRelease
+    ) async -> Result<
+        ManagedInstallerPurgeRecoveryCompletion,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = deploymentID
+        _ = operationID
+        _ = installerRelease
+        readCount += 1
+        return .success(completion)
+    }
+
+    func calls() -> Int { readCount }
 
     func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
         _ = currentVersion
