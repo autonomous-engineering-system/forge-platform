@@ -2,6 +2,7 @@ import Foundation
 
 protocol ManagedInstallerReviewedProviderAuthenticationStarting: Sendable {
     func begin(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data?
+    func finish(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data?
 }
 
 /// The released helper admits and starts one exact in-memory device ceremony.
@@ -16,7 +17,11 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
     private let admission: ManagedInstallerReviewedProviderAuthenticationAdmission
     private let makeSession: SessionFactory
     private var reserved = Set<String>()
-    private var sessions: [String: ManagedInstallerProviderAuthenticationSession] = [:]
+    private struct RunningCeremony {
+        let session: ManagedInstallerProviderAuthenticationSession
+        let reviewed: ManagedInstallerReviewedProviderAuthenticationContext
+    }
+    private var sessions: [String: RunningCeremony] = [:]
 
     init(admission: ManagedInstallerReviewedProviderAuthenticationAdmission,
          makeSession: @escaping SessionFactory) {
@@ -46,7 +51,10 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
                 .decodeJSON(canonicalIntent),
               intent.canonicalJSONData() == canonicalIntent else { return nil }
         let key = intent.operationID + "/" + providerTargetID.rawValue
-        sessions = sessions.filter { $0.value.status() == .running }
+        sessions = sessions.filter {
+            $0.value.session.status() == .running
+                || $0.value.session.status() == .exited(0)
+        }
         guard !reserved.contains(key), sessions[key] == nil,
               sessions.count < 8 else { return nil }
         reserved.insert(key)
@@ -56,7 +64,7 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
         ), admitted.reviewed.stablePlan.activationPlan.operationID
             == intent.operationID,
               let session = makeSession(admitted.physicalTarget) else { return nil }
-        sessions[key] = session
+        sessions[key] = RunningCeremony(session: session, reviewed: admitted.reviewed)
         let challenge = await Task.detached(priority: .userInitiated) {
             session.begin()
         }.value
@@ -87,7 +95,24 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
               let session = sessions.removeValue(
                 forKey: intent.operationID + "/" + providerTargetID.rawValue
               ) else { return false }
-        session.cancel()
+        session.session.cancel()
         return true
+    }
+
+    func finish(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data? {
+        guard let intent = try? ManagedInstallerReviewedExecutionIntent
+                .decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent,
+              let entry = sessions[intent.operationID + "/" + providerTargetID.rawValue]
+        else { return nil }
+        guard entry.session.status() == .exited(0) else { return nil }
+        guard let readback = await admission.verifyCompletion(
+            canonicalIntent: canonicalIntent, providerTargetID: providerTargetID,
+            original: entry.reviewed
+        ), readback.operationID == intent.operationID,
+           readback.stablePlanFingerprint == intent.stablePlanFingerprint
+        else { return nil }
+        sessions.removeValue(forKey: intent.operationID + "/" + providerTargetID.rawValue)
+        return readback.canonicalJSONData()
     }
 }
