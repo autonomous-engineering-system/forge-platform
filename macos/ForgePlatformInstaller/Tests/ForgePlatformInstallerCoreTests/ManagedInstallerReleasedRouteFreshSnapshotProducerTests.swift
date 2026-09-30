@@ -63,6 +63,29 @@ final class ManagedInstallerReleasedRouteFreshSnapshotProducerTests: XCTestCase 
         }
     }
 
+    func testActivePythonWithoutPhysicalSlotEvidenceCannotPublish() async throws {
+        let fixture = try FreshSnapshotFixture()
+        let runtime = fixture.session.managedPythonRuntime
+        let unverified = ManagedInstallerReleasedRouteInitialHostObservation(
+            python: try ManagedPythonRuntimeInstalledReadback(
+                activeRuntimeIdentitySHA256: runtime.identitySHA256,
+                activeRuntimeSlotIdentity:
+                    ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+                        for: runtime.identitySHA256
+                    ),
+                retainedRuntimeIdentitySHA256s: [],
+                evidenceReference: "receipt:active-python-marker"
+            ),
+            managedToolActions: []
+        )
+        let publisher = FreshSnapshotPublisher()
+        let result = await fixture.producer(
+            publisher: publisher, initial: unverified
+        ).produceAndPublish(request: fixture.request)
+        XCTAssertEqual(result, .failure(.unavailable))
+        XCTAssertNil(publisher.snapshot)
+    }
+
     func testServiceRequiresFreshPublicationEvenWhenOldRouteFileExists()
         async throws {
         let fixture = try ReleasedRouteFixture()

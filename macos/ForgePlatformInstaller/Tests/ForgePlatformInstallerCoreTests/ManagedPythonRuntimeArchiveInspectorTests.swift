@@ -65,6 +65,34 @@ final class ManagedPythonRuntimeArchiveInspectorTests: XCTestCase {
         XCTAssertEqual(corruptCache, .failure(.rejected))
     }
 
+    func testExistingRuntimeObservationVerifiesCachedArchiveAndPublishedTree()
+        async throws {
+        let fixture = try ArchiveInspectionFixture()
+        let root = try extractionSlot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let publisher = MacOSManagedPythonRuntimeSlotPublisher(
+            slotsRoot: root, expectedOwner: geteuid()
+        )
+        let request = try slotRequest(fixture)
+        guard case .success(let published) = publisher.publish(
+            archive: fixture.runtimeArchive,
+            runtime: fixture.runtime, request: request
+        ) else { return XCTFail("Exact runtime slot must publish") }
+        XCTAssertEqual(try publisher.verifyPublishedRuntimeFromCache(
+            fixture.runtime
+        ).get(), published.evidenceReference)
+        let slot = root.appendingPathComponent(request.runtimeSlotIdentity)
+        try Data("drift".utf8).write(to: slot.appendingPathComponent("lib/runtime.txt"))
+        XCTAssertEqual(publisher.verifyPublishedRuntimeFromCache(fixture.runtime),
+                       .failure(.rejected))
+        let cache = root.appendingPathComponent(
+            "archive-" + request.archiveSHA256.dropFirst("sha256:".count) + ".tar.gz"
+        )
+        try FileManager.default.removeItem(at: cache)
+        XCTAssertEqual(publisher.verifyPublishedRuntimeFromCache(fixture.runtime),
+                       .failure(.rejected))
+    }
+
     func testSlotCoordinatorUsesConcreteAdapterAndIndependentFinalReadback() async throws {
         let fixture = try ArchiveInspectionFixture()
         let root = try extractionSlot()

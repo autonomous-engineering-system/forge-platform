@@ -116,6 +116,11 @@ struct ManagedInstallerReleasedRouteFreshSnapshotProducer:
               case .success(let initial) = await initialHost.observe(
                 session: admitted.session
               ),
+              (initial.python.activeRuntimeIdentitySHA256 == nil)
+                == (initial.pythonSlotEvidenceReference == nil),
+              initial.pythonSlotEvidenceReference.map(
+                  ManagedPythonRuntimeInstalledReadback.isEvidenceReference
+              ) ?? true,
               let diffs = try? ManagedInstallerReleasedRouteCandidateReview().installDiffs(
                 compositionIdentity: admitted.session.compositionIdentity,
                 manifestSHA256: admitted.session.manifestSHA256,
@@ -184,6 +189,9 @@ struct ManagedInstallerReleasedRouteFreshSnapshotProducer:
             "installer_version": .string(material.currentRelease.version.description),
             "installer_digest": .string(material.currentRelease.sha256),
             "python": .string(initial.python.evidenceReference),
+            "python_slot": initial.pythonSlotEvidenceReference.map(
+                StrictJSONResourceValue.string
+            ) ?? .null,
             "tools": .array(tools),
             "products": .array(products),
             "macos": .string(facts.macOSVersion.description),

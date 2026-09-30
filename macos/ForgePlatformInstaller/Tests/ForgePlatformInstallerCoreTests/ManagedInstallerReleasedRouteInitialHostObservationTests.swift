@@ -58,6 +58,86 @@ final class ManagedInstallerReleasedRouteInitialHostObservationTests: XCTestCase
             changed.managedToolActions[0].initialReadback?.evidenceReference
         )
     }
+
+    func testExactActivePythonAndGitBecomeReviewedNoChange() async throws {
+        let session = try ReleasedRouteFixture(includeManagedGit: true).session
+        let runtime = session.managedPythonRuntime
+        let python = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: runtime.identitySHA256,
+            activeRuntimeSlotIdentity:
+                ManagedPythonRuntimeSlotMutationRequest.runtimeSlotIdentity(
+                    for: runtime.identitySHA256
+                ),
+            retainedRuntimeIdentitySHA256s: [],
+            evidenceReference: "receipt:active-python"
+        )
+        let requirement = try XCTUnwrap(session.managedTools.first)
+        let git = try ManagedToolInstalledReadback(
+            identity: .git, state: .active, version: requirement.version,
+            artifactSHA256: requirement.artifact.sha256,
+            managedRootIdentity: ManagedToolRequirement.managedRootIdentity,
+            evidenceReference: "receipt:active-git"
+        )
+        let observer = ManagedInstallerReleasedRouteInitialHostObserver(
+            python: InitialRoutePython(state: python),
+            git: InitialRouteGit(state: git),
+            pythonSlot: InitialRouteSlot(result: .success("receipt:verified-python-tree"))
+        )
+        let observed = try await observer.observe(session: session).get()
+        XCTAssertEqual(observed.python, python)
+        XCTAssertEqual(observed.pythonSlotEvidenceReference,
+                       "receipt:verified-python-tree")
+        XCTAssertEqual(observed.managedToolActions.map(\.action), [.noChange])
+        XCTAssertTrue(observed.managedToolActions[0].hasReviewedInitialState)
+
+        let staleSlot = ManagedInstallerReleasedRouteInitialHostObserver(
+            python: InitialRoutePython(state: python),
+            git: InitialRouteGit(state: git),
+            pythonSlot: InitialRouteSlot(result: .failure(.rejected))
+        )
+        let staleObservation = await staleSlot.observe(session: session)
+        XCTAssertEqual(staleObservation, .failure(.unavailable))
+        let wrongGit = ManagedInstallerReleasedRouteInitialHostObserver(
+            python: InitialRoutePython(state: python),
+            git: InitialRouteGit(state: try ManagedToolInstalledReadback(
+                identity: .git, state: .active,
+                version: try InstallerVersion("9.9.9"),
+                artifactSHA256: requirement.artifact.sha256,
+                managedRootIdentity: ManagedToolRequirement.managedRootIdentity,
+                evidenceReference: "receipt:wrong-git"
+            )),
+            pythonSlot: InitialRouteSlot(result: .success("receipt:verified-python-tree"))
+        )
+        let wrongGitObservation = await wrongGit.observe(session: session)
+        XCTAssertEqual(wrongGitObservation, .failure(.unavailable))
+    }
+}
+
+private struct InitialRoutePython: ManagedPythonInitialHostStateReading {
+    let state: ManagedPythonRuntimeInstalledReadback
+    func observe() -> Result<ManagedPythonRuntimeInstalledReadback,
+                             ManagedPythonRuntimeActivationFailure> { .success(state) }
+    func readOrBootstrap() -> Result<ManagedPythonRuntimeInstalledReadback,
+                                   ManagedPythonRuntimeActivationFailure> { .success(state) }
+}
+
+private struct InitialRouteGit: ManagedToolPostMutationReading {
+    let state: ManagedToolInstalledReadback
+    func readManagedTool(_ requirement: ManagedToolRequirement) async
+        -> Result<ManagedToolInstalledReadback,
+                  ManagedPythonRuntimeTerminalReceiptFailure> {
+        _ = requirement
+        return .success(state)
+    }
+}
+
+private struct InitialRouteSlot: ManagedInstallerExistingPythonRuntimeSlotVerifying {
+    let result: Result<String, ManagedPythonRuntimeSlotMutationFailure>
+    func verifyPublishedRuntimeFromCache(_ runtime: ManagedPythonRuntimeIdentity)
+        -> Result<String, ManagedPythonRuntimeSlotMutationFailure> {
+        _ = runtime
+        return result
+    }
 }
 
 private struct InitialRouteHostFixture {
