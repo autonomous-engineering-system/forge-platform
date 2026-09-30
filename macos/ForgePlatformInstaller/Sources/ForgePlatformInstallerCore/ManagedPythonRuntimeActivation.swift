@@ -599,6 +599,12 @@ public protocol ManagedPythonRuntimeActivationReading: Sendable {
 
 public protocol ManagedPythonRuntimeActivating: ManagedPythonRuntimeActivationReading {
 
+    /// Pre-mutation host read. A reused active runtime may precede creation of
+    /// this deployment's venvs; final readback still verifies every venv.
+    func readInitialRuntime(
+        _ request: ManagedPythonRuntimeActivationRequest
+    ) async -> Result<ManagedPythonRuntimeInstalledReadback, ManagedPythonRuntimeActivationFailure>
+
     func ensureProductVenv(
         _ request: ManagedPythonProductVenvMutationRequest
     ) async -> Result<ManagedPythonProductVenvReceipt, ManagedPythonRuntimeActivationFailure>
@@ -606,6 +612,14 @@ public protocol ManagedPythonRuntimeActivating: ManagedPythonRuntimeActivationRe
     func activateRuntime(
         _ request: ManagedPythonRuntimeActivationRequest
     ) async -> Result<ManagedPythonActivationMutationReceipt, ManagedPythonRuntimeActivationFailure>
+}
+
+public extension ManagedPythonRuntimeActivating {
+    func readInitialRuntime(
+        _ request: ManagedPythonRuntimeActivationRequest
+    ) async -> Result<ManagedPythonRuntimeInstalledReadback, ManagedPythonRuntimeActivationFailure> {
+        await readActiveRuntime(request)
+    }
 }
 
 /// Completes the native managed-Python mutation after exact runtime-slot
@@ -658,7 +672,7 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
             return .failure(.receiptPersistenceFailed)
         }
 
-        switch await mutation.readActiveRuntime(request) {
+        switch await mutation.readInitialRuntime(request) {
         case .success(let readback) where readback.matchesInitial(request):
             break
         case .success(let readback) where readback.matchesResumableFinal(request):
