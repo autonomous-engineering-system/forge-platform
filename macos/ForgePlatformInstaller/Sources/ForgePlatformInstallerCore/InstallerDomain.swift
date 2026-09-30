@@ -1406,9 +1406,14 @@ public struct InstallerWizardState: Equatable, Sendable {
               preflight.isPassed,
               providerRequirementsAreProjected,
               let index = providers.firstIndex(where: { $0.id == targetID }),
-              providers[index].isEnabled else {
+              providers[index].isEnabled,
+              providers[index].requirement.credentialScope == .user else {
             return false
         }
+
+        // A component-owned provider home does not exist until the reviewed
+        // helper stage. Its authentication and VERIFIED state must come from
+        // that exact helper route, never from a pre-review coordinator result.
 
         switch (providers[index].state, action) {
         case (.selected, .install), (.failed, .install):
@@ -1440,7 +1445,8 @@ public struct InstallerWizardState: Equatable, Sendable {
               preflight.isPassed,
               providerRequirementsAreProjected,
               let index = providers.firstIndex(where: { $0.id == targetID }),
-              providers[index].isEnabled else {
+              providers[index].isEnabled,
+              providers[index].requirement.credentialScope == .user else {
             return
         }
         guard Self.isAwaitingProviderActionResult(providers[index].state, for: action) else {
