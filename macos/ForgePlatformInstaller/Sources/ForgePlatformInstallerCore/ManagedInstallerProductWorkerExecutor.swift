@@ -65,7 +65,8 @@ struct SignedManagedInstallerForgeUpdateResourcesChecker:
     func check() async -> Bool {
         guard let resolver = ManagedInstallerForgeUpdateControllerResourceResolver
             .forCurrentProcess(),
-              case .success = await resolver.resolveReleaseReceipt() else {
+              case .success = await resolver.resolveReleaseReceipt(),
+              case .success = await resolver.resolveForge239ReleaseReceipt() else {
             return false
         }
         return true
