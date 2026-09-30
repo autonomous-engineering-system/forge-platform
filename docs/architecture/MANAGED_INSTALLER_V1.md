@@ -278,6 +278,11 @@ bound to the reviewed operation before this gate can be lifted.
 Preserved configuration and provider bytes remain product-owned, but preserved
 authentication is never `VERIFIED`. Restore must run fresh provider readback and,
 when required, an explicit authentication/repair ceremony for each exact target.
+The native RESTORE execution request now carries the reviewed prior PRESERVE
+operation and receipt under a distinct canonical schema. The helper still
+rejects execution before product mutation until the service, provider, pairing
+and registry continuation below is implemented and independently qualified;
+acceptance of the request envelope is not a terminal RESTORE result.
 For a restored Forge+EP deployment, historical pairing material is only a
 candidate: Forge and EP must independently prove their exact identities and the
 pairing must be revalidated or re-established through the existing product-owned

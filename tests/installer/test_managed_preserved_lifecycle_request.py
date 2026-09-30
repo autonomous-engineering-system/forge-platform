@@ -17,6 +17,7 @@ from forge_platform.managed_preserved_lifecycle_request import (
     ManagedPreservedLifecycleRequestError,
     NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
     NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA,
+    NATIVE_RESTORE_REQUEST_SCHEMA,
     decode_native_preserved_lifecycle_receipt,
     decode_native_preserved_lifecycle_request,
     encode_native_preserved_lifecycle_receipt,
@@ -28,8 +29,8 @@ from tests.installer.test_managed_product_operation_admission import installer_r
 
 def _request(manifest, registry, operation="PRESERVE", confirmation=None):
     intent = _intent(manifest, operation=operation)
-    if operation == "PURGE":
-        intent["operation_id"] = "purge-a"
+    if operation in {"PURGE", "RESTORE"}:
+        intent["operation_id"] = "purge-a" if operation == "PURGE" else "restore-a"
         intent["intent_fingerprint"] = sha256(_wire({
             key: item for key, item in intent.items()
             if key != "intent_fingerprint"
@@ -40,6 +41,7 @@ def _request(manifest, registry, operation="PRESERVE", confirmation=None):
     ))
     request = {
         "schema": (NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA if operation == "PURGE"
+                   else NATIVE_RESTORE_REQUEST_SCHEMA if operation == "RESTORE"
                    else NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA),
         "intent": intent, "proposal": proposal,
     }
@@ -50,6 +52,30 @@ def _request(manifest, registry, operation="PRESERVE", confirmation=None):
 
 
 class ManagedPreservedLifecycleRequestTests(unittest.TestCase):
+    def test_restore_requires_exact_preserved_review_and_no_destructive_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, active, preserved = _fixture()
+            registry = ManagedDeploymentRegistry(Path(directory).resolve())
+            registry.create(active)
+            registry._write(preserved)
+            value = _request(manifest, registry, "RESTORE")
+            request = decode_native_preserved_lifecycle_request(_wire(value))
+            self.assertEqual(request.review.preserve_operation_id, "preserve-a")
+            self.assertEqual(request.review.preserve_receipt_digest, "sha256:" + "e" * 64)
+            self.assertIsNone(request.confirmed_instance_id)
+            for changed in (
+                {**value, "schema": NATIVE_PRESERVED_LIFECYCLE_REQUEST_SCHEMA},
+                {**value, "schema": NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
+                 "confirmed_instance_id": "forge-a"},
+                {**value, "confirmed_instance_id": "forge-a"},
+            ):
+                changed["request_fingerprint"] = sha256(_wire({
+                    key: item for key, item in changed.items()
+                    if key != "request_fingerprint"
+                })).hexdigest()
+                with self.assertRaises(ManagedPreservedLifecycleRequestError):
+                    decode_native_preserved_lifecycle_request(_wire(changed))
+
     def test_purge_requires_exact_reviewed_instance_confirmation(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest, current, _ = _fixture()
