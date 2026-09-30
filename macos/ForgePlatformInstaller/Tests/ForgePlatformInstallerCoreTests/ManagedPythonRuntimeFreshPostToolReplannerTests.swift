@@ -40,6 +40,41 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(wrongResult.failure, .rejected)
     }
 
+    func testPhysicalPostToolReaderAdmitsExactReusedRuntimeForNewDeployment()
+        async throws {
+        let fixture = try FreshReplannerFixture(
+            freshInstall: true, reuseActiveRuntime: true
+        )
+        XCTAssertEqual(fixture.request.action, .noChange)
+        let material = ManagedInstallerHelperExecutionMaterial(
+            material: ManagedVerifiedCompositionMaterial(
+                session: fixture.stablePlan.session,
+                manifestBytes: physicalPostToolManifest()
+            ),
+            currentRelease: fixture.stablePlan.reviewedOperation.currentInstallerRelease
+        )
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let reader = try physicalPostToolReader(
+            fixture: fixture, material: material
+        )
+        let observed = try await reader.readAtomicPostToolHostState(for: request).get()
+        XCTAssertEqual(observed.pythonRuntime, fixture.request.initialReadback)
+        XCTAssertTrue(observed.gates.allSatisfy(\.passed))
+        _ = try ManagedInstallerPostToolComponentProviderInspector(
+            stablePlan: fixture.stablePlan,
+            activationRequest: fixture.request,
+            forge: ProviderInspectorSpy(results: [:]),
+            engineeringPlatform: ProviderInspectorSpy(results: [:])
+        )
+        let stale = try physicalPostToolReader(
+            fixture: fixture, material: material, stalePlan: true
+        )
+        let staleResult = await stale.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(staleResult.failure, .rejected)
+    }
+
     func testPhysicalPostToolReaderRejectsMissingMaterialDriftAndFailedHost() async throws {
         let fixture = try FreshReplannerFixture(freshInstall: true)
         let request = try ManagedInstallerPostToolHostObservationRequest(
@@ -1846,6 +1881,40 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         }
     }
 
+    func testPhysicalPythonPostToolReadbackBindsNoChangeToOriginalActiveEvidence()
+        async throws {
+        let fixture = try FreshReplannerFixture(
+            freshInstall: true, reuseActiveRuntime: true
+        )
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let physical = PhysicalPythonReadbackProbe(
+            result: .success(fixture.finalReadback)
+        )
+        let reader = try ManagedInstallerPostToolPhysicalPythonHostReader(
+            stablePlan: fixture.stablePlan,
+            activationRequest: fixture.request,
+            readback: physical
+        )
+        let observed = try await reader.readPostToolPythonRuntime(for: request).get()
+        XCTAssertEqual(observed, fixture.request.initialReadback)
+
+        let substituted = try ManagedPythonRuntimeInstalledReadback(
+            activeRuntimeIdentitySHA256: fixture.request.runtimeIdentitySHA256,
+            activeRuntimeSlotIdentity: fixture.request.runtimeSlotIdentity,
+            retainedRuntimeIdentitySHA256s: [],
+            evidenceReference: fixture.request.expectedResumeEvidenceReference
+        )
+        let wrongReader = try ManagedInstallerPostToolPhysicalPythonHostReader(
+            stablePlan: fixture.stablePlan,
+            activationRequest: fixture.request,
+            readback: PhysicalPythonReadbackProbe(result: .success(substituted))
+        )
+        let wrong = await wrongReader.readPostToolPythonRuntime(for: request)
+        XCTAssertEqual(wrong.failure, .rejected)
+    }
+
     func testPhysicalPythonPostToolReadbackPreservesFailClosedReadbackFailures()
         async throws {
         let fixture = try FreshReplannerFixture()
@@ -3509,9 +3578,13 @@ private struct FreshReplannerFixture {
         providerRequirements: [ProviderRequirement] = [],
         enabledProviderRequirements: [ProviderRequirement]? = nil,
         freshInstall: Bool = false,
+        reuseActiveRuntime: Bool = false,
         reviewedProductCandidateDrift: Bool = false,
         components: [ComponentDiff]? = nil
     ) throws {
+        guard !reuseActiveRuntime || freshInstall else {
+            throw ManagedPythonRuntimeActivationFailure.invalidRequest
+        }
         git = ManagedToolRequirement(
             identity: .git,
             version: try InstallerVersion("2.45.0"),
@@ -3554,6 +3627,9 @@ private struct FreshReplannerFixture {
                 id: "activation-deployment", exists: false
             ) : nil
         )
+        let initial = try reuseActiveRuntime
+            ? activation.activeReadback(evidence: "receipt:previous-active-python")
+            : activation.missingReadback()
         if let deploymentID {
             let replacement = try ManagedDeploymentTarget(
                 id: deploymentID,
@@ -3571,17 +3647,18 @@ private struct FreshReplannerFixture {
                 session: activation.session,
                 deployment: replacement,
                 preparationReceipt: preparation,
-                initialReadback: activation.missingReadback()
+                initialReadback: initial
             )
         } else {
             deployment = activation.deployment
-            request = try activation.request(initial: activation.missingReadback())
+            request = try activation.request(initial: initial)
         }
         finalReadback = try ManagedPythonRuntimeInstalledReadback(
             activeRuntimeIdentitySHA256: request.runtimeIdentitySHA256,
             activeRuntimeSlotIdentity: request.runtimeSlotIdentity,
             retainedRuntimeIdentitySHA256s: request.requiredRetainedRuntimeIdentitySHA256s,
-            evidenceReference: "receipt:fresh-python"
+            evidenceReference: reuseActiveRuntime
+                ? initial.evidenceReference : "receipt:fresh-python"
         )
         receipt = try ManagedPythonRuntimeExecutionReceipt(
             request: request,
