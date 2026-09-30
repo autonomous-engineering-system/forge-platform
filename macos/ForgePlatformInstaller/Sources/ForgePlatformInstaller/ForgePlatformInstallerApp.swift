@@ -483,6 +483,25 @@ final class InstallerWizardViewModel: ObservableObject {
         }
     }
 
+    func clearReviewedPairingTarget() {
+        if state.setReviewedPairingTarget(nil) {
+            providerStage = .idle
+        }
+    }
+
+    func setReviewedPairingTarget(
+        projectID: String,
+        repositoryID: String,
+        repositoryIdentity: String
+    ) {
+        guard let target = try? ManagedInstallerReviewedPairingTarget(
+            projectID: projectID,
+            repositoryID: repositoryID,
+            repositoryIdentity: repositoryIdentity
+        ), state.setReviewedPairingTarget(target) else { return }
+        providerStage = .idle
+    }
+
     func advance() {
         if state.step == .review {
             guard !isExecutionRequestInFlight, !isProviderStageInFlight else { return }
@@ -1364,6 +1383,9 @@ private struct ProviderRow: View {
 
 private struct CompositionReviewScreen: View {
     @ObservedObject var viewModel: InstallerWizardViewModel
+    @State private var pairingProject = ""
+    @State private var pairingRepository = ""
+    @State private var pairingRepositoryIdentity = ""
 
     var body: some View {
         ScreenHeader(
@@ -1408,6 +1430,42 @@ private struct CompositionReviewScreen: View {
                 }
             }
 
+            if viewModel.state.requiresPairingTarget {
+                GroupBox("Forge↔EP project en repository") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Kies het bestaande EP-project en de repository expliciet. Deze keuze wordt onderdeel van het beoordeelde plan.")
+                            .font(.caption)
+                        TextField("EP-project ID", text: Binding(
+                            get: { pairingProject },
+                            set: { pairingProject = $0; viewModel.clearReviewedPairingTarget() }
+                        ))
+                        TextField("EP-repository ID", text: Binding(
+                            get: { pairingRepository },
+                            set: { pairingRepository = $0; viewModel.clearReviewedPairingTarget() }
+                        ))
+                        TextField("Forge-repository-identiteit", text: Binding(
+                            get: { pairingRepositoryIdentity },
+                            set: { pairingRepositoryIdentity = $0; viewModel.clearReviewedPairingTarget() }
+                        ))
+                        Button("Neem project en repository op in het plan") {
+                            viewModel.setReviewedPairingTarget(
+                                projectID: pairingProject,
+                                repositoryID: pairingRepository,
+                                repositoryIdentity: pairingRepositoryIdentity
+                            )
+                        }
+                        if let target = viewModel.state.pairingTarget {
+                            Text("Beoordeeld: \(target.projectID) / \(target.repositoryID) / \(target.repositoryIdentity)")
+                                .textSelection(.enabled)
+                        } else {
+                            Text("Project: kleine letters, cijfers en streepjes. Repository: 3–128 kleine letters, cijfers, punten, underscores of streepjes. Geen paden of geheimen.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
             GroupBox("Gekozen providertargets") {
                 if viewModel.state.enabledProviders.isEmpty {
                     Text("Geen")
@@ -1426,7 +1484,8 @@ private struct CompositionReviewScreen: View {
                     set: { viewModel.setCompositionAcknowledged($0) }
                 )
             )
-            .disabled(!isCompatible(viewModel.state.composition.status))
+            .disabled(!isCompatible(viewModel.state.composition.status)
+                || !viewModel.state.pairingTargetIsReady)
 
             switch viewModel.state.preMutationCurrency {
             case .pending:

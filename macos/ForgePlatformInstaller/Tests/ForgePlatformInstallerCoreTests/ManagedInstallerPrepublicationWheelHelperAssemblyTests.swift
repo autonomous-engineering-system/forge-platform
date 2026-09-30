@@ -144,6 +144,60 @@ final class ManagedInstallerPrepublicationWheelHelperAssemblyTests:
         ))
     }
 
+    func testPriorRouterAdmitsBothFreshComponentsButNoPriorMutation() async throws {
+        let fresh = AssemblyWheelSpy(evidence: "sha256:"
+            + String(repeating: "a", count: 64))
+        let prior = AssemblyWheelSpy(evidence: "sha256:"
+            + String(repeating: "b", count: 64))
+        let forge = try request(component: "forge-runtime")
+        let ep = try request(component: "engineering-platform-server")
+        let previous = try request(component: "forge-runtime",
+                                   deployment: "prior-deployment")
+        let receipt = try ManagedPythonProductVenvReceipt(
+            operationID: previous.operationID,
+            deploymentID: previous.deploymentID,
+            componentIdentity: previous.componentIdentity,
+            venvIdentity: previous.venvIdentity,
+            runtimeIdentitySHA256: previous.runtimeIdentitySHA256,
+            runtimeSlotIdentity: previous.runtimeSlotIdentity,
+            runtimeSlotEvidenceReference: previous.runtimeSlotEvidenceReference,
+            state: .ready, evidenceReference: "receipt:prior-ready"
+        )
+        let evidence = ManagedInstallerProductWorkerVenvPublicationEvidence(
+            request: previous, activationReceipt: receipt,
+            wheelBindingEvidence: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let key = try XCTUnwrap(ManagedInstallerPriorProductWheelRouteKey(
+            deploymentID: previous.deploymentID,
+            componentIdentity: previous.componentIdentity
+        ))
+        let router = try XCTUnwrap(ManagedInstallerFreshPriorProductWheelRouter(
+            freshDeploymentID: forge.deploymentID,
+            freshComponentIdentities: ["forge-runtime", "engineering-platform-server"],
+            fresh: fresh, priorEvidence: [evidence], prior: [key: prior]
+        ))
+        let path = URL(fileURLWithPath: "/private/tmp/paired-route-test")
+        for target in [forge, ep] {
+            _ = try await router.installIntoPending(
+                path, published: path, request: target
+            ).get()
+            _ = try await router.readPublished(path, request: target).get()
+        }
+        _ = try await router.readPublished(path, request: previous).get()
+        guard case .failure(.rejected) = await router.installIntoPending(
+            path, published: path, request: previous
+        ) else { return XCTFail("prior route received fresh mutation") }
+        let freshCount = await fresh.count()
+        let priorCount = await prior.count()
+        XCTAssertEqual(freshCount, 4)
+        XCTAssertEqual(priorCount, 1)
+        XCTAssertNil(ManagedInstallerFreshPriorProductWheelRouter(
+            freshDeploymentID: forge.deploymentID,
+            freshComponentIdentities: ["forge-runtime", "workspace-server"],
+            fresh: fresh, priorEvidence: [], prior: [:]
+        ))
+    }
+
     func testPriorAssemblyRequiresExactPublishedWheelAndRuntime() async throws {
         let runtime = managedPythonTestRuntime
         let environment = try XCTUnwrap(managedPythonTestVenvs.first {

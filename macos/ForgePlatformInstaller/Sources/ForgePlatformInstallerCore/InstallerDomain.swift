@@ -1099,6 +1099,9 @@ public struct InstallerWizardState: Equatable, Sendable {
     /// provider gate.
     public private(set) var providers: [ProviderProgress]
     public var composition: CompositionReview
+    /// Explicit non-secret project/repository choice for a paired deployment.
+    /// Review acknowledgement and currency are invalidated when it changes.
+    public private(set) var pairingTarget: ManagedInstallerReviewedPairingTarget?
     /// A fresh currency decision is required after the reviewed diff and
     /// immediately before entering execution. It is invalidated with every
     /// session/composition change.
@@ -1117,6 +1120,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         self.providerRequirementsProjection = .pending
         self.providers = []
         self.composition = CompositionReview()
+        self.pairingTarget = nil
         self.preMutationCurrency = .pending
         self.executionStages = []
         self.summaryItems = []
@@ -1158,6 +1162,37 @@ public struct InstallerWizardState: Equatable, Sendable {
         enabledProvidersVerified
     }
 
+    public var requiresPairingTarget: Bool {
+        composition.components.count == 2
+            && Set(composition.components.map(\.componentID))
+                == Set(["forge-runtime", "engineering-platform-server"])
+    }
+
+    public var pairingTargetIsReady: Bool {
+        !requiresPairingTarget || pairingTarget != nil
+    }
+
+    @discardableResult
+    public mutating func setReviewedPairingTarget(
+        _ target: ManagedInstallerReviewedPairingTarget?
+    ) -> Bool {
+        guard step == .review,
+              hasAcceptedSessionPlan,
+              preflight.isPassed,
+              case .compatible = composition.status,
+              requiresPairingTarget else { return false }
+        guard pairingTarget != target else { return true }
+        pairingTarget = target
+        composition.isAcknowledged = false
+        preMutationCurrency = .pending
+        return true
+    }
+
+    mutating func clearReviewedPairingEvidence() {
+        pairingTarget = nil
+        preMutationCurrency = .pending
+    }
+
     public var canAdvance: Bool {
         switch step {
         case .selfUpdate:
@@ -1181,6 +1216,7 @@ public struct InstallerWizardState: Equatable, Sendable {
                 && preflight.isPassed
                 && enabledProvidersVerified
                 && composition.isReadyForExecution
+                && pairingTargetIsReady
                 && preMutationCurrency.isCurrent
         case .execution:
             return hasAcceptedSessionPlan
@@ -1528,6 +1564,7 @@ public struct InstallerWizardState: Equatable, Sendable {
             && preflight.isPassed
             && providerRequirementsAreProjected
             && composition.isReadyForExecution
+            && pairingTargetIsReady
             && !preMutationCurrency.isChecking
     }
 
@@ -1601,6 +1638,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         providers = []
         preflight = HostPreflight()
         composition = CompositionReview()
+        pairingTarget = nil
         preMutationCurrency = .pending
         executionStages = []
         summaryItems = []

@@ -15,6 +15,39 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertTrue(invocation.options.acceptInstallerUpdate)
     }
 
+    func testParserAcceptsOnlyCompleteCanonicalNonSecretPairingScope() throws {
+        let invocation = try InstallerCLIParser.parse([
+            "deployment", "apply", "--deployment", "new",
+            "--pairing-project", "project-one",
+            "--pairing-repository", "repo-one",
+            "--pairing-repository-identity", "owner.repo-one",
+            "--yes", "--non-interactive",
+        ])
+        XCTAssertEqual(invocation.options.pairingTarget?.projectID, "project-one")
+        XCTAssertEqual(invocation.options.pairingTarget?.repositoryID, "repo-one")
+        XCTAssertEqual(invocation.options.pairingTarget?.repositoryIdentity, "owner.repo-one")
+        for arguments in [
+            ["deployment", "apply", "--deployment", "new",
+             "--pairing-project", "project-one"],
+            ["deployment", "apply", "--deployment", "new",
+             "--pairing-project", "Project-One",
+             "--pairing-repository", "repo-one",
+             "--pairing-repository-identity", "owner.repo-one"],
+            ["deployment", "remove", "--deployment", "existing",
+             "--operation-id", "remove-one",
+             "--pairing-project", "project-one",
+             "--pairing-repository", "repo-one",
+             "--pairing-repository-identity", "owner.repo-one"],
+            ["deployment", "apply", "--deployment", "new",
+             "--pairing-project", "project-one",
+             "--pairing-project", "project-two",
+             "--pairing-repository", "repo-one",
+             "--pairing-repository-identity", "owner.repo-one"],
+        ] {
+            XCTAssertThrowsError(try InstallerCLIParser.parse(arguments))
+        }
+    }
+
     func testParserCoversPublicCommandSurfaceAndRejectsUnsafeShapes() throws {
         XCTAssertEqual(try InstallerCLIParser.parse([]).command, .help)
         XCTAssertEqual(try InstallerCLIParser.parse(["version"]).command, .version)
@@ -334,7 +367,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).planDeployment(
             "new",
-            options: InstallerCLIOptions()
+            options: pairedOptions()
         )
 
         XCTAssertEqual(result.exitCode, .success)
@@ -353,12 +386,25 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(handoffCalls, 0)
     }
 
+    func testPairedCLIPlanFailsClosedWithoutExplicitReviewedScopeEvenWithYes() async throws {
+        let coordinator = CLIWizardCoordinator(session: try session())
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        ).applyDeployment(
+            "new", options: InstallerCLIOptions(nonInteractive: true, assumeYes: true),
+            confirm: { _ in XCTFail("Missing pairing scope must block before confirmation"); return true }
+        )
+        XCTAssertEqual(result.exitCode, .blocked)
+        let executionCalls = await coordinator.executionCallCount()
+        XCTAssertEqual(executionCalls, 0)
+    }
+
     func testProviderBoundDeploymentPlanDoesNotInstallOrAuthenticateBeforeReview() async throws {
         let provider = ProviderRequirement(provider: .codex, isRequired: true)
         let coordinator = CLIWizardCoordinator(session: try session(providers: [provider]))
         let result = await InstallerCLIWorkflow(
             currentRelease: try release("1.2.3"), coordinator: coordinator
-        ).planDeployment("new", options: InstallerCLIOptions(nonInteractive: true))
+        ).planDeployment("new", options: pairedOptions(nonInteractive: true))
 
         XCTAssertEqual(result.exitCode, .success)
         XCTAssertEqual(result.status, "planned")
@@ -379,7 +425,7 @@ final class InstallerCLITests: XCTestCase {
         )
         let result = await workflow.applyDeployment(
             "new",
-            options: InstallerCLIOptions(),
+            options: pairedOptions(),
             confirm: { prompt in
                 XCTAssertTrue(prompt.contains("componentwijziging"))
                 XCTAssertTrue(prompt.contains("forge-runtime"))
@@ -407,7 +453,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(nonInteractive: true),
+            options: pairedOptions(nonInteractive: true),
             confirm: { _ in XCTFail("non-interactive must not prompt"); return true }
         )
         XCTAssertEqual(result.exitCode, .confirmationRequired)
@@ -433,7 +479,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(nonInteractive: true, assumeYes: true),
+            options: pairedOptions(nonInteractive: true, assumeYes: true),
             confirm: { _ in XCTFail("non-interactive must not prompt"); return true }
         )
         XCTAssertEqual(result.exitCode, .interactionRequired)
@@ -462,7 +508,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(),
+            options: pairedOptions(),
             confirm: { prompt in
                 XCTAssertTrue(prompt.contains("provider target=\(provider.id.rawValue)"))
                 return true
@@ -488,7 +534,7 @@ final class InstallerCLITests: XCTestCase {
         let result = await InstallerCLIWorkflow(
             currentRelease: try release("1.2.3"), coordinator: coordinator
         ).applyDeployment(
-            "new", options: InstallerCLIOptions(nonInteractive: true, assumeYes: true),
+            "new", options: pairedOptions(nonInteractive: true, assumeYes: true),
             confirm: { _ in XCTFail("Automation authority must not prompt"); return false }
         )
         XCTAssertEqual(result.exitCode, .success)
@@ -512,7 +558,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(
+            options: pairedOptions(
                 nonInteractive: true,
                 assumeYes: true,
                 acceptInstallerUpdate: true
@@ -538,7 +584,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: coordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(nonInteractive: true, assumeYes: true),
+            options: pairedOptions(nonInteractive: true, assumeYes: true),
             confirm: { _ in false }
         )
         XCTAssertEqual(result.exitCode, .installerUpdateRequired)
@@ -557,7 +603,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: failedCoordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(assumeYes: true),
+            options: pairedOptions(assumeYes: true),
             confirm: { _ in true }
         )
         XCTAssertEqual(failed.exitCode, .executionFailed)
@@ -572,7 +618,7 @@ final class InstallerCLITests: XCTestCase {
             coordinator: readinessCoordinator
         ).applyDeployment(
             "new",
-            options: InstallerCLIOptions(assumeYes: true),
+            options: pairedOptions(assumeYes: true),
             confirm: { _ in true }
         )
         XCTAssertEqual(readiness.exitCode, .executionFailed)
@@ -598,6 +644,22 @@ final class InstallerCLITests: XCTestCase {
         )
         XCTAssertEqual(remove.exitCode, .blocked)
         XCTAssertEqual(remove.status, "removal-review-blocked")
+    }
+
+    private func pairedOptions(
+        nonInteractive: Bool = false,
+        assumeYes: Bool = false,
+        acceptInstallerUpdate: Bool = false
+    ) -> InstallerCLIOptions {
+        InstallerCLIOptions(
+            nonInteractive: nonInteractive,
+            assumeYes: assumeYes,
+            acceptInstallerUpdate: acceptInstallerUpdate,
+            pairingTarget: try! ManagedInstallerReviewedPairingTarget(
+                projectID: "project-one", repositoryID: "repo-one",
+                repositoryIdentity: "owner.repo-one"
+            )
+        )
     }
 
     private func release(_ version: String) throws -> VerifiedInstallerRelease {

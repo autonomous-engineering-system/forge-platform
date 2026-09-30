@@ -5,12 +5,14 @@ import Foundation
 /// provider implementation, filesystem location, command, or credential.
 public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
     public static let schema = "forge-platform.reviewed-selection/v1"
+    public static let pairedSchema = "forge-platform.reviewed-selection/v2"
     static let maximumBytes = 8 * 1_024
 
     public let intent: ManagedInstallerReviewedExecutionIntent
     public let routeRequest: ManagedInstallerReleasedRouteRequest
     public let componentIdentities: [String]
     public let enabledProviderTargetIDs: [ProviderTargetID]
+    public let pairingTarget: ManagedInstallerReviewedPairingTarget?
 
     public init(stablePlan: ManagedInstallerStablePlan) throws {
         try self.init(
@@ -23,7 +25,8 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
             ),
             componentIdentities: stablePlan.session.productVirtualEnvironments
                 .map(\.componentIdentity),
-            enabledProviderTargetIDs: stablePlan.enabledProviderRequirements.map(\.id)
+            enabledProviderTargetIDs: stablePlan.enabledProviderRequirements.map(\.id),
+            pairingTarget: stablePlan.reviewedOperation.pairingTarget
         )
     }
 
@@ -31,7 +34,8 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
         intent: ManagedInstallerReviewedExecutionIntent,
         routeRequest: ManagedInstallerReleasedRouteRequest,
         componentIdentities: [String],
-        enabledProviderTargetIDs: [ProviderTargetID]
+        enabledProviderTargetIDs: [ProviderTargetID],
+        pairingTarget: ManagedInstallerReviewedPairingTarget?
     ) throws {
         let components = componentIdentities.sorted()
         let sorted = enabledProviderTargetIDs.sorted { $0.rawValue < $1.rawValue }
@@ -40,6 +44,8 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
               Set(components).isSubset(of: Set([
                 "engineering-platform-server", "forge-runtime",
               ])),
+              pairingTarget == nil || Set(components)
+                == Set(["engineering-platform-server", "forge-runtime"]),
               sorted.count <= 32,
               Set(sorted).count == sorted.count else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
@@ -52,11 +58,12 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
         self.routeRequest = routeRequest
         self.componentIdentities = components
         self.enabledProviderTargetIDs = sorted
+        self.pairingTarget = pairingTarget
     }
 
     public func canonicalJSONData() -> Data {
-        StrictSignedJSON.canonicalPayload(from: .object([
-            "schema": .string(Self.schema),
+        var fields: [String: StrictJSONResourceValue] = [
+            "schema": .string(pairingTarget == nil ? Self.schema : Self.pairedSchema),
             "route_request": routeRequest.canonicalValue(),
             "component_identities": .array(componentIdentities.map { .string($0) }),
             "intent": .object([
@@ -70,7 +77,11 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
             "enabled_provider_target_ids": .array(
                 enabledProviderTargetIDs.map { .string($0.rawValue) }
             ),
-        ]))
+        ]
+        if let pairingTarget {
+            fields["pairing_target"] = pairingTarget.canonicalValue()
+        }
+        return StrictSignedJSON.canonicalPayload(from: .object(fields))
     }
 
     public static func decodeJSON(_ data: Data) throws -> Self {
@@ -79,11 +90,12 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
         }
         var reader = try StrictJSONResourceReader(data: data)
         guard let fields = try reader.parseDocument().objectValue,
+              let version = fields["schema"]?.stringValue,
+              version == schema || version == pairedSchema,
               Set(fields.keys) == Set([
                 "schema", "intent", "route_request", "enabled_provider_target_ids",
                 "component_identities",
-              ]),
-              fields["schema"]?.stringValue == schema,
+              ] + (version == pairedSchema ? ["pairing_target"] : [])),
               let intentFields = fields["intent"]?.objectValue,
               let routeValue = fields["route_request"],
               let componentValues = fields["component_identities"]?.arrayValue,
@@ -113,11 +125,15 @@ public struct ManagedInstallerReviewedSelection: Equatable, Sendable {
             }
             return id
         }
+        let pairingTarget = try fields["pairing_target"].map {
+            try ManagedInstallerReviewedPairingTarget.decode($0)
+        }
         let selection = try Self(
             intent: intent,
             routeRequest: routeRequest,
             componentIdentities: components,
-            enabledProviderTargetIDs: ids
+            enabledProviderTargetIDs: ids,
+            pairingTarget: pairingTarget
         )
         guard selection.canonicalJSONData() == data else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest

@@ -6,7 +6,13 @@ import XCTest
 final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
     func testFreshWorkerAuthorityRequiresExactReviewedInstancesAndActivation()
         async throws {
-        let fixture = try accountPlanFixture(includeProductVenvs: true)
+        let fixture = try accountPlanFixture(
+            includeProductVenvs: true,
+            pairingTarget: ManagedInstallerReviewedPairingTarget(
+                projectID: "project-1", repositoryID: "repository-1",
+                repositoryIdentity: "owner:repository"
+            )
+        )
         let plan = fixture.plan
         let claims = try ManagedInstallerProductServiceAccountPlanner().plan(
             stablePlan: plan, material: fixture.material
@@ -625,7 +631,8 @@ final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
         forgeChange: ComponentChange = .install,
         forgeArtifactDigest: String? = nil,
         providers: [ProviderRequirement] = [],
-        includeProductVenvs: Bool = false
+        includeProductVenvs: Bool = false,
+        pairingTarget: ManagedInstallerReviewedPairingTarget? = nil
     ) throws -> (plan: ManagedInstallerStablePlan,
                  material: ManagedVerifiedCompositionMaterial) {
         let fixture = try PrepublicationWheelFixture(
@@ -657,7 +664,8 @@ final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
                     artifactDigest: forgeArtifactDigest ?? fixture.artifactDigest,
                     detail: "Exact Forge install"
                 ),
-            ]
+            ],
+            pairingTarget: pairingTarget
         )
         return (plan, fixture.material)
     }

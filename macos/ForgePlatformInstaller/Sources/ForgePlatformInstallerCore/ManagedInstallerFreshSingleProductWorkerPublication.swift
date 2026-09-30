@@ -203,8 +203,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                 ManagedInstallerFreshPriorWorkerVenvEvidenceAdmission.load(
                     prior: prior, registry: priorRegistry,
                     excluding: plan.deployment.id, store: evidenceStore
-                ),
-              prior?.routes.isEmpty != false else {
+              ) else {
             return .failed(.staleSession, stages: [])
         }
         let priorDigest = prior.map {
@@ -215,10 +214,15 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         var priorWheels: [ManagedInstallerPriorProductWheelRouteKey:
             any ManagedPythonProductVenvWheelInstalling] = [:]
         for item in priorEvidence {
-            guard let route = prior?.singleRoutes.first(where: {
-                    $0.deploymentID == item.request.deploymentID
-                        && $0.componentIdentity == item.request.componentIdentity
-                  }), let priorDigest,
+            let route = prior?.singleRoutes.first(where: {
+                $0.deploymentID == item.request.deploymentID
+                    && $0.componentIdentity == item.request.componentIdentity
+            }) ?? prior?.routes.first(where: {
+                $0.deploymentID == item.request.deploymentID
+            }).flatMap {
+                Self.priorComponentRoute($0, component: item.request.componentIdentity)
+            }
+            guard let route, let priorDigest,
                   let key = ManagedInstallerPriorProductWheelRouteKey(
                     deploymentID: route.deploymentID,
                     componentIdentity: route.componentIdentity
@@ -281,6 +285,39 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
             )
         default:
             return .failed(.staleSession, stages: [])
+        }
+    }
+
+    static func priorComponentRoute(
+        _ paired: ManagedInstallerProductWorkerRouteAuthority,
+        component: String
+    ) -> ManagedInstallerProductWorkerSingleRouteAuthority? {
+        switch component {
+        case "forge-runtime":
+            return try? ManagedInstallerProductWorkerSingleRouteAuthority(
+                deploymentID: paired.deploymentID,
+                componentIdentity: component,
+                instanceID: paired.forgeInstanceID,
+                serviceAccount: paired.forgeServiceAccount,
+                bindPort: paired.forgeBindPort,
+                artifactSHA256: paired.forgeArtifactSHA256,
+                forgeInstallationID: paired.forgeInstallationID,
+                venvSlotName: paired.forgeVenvSlotName
+            )
+        case "engineering-platform-server":
+            return try? ManagedInstallerProductWorkerSingleRouteAuthority(
+                deploymentID: paired.deploymentID,
+                componentIdentity: component,
+                instanceID: paired.engineeringPlatformInstanceID,
+                serviceAccount: paired.engineeringPlatformServiceAccount,
+                bindPort: paired.engineeringPlatformBindPort,
+                artifactSHA256: paired.engineeringPlatformArtifactSHA256,
+                engineeringPlatformDisplayLabel:
+                    paired.engineeringPlatformDisplayLabel,
+                venvSlotName: paired.engineeringPlatformVenvSlotName
+            )
+        default:
+            return nil
         }
     }
 }

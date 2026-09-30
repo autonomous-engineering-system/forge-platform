@@ -57,7 +57,11 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
               reviewedOperation.deploymentID == deployment.id,
               reviewedOperation.deploymentExists == deployment.exists,
               Set(reviewedOperation.components.map(\.componentID)).count
-                == reviewedOperation.components.count else {
+                == reviewedOperation.components.count,
+              reviewedOperation.pairingTarget == nil
+                || Set(reviewedOperation.components.map(\.componentID))
+                    == Set(["forge-runtime", "engineering-platform-server"])
+                    && reviewedOperation.components.count == 2 else {
             throw ManagedPythonRuntimeTerminalReceiptFailure.invalidRequest
         }
 
@@ -85,7 +89,7 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
         enabledProviders: [ProviderRequirement],
         actions: [ManagedToolOriginalPlanAction]
     ) -> String {
-        let material: StrictJSONResourceValue = .object([
+        var fields: [String: StrictJSONResourceValue] = [
             "schema": .string("forge-platform.native-stable-plan/v3"),
             "session": sessionValue(session),
             "deployment": deploymentValue(
@@ -100,7 +104,12 @@ public struct ManagedInstallerStablePlan: Equatable, Sendable {
                 reviewedOperation.components.sorted { $0.componentID < $1.componentID }
                     .map(componentValue)
             ),
-        ])
+        ]
+        if let pairing = reviewedOperation.pairingTarget {
+            fields["schema"] = .string("forge-platform.native-stable-plan/v4")
+            fields["pairing_target"] = pairing.canonicalValue()
+        }
+        let material: StrictJSONResourceValue = .object(fields)
         return SHA256.hash(data: StrictSignedJSON.canonicalPayload(from: material))
             .map { String(format: "%02x", $0) }
             .joined()

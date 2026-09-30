@@ -72,6 +72,7 @@ public struct ReviewedManagedDeploymentOperation: Equatable, Sendable {
     public let currentInstallerRelease: VerifiedInstallerRelease
     public let enabledProviderRequirements: [ProviderRequirement]
     public let components: [ComponentDiff]
+    public let pairingTarget: ManagedInstallerReviewedPairingTarget?
 
     init(
         sessionID: String,
@@ -82,7 +83,8 @@ public struct ReviewedManagedDeploymentOperation: Equatable, Sendable {
         inventoryEvidenceReference: String,
         currentInstallerRelease: VerifiedInstallerRelease,
         enabledProviderRequirements: [ProviderRequirement] = [],
-        components: [ComponentDiff]
+        components: [ComponentDiff],
+        pairingTarget: ManagedInstallerReviewedPairingTarget? = nil
     ) {
         self.sessionID = sessionID
         self.compositionIdentity = compositionIdentity
@@ -95,6 +97,7 @@ public struct ReviewedManagedDeploymentOperation: Equatable, Sendable {
             $0.id.rawValue < $1.id.rawValue
         }
         self.components = components
+        self.pairingTarget = pairingTarget
     }
 }
 
@@ -236,6 +239,7 @@ public extension InstallerWizardState {
               providerRequirementsAreProjected else {
             return false
         }
+        clearReviewedPairingEvidence()
         switch result {
         case .prepared(let prepared):
             guard prepared.sessionID == plan.sessionID,
@@ -270,6 +274,7 @@ public extension InstallerWizardState {
               !enabledProviders.isEmpty,
               !enabledProvidersVerified,
               composition.isReadyForExecution,
+              pairingTargetIsReady,
               let plan = acceptedSessionPlan,
               let selected = selectedDeploymentRouteContext,
               !selected.target.exists,
@@ -285,7 +290,8 @@ public extension InstallerWizardState {
             inventoryEvidenceReference: selected.evidenceReference,
             currentInstallerRelease: release,
             enabledProviderRequirements: enabledProviders.map(\.requirement),
-            components: composition.components
+            components: composition.components,
+            pairingTarget: pairingTarget
         )
     }
 
@@ -309,7 +315,8 @@ public extension InstallerWizardState {
             inventoryEvidenceReference: selected.evidenceReference,
             currentInstallerRelease: release,
             enabledProviderRequirements: enabledProviders.map(\.requirement),
-            components: composition.components
+            components: composition.components,
+            pairingTarget: pairingTarget
         )
         step = .execution
         executionStages = [

@@ -167,9 +167,10 @@ struct ManagedInstallerProductWorkerPairingAuthority: Equatable, Sendable {
             repositoryIdentity, operatorID,
         ]
         guard identifiers.allSatisfy(Self.isPairingIdentity),
-              credentialReference.hasPrefix("keychain://"),
-              credentialReference.utf8.count <= 512,
-              !credentialReference.unicodeScalars.contains(where: { $0.properties.isWhitespace })
+              ManagedInstallerReviewedPairingTarget.isEPIdentifier(consumerID),
+              ManagedInstallerReviewedPairingTarget.isEPIdentifier(projectID),
+              ManagedInstallerReviewedPairingTarget.isEPRepositoryID(repositoryID),
+              Self.isCanonicalKeychainReference(credentialReference)
         else {
             throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
         }
@@ -190,6 +191,45 @@ struct ManagedInstallerProductWorkerPairingAuthority: Equatable, Sendable {
         }
         return value.unicodeScalars.dropFirst().allSatisfy {
             isASCIIAlphaNumeric($0) || [45, 46, 58, 95].contains($0.value)
+        }
+    }
+
+    /// Forge's product-owned SecretReference accepts one exact generic-password
+    /// service/account pair and canonical optional namespace/version selectors.
+    /// A loose prefix here could publish authority that Forge cannot resolve.
+    private static func isCanonicalKeychainReference(_ value: String) -> Bool {
+        let prefix = "keychain://"
+        guard value.hasPrefix(prefix), value.utf8.count <= 512,
+              !value.contains("%") else { return false }
+        let parts = value.dropFirst(prefix.count).split(
+            separator: "?", omittingEmptySubsequences: false
+        )
+        guard (1...2).contains(parts.count),
+              let path = parts.first?.split(
+                separator: "/", omittingEmptySubsequences: false
+              ), path.count == 2,
+              path.allSatisfy(isKeychainPart) else { return false }
+        if parts.count == 1 { return true }
+        let selectors = parts[1].split(
+            separator: "&", omittingEmptySubsequences: false
+        )
+        guard (1...2).contains(selectors.count) else { return false }
+        let names = selectors.compactMap { selector -> String? in
+            let pair = selector.split(
+                separator: "=", omittingEmptySubsequences: false
+            )
+            guard pair.count == 2, isKeychainPart(pair[1]) else { return nil }
+            return String(pair[0])
+        }
+        return names.count == selectors.count
+            && (names == ["namespace"] || names == ["version"]
+                || names == ["namespace", "version"])
+    }
+
+    private static func isKeychainPart(_ value: Substring) -> Bool {
+        !value.isEmpty && value.utf8.count <= 128 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (65...90).contains($0)
+                || (97...122).contains($0) || [45, 46, 95].contains($0)
         }
     }
 
