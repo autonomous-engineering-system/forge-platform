@@ -87,6 +87,51 @@ final class ManagedInstallerHelperFreshInstallPlanExecutorTests: XCTestCase {
             XCTAssertEqual(result, .failed(.staleSession, stages: []))
         }
     }
+
+    func testTerminalCreateRotatesOnlyAfterCompleteReadyProductResult() throws {
+        let fixture = try HelperFreshPlanFixture()
+        let registry = try HelperFreshPlanTerminalRegistry(fixture.plan.deployment.id)
+        let candidate = HelperFreshPlanCandidate(next: "deployment-next")
+        let finalizer = ManagedInstallerTerminalCreateCandidateFinalizer(
+            candidate: candidate, registry: registry
+        )
+        let stage = ExecutionStage(
+            id: "readiness", title: "Ready", detail: "Exact target", state: .passed
+        )
+        let summary = InstallationSummaryItem(
+            componentID: "forge-runtime", title: "Forge", status: "Gereed",
+            dashboardURL: nil, serviceScope: .systemLaunchDaemon
+        )
+        let complete = ManagedDeploymentExecutionResult.completed(
+            stages: [stage], summaryItems: [summary]
+        )
+        XCTAssertEqual(finalizer.finalize(.failed(.executionFailed, stages: []),
+                                          for: fixture.plan),
+                       .failed(.executionFailed, stages: []))
+        XCTAssertEqual(candidate.calls(), [])
+        XCTAssertEqual(finalizer.finalize(complete, for: fixture.plan), complete)
+        XCTAssertEqual(candidate.calls(), [fixture.plan.deployment.id])
+    }
+
+    func testTerminalCreateRotationFailureNeverReportsInstallComplete() throws {
+        let fixture = try HelperFreshPlanFixture()
+        let registry = try HelperFreshPlanTerminalRegistry(fixture.plan.deployment.id)
+        let candidate = HelperFreshPlanCandidate(next: nil)
+        let finalizer = ManagedInstallerTerminalCreateCandidateFinalizer(
+            candidate: candidate, registry: registry
+        )
+        let result = ManagedDeploymentExecutionResult.completed(
+            stages: [ExecutionStage(id: "readiness", title: "Ready",
+                                    detail: "Exact target", state: .passed)],
+            summaryItems: [InstallationSummaryItem(
+                componentID: "forge-runtime", title: "Forge", status: "Gereed",
+                dashboardURL: nil, serviceScope: .systemLaunchDaemon
+            )]
+        )
+        XCTAssertEqual(finalizer.finalize(result, for: fixture.plan),
+                       .failed(.executionFailed, stages: []))
+        XCTAssertEqual(candidate.calls(), [fixture.plan.deployment.id])
+    }
 }
 
 private struct HelperFreshPlanFixture {
@@ -152,8 +197,76 @@ private struct HelperFreshPlanFixture {
                 events.record("transaction-factory")
                 return runtimeAvailable ? HelperFreshPlanRuntime(events: events) : nil
             },
-            products: HelperFreshPlanProducts(events: events)
+            products: HelperFreshPlanProducts(events: events),
+            terminalCreate: ManagedInstallerTerminalCreateCandidateFinalizer(
+                candidate: HelperFreshPlanCandidate(next: nil),
+                registry: HelperFreshPlanUnavailableRegistry()
+            )
         )
+    }
+}
+
+private final class HelperFreshPlanCandidate:
+    ManagedInstallerTerminalCreateCandidateRotating, @unchecked Sendable {
+    private let lock = NSLock()
+    private let next: String?
+    private var deployments: [String] = []
+
+    init(next: String?) { self.next = next }
+
+    func rotateAfterTerminalCreate(
+        consumedDeploymentID: String,
+        registry: any ManagedInstallerManagedDeploymentRegistrySnapshotLoading
+    ) -> Result<String, ManagedInstallerCreateCandidateRotationFailure> {
+        _ = registry
+        lock.withLock { deployments.append(consumedDeploymentID) }
+        return next.map(Result.success) ?? .failure(.terminalEvidenceMissing)
+    }
+
+    func calls() -> [String] { lock.withLock { deployments } }
+}
+
+private struct HelperFreshPlanUnavailableRegistry:
+    ManagedInstallerManagedDeploymentRegistrySnapshotLoading {
+    func read() -> Result<ManagedInstallerManagedDeploymentRegistrySnapshot,
+                          ManagedInstallerManagedDeploymentRegistryReadFailure> {
+        .failure(.unavailable)
+    }
+}
+
+private struct HelperFreshPlanTerminalRegistry:
+    ManagedInstallerManagedDeploymentRegistrySnapshotLoading {
+    let snapshot: ManagedInstallerManagedDeploymentRegistrySnapshot
+
+    init(_ deploymentID: String) throws {
+        let record = try ManagedInstallerManagedDeploymentRegistryRecord.decode(
+            StrictSignedJSON.canonicalPayload(from: .object([
+                "schema": .string("forge-platform.managed-deployment/v2"),
+                "deployment_id": .string(deploymentID),
+                "revision": .integer("1"),
+                "label": .null,
+                "components": .array([.object([
+                    "component": .string("forge-runtime"),
+                    "instance_id": .string("forge-one"),
+                    "receipt_reference": .string("receipt:forge-one"),
+                ])]),
+                "peer_binding": .null,
+                "composition_binding": .object([
+                    "composition_id": .string("forge-qualified"),
+                    "manifest_digest": .string("sha256:" + String(repeating: "a", count: 64)),
+                    "receipt_reference": .string("receipt:composition-one"),
+                ]),
+            ])) + Data([0x0A]), expectedDeploymentID: deploymentID
+        )
+        snapshot = ManagedInstallerManagedDeploymentRegistrySnapshot(
+            records: [record],
+            evidenceReference: "registry:sha256:" + String(repeating: "a", count: 64)
+        )
+    }
+
+    func read() -> Result<ManagedInstallerManagedDeploymentRegistrySnapshot,
+                          ManagedInstallerManagedDeploymentRegistryReadFailure> {
+        .success(snapshot)
     }
 }
 
