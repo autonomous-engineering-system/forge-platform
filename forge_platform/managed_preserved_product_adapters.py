@@ -187,13 +187,19 @@ class ForgePreservedProductAdapter:
             "--instance-id", self.target.instance_id,
         ))
         status = _product_json(status_result.returncode, status_result.stdout)
+        if receipt.get("installation_id") != self.installation_id:
+            raise ManagedPreservedProductAdapterError(
+                "Forge lifecycle receipt targets another installation"
+            )
         try:
             terminal = validate_terminal_preserved_lifecycle(
                 component=FORGE_COMPONENT, operation=review.operation,
                 operation_id=review.operation_id, instance_id=self.target.instance_id,
                 artifact=self.artifact, request_digest=_forge_product_digest(request),
                 receipt=receipt, status=status,
-                preserve_operation_id=review.preserve_operation_id,
+                preserve_operation_id=(
+                    review.preserve_operation_id if review.operation == "RESTORE" else None
+                ),
             )
             return ProductPreservedLifecycleInvocation(terminal, receipt, status)
         except ProductPreservedLifecycleError as error:
@@ -288,7 +294,9 @@ class EPPreservedProductAdapter:
                 operation_id=review.operation_id, instance_id=self.target.instance_id,
                 artifact=self.artifact, request_digest=digest,
                 receipt=receipt, status=status,
-                preserve_operation_id=review.preserve_operation_id,
+                preserve_operation_id=(
+                    review.preserve_operation_id if review.operation == "RESTORE" else None
+                ),
             )
             return ProductPreservedLifecycleInvocation(terminal, receipt, status)
         except ProductPreservedLifecycleError as error:

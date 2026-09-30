@@ -221,6 +221,21 @@ class ManagedPreservedProductAdapterTests(unittest.TestCase):
                 forge_review, registry=registry, installed_manifest=manifest,
             ).terminal.lifecycle_state, "PURGED")
             self.assertEqual(runner.calls[0][4], "purge")
+            wrong_receipt, wrong_status = _forge_evidence(
+                "PURGE", "purge-a", "forge-a", "install-b",
+                _forge_product_digest(request),
+            )
+            wrong_runner = FakeRunner(ForgeCommandResult, (
+                (0, _wire(wrong_receipt)), (0, _wire(wrong_status)),
+            ))
+            wrong_install = ForgePreservedProductAdapter(
+                lifecycle_executable=root / "forge-lifecycle", target=target,
+                installation_id="install-a", artifact=artifact, runner=wrong_runner,
+            )
+            with self.assertRaisesRegex(ManagedPreservedProductAdapterError, "another installation"):
+                wrong_install.invoke(
+                    forge_review, registry=registry, installed_manifest=manifest,
+                )
 
             ep_review = prepare_preserved_lifecycle_review(
                 current=active, installed_manifest=manifest, operation="PURGE",
@@ -273,7 +288,9 @@ class ManagedPreservedProductAdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(ManagedPreservedProductAdapterError, "target changed"):
                 wrong.invoke(review, registry=registry, installed_manifest=manifest)
             self.assertEqual(runner.calls, [])
-            runner = FakeRunner(ForgeCommandResult, ((0, "{\"bad\":true}"), (0, "{}")))
+            runner = FakeRunner(ForgeCommandResult, (
+                (0, '{"installation_id":"install-a","bad":true}'), (0, "{}"),
+            ))
             adapter = ForgePreservedProductAdapter(
                 lifecycle_executable=root / "forge-lifecycle", target=self._forge_target(root),
                 installation_id="install-a", artifact=_artifact(FORGE_COMPONENT), runner=runner,
