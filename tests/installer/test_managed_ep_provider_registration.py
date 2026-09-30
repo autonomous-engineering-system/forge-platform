@@ -30,6 +30,21 @@ from tests.installer.test_managed_product_operation_admission import installer_r
 from tests.installer.test_universal_installer import current_context, selection
 
 
+class ProviderCurrencyGuard:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.fail_first = False
+        self.change_second = False
+
+    def require_current(self, **kwargs) -> str:
+        self.calls.append(kwargs)
+        if self.fail_first and len(self.calls) == 1:
+            raise ValueError("released authority changed")
+        if self.change_second and len(self.calls) == 2:
+            return "currency:changed"
+        return "currency:exact"
+
+
 class EPProviderWorkerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.private = tempfile.TemporaryDirectory()
@@ -62,6 +77,8 @@ class EPProviderWorkerTests(unittest.TestCase):
             current_installer_release=installer_release(), manifests=(self.manifest,)
         )
         self.service.provider_routes = {"deployment-a": self.adapter}
+        self.currency = ProviderCurrencyGuard()
+        self.service.provider_currency_guard = self.currency
 
     def tearDown(self) -> None:
         self.private.cleanup()
@@ -77,6 +94,7 @@ class EPProviderWorkerTests(unittest.TestCase):
         self.assertEqual(receipt["provider_target"], "codex:engineering-platform-server:ep-prod")
         self.assertEqual(receipt["state"], "VERIFIED")
         self.assertEqual(len(self.runner.calls), 1)
+        self.assertEqual(len(self.currency.calls), 2)
         self.assertIn("provider-register", self.runner.calls[0])
         self.assertNotIn("provider-observation", " ".join(self.runner.calls[0]))
         self.assertNotIn("token", response.decode().lower())
@@ -104,6 +122,18 @@ class EPProviderWorkerTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(Exception):
                 execute_ep_provider_registration(raw, service_loader=lambda: self.service)
         self.assertEqual(self.runner.calls, [])
+
+    def test_currency_drift_rejects_before_product_mutation(self) -> None:
+        self.currency.fail_first = True
+        with self.assertRaises(ManagedProductOperationServiceError):
+            self.service.register_ep_provider(self.request.canonical_bytes())
+        self.assertEqual(self.runner.calls, [])
+
+    def test_currency_change_after_product_call_is_not_terminal(self) -> None:
+        self.currency.change_second = True
+        with self.assertRaises(ManagedProductOperationServiceError):
+            self.service.register_ep_provider(self.request.canonical_bytes())
+        self.assertEqual(len(self.runner.calls), 1)
 
     def test_github_cli_uses_exact_product_owned_github_context(self) -> None:
         github_runtime = replace(

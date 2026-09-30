@@ -581,6 +581,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     private let providerReadback: (any ManagedInstallerHelperReviewedProviderReading)?
     private let providerAuthentication:
         (any ManagedInstallerReviewedProviderAuthenticationStarting)?
+    private let epProviderRegistration: ManagedInstallerReviewedEPProviderRegistration?
     private let freshSnapshotProducer: (any ManagedInstallerReleasedRouteFreshSnapshotProducing)?
     private let requiresFreshSnapshotPublication: Bool
 
@@ -612,7 +613,9 @@ public final class FileManagedInstallerReleasedRouteXPCService:
             ),
             providerAuthentication: registration.flatMap {
                 ManagedInstallerReviewedProviderAuthenticationStart.production(loader: $0)
-            }
+            },
+            epProviderRegistration: ManagedInstallerReviewedEPProviderRegistration
+                .production(loader: registration)
         )
     }
 
@@ -628,7 +631,8 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         providerStaging: (any ManagedInstallerHelperReviewedProviderStaging)? = nil,
         providerReadback: (any ManagedInstallerHelperReviewedProviderReading)? = nil,
         providerAuthentication:
-            (any ManagedInstallerReviewedProviderAuthenticationStarting)? = nil
+            (any ManagedInstallerReviewedProviderAuthenticationStarting)? = nil,
+        epProviderRegistration: ManagedInstallerReviewedEPProviderRegistration? = nil
     ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
@@ -641,6 +645,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         self.providerStaging = providerStaging
         self.providerReadback = providerReadback
         self.providerAuthentication = providerAuthentication
+        self.epProviderRegistration = epProviderRegistration
         super.init()
     }
 
@@ -806,6 +811,26 @@ public final class FileManagedInstallerReleasedRouteXPCService:
                    $0.id == targetID && $0.state == .verified
                }) else { gate.complete(nil); return }
             gate.complete(bytes)
+        }
+    }
+
+    public func registerReviewedEPProvider(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let epProviderRegistration,
+              let targetID = ProviderTargetID(rawValue: providerTargetID),
+              let intent = try? ManagedInstallerReviewedExecutionIntent
+                .decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            gate.complete(await epProviderRegistration.register(
+                canonicalIntent: canonicalIntent, providerTargetID: targetID
+            ))
         }
     }
 
@@ -1025,6 +1050,10 @@ public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
         withReply reply: @escaping (Data?) -> Void
     )
     func finishReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    )
+    func registerReviewedEPProvider(
         _ canonicalIntent: Data, providerTargetID: String,
         withReply reply: @escaping (Data?) -> Void
     )
@@ -1382,6 +1411,15 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
     }
 
     public func finishReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        _ = providerTargetID
+        reply(nil)
+    }
+
+    public func registerReviewedEPProvider(
         _ canonicalIntent: Data, providerTargetID: String,
         withReply reply: @escaping (Data?) -> Void
     ) {
