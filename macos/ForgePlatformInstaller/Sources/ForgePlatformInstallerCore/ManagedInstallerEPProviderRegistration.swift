@@ -64,19 +64,19 @@ struct ManagedInstallerEPProviderRegistrationRequest: Equatable, Sendable {
     }
 }
 
-struct ManagedInstallerEPProviderRegistrationReceipt: Equatable, Sendable {
-    static let schema = "forge-platform.ep-provider-registration-receipt/v1"
-    let operationID: String
-    let stablePlanFingerprint: String
-    let deploymentID: String
-    let epInstanceID: String
-    let provider: ProviderID
-    let providerTarget: String
-    let runtimeDigest: String
-    let productEvidenceReference: String
-    let physicalEvidenceReference: String
+public struct ManagedInstallerEPProviderRegistrationReceipt: Equatable, Sendable {
+    public static let schema = "forge-platform.ep-provider-registration-receipt/v1"
+    public let operationID: String
+    public let stablePlanFingerprint: String
+    public let deploymentID: String
+    public let epInstanceID: String
+    public let provider: ProviderID
+    public let providerTarget: String
+    public let runtimeDigest: String
+    public let productEvidenceReference: String
+    public let physicalEvidenceReference: String
 
-    func canonicalJSONData() -> Data {
+    public func canonicalJSONData() -> Data {
         StrictSignedJSON.canonicalPayload(from: .object([
             "schema": .string(Self.schema),
             "operation_id": .string(operationID),
@@ -95,6 +95,36 @@ struct ManagedInstallerEPProviderRegistrationReceipt: Equatable, Sendable {
     static func decode(
         _ data: Data, request: ManagedInstallerEPProviderRegistrationRequest
     ) -> Self? {
+        guard let receipt = parse(data),
+              receipt.operationID == request.operationID,
+              receipt.stablePlanFingerprint == request.stablePlanFingerprint,
+              receipt.deploymentID == request.deploymentID,
+              receipt.epInstanceID == request.epInstanceID,
+              receipt.provider == request.provider,
+              receipt.runtimeDigest == request.runtimeDigest,
+              receipt.physicalEvidenceReference == request.physicalEvidenceReference
+        else { return nil }
+        return receipt
+    }
+
+    public static func decode(
+        _ data: Data, intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) -> Self? {
+        guard let receipt = parse(data),
+              receipt.operationID == intent.operationID,
+              receipt.stablePlanFingerprint == "sha256:" + intent.stablePlanFingerprint,
+              receipt.deploymentID == intent.deploymentID,
+              receipt.epInstanceID == ManagedInstallerProductServiceAccountPlanner.instanceID(
+                  deploymentID: intent.deploymentID,
+                  componentIdentity: "engineering-platform-server"
+              ),
+              providerTargetID.rawValue == "\(receipt.provider.rawValue):engineering-platform-server:\(intent.deploymentID)"
+        else { return nil }
+        return receipt
+    }
+
+    private static func parse(_ data: Data) -> Self? {
         guard !data.isEmpty, data.count <= 4 * 1_024,
               var reader = try? StrictJSONResourceReader(data: data),
               let fields = try? reader.parseDocument().objectValue,
@@ -106,32 +136,69 @@ struct ManagedInstallerEPProviderRegistrationReceipt: Equatable, Sendable {
               ]),
               fields["schema"]?.stringValue == schema,
               fields["state"]?.stringValue == "VERIFIED",
-              fields["operation_id"]?.stringValue == request.operationID,
-              fields["stable_plan_fingerprint"]?.stringValue == request.stablePlanFingerprint,
-              fields["deployment_id"]?.stringValue == request.deploymentID,
-              fields["ep_instance_id"]?.stringValue == request.epInstanceID,
-              fields["provider"]?.stringValue == request.provider.rawValue,
-              fields["provider_target"]?.stringValue ==
-                "\(request.provider.rawValue):engineering-platform-server:\(request.epInstanceID)",
-              fields["runtime_digest"]?.stringValue == request.runtimeDigest,
-              fields["physical_evidence_reference"]?.stringValue
-                == request.physicalEvidenceReference,
+              let operationID = fields["operation_id"]?.stringValue,
+              ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+              let fingerprint = fields["stable_plan_fingerprint"]?.stringValue,
+              CompositionCatalogValidation.isTaggedSHA256(fingerprint),
+              let deploymentID = fields["deployment_id"]?.stringValue,
+              ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID),
+              let epInstanceID = fields["ep_instance_id"]?.stringValue,
+              ManagedPythonRuntimeStagingValidation.isOperationID(epInstanceID),
+              let providerRaw = fields["provider"]?.stringValue,
+              let provider = ProviderID(rawValue: providerRaw),
+              let providerTarget = fields["provider_target"]?.stringValue,
+              providerTarget == "\(provider.rawValue):engineering-platform-server:\(epInstanceID)",
+              let runtimeDigest = fields["runtime_digest"]?.stringValue,
+              CompositionCatalogValidation.isTaggedSHA256(runtimeDigest),
+              let physical = fields["physical_evidence_reference"]?.stringValue,
+              physical.range(of: "^receipt:provider-observation-[0-9a-f]{64}$",
+                             options: .regularExpression) != nil,
               let product = fields["product_evidence_reference"]?.stringValue,
               product.range(of: "^ep-provider-readback:sha256:[0-9a-f]{64}$",
                             options: .regularExpression) != nil,
               StrictSignedJSON.canonicalPayload(from: .object(fields)) == data
         else { return nil }
         return Self(
-            operationID: request.operationID,
-            stablePlanFingerprint: request.stablePlanFingerprint,
-            deploymentID: request.deploymentID,
-            epInstanceID: request.epInstanceID,
-            provider: request.provider,
-            providerTarget: "\(request.provider.rawValue):engineering-platform-server:\(request.epInstanceID)",
-            runtimeDigest: request.runtimeDigest,
+            operationID: operationID,
+            stablePlanFingerprint: fingerprint,
+            deploymentID: deploymentID,
+            epInstanceID: epInstanceID,
+            provider: provider,
+            providerTarget: providerTarget,
+            runtimeDigest: runtimeDigest,
             productEvidenceReference: product,
-            physicalEvidenceReference: request.physicalEvidenceReference
+            physicalEvidenceReference: physical
         )
+    }
+}
+
+/// Both app entrypoints use this gate after physical provider verification.
+/// Only the privileged helper can translate a reviewed target to EP authority.
+public enum ManagedInstallerEPProviderRegistrationGate {
+    public static func registerVerifiedTargets(
+        coordinator: any InstallerWizardCoordinator,
+        operation: ReviewedManagedDeploymentOperation,
+        readback: ManagedInstallerReviewedProviderReadback,
+        requirements: [ProviderRequirement]
+    ) async -> Bool {
+        guard readback.allVerified else { return true }
+        for requirement in requirements where requirement.ownerComponent == .engineeringPlatformServer {
+            guard let observed = readback.targets.first(where: { $0.id == requirement.id }),
+                  observed.state == .verified,
+                  let runtime = requirement.runtime,
+                  let receipt = await coordinator.registerReviewedEPProvider(
+                    operation, providerTargetID: requirement.id
+                  ),
+                  receipt.operationID == readback.operationID,
+                  receipt.stablePlanFingerprint ==
+                    "sha256:" + readback.stablePlanFingerprint,
+                  receipt.provider == requirement.provider,
+                  receipt.deploymentID == operation.deploymentID,
+                  receipt.runtimeDigest == runtime.executableSHA256,
+                  receipt.physicalEvidenceReference == observed.evidenceReference
+            else { return false }
+        }
+        return true
     }
 }
 

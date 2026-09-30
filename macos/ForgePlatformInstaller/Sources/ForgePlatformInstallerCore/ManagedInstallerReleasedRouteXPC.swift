@@ -1017,6 +1017,13 @@ public protocol ManagedInstallerReviewedProviderAuthenticationIntentSending: Sen
     ) async throws -> ManagedInstallerReviewedProviderReadback
 }
 
+public protocol ManagedInstallerReviewedEPProviderRegistrationIntentSending: Sendable {
+    func registerReviewedEPProvider(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerEPProviderRegistrationReceipt
+}
+
 public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
     func registerReviewedSelection(
         _ selection: ManagedInstallerReviewedSelection
@@ -1069,6 +1076,7 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     ManagedInstallerReviewedProviderStageIntentSending,
     ManagedInstallerReviewedProviderReadbackIntentSending,
     ManagedInstallerReviewedProviderAuthenticationIntentSending,
+    ManagedInstallerReviewedEPProviderRegistrationIntentSending,
     ManagedInstallerReviewedSelectionRegistering,
     ManagedInstallerPreservedRegistryReading {
     public static let machServiceName =
@@ -1212,6 +1220,22 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
               receipt.targets.contains(where: {
                   $0.id == providerTargetID && $0.state == .verified
               }) else { throw ManagedInstallerReleasedRouteXPCFailure.rejected }
+        return receipt
+    }
+
+    public func registerReviewedEPProvider(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerEPProviderRegistrationReceipt {
+        let data = try await call { service, reply in
+            service.registerReviewedEPProvider(
+                intent.canonicalJSONData(), providerTargetID: providerTargetID.rawValue,
+                withReply: reply
+            )
+        }
+        guard let receipt = ManagedInstallerEPProviderRegistrationReceipt.decode(
+            data, intent: intent, providerTargetID: providerTargetID
+        ) else { throw ManagedInstallerReleasedRouteXPCFailure.rejected }
         return receipt
     }
 

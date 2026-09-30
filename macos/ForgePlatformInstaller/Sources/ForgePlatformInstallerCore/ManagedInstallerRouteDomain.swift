@@ -143,9 +143,21 @@ public protocol ManagedDeploymentRouteCoordinating: Sendable {
         _ operation: ReviewedManagedDeploymentOperation,
         providerTargetID: ProviderTargetID
     ) async -> ManagedInstallerProviderAuthenticationChallengeResponse?
+    func registerReviewedEPProvider(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerEPProviderRegistrationReceipt?
 }
 
 public extension ManagedDeploymentRouteCoordinating {
+    func registerReviewedEPProvider(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerEPProviderRegistrationReceipt? {
+        _ = operation
+        _ = providerTargetID
+        return nil
+    }
     func stageReviewedProviders(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedInstallerProviderStagePreparationResult {

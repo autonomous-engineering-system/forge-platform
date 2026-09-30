@@ -763,6 +763,60 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         XCTAssertEqual(ManagedInstallerEPProviderRegistrationReceipt.decode(
             expectedProduct.canonicalJSONData(), request: request
         ), expectedProduct)
+        XCTAssertEqual(ManagedInstallerEPProviderRegistrationReceipt.decode(
+            expectedProduct.canonicalJSONData(), intent: intent,
+            providerTargetID: requirement.id
+        ), expectedProduct)
+        let wrongTarget = ProviderTargetID(
+            rawValue: "codex:engineering-platform-server:deployment-b"
+        )!
+        XCTAssertNil(ManagedInstallerEPProviderRegistrationReceipt.decode(
+            expectedProduct.canonicalJSONData(), intent: intent,
+            providerTargetID: wrongTarget
+        ))
+        let wrongProduct = ManagedInstallerEPProviderRegistrationReceipt(
+            operationID: expectedProduct.operationID,
+            stablePlanFingerprint: expectedProduct.stablePlanFingerprint,
+            deploymentID: expectedProduct.deploymentID,
+            epInstanceID: expectedProduct.epInstanceID,
+            provider: expectedProduct.provider,
+            providerTarget: expectedProduct.providerTarget,
+            runtimeDigest: expectedProduct.runtimeDigest,
+            productEvidenceReference: "ep-provider-readback:sha256:wrong",
+            physicalEvidenceReference: expectedProduct.physicalEvidenceReference
+        )
+        XCTAssertNil(ManagedInstallerEPProviderRegistrationReceipt.decode(
+            wrongProduct.canonicalJSONData(), intent: intent,
+            providerTargetID: requirement.id
+        ))
+        let gate = EPRegistrationGateCoordinator(receipt: expectedProduct)
+        let registered = await ManagedInstallerEPProviderRegistrationGate.registerVerifiedTargets(
+            coordinator: gate, operation: fixture.plan.reviewedOperation,
+            readback: observed, requirements: [requirement]
+        )
+        XCTAssertTrue(registered)
+        let registeredCalls = await gate.registerCalls()
+        XCTAssertEqual(registeredCalls, 1)
+        let driftedObservation = try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: [try .init(
+                id: requirement.id, state: .verified,
+                evidenceReference: "receipt:provider-observation-"
+                    + String(repeating: "c", count: 64)
+            )]
+        )
+        let driftedRegistration = await ManagedInstallerEPProviderRegistrationGate.registerVerifiedTargets(
+            coordinator: gate, operation: fixture.plan.reviewedOperation,
+            readback: driftedObservation, requirements: [requirement]
+        )
+        XCTAssertFalse(driftedRegistration)
+        let unavailableGate = EPRegistrationGateCoordinator(receipt: nil)
+        let unavailableRegistration = await ManagedInstallerEPProviderRegistrationGate.registerVerifiedTargets(
+            coordinator: unavailableGate, operation: fixture.plan.reviewedOperation,
+            readback: observed, requirements: [requirement]
+        )
+        XCTAssertFalse(unavailableRegistration)
         XCTAssertNil(ManagedInstallerEPProviderRegistrationReceipt.decode(
             expectedProduct.canonicalJSONData() + Data([0x0A]), request: request
         ))
@@ -820,6 +874,30 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             ) { continuation.resume(returning: $0) }
         }
         XCTAssertNotNil(xpcReceipt)
+        let listener = MacOSManagedInstallerReleasedRouteXPCListener(
+            listener: .anonymous(),
+            callerIdentity: try ManagedInstallerProductOperationXPCCallerIdentity(
+                bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
+                teamIdentifier: "ZEML4LPXH4"
+            ), serviceHandler: service,
+            installCodeSigningRequirement: { _, _ in }
+        )
+        listener.activate()
+        defer { listener.invalidate() }
+        let transport = MacOSManagedInstallerReleasedRouteXPCTransport(
+            endpoint: listener.endpoint
+        )
+        let transported = try await transport.registerReviewedEPProvider(
+            intent, providerTargetID: requirement.id
+        )
+        XCTAssertEqual(transported, expectedProduct)
+        do {
+            _ = try await transport.registerReviewedEPProvider(
+                intent, providerTargetID: wrongTarget
+            )
+            XCTFail("wrong EP target must be rejected")
+        } catch {}
+        await transport.invalidate()
         let wrongXPC: Data? = await withCheckedContinuation { continuation in
             service.registerReviewedEPProvider(
                 Data("{}".utf8), providerTargetID: requirement.id.rawValue
@@ -2002,6 +2080,59 @@ private struct FreshRuntimeAccountReader: ManagedInstallerFreshProductAccountRea
         -> Result<ManagedInstallerProductServiceAccountReadback?,
                   ManagedInstallerProductServiceAccountPreparationFailure> {
         .success(readbacks.first(where: { $0.claim == claim }))
+    }
+}
+
+private actor EPRegistrationGateCoordinator: InstallerWizardCoordinator {
+    let receipt: ManagedInstallerEPProviderRegistrationReceipt?
+    private var calls = 0
+
+    init(receipt: ManagedInstallerEPProviderRegistrationReceipt?) {
+        self.receipt = receipt
+    }
+
+    func registerCalls() -> Int { calls }
+
+    func registerReviewedEPProvider(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerEPProviderRegistrationReceipt? {
+        _ = operation
+        _ = providerTargetID
+        calls += 1
+        return receipt
+    }
+
+    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+        _ = currentVersion
+        return .rejected("unavailable")
+    }
+
+    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
+        _ = release
+        return .failed("unavailable")
+    }
+
+    func recheckInstallerBeforeMutation(
+        currentVersion: InstallerVersion
+    ) async -> InstallerCurrencyCheckResult {
+        _ = currentVersion
+        return .failed("unavailable")
+    }
+
+    func executeReviewedManagedDeployment(
+        _ operation: ReviewedManagedDeploymentOperation
+    ) async -> ManagedDeploymentExecutionResult {
+        _ = operation
+        return .failed(.executionFailed, stages: [])
+    }
+
+    func performProviderAction(
+        _ action: ProviderAction, for provider: ProviderID
+    ) async -> ProviderActionResult {
+        _ = action
+        _ = provider
+        return .failed(.coordinatorUnavailable)
     }
 }
 
