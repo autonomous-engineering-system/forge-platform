@@ -39,6 +39,12 @@ from .managed_preserve_recovery import (
     decode_native_preserve_recovery_request,
     decode_native_preserve_recovery_receipt,
 )
+from .managed_purge_recovery import (
+    MAXIMUM_NATIVE_PURGE_RECOVERY_RECEIPT_BYTES,
+    NATIVE_PURGE_RECOVERY_REQUEST_SCHEMA,
+    decode_native_purge_recovery_request,
+    decode_native_purge_recovery_receipt,
+)
 from .managed_product_operation_service import (
     MAXIMUM_NATIVE_PRODUCT_OPERATION_RECEIPT_BYTES,
     MAXIMUM_NATIVE_PRODUCT_REMOVAL_RECEIPT_BYTES,
@@ -301,6 +307,30 @@ def read_terminal_preserve_recovery_request(
     return response
 
 
+def read_terminal_purge_recovery_request(
+    canonical_request: bytes, *,
+    service_loader: ServiceLoader = load_released_product_service,
+) -> bytes:
+    """Read only terminal proof for the original exact confirmed PURGE."""
+    request = decode_native_purge_recovery_request(canonical_request)
+    service = service_loader()
+    if not isinstance(service, ManagedProductOperationHelperService):
+        raise InstallerProductWorkerUnavailable("purge recovery service is unavailable")
+    response = service.read_terminal_purge_recovery(canonical_request)
+    if (
+        not isinstance(response, bytes) or not response
+        or len(response) > MAXIMUM_NATIVE_PURGE_RECOVERY_RECEIPT_BYTES
+    ):
+        raise InstallerProductWorkerUnavailable("purge recovery receipt is unavailable")
+    try:
+        decode_native_purge_recovery_receipt(response, request=request)
+    except Exception as error:
+        raise InstallerProductWorkerUnavailable(
+            "purge recovery receipt was rejected"
+        ) from error
+    return response
+
+
 def run(
     input_stream: BinaryIO,
     output_stream: BinaryIO,
@@ -330,6 +360,10 @@ def run(
             )
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVE_RECOVERY_REQUEST_SCHEMA:
             response = read_terminal_preserve_recovery_request(
+                request, service_loader=service_loader,
+            )
+        elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PURGE_RECOVERY_REQUEST_SCHEMA:
+            response = read_terminal_purge_recovery_request(
                 request, service_loader=service_loader,
             )
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REQUEST_SCHEMA:
