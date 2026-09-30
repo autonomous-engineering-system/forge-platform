@@ -79,6 +79,16 @@ _FORGE_RELEASE_SOURCE_INFO_KEY = "ForgePlatformForgeReleaseSourceRevision"
 _FORGE_RELEASE_SOURCE = "0a3d6e35b01da93bb5a674ae7795558655c16c7d"
 _FORGE_RELEASE_RECEIPT_SHA256 = "sha256:7f8f4646a369ea565e52f8420df665acb64d032e5004e1b45ef7dc8427548c49"
 _FORGE_RELEASE_RECEIPT_MAXIMUM_BYTES = 64 * 1_024
+_FORGE_239_CONTROLLER_RESOURCE_NAME = "forge-update-controller-2.7.39.py"
+_FORGE_239_CONTROLLER_DIGEST_INFO_KEY = "ForgePlatformForge239UpdateControllerSHA256"
+_FORGE_239_CONTROLLER_SOURCE_INFO_KEY = "ForgePlatformForge239UpdateControllerSourceRevision"
+_FORGE_239_CONTROLLER_SOURCE = "ebc43dc12da27353f85c991a26da9852aa790f05"
+_FORGE_239_CONTROLLER_SHA256 = "sha256:84bac133849c539a2bfae662234be93c3cd6583e841cae34eb27f3b21728fb87"
+_FORGE_239_RECEIPT_RESOURCE_NAME = "forge-release-complete-2.7.39.json"
+_FORGE_239_RECEIPT_DIGEST_INFO_KEY = "ForgePlatformForge239ReleaseCompleteSHA256"
+_FORGE_239_RELEASE_SOURCE_INFO_KEY = "ForgePlatformForge239ReleaseSourceRevision"
+_FORGE_239_RELEASE_SOURCE = "ebc43dc12da27353f85c991a26da9852aa790f05"
+_FORGE_239_RECEIPT_SHA256 = "sha256:078a9f09f048cbd1fd36c4d5f83a5739dfeb3c3a546ba94bb1148596135ba15f"
 
 
 @dataclass(frozen=True)
@@ -198,6 +208,40 @@ def _validated_forge_update_controller_resource(
     if not contents or digest != _FORGE_UPDATE_CONTROLLER_SHA256:
         raise ValueError("Forge update controller does not match the exact protected source")
     return SealedForgeUpdateControllerResource(source, contents, digest)
+
+
+def _sealed_forge_239_controller_resource(value: str) -> SealedForgeUpdateControllerResource:
+    source, contents = _read_regular_non_symlink_file(
+        value, description="Forge 2.7.39 update controller",
+        maximum_bytes=_FORGE_UPDATE_CONTROLLER_MAXIMUM_BYTES,
+    )
+    return _validated_forge_239_controller_resource(source, contents)
+
+
+def _validated_forge_239_controller_resource(
+    source: Path, contents: bytes,
+) -> SealedForgeUpdateControllerResource:
+    digest = "sha256:" + sha256(contents).hexdigest()
+    if not contents or digest != _FORGE_239_CONTROLLER_SHA256:
+        raise ValueError("Forge 2.7.39 controller does not match the published producer source")
+    return SealedForgeUpdateControllerResource(source, contents, digest)
+
+
+def _sealed_forge_239_receipt_resource(value: str) -> SealedForgeReleaseCompleteReceiptResource:
+    source, contents = _read_regular_non_symlink_file(
+        value, description="Forge 2.7.39 RELEASE_COMPLETE receipt",
+        maximum_bytes=_FORGE_RELEASE_RECEIPT_MAXIMUM_BYTES,
+    )
+    return _validated_forge_239_receipt_resource(source, contents)
+
+
+def _validated_forge_239_receipt_resource(
+    source: Path, contents: bytes,
+) -> SealedForgeReleaseCompleteReceiptResource:
+    digest = "sha256:" + sha256(contents).hexdigest()
+    if not contents or digest != _FORGE_239_RECEIPT_SHA256:
+        raise ValueError("Forge 2.7.39 receipt does not match the public release")
+    return SealedForgeReleaseCompleteReceiptResource(source, contents, digest)
 
 
 def _read_regular_non_symlink_file(value: str, *, description: str, maximum_bytes: int) -> tuple[Path, bytes]:
@@ -533,6 +577,8 @@ def package(
     product_worker: SealedProductWorkerResource | None = None,
     forge_update_controller: SealedForgeUpdateControllerResource | None = None,
     forge_release_receipt: SealedForgeReleaseCompleteReceiptResource | None = None,
+    forge_239_update_controller: SealedForgeUpdateControllerResource | None = None,
+    forge_239_release_receipt: SealedForgeReleaseCompleteReceiptResource | None = None,
     output: Path,
     bundle_identifier: str,
     sealed_release_trust: SealedReleaseTrustResource | None = None,
@@ -598,6 +644,17 @@ def package(
         )
         if forge_update_controller is None:
             raise ValueError("Forge release receipt requires exact update controller")
+    if (forge_239_update_controller is None) != (forge_239_release_receipt is None):
+        raise ValueError("Forge 2.7.39 update controller and release receipt must be paired")
+    if forge_239_update_controller is not None and forge_239_release_receipt is not None:
+        forge_239_update_controller = _validated_forge_239_controller_resource(
+            forge_239_update_controller.source, forge_239_update_controller.contents
+        )
+        forge_239_release_receipt = _validated_forge_239_receipt_resource(
+            forge_239_release_receipt.source, forge_239_release_receipt.contents
+        )
+        if helper_executable is None or product_worker is None:
+            raise ValueError("Forge 2.7.39 resources require helper and product worker")
 
     if sealed_composition_catalog_trust is not None and (
         sealed_release_trust is None or sealed_release_provenance is None
@@ -667,6 +724,8 @@ def package(
     product_worker_destination = resources / _PRODUCT_WORKER_RESOURCE_NAME
     forge_controller_destination = resources / _FORGE_UPDATE_CONTROLLER_RESOURCE_NAME
     forge_receipt_destination = resources / _FORGE_RELEASE_RECEIPT_RESOURCE_NAME
+    forge_239_controller_destination = resources / _FORGE_239_CONTROLLER_RESOURCE_NAME
+    forge_239_receipt_destination = resources / _FORGE_239_RECEIPT_RESOURCE_NAME
     helper_plist = launch_daemons / _HELPER_PLIST_NAME
     info_plist = contents / "Info.plist"
     output_owned = False
@@ -726,6 +785,11 @@ def package(
         if forge_release_receipt is not None:
             metadata[_FORGE_RELEASE_RECEIPT_DIGEST_INFO_KEY] = forge_release_receipt.sha256
             metadata[_FORGE_RELEASE_SOURCE_INFO_KEY] = _FORGE_RELEASE_SOURCE
+        if forge_239_update_controller is not None and forge_239_release_receipt is not None:
+            metadata[_FORGE_239_CONTROLLER_DIGEST_INFO_KEY] = forge_239_update_controller.sha256
+            metadata[_FORGE_239_CONTROLLER_SOURCE_INFO_KEY] = _FORGE_239_CONTROLLER_SOURCE
+            metadata[_FORGE_239_RECEIPT_DIGEST_INFO_KEY] = forge_239_release_receipt.sha256
+            metadata[_FORGE_239_RELEASE_SOURCE_INFO_KEY] = _FORGE_239_RELEASE_SOURCE
         with info_plist.open("wb") as stream:
             plistlib.dump(metadata, stream, fmt=plistlib.FMT_XML, sort_keys=True)
         info_plist.chmod(0o644)
@@ -736,6 +800,7 @@ def package(
             or product_worker is not None
             or forge_update_controller is not None
             or forge_release_receipt is not None
+            or forge_239_update_controller is not None
         ):
             resources.mkdir(mode=0o755, exist_ok=helper_executable is not None)
         if product_worker is not None:
@@ -750,6 +815,13 @@ def package(
             with forge_receipt_destination.open("xb") as stream:
                 stream.write(forge_release_receipt.contents)
             forge_receipt_destination.chmod(0o644)
+        if forge_239_update_controller is not None and forge_239_release_receipt is not None:
+            with forge_239_controller_destination.open("xb") as stream:
+                stream.write(forge_239_update_controller.contents)
+            forge_239_controller_destination.chmod(0o644)
+            with forge_239_receipt_destination.open("xb") as stream:
+                stream.write(forge_239_release_receipt.contents)
+            forge_239_receipt_destination.chmod(0o644)
         if sealed_release_trust is not None:
             trust_destination = resources / INSTALLER_RELEASE_TRUST_RESOURCE_NAME
             with trust_destination.open("xb") as stream:
@@ -806,6 +878,16 @@ def main() -> None:
             f"Contents/Resources/{_FORGE_RELEASE_RECEIPT_RESOURCE_NAME}"
         ),
     )
+    parser.add_argument(
+        "--forge-239-update-controller",
+        help=("exact published Forge 2.7.39 update script copied to "
+              f"Contents/Resources/{_FORGE_239_CONTROLLER_RESOURCE_NAME}"),
+    )
+    parser.add_argument(
+        "--forge-239-release-complete-receipt",
+        help=("exact public Forge 2.7.39 RELEASE_COMPLETE receipt copied to "
+              f"Contents/Resources/{_FORGE_239_RECEIPT_RESOURCE_NAME}"),
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--bundle-identifier", required=True)
     parser.add_argument(
@@ -861,6 +943,14 @@ def main() -> None:
             if args.forge_release_complete_receipt is not None
             else None
         )
+        forge_239_update_controller = (
+            _sealed_forge_239_controller_resource(args.forge_239_update_controller)
+            if args.forge_239_update_controller is not None else None
+        )
+        forge_239_release_receipt = (
+            _sealed_forge_239_receipt_resource(args.forge_239_release_complete_receipt)
+            if args.forge_239_release_complete_receipt is not None else None
+        )
         output = _output_bundle(args.output)
         bundle_identifier = _bundle_identifier(args.bundle_identifier)
         sealed_release_trust = (
@@ -887,6 +977,8 @@ def main() -> None:
             product_worker=product_worker,
             forge_update_controller=forge_update_controller,
             forge_release_receipt=forge_release_receipt,
+            forge_239_update_controller=forge_239_update_controller,
+            forge_239_release_receipt=forge_239_release_receipt,
             output=output,
             bundle_identifier=bundle_identifier,
             sealed_release_trust=sealed_release_trust,
@@ -902,6 +994,8 @@ def main() -> None:
             f" product_worker={'PACKAGED' if product_worker is not None else 'ABSENT_FAIL_CLOSED'}"
             f" forge_update_controller={'PACKAGED' if forge_update_controller is not None else 'ABSENT_FAIL_CLOSED'}"
             f" forge_release_receipt={'PACKAGED' if forge_release_receipt is not None else 'ABSENT_FAIL_CLOSED'}"
+            f" forge_239_update_controller={'PACKAGED' if forge_239_update_controller is not None else 'ABSENT_FAIL_CLOSED'}"
+            f" forge_239_release_receipt={'PACKAGED' if forge_239_release_receipt is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_release_trust={'PACKAGED_V2' if sealed_release_trust is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_release_provenance={'PACKAGED_V1' if sealed_release_provenance is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_composition_catalog_trust={'PACKAGED_V1' if sealed_composition_catalog_trust is not None else 'ABSENT_FAIL_CLOSED'}"

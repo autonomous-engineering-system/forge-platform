@@ -23,6 +23,11 @@ _WORKER_NAME = "forge-platform-product-worker.pyz"
 _CONTROLLER_NAME = "forge-update-controller.py"
 _RECEIPT_NAME = "forge-release-complete-2.7.38.json"
 _BUNDLE_IDENTIFIER = "com.autonomous-engineering-system.forge-platform-installer"
+_FORGE_239_CONTROLLER_NAME = "forge-update-controller-2.7.39.py"
+_FORGE_239_CONTROLLER_SOURCE = "ebc43dc12da27353f85c991a26da9852aa790f05"
+_FORGE_239_CONTROLLER_DIGEST = "sha256:84bac133849c539a2bfae662234be93c3cd6583e841cae34eb27f3b21728fb87"
+_FORGE_239_RECEIPT_NAME = "forge-release-complete-2.7.39.json"
+_FORGE_239_RECEIPT_DIGEST = "sha256:078a9f09f048cbd1fd36c4d5f83a5739dfeb3c3a546ba94bb1148596135ba15f"
 
 
 class ForgeUpdateResourceError(RuntimeError):
@@ -31,6 +36,12 @@ class ForgeUpdateResourceError(RuntimeError):
 
 @dataclass(frozen=True)
 class ForgeUpdateResources:
+    controller: Path
+    release_receipt: Path
+
+
+@dataclass(frozen=True)
+class Forge239UpdateResources:
     controller: Path
     release_receipt: Path
 
@@ -116,3 +127,44 @@ def read_forge_update_resources(worker: Path) -> ForgeUpdateResources:
     if "sha256:" + sha256(_read_stable(receipt, 64 * 1_024)).hexdigest() != _RELEASE_DIGEST:
         raise ForgeUpdateResourceError("Forge release receipt bytes changed")
     return ForgeUpdateResources(controller, receipt)
+
+
+def read_forge_239_update_resources(worker: Path) -> Forge239UpdateResources:
+    """Admit only the published 2.7.39 script and receipt in one signed app."""
+    if (
+        not isinstance(worker, Path)
+        or not worker.is_absolute()
+        or worker.name != _WORKER_NAME
+        or worker.parent.name != "Resources"
+        or worker.parent.parent.name != "Contents"
+        or worker.parent.parent.parent.suffix != ".app"
+    ):
+        raise ForgeUpdateResourceError("Forge 2.7.39 worker bundle layout is invalid")
+    resources = worker.parent
+    _read_stable(worker, 16 * 1_024 * 1_024)
+    try:
+        metadata = plistlib.loads(_read_stable(resources.parent / "Info.plist", 1 * 1_024 * 1_024))
+    except (ValueError, TypeError) as error:
+        raise ForgeUpdateResourceError("Forge 2.7.39 app metadata is invalid") from error
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("CFBundleIdentifier") != _BUNDLE_IDENTIFIER
+        or metadata.get("ForgePlatformForge239UpdateControllerSourceRevision")
+            != _FORGE_239_CONTROLLER_SOURCE
+        or metadata.get("ForgePlatformForge239UpdateControllerSHA256")
+            != _FORGE_239_CONTROLLER_DIGEST
+        or metadata.get("ForgePlatformForge239ReleaseSourceRevision")
+            != _FORGE_239_CONTROLLER_SOURCE
+        or metadata.get("ForgePlatformForge239ReleaseCompleteSHA256")
+            != _FORGE_239_RECEIPT_DIGEST
+    ):
+        raise ForgeUpdateResourceError("Forge 2.7.39 app metadata changed")
+    controller = resources / _FORGE_239_CONTROLLER_NAME
+    receipt = resources / _FORGE_239_RECEIPT_NAME
+    if "sha256:" + sha256(_read_stable(controller, 512 * 1_024)).hexdigest() \
+            != _FORGE_239_CONTROLLER_DIGEST:
+        raise ForgeUpdateResourceError("Forge 2.7.39 controller bytes changed")
+    if "sha256:" + sha256(_read_stable(receipt, 64 * 1_024)).hexdigest() \
+            != _FORGE_239_RECEIPT_DIGEST:
+        raise ForgeUpdateResourceError("Forge 2.7.39 receipt bytes changed")
+    return Forge239UpdateResources(controller, receipt)
