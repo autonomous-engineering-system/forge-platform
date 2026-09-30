@@ -713,6 +713,147 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         }
     }
 
+    func testEPProviderRegistrationDerivesProductInstanceAndRequiresFreshVerifiedTarget()
+        async throws {
+        let forgeProvider = try stagedProviderRequirement()
+        let requirement = ProviderRequirement(
+            provider: .codex, isRequired: true,
+            minimumVersion: forgeProvider.minimumVersion,
+            credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer,
+            targetIdentity: "deployment-a", runtime: forgeProvider.runtime
+        )
+        let fixture = try FreshRuntimeFixture(
+            providers: [requirement], components: ["engineering-platform-server"]
+        )
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: fixture.plan)
+        let observed = try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: [try .init(
+                id: requirement.id, state: .verified,
+                evidenceReference: "receipt:provider-observation-"
+                    + String(repeating: "a", count: 64)
+            )]
+        )
+        let request = try XCTUnwrap(ManagedInstallerEPProviderRegistrationRequest(
+            plan: fixture.plan, requirement: requirement, readback: observed
+        ))
+        XCTAssertEqual(request.epInstanceID,
+            ManagedInstallerProductServiceAccountPlanner.instanceID(
+                deploymentID: fixture.plan.deployment.id,
+                componentIdentity: "engineering-platform-server"
+            ))
+        XCTAssertEqual(request.stablePlanFingerprint,
+                       "sha256:" + fixture.plan.fingerprint)
+        XCTAssertEqual(request.physicalEvidenceReference,
+                       observed.targets[0].evidenceReference)
+        let expectedProduct = ManagedInstallerEPProviderRegistrationReceipt(
+            operationID: request.operationID,
+            stablePlanFingerprint: request.stablePlanFingerprint,
+            deploymentID: request.deploymentID,
+            epInstanceID: request.epInstanceID,
+            provider: request.provider,
+            providerTarget: "\(request.provider.rawValue):engineering-platform-server:\(request.epInstanceID)",
+            runtimeDigest: request.runtimeDigest,
+            productEvidenceReference: "ep-provider-readback:sha256:"
+                + String(repeating: "b", count: 64),
+            physicalEvidenceReference: request.physicalEvidenceReference
+        )
+        XCTAssertEqual(ManagedInstallerEPProviderRegistrationReceipt.decode(
+            expectedProduct.canonicalJSONData(), request: request
+        ), expectedProduct)
+        XCTAssertNil(ManagedInstallerEPProviderRegistrationReceipt.decode(
+            expectedProduct.canonicalJSONData() + Data([0x0A]), request: request
+        ))
+        let invocation = ManagedInstallerProductWorkerInvocation(
+            interpreterURL: URL(fileURLWithPath: "/fixed/python3"),
+            workerURL: URL(fileURLWithPath: "/fixed/worker.pyz"),
+            workerSHA256: "sha256:" + String(repeating: "d", count: 64),
+            expectedInterpreterOwner: 0, requireSingleInterpreterLink: true,
+            timeoutNanoseconds: 1
+        )
+        let productRunner = EPProviderWorkerRunner(
+            result: .success(expectedProduct.canonicalJSONData())
+        )
+        let bridge = ManagedInstallerEPProviderRegistrationWorker(
+            resolver: EPProviderWorkerResolver(result: .success(invocation)),
+            runner: productRunner
+        )
+        let bridged = await bridge.register(request)
+        let bridgeCalls = await productRunner.calls()
+        XCTAssertEqual(bridged, expectedProduct)
+        XCTAssertEqual(bridgeCalls, [request.canonicalJSONData()])
+        let blockedBridge = ManagedInstallerEPProviderRegistrationWorker(
+            resolver: EPProviderWorkerResolver(result: .failure(.unavailable)),
+            runner: productRunner
+        )
+        let blocked = await blockedBridge.register(request)
+        XCTAssertNil(blocked)
+        let corruptBridge = ManagedInstallerEPProviderRegistrationWorker(
+            resolver: EPProviderWorkerResolver(result: .success(invocation)),
+            runner: EPProviderWorkerRunner(result: .success(Data("{}".utf8)))
+        )
+        let corrupt = await corruptBridge.register(request)
+        XCTAssertNil(corrupt)
+        let worker = RecordingEPProviderRegistrationWorker()
+        let admitted = ManagedInstallerReviewedEPProviderRegistration(
+            loader: ProviderStagePlanLoader(plan: fixture.plan),
+            reader: ProviderAuthStatusReader(status: observed), worker: worker
+        )
+        let receipt = await admitted.register(
+            canonicalIntent: intent.canonicalJSONData(),
+            providerTargetID: requirement.id
+        )
+        XCTAssertNotNil(receipt)
+        let workerCalls = await worker.calls()
+        let workerRequest = await worker.request()
+        XCTAssertEqual(workerCalls, 1)
+        XCTAssertEqual(workerRequest, request)
+        let service = FileManagedInstallerReleasedRouteXPCService(
+            rootDirectory: URL(fileURLWithPath: "/private/tmp", isDirectory: true),
+            expectedOwner: geteuid(), epProviderRegistration: admitted
+        )
+        let xpcReceipt: Data? = await withCheckedContinuation { continuation in
+            service.registerReviewedEPProvider(
+                intent.canonicalJSONData(), providerTargetID: requirement.id.rawValue
+            ) { continuation.resume(returning: $0) }
+        }
+        XCTAssertNotNil(xpcReceipt)
+        let wrongXPC: Data? = await withCheckedContinuation { continuation in
+            service.registerReviewedEPProvider(
+                Data("{}".utf8), providerTargetID: requirement.id.rawValue
+            ) { continuation.resume(returning: $0) }
+        }
+        XCTAssertNil(wrongXPC)
+        let malformed = await admitted.register(
+            canonicalIntent: Data("{}".utf8), providerTargetID: requirement.id
+        )
+        XCTAssertNil(malformed)
+
+        let unverified = try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: [try .init(
+                id: requirement.id, state: .authenticationRequired,
+                evidenceReference: observed.targets[0].evidenceReference
+            )]
+        )
+        let deniedWorker = RecordingEPProviderRegistrationWorker()
+        let denied = ManagedInstallerReviewedEPProviderRegistration(
+            loader: ProviderStagePlanLoader(plan: fixture.plan),
+            reader: ProviderAuthStatusReader(status: unverified),
+            worker: deniedWorker
+        )
+        let deniedReceipt = await denied.register(
+            canonicalIntent: intent.canonicalJSONData(),
+            providerTargetID: requirement.id
+        )
+        let deniedCalls = await deniedWorker.calls()
+        XCTAssertNil(deniedReceipt)
+        XCTAssertEqual(deniedCalls, 0)
+    }
+
     func testFailedPreproviderOrProviderStopsNextBoundary() async throws {
         let fixture = try FreshRuntimeFixture()
         let events = FreshRuntimeEvents()
@@ -1595,6 +1736,59 @@ private actor ProviderAuthMutableStatusReader: ManagedInstallerStablePlanProvide
         _ = stablePlan
         return status
     }
+}
+
+private actor RecordingEPProviderRegistrationWorker:
+    ManagedInstallerEPProviderRegistrationExecuting {
+    private var received: ManagedInstallerEPProviderRegistrationRequest?
+    private var count = 0
+    func register(_ request: ManagedInstallerEPProviderRegistrationRequest) async
+        -> ManagedInstallerEPProviderRegistrationReceipt? {
+        received = request
+        count += 1
+        return ManagedInstallerEPProviderRegistrationReceipt(
+            operationID: request.operationID,
+            stablePlanFingerprint: request.stablePlanFingerprint,
+            deploymentID: request.deploymentID,
+            epInstanceID: request.epInstanceID,
+            provider: request.provider,
+            providerTarget: "\(request.provider.rawValue):engineering-platform-server:\(request.epInstanceID)",
+            runtimeDigest: request.runtimeDigest,
+            productEvidenceReference: "ep-provider-readback:sha256:"
+                + String(repeating: "b", count: 64),
+            physicalEvidenceReference: request.physicalEvidenceReference
+        )
+    }
+    func calls() -> Int { count }
+    func request() -> ManagedInstallerEPProviderRegistrationRequest? { received }
+}
+
+private struct EPProviderWorkerResolver:
+    ManagedInstallerProductWorkerInvocationResolving {
+    let result: Result<ManagedInstallerProductWorkerInvocation,
+                ManagedInstallerProductWorkerFailure>
+    func resolveProductWorkerInvocation() async
+        -> Result<ManagedInstallerProductWorkerInvocation,
+                  ManagedInstallerProductWorkerFailure> {
+        result
+    }
+}
+
+private actor EPProviderWorkerRunner: ManagedInstallerProductWorkerRunning {
+    let result: Result<Data, ManagedInstallerProductWorkerFailure>
+    private var requests: [Data] = []
+    init(result: Result<Data, ManagedInstallerProductWorkerFailure>) {
+        self.result = result
+    }
+    func runProductWorker(
+        _ invocation: ManagedInstallerProductWorkerInvocation,
+        canonicalRequest: Data
+    ) async -> Result<Data, ManagedInstallerProductWorkerFailure> {
+        _ = invocation
+        requests.append(canonicalRequest)
+        return result
+    }
+    func calls() -> [Data] { requests }
 }
 
 private actor ProviderAuthDriftingLoader: ManagedInstallerHelperOwnedStablePlanLoading {
