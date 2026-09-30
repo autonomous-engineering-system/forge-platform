@@ -725,6 +725,7 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
             if let existing = try readExisting(in: root) {
                 try Self.validateExisting(existing)
                 if existing == data {
+                    try prepareForgeRuntimeRoots(for: snapshot, in: root)
                     return .success(Self.receipt(for: data))
                 }
                 guard Self.receipt(for: existing).sha256 == expectedExistingSHA256 else {
@@ -733,6 +734,7 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
             } else if expectedExistingSHA256 != nil {
                 throw ManagedInstallerProductWorkerAuthorityPublicationFailure.staleAuthority
             }
+            try prepareForgeRuntimeRoots(for: snapshot, in: root)
             try replace(data, in: root)
             guard try readExisting(in: root) == data else {
                 throw ManagedInstallerProductWorkerAuthorityPublicationFailure.unavailable
@@ -753,6 +755,46 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
             sha256: "sha256:" + digest,
             byteCount: data.count
         )
+    }
+
+    /// Only canonical, unique route identities select runtime directories. The
+    /// helper owns these paths; no XPC caller supplies a filesystem location.
+    private func prepareForgeRuntimeRoots(
+        for snapshot: ManagedInstallerProductWorkerAuthoritySnapshot, in root: Int32
+    ) throws {
+        let ids = snapshot.routes.map(\.forgeInstanceID) + snapshot.singleRoutes.compactMap {
+            $0.componentIdentity == "forge-runtime" ? $0.instanceID : nil
+        }
+        guard Set(ids).count == ids.count,
+              ids.allSatisfy(ManagedInstallerProductWorkerRouteAuthority.isSafeIdentity)
+        else { throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority }
+        if ids.isEmpty { return }
+        let products = try privateChild("products", in: root)
+        defer { _ = Darwin.close(products) }
+        let forge = try privateChild("forge", in: products)
+        defer { _ = Darwin.close(forge) }
+        for id in ids {
+            let instance = try privateChild(id, in: forge)
+            _ = Darwin.close(instance)
+        }
+    }
+
+    private func privateChild(_ name: String, in parent: Int32) throws -> Int32 {
+        let created = name.withCString { Darwin.mkdirat(parent, $0, mode_t(0o700)) }
+        guard created == 0 || errno == EEXIST else {
+            throw ManagedInstallerProductWorkerAuthorityPublicationFailure.unavailable
+        }
+        let descriptor = name.withCString {
+            Darwin.openat(parent, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        var details = stat()
+        guard descriptor >= 0, Darwin.fstat(descriptor, &details) == 0,
+              Self.isDirectory(details, owner: expectedOwner),
+              (created != 0 || Darwin.fsync(parent) == 0) else {
+            if descriptor >= 0 { _ = Darwin.close(descriptor) }
+            throw ManagedInstallerProductWorkerAuthorityPublicationFailure.unavailable
+        }
+        return descriptor
     }
 
     private static func validateExisting(_ data: Data) throws {
