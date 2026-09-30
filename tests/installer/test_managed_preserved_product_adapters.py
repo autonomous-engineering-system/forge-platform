@@ -88,6 +88,65 @@ def _ep_evidence(operation, operation_id, instance_id, preserve_operation_id="pr
 
 
 class ManagedPreservedProductAdapterTests(unittest.TestCase):
+    def test_preserve_recovery_requires_fresh_exact_product_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            target = self._forge_target(root)
+            artifact = _artifact(FORGE_COMPONENT)
+            request = {
+                "operation_id": "preserve-a", "instance_id": "forge-a",
+                "runtime_id": "forge-a", "installation_id": "install-a",
+                "installed_version": artifact.version,
+                "installed_source": artifact.source_revision,
+                "installed_artifact_digest": artifact.digest,
+                "data_root": str(target.data_root),
+                "instances_root": str(target.instances_root),
+            }
+            receipt, status = _forge_evidence(
+                "PRESERVE", "preserve-a", "forge-a", "install-a",
+                _forge_product_digest(request),
+            )
+            runner = FakeRunner(ForgeCommandResult, (
+                (0, _wire(status)),
+                (0, _wire(status | {"request_digest": "sha256:" + "0" * 64})),
+                (1, ""),
+            ))
+            adapter = ForgePreservedProductAdapter(
+                lifecycle_executable=root / "forge", target=target,
+                installation_id="install-a", artifact=artifact, runner=runner,
+            )
+            adapter.require_terminal_preserve_status(
+                operation_id="preserve-a", receipt_digest=receipt["receipt_digest"],
+            )
+            with self.assertRaises(ManagedPreservedProductAdapterError):
+                adapter.require_terminal_preserve_status(
+                    operation_id="preserve-a", receipt_digest=receipt["receipt_digest"],
+                )
+            with self.assertRaises(ManagedPreservedProductAdapterError):
+                adapter.require_terminal_preserve_status(
+                    operation_id="preserve-a", receipt_digest=receipt["receipt_digest"],
+                )
+            self.assertTrue(all(call[1:3] == ("server", "lifecycle-status") for call in runner.calls))
+
+            ep_receipt, ep_status = _ep_evidence("PRESERVE", "preserve-ep", "ep-a")
+            ep_runner = FakeRunner(ProductCommandResult, (
+                (0, _wire(ep_status)),
+                (0, _wire(ep_status | {"instance_id": "ep-b"})),
+            ))
+            ep = EPPreservedProductAdapter(
+                provisioner_executable=root / "ep", product_root=root / "ep-root",
+                target=EPSystemInstanceTarget("ep-a", "EP A", "_ep", 8766),
+                artifact=_artifact(EP_COMPONENT), staged_wheel=root / "ep.whl",
+                launch_daemons_directory=root / "daemons", runner=ep_runner,
+            )
+            ep.require_terminal_preserve_status(
+                operation_id="preserve-ep", receipt_digest=ep_receipt["receipt_sha256"],
+            )
+            with self.assertRaises(ManagedPreservedProductAdapterError):
+                ep.require_terminal_preserve_status(
+                    operation_id="preserve-ep", receipt_digest=ep_receipt["receipt_sha256"],
+                )
+
     def _state(self, root, *, preserved=False):
         manifest, active, preserved_record = _fixture()
         registry = ManagedDeploymentRegistry(root / "registry")

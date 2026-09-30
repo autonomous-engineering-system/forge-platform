@@ -141,6 +141,48 @@ class ForgePreservedProductAdapter:
         self.artifact = artifact
         self.runner = runner or SubprocessForgeCommandRunner()
 
+    def require_terminal_preserve_status(
+        self, *, operation_id: str, receipt_digest: str,
+    ) -> None:
+        """Independently read the exact preserved product state for recovery."""
+        if (
+            not isinstance(operation_id, str) or _ID.fullmatch(operation_id) is None
+            or not isinstance(receipt_digest, str)
+            or _DIGEST.fullmatch(receipt_digest) is None
+        ):
+            raise ManagedPreservedProductAdapterError("Forge preserve selector changed")
+        request = {
+            "operation_id": operation_id,
+            "instance_id": self.target.instance_id,
+            "runtime_id": self.target.instance_id,
+            "installation_id": self.installation_id,
+            "installed_version": self.artifact.version,
+            "installed_source": self.artifact.source_revision,
+            "installed_artifact_digest": self.artifact.digest,
+            "data_root": str(self.target.data_root),
+            "instances_root": str(self.target.instances_root),
+        }
+        observed = self.runner.run((
+            str(self.lifecycle_executable), "server", "lifecycle-status",
+            "--operation-id", operation_id,
+            "--instances-root", str(self.target.instances_root),
+            "--instance-id", self.target.instance_id,
+        ))
+        status = _product_json(observed.returncode, observed.stdout)
+        if (
+            status.get("contract") != FORGE_CONTRACT
+            or status.get("operation") != "PRESERVE"
+            or status.get("operation_id") != operation_id
+            or status.get("instance_id") != self.target.instance_id
+            or status.get("phase") != "COMPLETE"
+            or status.get("state") != "COMPLETE"
+            or status.get("lifecycle_state") != "UNINSTALLED_DATA_PRESERVED"
+            or status.get("restorable") is not True
+            or status.get("request_digest") != _forge_product_digest(request)
+            or status.get("receipt_digest") != receipt_digest
+        ):
+            raise ManagedPreservedProductAdapterError("Forge preserve terminal status changed")
+
     def require_terminal_purge_status(
         self, review: ManagedPreservedLifecycleReview, *, receipt_digest: str,
     ) -> None:
@@ -280,6 +322,37 @@ class EPPreservedProductAdapter:
         self.staged_wheel = staged_wheel
         self.launch_daemons_directory = launch_daemons_directory
         self.runner = runner or SubprocessProductCommandRunner()
+
+    def require_terminal_preserve_status(
+        self, *, operation_id: str, receipt_digest: str,
+    ) -> None:
+        """Independently read EP's exact preserved state for recovery."""
+        if (
+            not isinstance(operation_id, str) or _ID.fullmatch(operation_id) is None
+            or not isinstance(receipt_digest, str)
+            or _DIGEST.fullmatch(receipt_digest) is None
+        ):
+            raise ManagedPreservedProductAdapterError("EP preserve selector changed")
+        observed = self.runner.run((
+            str(self.provisioner_executable), "lifecycle-status",
+            "--product-root", str(self.product_root),
+            "--launch-daemons-dir", str(self.launch_daemons_directory),
+            "--instance-id", self.target.instance_id,
+            "--operation-id", operation_id,
+        ))
+        status = _product_json(observed.returncode, observed.stdout)
+        if (
+            status.get("contract") != EP_CONTRACT
+            or status.get("operation") != "PRESERVE"
+            or status.get("operation_id") != operation_id
+            or status.get("instance_id") != self.target.instance_id
+            or status.get("phase") != "COMPLETE"
+            or status.get("state") != "COMPLETE"
+            or status.get("lifecycle_state") != "UNINSTALLED_DATA_PRESERVED"
+            or status.get("restorable") is not True
+            or status.get("receipt_sha256") != receipt_digest
+        ):
+            raise ManagedPreservedProductAdapterError("EP preserve terminal status changed")
 
     def require_terminal_purge_status(
         self, review: ManagedPreservedLifecycleReview, *, receipt_digest: str,

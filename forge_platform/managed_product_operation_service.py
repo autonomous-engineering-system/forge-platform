@@ -464,6 +464,11 @@ class ManagedProductOperationHelperService:
                 manifest_digest=manifest.manifest_digest,
                 expected_owner_uid=self.preserved_dispatcher.expected_owner_uid,
             )
+            self.preserved_dispatcher.require_terminal_preserve(
+                request.intent, installed_manifest=manifest,
+                receipt_digest=record.receipt_digest,
+                review_fingerprint=record.review_fingerprint,
+            )
             response = encode_native_preserve_recovery_receipt(request, record)
             if decode_native_preserve_recovery_receipt(response, request=request) != record:
                 raise ValueError("terminal preserve recovery response changed")

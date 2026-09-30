@@ -27,6 +27,7 @@ from .managed_preserve_execution import (
     ManagedPurgeExecutionCoordinator, read_terminal_preserve_evidence,
 )
 from .managed_preserved_lifecycle_request import NativePreservedLifecycleRequest
+from .managed_preserved_lifecycle_proposal import NativePreservedLifecycleReviewIntent
 from .managed_preserved_lifecycle_plan import (
     ManagedPreservedLifecycleReview, prepare_preserved_lifecycle_review,
     require_current_preserved_lifecycle_review,
@@ -99,6 +100,134 @@ class ManagedPreservedLifecycleDispatcher:
                 scope_claims=scopes, expected_owner_uid=expected_owner_uid,
             ) if scopes else None
         )
+
+    def require_terminal_preserve(
+        self, intent: NativePreservedLifecycleReviewIntent, *,
+        installed_manifest: CompositionManifest, receipt_digest: str,
+        review_fingerprint: str,
+    ) -> None:
+        """Require the sealed product to still report the exact PRESERVE."""
+        if (
+            not isinstance(intent, NativePreservedLifecycleReviewIntent)
+            or intent.operation != "PRESERVE"
+            or not isinstance(installed_manifest, CompositionManifest)
+            or (intent.installed_composition_identity,
+                intent.installed_manifest_sha256) !=
+                (installed_manifest.composition_id, installed_manifest.manifest_digest)
+        ):
+            raise ManagedPreservedLifecycleDispatchError("preserve recovery release changed")
+        config = self.configurations.get(intent.deployment_id)
+        current = self.registry.load(intent.deployment_id)
+        artifacts = {
+            item.identity: item.artifact for item in installed_manifest.components
+        }
+        if (
+            config is None or current is None
+            or current.active_by_component.get(intent.component) is not None
+            or current.preserved_by_component.get(intent.component) is None
+            or current.preserved_by_component[intent.component].instance_id
+                != intent.instance_id
+            or current.preserved_by_component[intent.component].preserve_operation_id
+                != intent.operation_id
+            or current.preserved_by_component[intent.component].preserve_receipt_digest
+                != receipt_digest
+        ):
+            raise ManagedPreservedLifecycleDispatchError("preserve recovery inventory changed")
+        historical_peer = getattr(current, "historical_peer_binding", None)
+        if historical_peer is not None:
+            if (
+                intent.component != FORGE_COMPONENT
+                or not isinstance(config, ReleasedManagedProductRouteConfiguration)
+                or self.pairing_revocation is None
+                or current.peer_binding is not None
+                or set(current.active_by_component) != {EP_COMPONENT}
+                or current.active_by_component[EP_COMPONENT].instance_id
+                    != config.engineering_platform_target.instance_id
+                or artifacts.get(EP_COMPONENT)
+                    != config.engineering_platform_installed_artifact
+                or historical_peer.forge_instance_id != intent.instance_id
+                or historical_peer.ep_instance_id
+                    != config.engineering_platform_target.instance_id
+                or self.pairing_revocation.scope_claims.get(intent.deployment_id)
+                    != EPConsumerScope(
+                        config.pairing_binding.consumer_id,
+                        config.pairing_binding.project_id,
+                    )
+            ):
+                raise ManagedPreservedLifecycleDispatchError("paired preserve scope changed")
+            ep_adapter = EngineeringPlatformSystemProvisionerAdapter(
+                provisioner_executable=config.engineering_platform_provisioner,
+                product_root=config.engineering_platform_product_root,
+                target=config.engineering_platform_target,
+                staged_artifacts=config.staged_artifacts,
+            )
+            revoker = EPConsumerRevocationAdapter(
+                provisioner=ep_adapter,
+                scope=self.pairing_revocation.scope_claims[intent.deployment_id],
+                expected_artifact=config.engineering_platform_installed_artifact,
+                expected_owner_uid=self.expected_owner_uid,
+            )
+            matches = 0
+            for original in prior_paired_forge_candidates(current):
+                review = prepare_preserved_lifecycle_review(
+                    current=original, installed_manifest=installed_manifest,
+                    operation="PRESERVE", operation_id=intent.operation_id,
+                    component=FORGE_COMPONENT, instance_id=intent.instance_id,
+                )
+                if review.review_fingerprint != review_fingerprint:
+                    continue
+                try:
+                    self.pairing_revocation.read_terminal(
+                        operation_id=intent.operation_id,
+                        deployment_id=intent.deployment_id,
+                        reviewed_deployment_fingerprint=review.registry_fingerprint,
+                        forge_instance_id=intent.instance_id,
+                        ep_instance_id=historical_peer.ep_instance_id,
+                        revoker=revoker,
+                    )
+                except ManagedPairingRevocationError:
+                    continue
+                matches += 1
+            if matches != 1:
+                raise ManagedPreservedLifecycleDispatchError("paired preserve lost EP revocation")
+        if isinstance(config, ReleasedManagedSingleProductRouteConfiguration):
+            if config.component_identity != intent.component:
+                raise ManagedPreservedLifecycleDispatchError("single preserve route changed")
+            target = config.target
+            artifact = config.installed_artifact
+            executable = config.forge_lifecycle_executable if intent.component == FORGE_COMPONENT else config.executable
+        else:
+            target = config.forge_target if intent.component == FORGE_COMPONENT else config.engineering_platform_target
+            artifact = config.forge_installed_artifact if intent.component == FORGE_COMPONENT else config.engineering_platform_installed_artifact
+            executable = config.forge_lifecycle_executable if intent.component == FORGE_COMPONENT else config.engineering_platform_provisioner
+        if (
+            target.instance_id != intent.instance_id
+            or artifact != artifacts.get(intent.component)
+            or executable is None
+        ):
+            raise ManagedPreservedLifecycleDispatchError("preserve recovery product route changed")
+        if intent.component == FORGE_COMPONENT:
+            binding = config.forge_uninstall_binding
+            if binding is None or binding.runtime_id != intent.instance_id:
+                raise ManagedPreservedLifecycleDispatchError("Forge preserve binding changed")
+            ForgePreservedProductAdapter(
+                lifecycle_executable=executable, target=target,
+                installation_id=binding.installation_id, artifact=artifact,
+            ).require_terminal_preserve_status(
+                operation_id=intent.operation_id, receipt_digest=receipt_digest,
+            )
+        else:
+            wheel = config.staged_artifacts.get(artifact.digest)
+            if wheel is None or config.engineering_platform_product_root is None:
+                raise ManagedPreservedLifecycleDispatchError("EP preserve binding changed")
+            EPPreservedProductAdapter(
+                provisioner_executable=executable,
+                product_root=config.engineering_platform_product_root,
+                target=target, artifact=artifact, staged_wheel=wheel,
+                launch_daemons_directory=config.launch_daemons_directory,
+            ).require_terminal_preserve_status(
+                operation_id=intent.operation_id, receipt_digest=receipt_digest,
+            )
 
     def _paired_revocation_after_purge(
         self, review: ManagedPreservedLifecycleReview, current: ManagedDeployment,
