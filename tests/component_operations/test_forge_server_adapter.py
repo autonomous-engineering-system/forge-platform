@@ -303,6 +303,49 @@ class Probe:
 
 
 class ForgeServerAdapterTests(unittest.TestCase):
+    def test_exact_239_peer_replacement_requires_product_generation_guards(self) -> None:
+        current = QualifiedArtifact(
+            "2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
+            ARTIFACT.source,
+            "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+            ARTIFACT.qualification,
+        )
+        self.adapter.installed_artifact = current
+        arguments = {
+            "binding_id": "binding-new", "endpoint": "http://127.0.0.1:8766",
+            "expected_instance_id": "ep-instance-1", "consumer_id": "consumer-new",
+            "host_id": "host-1", "project_id": "project-1",
+            "repository_id": "repository-1", "repository_identity": "owner/repo",
+            "credential_reference": "keychain://forge/ep-new",
+            "operator_id": "operator-1",
+        }
+        self.adapter.configure_ep_peer(**arguments)
+        self.assertNotIn("--replace", self.runner.calls[-1])
+        digest = "sha256:" + "a" * 64
+        self.adapter.configure_ep_peer(
+            **arguments, expected_revision=3, expected_digest=digest,
+        )
+        call = self.runner.calls[-1]
+        self.assertEqual(call[call.index("--expected-revision") + 1], "3")
+        self.assertEqual(call[call.index("--expected-digest") + 1], digest)
+        self.assertIn("--replace", call)
+        count = len(self.runner.calls)
+        for guards in (
+            {"expected_revision": 3},
+            {"expected_digest": digest},
+            {"expected_revision": True, "expected_digest": digest},
+            {"expected_revision": 0, "expected_digest": digest},
+            {"expected_revision": 3, "expected_digest": "sha256:wrong"},
+        ):
+            with self.assertRaisesRegex(ForgeServerAdapterError, "replacement authority"):
+                self.adapter.configure_ep_peer(**arguments, **guards)
+        self.assertEqual(len(self.runner.calls), count)
+        self.adapter.installed_artifact = ARTIFACT
+        with self.assertRaisesRegex(ForgeServerAdapterError, "replacement authority"):
+            self.adapter.configure_ep_peer(
+                **arguments, expected_revision=3, expected_digest=digest,
+            )
+
     def test_exact_239_peer_detach_uses_product_receipt_and_independent_status(self) -> None:
         current = QualifiedArtifact(
             "2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
