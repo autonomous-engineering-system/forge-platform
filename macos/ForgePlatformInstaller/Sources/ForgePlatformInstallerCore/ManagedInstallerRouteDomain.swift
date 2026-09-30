@@ -136,6 +136,10 @@ public protocol ManagedDeploymentRouteCoordinating: Sendable {
     func readReviewedProviders(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedInstallerProviderReadbackResult
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse?
 }
 
 public extension ManagedDeploymentRouteCoordinating {
@@ -151,6 +155,15 @@ public extension ManagedDeploymentRouteCoordinating {
     ) async -> ManagedInstallerProviderReadbackResult {
         _ = operation
         return .unavailable(.coordinatorUnavailable)
+    }
+
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        _ = operation
+        _ = providerTargetID
+        return nil
     }
 }
 

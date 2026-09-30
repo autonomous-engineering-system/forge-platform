@@ -579,6 +579,8 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     private let execution: (any ManagedInstallerHelperReviewedIntentExecuting)?
     private let providerStaging: (any ManagedInstallerHelperReviewedProviderStaging)?
     private let providerReadback: (any ManagedInstallerHelperReviewedProviderReading)?
+    private let providerAuthentication:
+        (any ManagedInstallerReviewedProviderAuthenticationStarting)?
     private let freshSnapshotProducer: (any ManagedInstallerReleasedRouteFreshSnapshotProducing)?
     private let requiresFreshSnapshotPublication: Bool
 
@@ -607,7 +609,10 @@ public final class FileManagedInstallerReleasedRouteXPCService:
             providerReadback: ManagedInstallerReviewedProviderReadbackAdmission.whenReady(
                 loader: registration,
                 reader: ManagedInstallerHelperFreshProviderReader.production()
-            )
+            ),
+            providerAuthentication: registration.flatMap {
+                ManagedInstallerReviewedProviderAuthenticationStart.production(loader: $0)
+            }
         )
     }
 
@@ -621,7 +626,9 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         requiresFreshSnapshotPublication: Bool = false,
         execution: (any ManagedInstallerHelperReviewedIntentExecuting)? = nil,
         providerStaging: (any ManagedInstallerHelperReviewedProviderStaging)? = nil,
-        providerReadback: (any ManagedInstallerHelperReviewedProviderReading)? = nil
+        providerReadback: (any ManagedInstallerHelperReviewedProviderReading)? = nil,
+        providerAuthentication:
+            (any ManagedInstallerReviewedProviderAuthenticationStarting)? = nil
     ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
@@ -633,6 +640,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         self.execution = execution
         self.providerStaging = providerStaging
         self.providerReadback = providerReadback
+        self.providerAuthentication = providerAuthentication
         super.init()
     }
 
@@ -748,6 +756,29 @@ public final class FileManagedInstallerReleasedRouteXPCService:
                   receipt.operationID == intent.operationID,
                   receipt.stablePlanFingerprint == intent.stablePlanFingerprint
             else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
+    }
+
+    public func beginReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let providerAuthentication,
+              let targetID = ProviderTargetID(rawValue: providerTargetID),
+              let intent = try? ManagedInstallerReviewedExecutionIntent
+                .decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            guard let bytes = await providerAuthentication.begin(
+                canonicalIntent: canonicalIntent, providerTargetID: targetID
+            ), ManagedInstallerProviderAuthenticationChallengeResponse.decodeJSON(
+                bytes, intent: intent, targetID: targetID
+            ) != nil else { gate.complete(nil); return }
             gate.complete(bytes)
         }
     }
@@ -924,6 +955,13 @@ public protocol ManagedInstallerReviewedProviderReadbackIntentSending: Sendable 
     ) async throws -> ManagedInstallerReviewedProviderReadback
 }
 
+public protocol ManagedInstallerReviewedProviderAuthenticationIntentSending: Sendable {
+    func beginReviewedProviderAuthentication(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerProviderAuthenticationChallengeResponse
+}
+
 public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
     func registerReviewedSelection(
         _ selection: ManagedInstallerReviewedSelection
@@ -952,6 +990,10 @@ public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     )
+    func beginReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    )
     func registerReviewedSelection(
         _ canonicalSelection: Data,
         withReply reply: @escaping (Data?) -> Void
@@ -963,6 +1005,7 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     ManagedInstallerReviewedExecutionIntentSending,
     ManagedInstallerReviewedProviderStageIntentSending,
     ManagedInstallerReviewedProviderReadbackIntentSending,
+    ManagedInstallerReviewedProviderAuthenticationIntentSending,
     ManagedInstallerReviewedSelectionRegistering,
     ManagedInstallerPreservedRegistryReading {
     public static let machServiceName =
@@ -1070,6 +1113,24 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
             throw ManagedInstallerReleasedRouteXPCFailure.rejected
         }
         return receipt
+    }
+
+    public func beginReviewedProviderAuthentication(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerProviderAuthenticationChallengeResponse {
+        let data = try await call { service, reply in
+            service.beginReviewedProviderAuthentication(
+                intent.canonicalJSONData(),
+                providerTargetID: providerTargetID.rawValue,
+                withReply: reply
+            )
+        }
+        guard let response = ManagedInstallerProviderAuthenticationChallengeResponse
+            .decodeJSON(data, intent: intent, targetID: providerTargetID) else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+        return response
     }
 
     public func registerReviewedSelection(
@@ -1256,6 +1317,15 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
             else { gate.complete(nil); return }
             gate.complete(bytes)
         }
+    }
+
+    public func beginReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        _ = canonicalIntent
+        _ = providerTargetID
+        reply(nil)
     }
 
     public func registerReviewedSelection(

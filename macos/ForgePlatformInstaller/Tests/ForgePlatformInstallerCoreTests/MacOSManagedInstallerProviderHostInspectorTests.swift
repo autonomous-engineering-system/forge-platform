@@ -194,7 +194,8 @@ final class MacOSManagedInstallerProviderHostInspectorTests: XCTestCase {
     func testFreshEPProbeBindsFullAccountReadbackAndServiceOwnedHome()
         async throws {
         let fixture = try ProviderInspectionFixture(
-            provider: .githubCLI, epProductLayout: true, freshEPProduct: true
+            provider: .githubCLI, epProductLayout: true, freshEPProduct: true,
+            freshDeployment: true
         )
         let instance = ManagedInstallerProductServiceAccountPlanner.instanceID(
             deploymentID: fixture.request.deploymentID,
@@ -241,6 +242,41 @@ final class MacOSManagedInstallerProviderHostInspectorTests: XCTestCase {
                 name: claim.accountName, uid: account.uid, gid: account.gid
             ),
         ])
+        let authenticationRunner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 1, standardOutput: nil)),
+        ])
+        let authenticationInspector = MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshClaim: claim,
+            accountReader: StaticFreshProviderAccountReader(account: account),
+            runner: authenticationRunner
+        )
+        let prepared = await authenticationInspector.prepareFreshAuthentication(
+            fixture.requirement, stablePlan: fixture.stablePlan
+        )
+        XCTAssertEqual(prepared?.provider, .githubCLI)
+        XCTAssertEqual(prepared?.account.name, claim.accountName)
+        XCTAssertEqual(prepared?.executableURL.resolvingSymlinksInPath(),
+                       fixture.executable.resolvingSymlinksInPath())
+        XCTAssertEqual(prepared?.providerHomeURL.resolvingSymlinksInPath(),
+                       fixture.home.resolvingSymlinksInPath())
+        XCTAssertTrue(prepared?.priorEvidenceReference.hasPrefix(
+            "receipt:provider-observation-"
+        ) == true)
+        let verifiedRunner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("gh version 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 0, standardOutput: nil)),
+        ])
+        let verifiedTarget = await MacOSManagedInstallerProviderHostInspector(
+            epProductRoot: fixture.root, freshClaim: claim,
+            accountReader: StaticFreshProviderAccountReader(account: account),
+            runner: verifiedRunner
+        ).prepareFreshAuthentication(
+            fixture.requirement, stablePlan: fixture.stablePlan
+        )
+        XCTAssertNil(verifiedTarget)
         let foreign = MacOSManagedInstallerProviderHostInspector(
             epProductRoot: fixture.root, freshClaim: claim,
             accountReader: StaticFreshProviderAccountReader(account: nil),
@@ -687,7 +723,10 @@ private struct ProviderInspectionFixture {
             providerRequirements: [requirement],
             managedTools: [git],
             overrideDeployment: freshDeployment
-                ? ManagedDeploymentTarget(id: "ep-one", exists: false) : nil
+                ? ManagedDeploymentTarget(
+                    id: freshEPProduct ? "activation-deployment" : "ep-one",
+                    exists: false
+                ) : nil
         )
         let activationRequest = try activation.request(initial: activation.missingReadback())
         stablePlan = try managedInstallerTestStablePlan(

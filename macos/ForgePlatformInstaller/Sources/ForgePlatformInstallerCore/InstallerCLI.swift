@@ -65,25 +65,34 @@ public enum InstallerCLIExitCode: Int32, Equatable, Sendable {
     case executionFailed = 60
 }
 
-public struct InstallerCLIResult: Equatable, Sendable {
+public struct InstallerCLIResult: Equatable, Sendable,
+    CustomStringConvertible, CustomDebugStringConvertible {
     public let exitCode: InstallerCLIExitCode
     public let status: String
     public let message: String
     public let details: [String: String]
     public let records: [[String: String]]
+    public let authenticationChallenge:
+        ManagedInstallerProviderAuthenticationChallengeResponse?
+
+    public var description: String { "<installer CLI result: \(status)>" }
+    public var debugDescription: String { description }
 
     public init(
         exitCode: InstallerCLIExitCode,
         status: String,
         message: String,
         details: [String: String] = [:],
-        records: [[String: String]] = []
+        records: [[String: String]] = [],
+        authenticationChallenge:
+            ManagedInstallerProviderAuthenticationChallengeResponse? = nil
     ) {
         self.exitCode = exitCode
         self.status = status
         self.message = message
         self.details = details
         self.records = records
+        self.authenticationChallenge = authenticationChallenge
     }
 }
 
@@ -872,6 +881,29 @@ public struct InstallerCLIWorkflow: Sendable {
                         return Self.blocked("De helper kon de exacte providerstatus niet onafhankelijk teruglezen.")
                     }
                     if !readback.allVerified {
+                        let challenge: ManagedInstallerProviderAuthenticationChallengeResponse?
+                        if !options.nonInteractive, !options.json,
+                           let target = readback.targets.first(where: {
+                               $0.state == .authenticationRequired
+                           }) {
+                            guard state.beginPreMutationCurrencyCheck() else {
+                                return Self.blocked("De installercontrole kon niet opnieuw starten.")
+                            }
+                            let current = await coordinator.recheckInstallerBeforeMutation(
+                                currentVersion: state.currentInstallerVersion
+                            )
+                            guard state.recordPreMutationCurrencyCheck(current),
+                                  state.reviewedProviderStageOperation() == operation else {
+                                return Self.blocked(
+                                    "De installer of het beoordeelde providertarget is gewijzigd."
+                                )
+                            }
+                            challenge = await coordinator.beginReviewedProviderAuthentication(
+                                operation, providerTargetID: target.id
+                            )
+                        } else {
+                            challenge = nil
+                        }
                         return InstallerCLIResult(
                             exitCode: .interactionRequired,
                             status: "provider-authentication-required",
@@ -886,7 +918,8 @@ public struct InstallerCLIWorkflow: Sendable {
                                 "provider_target": $0.id.rawValue,
                                 "state": $0.state.rawValue,
                                 "evidence_reference": $0.evidenceReference,
-                            ] }
+                            ] },
+                            authenticationChallenge: challenge
                         )
                     }
                     guard state.beginPreMutationCurrencyCheck() else {

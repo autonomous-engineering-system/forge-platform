@@ -105,3 +105,56 @@ struct ManagedInstallerProviderDeviceChallenge: Equatable, Sendable,
                     userCode: String(suffix[range]))
     }
 }
+
+/// XPC-only, ephemeral handoff to the reviewed GUI/CLI flow. Neither this
+/// value nor its encoded bytes may enter a journal, receipt or diagnostic.
+public struct ManagedInstallerProviderAuthenticationChallengeResponse:
+    Codable, Equatable, Sendable, CustomStringConvertible,
+    CustomDebugStringConvertible {
+    public let operationID: String
+    public let stablePlanFingerprint: String
+    public let providerTargetID: String
+    public let provider: ProviderID
+    public let verificationURL: URL
+    public let userCode: String
+
+    public var description: String { "<provider authentication challenge: redacted>" }
+    public var debugDescription: String { description }
+
+    init(intent: ManagedInstallerReviewedExecutionIntent,
+         targetID: ProviderTargetID,
+         challenge: ManagedInstallerProviderDeviceChallenge) {
+        operationID = intent.operationID
+        stablePlanFingerprint = intent.stablePlanFingerprint
+        providerTargetID = targetID.rawValue
+        provider = challenge.provider
+        verificationURL = challenge.verificationURL
+        userCode = challenge.userCode
+    }
+
+    func canonicalJSONData() -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try? encoder.encode(self)
+    }
+
+    public static func decodeJSON(
+        _ data: Data, intent: ManagedInstallerReviewedExecutionIntent,
+        targetID: ProviderTargetID
+    ) -> Self? {
+        guard data.count <= 1_024,
+              let value = try? JSONDecoder().decode(Self.self, from: data),
+              value.canonicalJSONData() == data,
+              value.operationID == intent.operationID,
+              value.stablePlanFingerprint == intent.stablePlanFingerprint,
+              value.providerTargetID == targetID.rawValue,
+              value.userCode.range(of: "^[A-Z0-9]{4}-[A-Z0-9]{4}$",
+                                   options: .regularExpression) != nil,
+              value.verificationURL.absoluteString == (
+                  value.provider == .codex
+                    ? "https://auth.openai.com/codex/device"
+                    : "https://github.com/login/device"
+              ) else { return nil }
+        return value
+    }
+}

@@ -286,4 +286,31 @@ public actor ManagedInstallerReleasedRouteCoordinator:
             return .unavailable(.staleSession)
         }
     }
+
+    public func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        guard let reviewed = reviewedPlan,
+              reviewed.reviewedOperation == operation,
+              reviewed.enabledProviderRequirements.contains(where: {
+                  $0.id == providerTargetID && $0.credentialScope == .component
+              }),
+              let sender = loader as?
+                any ManagedInstallerReviewedProviderAuthenticationIntentSending
+        else { return nil }
+        switch await prepareStablePlan(for: operation) {
+        case .prepared(let refreshed) where refreshed == reviewed
+            && reviewedPlan == reviewed:
+            guard let intent = try? ManagedInstallerReviewedExecutionIntent(
+                stablePlan: reviewed
+            ), let response = try? await sender.beginReviewedProviderAuthentication(
+                intent, providerTargetID: providerTargetID
+            ), response.operationID == intent.operationID,
+              response.stablePlanFingerprint == intent.stablePlanFingerprint,
+              response.providerTargetID == providerTargetID.rawValue else { return nil }
+            return response
+        case .prepared, .unavailable: return nil
+        }
+    }
 }

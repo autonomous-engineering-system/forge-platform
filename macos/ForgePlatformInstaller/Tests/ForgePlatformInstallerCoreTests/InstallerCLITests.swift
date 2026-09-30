@@ -444,6 +444,8 @@ final class InstallerCLITests: XCTestCase {
         let readCalls1 = await coordinator.providerReadCount()
         XCTAssertEqual(stageCalls1, 1)
         XCTAssertEqual(readCalls1, 1)
+        let noninteractiveCalls = await coordinator.calls()
+        XCTAssertFalse(noninteractiveCalls.contains("provider-authentication"))
         XCTAssertEqual(result.details["provider_targets"], provider.id.rawValue)
         let executionCalls3 = await coordinator.executionCallCount()
         XCTAssertEqual(executionCalls3, 0)
@@ -474,6 +476,8 @@ final class InstallerCLITests: XCTestCase {
         let executionCalls2 = await coordinator.executionCallCount()
         XCTAssertEqual(stageCalls2, 1)
         XCTAssertEqual(executionCalls2, 0)
+        let interactiveCalls = await coordinator.calls()
+        XCTAssertTrue(interactiveCalls.contains("provider-authentication"))
     }
 
     func testVerifiedProviderReadbackNeedsFreshCurrencyBeforeProductExecution() async throws {
@@ -970,6 +974,17 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
             targets: targets
         ) else { return .unavailable(.executionFailed) }
         return .observed(receipt)
+    }
+
+    func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        guard operation.enabledProviderRequirements.contains(where: {
+            $0.id == providerTargetID
+        }) else { return nil }
+        recordedCalls.append("provider-authentication")
+        return nil
     }
 
     func performProviderAction(

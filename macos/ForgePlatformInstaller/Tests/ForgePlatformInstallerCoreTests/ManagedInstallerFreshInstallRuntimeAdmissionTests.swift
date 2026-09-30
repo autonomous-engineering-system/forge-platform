@@ -485,6 +485,89 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         XCTAssertEqual(accepted?.requirement, requirement)
         XCTAssertEqual(accepted?.priorEvidenceReference,
                        "receipt:provider-physical-test")
+        let physicalTarget = ManagedInstallerProviderAuthenticationTarget(
+            provider: requirement.provider,
+            account: ManagedInstallerProviderProbeAccount(
+                name: "_fpi_" + String(repeating: "a", count: 20),
+                uid: 501, gid: 20
+            ),
+            executableURL: URL(fileURLWithPath: "/private/provider/runtime/bin/codex"),
+            providerHomeURL: URL(fileURLWithPath: "/private/provider/home"),
+            priorEvidenceReference: "receipt:provider-physical-test"
+        )
+        let bound = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.plan), reader: reader,
+            prepareTarget: { _, _ in physicalTarget }
+        )
+        let launched = await bound.admitLaunchTarget(
+            canonicalIntent: canonical, providerTargetID: requirement.id
+        )
+        XCTAssertEqual(launched?.reviewed, accepted)
+        XCTAssertEqual(launched?.physicalTarget, physicalTarget)
+        let device = try XCTUnwrap(ManagedInstallerProviderDeviceChallenge.parse(
+            provider: requirement.provider,
+            output: Data("https://auth.openai.com/codex/device\nEnter this one-time code ABCD-EF12".utf8)
+        ))
+        let response = ManagedInstallerProviderAuthenticationChallengeResponse(
+            intent: intent, targetID: requirement.id, challenge: device
+        )
+        let responseBytes = try XCTUnwrap(response.canonicalJSONData())
+        XCTAssertEqual(ManagedInstallerProviderAuthenticationChallengeResponse.decodeJSON(
+            responseBytes, intent: intent, targetID: requirement.id
+        ), response)
+        XCTAssertNil(ManagedInstallerProviderAuthenticationChallengeResponse.decodeJSON(
+            responseBytes + Data([0x0A]), intent: intent, targetID: requirement.id
+        ))
+        XCTAssertEqual(String(describing: response),
+                       "<provider authentication challenge: redacted>")
+        XCTAssertFalse(String(reflecting: response).contains("ABCD-EF12"))
+        let starter = ManagedInstallerReviewedProviderAuthenticationStart(
+            admission: bound,
+            makeSession: { _ in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                process.arguments = [
+                    "-c",
+                    "printf 'https://auth.openai.com/codex/device\\n"
+                        + "Enter this one-time code ABCD-EF12\\n'; exec /bin/sleep 2",
+                ]
+                return ManagedInstallerProviderAuthenticationSession(
+                    provider: .codex, process: process
+                )
+            }
+        )
+        let startedBytes = await starter.begin(
+            canonicalIntent: canonical, providerTargetID: requirement.id
+        )
+        XCTAssertNotNil(startedBytes)
+        XCTAssertEqual(ManagedInstallerProviderAuthenticationChallengeResponse.decodeJSON(
+            try XCTUnwrap(startedBytes), intent: intent,
+            targetID: requirement.id
+        )?.userCode, "ABCD-EF12")
+        let duplicateStart = await starter.begin(
+            canonicalIntent: canonical, providerTargetID: requirement.id
+        )
+        XCTAssertNil(duplicateStart)
+        let cancelled = await starter.cancel(
+            canonicalIntent: canonical, providerTargetID: requirement.id
+        )
+        XCTAssertTrue(cancelled)
+        let drifted = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.plan), reader: reader,
+            prepareTarget: { _, _ in
+                ManagedInstallerProviderAuthenticationTarget(
+                    provider: physicalTarget.provider,
+                    account: physicalTarget.account,
+                    executableURL: physicalTarget.executableURL,
+                    providerHomeURL: physicalTarget.providerHomeURL,
+                    priorEvidenceReference: "receipt:changed-physical-target"
+                )
+            }
+        )
+        let rejectedLaunch = await drifted.admitLaunchTarget(
+            canonicalIntent: canonical, providerTargetID: requirement.id
+        )
+        XCTAssertNil(rejectedLaunch)
 
         let malformed = await admission.admit(
             canonicalIntent: Data("{}".utf8), providerTargetID: requirement.id
