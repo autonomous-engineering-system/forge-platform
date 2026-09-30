@@ -414,6 +414,21 @@ class ForgeServerAdapterTests(unittest.TestCase):
             self.assertEqual(adapter.installed_artifact, candidate)
             self.assertEqual(adapter.resume(reviewed, completed), completed)
             self.assertEqual(self.supervisor.calls.count("stop"), 1)
+            durable = ForgeUpdateIntentStore(binding.intent_root).read(request.operation_id)
+            self.assertIsNotNone(durable)
+            self.assertEqual(durable.binding_snapshot, binding.durable_snapshot())
+            changed_binding = replace(
+                binding, peer_configuration_digest="sha256:" + "f" * 64,
+            )
+            with self.assertRaisesRegex(ForgeServerAdapterError, "resume changed"):
+                adapter._continue_update(
+                    reviewed, changed_binding,
+                    ForgeUpdateIntentStore(binding.intent_root), durable,
+                )
+            adapter.update_binding = changed_binding
+            with self.assertRaisesRegex(ForgeServerAdapterError, "durable product binding"):
+                adapter.execute(reviewed)
+            adapter.update_binding = binding
             controller.write_bytes(b"tampered")
             another = ForgeServerProductAdapter(
                 forge_executable=Path("/opt/forge/current/bin/forge"),
