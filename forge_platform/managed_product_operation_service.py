@@ -373,6 +373,7 @@ class ManagedProductOperationHelperService:
         self.removal_dispatcher = removal_dispatcher
         self.preserved_dispatcher = preserved_dispatcher
         self.provider_routes = MappingProxyType(dict(provider_routes or {}))
+        self.provider_currency_guard = dispatcher.coordinator.currency_guard
 
     def register_ep_provider(self, canonical_request: bytes) -> bytes:
         """Consume only helper-origin physical evidence with pinned EP authority."""
@@ -390,7 +391,29 @@ class ManagedProductOperationHelperService:
                 request.composition_id, request.manifest_digest
             )
             adapter = self.provider_routes.get(request.deployment_id)
-            return register_ep_provider(request, manifest=manifest, adapter=adapter)
+            guard = self.provider_currency_guard
+            if not callable(getattr(guard, "require_current", None)):
+                raise TypeError("EP provider mutation currency is unavailable")
+            before = guard.require_current(
+                deployment_id=request.deployment_id,
+                mutation="PROVIDER_REGISTER",
+                component=EP_COMPONENT,
+                instance_id=request.ep_instance_id,
+                operation_id=request.operation_id,
+            )
+            response = register_ep_provider(
+                request, manifest=manifest, adapter=adapter
+            )
+            after = guard.require_current(
+                deployment_id=request.deployment_id,
+                mutation="PROVIDER_REGISTER",
+                component=EP_COMPONENT,
+                instance_id=request.ep_instance_id,
+                operation_id=request.operation_id,
+            )
+            if before != after:
+                raise ValueError("EP provider released authority changed during mutation")
+            return response
         except Exception as error:
             raise ManagedProductOperationServiceError(
                 "EP provider registration was rejected"
