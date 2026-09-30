@@ -170,6 +170,10 @@ struct ManagedInstallerFreshPairedProductWorkerRouteBuilder: Sendable {
         prior: ManagedInstallerProductWorkerAuthoritySnapshot?
     ) -> ManagedInstallerProductWorkerAuthoritySnapshot? {
         guard plan.reviewedOperation.components.count == 2,
+              let reviewedPairing = plan.reviewedOperation.pairingTarget,
+              pairing.projectID == reviewedPairing.projectID,
+              pairing.repositoryID == reviewedPairing.repositoryID,
+              pairing.repositoryIdentity == reviewedPairing.repositoryIdentity,
               accounts.count == 2, venvEvidence.count == 2,
               Set(accounts.map(\.claim.componentIdentity))
                 == Set(["forge-runtime", "engineering-platform-server"]),

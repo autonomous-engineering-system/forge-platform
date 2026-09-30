@@ -196,6 +196,19 @@ final class ManagedInstallerFreshSingleProductWorkerRouteTests: XCTestCase {
             accounts: fixture.accounts, activation: fixture.activation,
             venvEvidence: fixture.evidence, pairing: pairing, prior: snapshot
         ), snapshot)
+        let mismatchedPairing = try ManagedInstallerProductWorkerPairingAuthority(
+            bindingID: pairing.bindingID, consumerID: pairing.consumerID,
+            hostID: pairing.hostID, projectID: "other-project",
+            repositoryID: pairing.repositoryID,
+            repositoryIdentity: pairing.repositoryIdentity,
+            credentialReference: pairing.credentialReference,
+            operatorID: pairing.operatorID
+        )
+        XCTAssertNil(builder.build(
+            plan: fixture.plan, material: fixture.material,
+            accounts: fixture.accounts, activation: fixture.activation,
+            venvEvidence: fixture.evidence, pairing: mismatchedPairing, prior: nil
+        ))
         XCTAssertNil(builder.build(
             plan: fixture.plan, material: fixture.material,
             accounts: Array(fixture.accounts.dropLast()), activation: fixture.activation,
@@ -306,7 +319,10 @@ final class ManagedInstallerFreshSingleProductWorkerRouteTests: XCTestCase {
             componentDiff("forge-runtime", digest: wheel.artifactDigest),
             componentDiff("engineering-platform-server",
                           digest: "sha256:" + String(repeating: "c", count: 64)),
-        ])
+        ], pairingTarget: ManagedInstallerReviewedPairingTarget(
+            projectID: "project-pair", repositoryID: "repository-pair",
+            repositoryIdentity: "repository-identity-pair"
+        ))
         let claims = try ManagedInstallerProductServiceAccountPlanner().plan(
             stablePlan: plan, material: wheel.material
         ).get()
@@ -363,7 +379,8 @@ final class ManagedInstallerFreshSingleProductWorkerRouteTests: XCTestCase {
     }
 
     private func planFor(
-        _ wheel: PrepublicationWheelFixture, components: [ComponentDiff]
+        _ wheel: PrepublicationWheelFixture, components: [ComponentDiff],
+        pairingTarget: ManagedInstallerReviewedPairingTarget? = nil
     ) throws -> ManagedInstallerStablePlan {
         let activation = try ManagedPythonRuntimeActivationPlan(
             session: wheel.material.session, deployment: wheel.deployment,
@@ -375,7 +392,8 @@ final class ManagedInstallerFreshSingleProductWorkerRouteTests: XCTestCase {
         )
         return try managedInstallerTestStablePlan(
             session: wheel.material.session, deployment: wheel.deployment,
-            activationPlan: activation, actions: [], components: components
+            activationPlan: activation, actions: [], components: components,
+            pairingTarget: pairingTarget
         )
     }
 

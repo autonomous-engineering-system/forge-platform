@@ -82,6 +82,10 @@ enum ManagedInstallerFreshProductWorkerAuthorityAdmission {
            snapshot.singleRoutes.allSatisfy({
                $0.deploymentID != plan.deployment.id
            }),
+           let reviewedPairing = plan.reviewedOperation.pairingTarget,
+           route.pairing.projectID == reviewedPairing.projectID,
+           route.pairing.repositoryID == reviewedPairing.repositoryID,
+           route.pairing.repositoryIdentity == reviewedPairing.repositoryIdentity,
            let forgeSlot = route.forgeVenvSlotName,
            let epSlot = route.engineeringPlatformVenvSlotName {
             routeClaims = [
@@ -96,6 +100,7 @@ enum ManagedInstallerFreshProductWorkerAuthorityAdmission {
         }), snapshot.singleRoutes.filter({
             $0.deploymentID == plan.deployment.id
         }).count == 1,
+                  plan.reviewedOperation.pairingTarget == nil,
                   snapshot.routes.allSatisfy({
                       $0.deploymentID != plan.deployment.id
                   }),

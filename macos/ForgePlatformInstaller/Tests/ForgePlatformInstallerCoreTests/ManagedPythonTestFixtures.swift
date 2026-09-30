@@ -44,7 +44,8 @@ func managedInstallerTestStablePlan(
     activationPlan: ManagedPythonRuntimeActivationPlan,
     actions: [ManagedToolOriginalPlanAction],
     enabledProviderRequirements: [ProviderRequirement]? = nil,
-    components: [ComponentDiff]? = nil
+    components: [ComponentDiff]? = nil,
+    pairingTarget: ManagedInstallerReviewedPairingTarget? = nil
 ) throws -> ManagedInstallerStablePlan {
     let reviewedComponents = components ?? [
         ComponentDiff(
@@ -88,7 +89,8 @@ func managedInstallerTestStablePlan(
             ),
             enabledProviderRequirements: enabledProviderRequirements
                 ?? session.providerRequirements.filter(\.isRequired),
-            components: reviewedComponents
+            components: reviewedComponents,
+            pairingTarget: pairingTarget
         ),
         originalManagedToolActions: actions
     )
