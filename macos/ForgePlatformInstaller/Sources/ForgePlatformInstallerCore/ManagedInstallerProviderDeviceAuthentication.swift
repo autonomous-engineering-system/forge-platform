@@ -3,7 +3,7 @@ import Foundation
 /// A fixed provider-owned device ceremony. No request supplies an executable,
 /// argument, URL, environment key, home or account. The helper derives those
 /// from the admitted exact target and executes under its component account.
-struct ManagedInstallerProviderDeviceAuthenticationCommand: Equatable, Sendable {
+public struct ManagedInstallerProviderDeviceAuthenticationCommand: Equatable, Sendable {
     let provider: ProviderID
     let arguments: [String]
     let environment: [String: String]
@@ -14,27 +14,42 @@ struct ManagedInstallerProviderDeviceAuthenticationCommand: Equatable, Sendable 
               componentHome.isFileURL, componentHome.baseURL == nil,
               componentHome.path.hasPrefix("/") else { return nil }
         provider = requirement.provider
+        arguments = Self.fixedArguments(for: requirement.provider)
+        environment = Self.fixedEnvironment(
+            for: requirement.provider, componentHome: componentHome
+        )
+    }
+
+    public static func fixedArguments(for provider: ProviderID) -> [String] {
+        switch provider {
+        case .codex: return ["login", "--device-auth"]
+        case .githubCLI:
+            return [
+                "auth", "login", "--web", "--hostname", "github.com",
+                "--git-protocol", "https", "--skip-ssh-key",
+            ]
+        }
+    }
+
+    public static func fixedEnvironment(
+        for provider: ProviderID, componentHome: URL
+    ) -> [String: String] {
         var values = [
             "HOME": componentHome.path,
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "LANG": "C", "LC_ALL": "C", "NO_COLOR": "1", "TERM": "dumb",
         ]
-        switch requirement.provider {
+        switch provider {
         case .codex:
-            arguments = ["login", "--device-auth"]
             values["CODEX_HOME"] = componentHome.path
         case .githubCLI:
-            arguments = [
-                "auth", "login", "--web", "--hostname", "github.com",
-                "--git-protocol", "https", "--skip-ssh-key",
-            ]
             values["GH_CONFIG_DIR"] = componentHome.path
             values["GH_NO_UPDATE_NOTIFIER"] = "1"
             // The operator opens the fixed device URL from the installer UI;
             // a root-owned daemon may not open a user's browser session.
             values["BROWSER"] = "/usr/bin/true"
         }
-        environment = values
+        return values
     }
 }
 
