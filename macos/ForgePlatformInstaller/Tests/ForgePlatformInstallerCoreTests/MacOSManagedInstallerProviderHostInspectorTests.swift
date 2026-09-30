@@ -5,6 +5,25 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class MacOSManagedInstallerProviderHostInspectorTests: XCTestCase {
+    func testFreshProviderInspectionUsesSamePhysicalAccountAndRuntimeBoundary() async throws {
+        let fixture = try ProviderInspectionFixture(
+            provider: .codex, freshDeployment: true
+        )
+        let runner = ProviderProbeRunnerSpy(results: [
+            .success(.init(exitStatus: 0,
+                           standardOutput: Data("codex-cli 2.70.0\n".utf8))),
+            .success(.init(exitStatus: 1, standardOutput: nil)),
+        ])
+        let inspector = MacOSManagedInstallerProviderHostInspector(
+            rootDirectory: fixture.root, runner: runner
+        )
+        let readback = try await inspector.inspectFreshProvider(
+            fixture.requirement, stablePlan: fixture.stablePlan
+        ).get()
+        XCTAssertEqual(readback.providerTargetID, fixture.requirement.id)
+        XCTAssertEqual(readback.state, .authenticationRequired)
+        XCTAssertEqual(readback.executableSHA256, fixture.executableSHA256)
+    }
     func testPublishedBinAllowsOnlySafeRootOwnedSearchMode() async throws {
         let fixture = try ProviderInspectionFixture(
             provider: .githubCLI, epProductLayout: true
@@ -616,6 +635,7 @@ private struct ProviderInspectionFixture {
     let executableSHA256: String
     let requirement: ProviderRequirement
     let request: ManagedInstallerPostToolHostObservationRequest
+    let stablePlan: ManagedInstallerStablePlan
 
     init(
         provider: ProviderID,
@@ -624,7 +644,8 @@ private struct ProviderInspectionFixture {
         declaredExecutableSHA256: String? = nil,
         requestRequirementOverride: ProviderRequirement? = nil,
         epProductLayout: Bool = false,
-        freshEPProduct: Bool = false
+        freshEPProduct: Bool = false,
+        freshDeployment: Bool = false
     ) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "provider-inspector-\(UUID().uuidString)",
@@ -664,10 +685,12 @@ private struct ProviderInspectionFixture {
         )
         let activation = try ActivationFixture(
             providerRequirements: [requirement],
-            managedTools: [git]
+            managedTools: [git],
+            overrideDeployment: freshDeployment
+                ? ManagedDeploymentTarget(id: "ep-one", exists: false) : nil
         )
         let activationRequest = try activation.request(initial: activation.missingReadback())
-        let stablePlan = try managedInstallerTestStablePlan(
+        stablePlan = try managedInstallerTestStablePlan(
             session: activation.session,
             deployment: activation.deployment,
             activationPlan: ManagedPythonRuntimeActivationPlan(

@@ -36,6 +36,25 @@ struct ManagedInstallerPostToolComponentProviderInspector:
         stablePlan: ManagedInstallerStablePlan,
         activationRequest: ManagedPythonRuntimeActivationRequest
     ) -> Self? {
+        guard let inspectors = productionInspectors(stablePlan: stablePlan) else {
+            return nil
+        }
+        return try? Self(
+            stablePlan: stablePlan,
+            activationRequest: activationRequest,
+            forge: inspectors.forge,
+            engineeringPlatform: inspectors.engineeringPlatform
+        )
+    }
+
+    /// One helper-owned root/account selection is shared by pre-product
+    /// authentication readback and terminal post-tool observation.
+    static func productionInspectors(
+        stablePlan: ManagedInstallerStablePlan
+    ) -> (
+        forge: MacOSManagedInstallerProviderHostInspector,
+        engineeringPlatform: MacOSManagedInstallerProviderHostInspector
+    )? {
         guard !stablePlan.deployment.exists else { return nil }
         func claim(_ owner: ProviderOwnerComponent)
             -> ManagedInstallerProductServiceAccountClaim? {
@@ -86,9 +105,7 @@ struct ManagedInstallerPostToolComponentProviderInspector:
             ManagedInstallerHelperStateRootBootstrap.engineeringPlatformDirectoryName,
             isDirectory: true
         )
-        return try? Self(
-            stablePlan: stablePlan,
-            activationRequest: activationRequest,
+        return (
             forge: forgeClaim.map {
                 MacOSManagedInstallerProviderHostInspector(
                     rootDirectory: forgeRoot, freshClaim: $0,

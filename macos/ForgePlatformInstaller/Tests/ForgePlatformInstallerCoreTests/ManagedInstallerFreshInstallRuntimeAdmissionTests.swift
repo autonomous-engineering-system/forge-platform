@@ -393,6 +393,73 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         ))
     }
 
+    func testReviewedProviderReadbackRechecksExactAccountContextAndReceipt() async throws {
+        let requirement = try stagedProviderRequirement()
+        let fixture = try FreshRuntimeFixture(providers: [requirement])
+        let admitted = ManagedInstallerHelperExecutionMaterial(
+            material: fixture.material,
+            currentRelease: fixture.plan.reviewedOperation.currentInstallerRelease
+        )
+        let inspector = ProviderReadbackInspector(state: .authenticationRequired)
+        let reader = ManagedInstallerHelperFreshProviderReader(
+            material: FreshSingleRouteMaterial(admitted: admitted, failSecondRead: false),
+            currency: FreshSingleRouteCurrency(release: admitted.currentRelease, fail: false),
+            makeInspectors: { _ in (forge: inspector, engineeringPlatform: inspector) }
+        )
+        let observed = await reader.read(stablePlan: fixture.plan)
+        let readback = try XCTUnwrap(observed)
+        XCTAssertTrue(readback.matches(fixture.plan))
+        XCTAssertEqual(readback.targets.map(\.id), [requirement.id])
+        XCTAssertEqual(readback.targets.map(\.state), [.authenticationRequired])
+        XCTAssertFalse(readback.allVerified)
+        XCTAssertEqual(try ManagedInstallerReviewedProviderReadback.decodeJSON(
+            readback.canonicalJSONData()
+        ), readback)
+        let verifiedInspector = ProviderReadbackInspector(state: .verified)
+        let verifiedReader = ManagedInstallerHelperFreshProviderReader(
+            material: FreshSingleRouteMaterial(admitted: admitted, failSecondRead: false),
+            currency: FreshSingleRouteCurrency(release: admitted.currentRelease, fail: false),
+            makeInspectors: { _ in (
+                forge: verifiedInspector, engineeringPlatform: verifiedInspector
+            ) }
+        )
+        let verified = await verifiedReader.read(stablePlan: fixture.plan)
+        XCTAssertEqual(verified?.allVerified, true)
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: fixture.plan)
+        let admission = ManagedInstallerReviewedProviderReadbackAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.plan), reader: reader
+        )
+        let bytes = await admission.read(canonicalIntent: intent.canonicalJSONData())
+        XCTAssertEqual(try ManagedInstallerReviewedProviderReadback.decodeJSON(
+            XCTUnwrap(bytes)
+        ), readback)
+        let invalid = await admission.read(canonicalIntent: Data("{}".utf8))
+        XCTAssertNil(invalid)
+
+        let drifted = ManagedInstallerHelperFreshProviderReader(
+            material: FreshSingleRouteMaterial(admitted: admitted, failSecondRead: true),
+            currency: FreshSingleRouteCurrency(release: admitted.currentRelease, fail: false),
+            makeInspectors: { _ in (forge: inspector, engineeringPlatform: inspector) }
+        )
+        let stale = await drifted.read(stablePlan: fixture.plan)
+        XCTAssertNil(stale)
+        let wrongInspector = ProviderReadbackInspector(
+            state: .verified, reportedTarget: .githubCLI
+        )
+        let crossed = ManagedInstallerHelperFreshProviderReader(
+            material: FreshSingleRouteMaterial(admitted: admitted, failSecondRead: false),
+            currency: FreshSingleRouteCurrency(release: admitted.currentRelease, fail: false),
+            makeInspectors: { _ in (
+                forge: wrongInspector, engineeringPlatform: wrongInspector
+            ) }
+        )
+        let crossedResult = await crossed.read(stablePlan: fixture.plan)
+        XCTAssertNil(crossedResult)
+        XCTAssertThrowsError(try ManagedInstallerReviewedProviderReadback.decodeJSON(
+            readback.canonicalJSONData() + Data([0x0A])
+        ))
+    }
+
     func testFailedPreproviderOrProviderStopsNextBoundary() async throws {
         let fixture = try FreshRuntimeFixture()
         let events = FreshRuntimeEvents()
@@ -1263,6 +1330,34 @@ private struct ProviderStageReceiptStager: ManagedInstallerStablePlanProviderSta
         -> ManagedInstallerReviewedProviderStageReceipt? {
         _ = stablePlan
         return receipt
+    }
+}
+
+private struct ProviderReadbackInspector: ManagedInstallerFreshProviderPhysicallyInspecting {
+    let state: ManagedInstallerProviderHostReadback.State
+    let reportedTarget: ProviderTargetID?
+
+    init(state: ManagedInstallerProviderHostReadback.State,
+         reportedTarget: ProviderTargetID? = nil) {
+        self.state = state
+        self.reportedTarget = reportedTarget
+    }
+
+    func inspectFreshProvider(
+        _ requirement: ProviderRequirement, stablePlan: ManagedInstallerStablePlan
+    ) async -> Result<ManagedInstallerProviderHostReadback,
+                      ManagedPythonRuntimeTerminalReceiptFailure> {
+        guard stablePlan.enabledProviderRequirements.contains(requirement),
+              let runtime = requirement.runtime,
+              let readback = try? ManagedInstallerProviderHostReadback(
+                providerTargetID: reportedTarget ?? requirement.id,
+                state: state,
+                version: runtime.version,
+                executableIdentity: "provider-executable-test",
+                executableSHA256: runtime.executableSHA256,
+                evidenceReference: "receipt:provider-physical-test"
+              ) else { return .failure(.rejected) }
+        return .success(readback)
     }
 }
 

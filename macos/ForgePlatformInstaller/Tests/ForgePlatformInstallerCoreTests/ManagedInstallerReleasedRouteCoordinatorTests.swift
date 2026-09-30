@@ -2,6 +2,31 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
+    func testProviderReadbackUsesFreshExactReviewedPlanAndTarget() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let fixture = try ReleasedRouteFixture(providerRequirements: [provider])
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        guard case .prepared(let plan) = await coordinator.prepareStablePlan(
+            for: fixture.operation
+        ) else { return XCTFail("Expected exact provider plan") }
+        let result = await coordinator.readReviewedProviders(fixture.operation)
+        guard case .observed(let readback) = result else {
+            return XCTFail("Helper readback must cross exact reviewed route")
+        }
+        XCTAssertTrue(readback.matches(plan))
+        XCTAssertEqual(readback.targets.map(\.id), [provider.id])
+        let sent = await loader.readbackIntents()
+        XCTAssertEqual(sent, [
+            try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
+        ])
+        await loader.setFailure(true)
+        let stale = await coordinator.readReviewedProviders(fixture.operation)
+        XCTAssertEqual(stale, .unavailable(.staleSession))
+    }
     func testReviewedExecutionSendsOnlyExactIntentAfterFreshSnapshot() async throws {
         let fixture = try ReleasedRouteFixture()
         let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
@@ -266,18 +291,23 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
 private actor ExecutionRouteLoader:
     ManagedInstallerReleasedRouteSnapshotLoading,
     ManagedInstallerReviewedExecutionIntentSending,
+    ManagedInstallerReviewedProviderReadbackIntentSending,
     ManagedInstallerReviewedSelectionRegistering {
     let snapshot: ManagedInstallerReleasedRouteSnapshot
     private var failing = false
     private var registrationFailure = false
     private var sent: [ManagedInstallerReviewedExecutionIntent] = []
     private var registered: [ManagedInstallerReviewedSelection] = []
+    private var readbackRequests: [ManagedInstallerReviewedExecutionIntent] = []
 
     init(snapshot: ManagedInstallerReleasedRouteSnapshot) { self.snapshot = snapshot }
     func setFailure(_ value: Bool) { failing = value }
     func setRegistrationFailure(_ value: Bool) { registrationFailure = value }
     func sentIntents() -> [ManagedInstallerReviewedExecutionIntent] { sent }
     func registeredSelections() -> [ManagedInstallerReviewedSelection] { registered }
+    func readbackIntents() -> [ManagedInstallerReviewedExecutionIntent] {
+        readbackRequests
+    }
 
     func registerReviewedSelection(
         _ selection: ManagedInstallerReviewedSelection
@@ -306,6 +336,20 @@ private actor ExecutionRouteLoader:
     ) async throws -> ManagedDeploymentExecutionResult {
         sent.append(intent)
         return .failed(.executionFailed, stages: [])
+    }
+
+    func readReviewedProviders(
+        _ intent: ManagedInstallerReviewedExecutionIntent
+    ) async throws -> ManagedInstallerReviewedProviderReadback {
+        readbackRequests.append(intent)
+        return try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: snapshot.session.providerRequirements.map {
+                try .init(id: $0.id, state: .authenticationRequired,
+                          evidenceReference: "receipt:route-provider-readback")
+            }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
+        )
     }
 }
 
