@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 import fcntl
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -20,7 +21,8 @@ from typing import Protocol
 from .forge_server_adapter import ForgeServiceSupervisor, ForgeServerTarget
 from .managed_deployments import (
     MANAGED_DEPLOYMENT_SCHEMA_V2, MANAGED_DEPLOYMENT_SCHEMA_V3,
-    ManagedDeployment, ManagedDeploymentRegistry,
+    ManagedDeployment, ManagedDeploymentPlanner, ManagedDeploymentRegistry,
+    prior_paired_forge_candidates,
 )
 from .managed_install_flow import InstallerMutationCurrencyGuard
 from .managed_pairing_revocation import PairingRevocationRecord
@@ -624,15 +626,60 @@ class ManagedPurgeExecutionCoordinator(ManagedPreserveExecutionCoordinator):
         current = self.registry.load(review.deployment_id)
         if current is not None and current.peer_binding is not None:
             self._require_pairing_proof(current, review, pairing_revocation)
+        elif current is not None and getattr(current, "historical_peer_binding", None) is not None:
+            peer = current.historical_peer_binding
+            preserved = current.preserved_by_component.get(FORGE_COMPONENT)
+            if (
+                review.component != FORGE_COMPONENT
+                or preserved is None
+                or preserved.instance_id != review.instance_id
+                or preserved.preserve_operation_id != review.preserve_operation_id
+                or preserved.preserve_receipt_digest != review.preserve_receipt_digest
+                or peer.receipt_reference != review.historical_peer_reference
+                or pairing_revocation is None
+                or pairing_revocation.state != "COMPLETE"
+                or pairing_revocation.operation_id != review.preserve_operation_id
+                or pairing_revocation.deployment_id != review.deployment_id
+                or pairing_revocation.forge_instance_id != review.instance_id
+                or pairing_revocation.ep_instance_id != peer.ep_instance_id
+                or not isinstance(pairing_revocation.receipt_reference, str)
+                or re.fullmatch(
+                    r"ep-consumer-revoke:sha256:[0-9a-f]{64}",
+                    pairing_revocation.receipt_reference,
+                ) is None
+                or sum(
+                    pairing_revocation.reviewed_deployment_fingerprint ==
+                        "sha256:" + sha256(json.dumps(
+                            asdict(original), sort_keys=True, separators=(",", ":"),
+                            allow_nan=False,
+                        ).encode("utf-8")).hexdigest()
+                    and pairing_revocation.plan_fingerprint ==
+                        "sha256:" + sha256(json.dumps(
+                            asdict(ManagedDeploymentPlanner.plan(
+                                original, replace(
+                                    original,
+                                    components=(original.active_by_component[EP_COMPONENT],),
+                                    peer_binding=None,
+                                ),
+                            )), sort_keys=True, separators=(",", ":"),
+                            allow_nan=False,
+                        ).encode("utf-8")).hexdigest()
+                    for original in prior_paired_forge_candidates(current)
+                ) != 1
+            ):
+                raise ManagedPreserveExecutionError("historical paired purge proof changed")
         elif review.historical_peer_reference is not None:
             if (
                 current is None
                 or getattr(current, "historical_peer_binding", None) is not None
                 or pairing_revocation is None
                 or pairing_revocation.state != "COMPLETE"
-                or pairing_revocation.operation_id != review.operation_id
+                or pairing_revocation.operation_id != (
+                    review.preserve_operation_id or review.operation_id
+                )
                 or pairing_revocation.deployment_id != review.deployment_id
-                or pairing_revocation.reviewed_deployment_fingerprint != review.registry_fingerprint
+                or review.preserve_operation_id is None and
+                    pairing_revocation.reviewed_deployment_fingerprint != review.registry_fingerprint
                 or pairing_revocation.forge_instance_id != review.instance_id
                 or current.active_by_component.get(EP_COMPONENT) is None
                 or current.active_by_component[EP_COMPONENT].instance_id != pairing_revocation.ep_instance_id
@@ -670,8 +717,6 @@ class ManagedPurgeExecutionCoordinator(ManagedPreserveExecutionCoordinator):
             complete = replace(existing, state="COMPLETE")
             _write(path, complete)
             return complete
-        if getattr(current, "historical_peer_binding", None) is not None:
-            raise ManagedPreserveExecutionError("paired purge requires product-owned consumer revocation")
         if existing is not None and existing.state == "COMPLETE":
             raise ManagedPreserveExecutionError("completed purge regained its inventory")
         self._current(review, manifest)

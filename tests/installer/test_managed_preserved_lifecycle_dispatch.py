@@ -539,6 +539,117 @@ class ManagedPreservedLifecycleDispatchTests(unittest.TestCase):
                 self.assertEqual(registry.load("reviewed-pair").revision, 2)
                 self.assertEqual(revoker.calls, 1)
 
+    def test_paired_preserve_then_purge_uses_original_revocation_without_new_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, _, _, service = self._service(root, paired=True)
+            original = registry.load("reviewed-pair")
+            registry._write(replace(original, components=tuple(reversed(original.components))))
+            original = registry.load("reviewed-pair")
+            sibling = replace(
+                original, deployment_id="other-pair",
+                components=tuple(replace(
+                    item, instance_id=item.instance_id.replace("-a", "-b"),
+                ) for item in original.components),
+                peer_binding=replace(original.peer_binding, forge_instance_id="forge-b",
+                                     ep_instance_id="ep-b", receipt_reference="receipt:pair-b"),
+            )
+            registry.create(sibling)
+            sibling_bytes = (registry.root / "other-pair.json").read_bytes()
+            revoker = Revoker(EPConsumerScope("forge-consumer", "forge-project"))
+            supervisor = preserve_helpers.Supervisor()
+            preserve_runner = preserve_helpers.ManagedPreserveExecutionTests._forge_adapter(root)[1]
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=preserve_runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.EPConsumerRevocationAdapter", return_value=revoker),
+            ):
+                service.execute_preserved_lifecycle(_wire(_request(manifest, registry)))
+            preserved = registry.load("reviewed-pair")
+            self.assertEqual(preserved.preserved_by_component[FORGE_COMPONENT].preserve_operation_id, "preserve-a")
+            purge_request = _wire(_request(manifest, registry, "PURGE", "forge-a"))
+            _, purge_runner, product_receipt = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=purge_runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.EPConsumerRevocationAdapter", return_value=revoker),
+            ):
+                first = service.execute_preserved_lifecycle(purge_request)
+                self.assertEqual(service.execute_preserved_lifecycle(purge_request), first)
+                _, status = _forge_evidence(
+                    "PURGE", "purge-a", "forge-a", "Install-A",
+                    product_receipt["request_digest"],
+                )
+                purge_runner.results.append((0, json.dumps(status)))
+                recovery = self._purge_recovery_request(purge_request)
+                self.assertEqual(
+                    decode_native_purge_recovery_receipt(
+                        service.read_terminal_purge_recovery(recovery),
+                        request=decode_native_purge_recovery_request(recovery),
+                    ).state, "COMPLETE",
+                )
+            self.assertEqual(revoker.calls, 1)
+            self.assertEqual(set(registry.load("reviewed-pair").active_by_component),
+                             {"engineering-platform-server"})
+            self.assertEqual((registry.root / "other-pair.json").read_bytes(), sibling_bytes)
+
+    def test_historical_purge_without_original_preserve_journal_fails_before_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, currency, _, service = self._service(root, paired=True)
+            _, _, preserved = _fixture()
+            registry._write(preserved)
+            request = _wire(_request(manifest, registry, "PURGE", "forge-a"))
+            runner = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)[1]
+            supervisor = preserve_helpers.Supervisor()
+            revoker = Revoker(EPConsumerScope("forge-consumer", "forge-project"))
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.EPConsumerRevocationAdapter", return_value=revoker),
+            ):
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.execute_preserved_lifecycle(request)
+            self.assertEqual(registry.load("reviewed-pair"), preserved)
+            self.assertEqual(revoker.calls, 0)
+            self.assertEqual(runner.calls, [])
+            self.assertEqual(supervisor.calls, [])
+            self.assertEqual(currency.calls, [])
+
+    def test_historical_purge_rejects_changed_original_revocation_plan_before_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest, registry, currency, _, service = self._service(root, paired=True)
+            revoker = Revoker(EPConsumerScope("forge-consumer", "forge-project"))
+            preserve_runner = preserve_helpers.ManagedPreserveExecutionTests._forge_adapter(root)[1]
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=preserve_runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=preserve_helpers.Supervisor()),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.EPConsumerRevocationAdapter", return_value=revoker),
+            ):
+                service.execute_preserved_lifecycle(_wire(_request(manifest, registry)))
+            journal = root / "operations/preserved-lifecycle/ep-consumer-revocation/preserve-a.json"
+            changed = json.loads(journal.read_text())
+            changed["plan_fingerprint"] = "sha256:" + "0" * 64
+            journal.write_text(json.dumps(changed, sort_keys=True, separators=(",", ":")))
+            before = registry.load("reviewed-pair")
+            calls_before = len(currency.calls)
+            purge_runner = preserve_helpers.ManagedPreserveExecutionTests._forge_purge_adapter(root)[1]
+            supervisor = preserve_helpers.Supervisor()
+            with (
+                patch("forge_platform.managed_preserved_product_adapters.SubprocessForgeCommandRunner", return_value=purge_runner),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.MacOSForgeLaunchDaemonSupervisor", return_value=supervisor),
+                patch("forge_platform.managed_preserved_lifecycle_dispatch.EPConsumerRevocationAdapter", return_value=revoker),
+            ):
+                with self.assertRaises(ManagedProductOperationServiceError):
+                    service.execute_preserved_lifecycle(_wire(_request(
+                        manifest, registry, "PURGE", "forge-a",
+                    )))
+            self.assertEqual(registry.load("reviewed-pair"), before)
+            self.assertEqual(len(currency.calls), calls_before)
+            self.assertEqual(purge_runner.calls, [])
+            self.assertEqual(supervisor.calls, [])
+
     def test_paired_purge_wrong_consumer_scope_rejected_before_forge_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

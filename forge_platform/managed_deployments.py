@@ -268,6 +268,43 @@ class ManagedPreservedDeployment(ManagedDeployment):
         return {item.component: item for item in self.preserved_components}
 
 
+def prior_paired_forge_candidates(
+    current: ManagedDeployment,
+) -> tuple[ManagedDeployment, ManagedDeployment]:
+    """Reconstruct both possible component orders of one exact paired PRESERVE.
+
+    The owning preserve/revocation journals must independently select exactly
+    one candidate by their original reviewed fingerprints.
+    """
+    if (
+        not isinstance(current, ManagedPreservedDeployment)
+        or current.revision < 2
+        or current.peer_binding is not None
+        or current.historical_peer_binding is None
+        or set(current.active_by_component) != {"engineering-platform-server"}
+        or set(current.preserved_by_component) != {"forge-runtime"}
+    ):
+        raise ManagedDeploymentError("historical paired Forge inventory is unavailable")
+    preserved = current.preserved_by_component["forge-runtime"]
+    ep = current.active_by_component["engineering-platform-server"]
+    peer = current.historical_peer_binding
+    if (
+        preserved.instance_id != peer.forge_instance_id
+        or ep.instance_id != peer.ep_instance_id
+    ):
+        raise ManagedDeploymentError("historical paired instances changed")
+    forge = ManagedComponentBinding(
+        "forge-runtime", preserved.instance_id, preserved.previous_receipt_reference,
+    )
+    def candidate(components: tuple[ManagedComponentBinding, ...]) -> ManagedDeployment:
+        return ManagedDeployment(
+            current.deployment_id, current.revision - 1, current.label,
+            components, peer, MANAGED_DEPLOYMENT_SCHEMA_V2,
+            current.composition_binding,
+        )
+    return candidate((forge, ep)), candidate((ep, forge))
+
+
 @dataclass(frozen=True)
 class ManagedDeploymentDiff:
     component: str
@@ -592,17 +629,10 @@ class ManagedDeploymentRegistry:
                 from .managed_pairing_revocation import PairingRevocationRecord
                 if (
                     component != "forge-runtime"
-                    or current.peer_binding is None
                     or pairing_revocation is None
                     or not isinstance(pairing_revocation, PairingRevocationRecord)
                     or pairing_revocation.state != "COMPLETE"
-                    or pairing_revocation.operation_id != operation_id
                     or pairing_revocation.deployment_id != deployment_id
-                    or pairing_revocation.reviewed_deployment_fingerprint !=
-                        "sha256:" + sha256(json.dumps(
-                            asdict(current), sort_keys=True, separators=(",", ":"),
-                            allow_nan=False,
-                        ).encode("utf-8")).hexdigest()
                     or pairing_revocation.forge_instance_id != instance_id
                     or pairing_revocation.ep_instance_id != peer.ep_instance_id
                     or peer.forge_instance_id != instance_id
@@ -616,14 +646,33 @@ class ManagedDeploymentRegistry:
                 ep = current.active_by_component.get("engineering-platform-server")
                 if ep is None:
                     raise ManagedDeploymentError("paired purge lost its EP component")
-                desired = replace(current, components=(ep,), peer_binding=None)
-                plan = ManagedDeploymentPlanner.plan(current, desired)
-                if pairing_revocation.plan_fingerprint != "sha256:" + sha256(
-                    json.dumps(
-                        asdict(plan), sort_keys=True, separators=(",", ":"),
+                if current.peer_binding is not None:
+                    originals = (current,)
+                    expected_proof_operation = operation_id
+                else:
+                    preserved_forge = current.preserved_by_component.get("forge-runtime")
+                    if preserved_forge is None or preserved_forge.instance_id != instance_id:
+                        raise ManagedDeploymentError("historical Forge purge target changed")
+                    originals = prior_paired_forge_candidates(current)
+                    expected_proof_operation = preserved_forge.preserve_operation_id
+                matching = tuple(original for original in originals if (
+                    pairing_revocation.reviewed_deployment_fingerprint == "sha256:" +
+                    sha256(json.dumps(
+                        asdict(original), sort_keys=True, separators=(",", ":"),
                         allow_nan=False,
-                    ).encode("utf-8")
-                ).hexdigest():
+                    ).encode("utf-8")).hexdigest()
+                    and pairing_revocation.plan_fingerprint == "sha256:" +
+                    sha256(json.dumps(
+                        asdict(ManagedDeploymentPlanner.plan(
+                            original,
+                            replace(original, components=(ep,), peer_binding=None),
+                        )), sort_keys=True, separators=(",", ":"), allow_nan=False,
+                    ).encode("utf-8")).hexdigest()
+                ))
+                if (
+                    pairing_revocation.operation_id != expected_proof_operation
+                    or len(matching) != 1
+                ):
                     raise ManagedDeploymentError("paired purge removal plan changed")
             active = current.active_by_component.get(component)
             preserved = current.preserved_by_component.get(component)
