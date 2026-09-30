@@ -47,13 +47,20 @@ final class ManagedInstallerManagedDeploymentRegistryRecordTests: XCTestCase {
         var current = historical
         var entries = try XCTUnwrap(current["preserved_components"]?.arrayValue)
         var forge = try XCTUnwrap(entries[0].objectValue)
-        forge["version"] = .string("2.7.38")
-        forge["source_revision"] = .string("0a3d6e35b01da93bb5a674ae7795558655c16c7d")
-        forge["artifact_digest"] = .string("sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8")
-        entries[0] = .object(forge)
-        current["preserved_components"] = .array(entries)
-        let decoded = try codec.decode(wire(current), expectedDeploymentID: "deployment-one")
-        XCTAssertEqual(decoded.preservedComponents["forge-runtime"]?.version, "2.7.38")
+        for (version, source, digest) in [
+            ("2.7.38", "0a3d6e35b01da93bb5a674ae7795558655c16c7d",
+             "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8"),
+            ("2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
+             "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1"),
+        ] {
+            forge["version"] = .string(version)
+            forge["source_revision"] = .string(source)
+            forge["artifact_digest"] = .string(digest)
+            entries[0] = .object(forge)
+            current["preserved_components"] = .array(entries)
+            let decoded = try codec.decode(wire(current), expectedDeploymentID: "deployment-one")
+            XCTAssertEqual(decoded.preservedComponents["forge-runtime"]?.version, version)
+        }
 
         forge["artifact_digest"] = .string("sha256:b8165e59935a1edf22590cf6378fab3c5b1014aded88eec1e1a294bfa1b94938")
         entries[0] = .object(forge)
