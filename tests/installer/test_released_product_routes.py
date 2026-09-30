@@ -250,6 +250,23 @@ class ReleasedManagedProductRouteBuilderTests(unittest.TestCase):
                 forge_uninstall_binding=ForgeUninstallBinding("foreign", "installation-1")
             )
 
+    def test_request_bound_update_provider_stays_inside_the_pinned_forge_route(self):
+        class Provider:
+            def resolve(self, request):
+                raise AssertionError("resolution occurs only for a selected update request")
+
+        provider = Provider()
+        config = self.configuration(forge_update_binding_provider=provider)
+        routes = ReleasedManagedProductRouteBuilder.build(
+            configurations=(config,), candidate_selections=(self.selection,),
+        )
+        self.assertIs(
+            routes["production"].adapters["forge-runtime"].update_binding_provider,
+            provider,
+        )
+        with self.assertRaisesRegex(TypeError, "update provider"):
+            self.configuration(forge_update_binding_provider="untrusted")
+
     def test_closed_helper_builder_constructs_routes_and_authority_together(self):
         product_coordinator = coordinator(
             self.root,

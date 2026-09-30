@@ -32,6 +32,7 @@ from .forge_server_adapter import (
     ForgeServerTarget,
     ForgeUninstallBinding,
     ForgeUpdateBinding,
+    ForgeUpdateBindingProvider,
     MacOSForgeLaunchDaemonSupervisor,
 )
 from .managed_deployments import ManagedComponentBinding
@@ -59,6 +60,7 @@ class ReleasedManagedProductRouteConfiguration:
     pairing_binding: ForgeEPProductPairingBinding
     launch_daemons_directory: Path = Path("/Library/LaunchDaemons")
     forge_update_binding: ForgeUpdateBinding | None = None
+    forge_update_binding_provider: ForgeUpdateBindingProvider | None = None
     forge_lifecycle_executable: Path | None = None
     forge_uninstall_binding: ForgeUninstallBinding | None = None
 
@@ -78,6 +80,11 @@ class ReleasedManagedProductRouteConfiguration:
             self.forge_update_binding, ForgeUpdateBinding
         ):
             raise TypeError("released route Forge update binding is invalid")
+        if self.forge_update_binding_provider is not None and (
+            self.forge_update_binding is not None
+            or not callable(getattr(self.forge_update_binding_provider, "resolve", None))
+        ):
+            raise TypeError("released route Forge update provider is invalid or ambiguous")
         if self.forge_lifecycle_executable is not None and (
             not isinstance(self.forge_lifecycle_executable, Path)
             or not self.forge_lifecycle_executable.is_absolute()
@@ -134,6 +141,7 @@ class ReleasedManagedSingleProductRouteConfiguration:
     engineering_platform_product_root: Path | None = None
     launch_daemons_directory: Path = Path("/Library/LaunchDaemons")
     forge_update_binding: ForgeUpdateBinding | None = None
+    forge_update_binding_provider: ForgeUpdateBindingProvider | None = None
     forge_lifecycle_executable: Path | None = None
     forge_uninstall_binding: ForgeUninstallBinding | None = None
 
@@ -153,6 +161,11 @@ class ReleasedManagedSingleProductRouteConfiguration:
                 self.forge_update_binding, ForgeUpdateBinding
             ):
                 raise TypeError("single Forge update binding is invalid")
+            if self.forge_update_binding_provider is not None and (
+                self.forge_update_binding is not None
+                or not callable(getattr(self.forge_update_binding_provider, "resolve", None))
+            ):
+                raise TypeError("single Forge update provider is invalid or ambiguous")
         elif self.component_identity == EP_COMPONENT:
             if not isinstance(self.target, EPSystemInstanceTarget):
                 raise TypeError("single EP route requires an exact EP target")
@@ -163,6 +176,7 @@ class ReleasedManagedSingleProductRouteConfiguration:
                 raise ValueError("single EP route requires an absolute product root")
             if any((
                 self.forge_update_binding,
+                self.forge_update_binding_provider,
                 self.forge_lifecycle_executable,
                 self.forge_uninstall_binding,
             )):
@@ -296,6 +310,7 @@ class ReleasedManagedProductRouteBuilder:
                     config.launch_daemons_directory
                 ),
                 update_binding=config.forge_update_binding,
+                update_binding_provider=config.forge_update_binding_provider,
                 lifecycle_executable=config.forge_lifecycle_executable,
                 uninstall_binding=config.forge_uninstall_binding,
             )
@@ -414,6 +429,7 @@ def _build_single_route(
                 config.launch_daemons_directory
             ),
             update_binding=config.forge_update_binding,
+            update_binding_provider=config.forge_update_binding_provider,
             lifecycle_executable=config.forge_lifecycle_executable,
             uninstall_binding=config.forge_uninstall_binding,
         )

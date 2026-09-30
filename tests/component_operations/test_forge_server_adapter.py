@@ -46,6 +46,70 @@ ARTIFACT = QualifiedArtifact(
 
 
 class ForgeProductPeerStatusReadbackTests(unittest.TestCase):
+    def test_update_binding_provider_is_request_bound_and_rejects_cross_instance(self) -> None:
+        root = Path('/private/tmp/forge-update-provider-fixture')
+        target = ForgeServerTarget(
+            'forge-a', root / 'instances/forge-a', root / 'instances',
+            '_forge_a', 8811, root / 'credentials/forge-a.token',
+        )
+        request = ComponentOperationRequest(
+            'update-provider-a', 'forge-runtime', 'update', ARTIFACT,
+            target.instance_id, 'server', {},
+        )
+        binding = ForgeUpdateBinding(
+            root / 'controller', root / 'receipt', 'sha256:' + 'a' * 64,
+            'b' * 40, 'sha256:' + 'c' * 64, root / 'resolver',
+            'sha256:' + 'd' * 64, root / 'runtime/forge-a',
+            target.instance_id, 'installation-a', 'sha256:' + 'e' * 64,
+            root / 'venv/bin/python', ARTIFACT.version, root / 'python',
+            root / 'state/forge-update-intents',
+        )
+
+        class Provider:
+            def __init__(self) -> None:
+                self.calls = []
+                self.binding = binding
+
+            def resolve(self, selected):
+                self.calls.append(selected.operation_id)
+                return self.binding
+
+        provider = Provider()
+        adapter = ForgeServerProductAdapter(
+            forge_executable=root / 'venv/bin/forge', target=target,
+            installed_artifact=ARTIFACT, staged_artifacts={},
+            supervisor=MacOSForgeLaunchDaemonSupervisor(root / 'LaunchDaemons'),
+            update_binding_provider=provider,
+        )
+        self.assertEqual(adapter._binding_for(request), binding)
+        self.assertEqual(provider.calls, [request.operation_id])
+        provider.binding = replace(binding, runtime_id='forge-b')
+        with self.assertRaisesRegex(ForgeServerAdapterError, 'selected instance'):
+            adapter._binding_for(request)
+        provider.binding = replace(binding, existing_version='2.7.39')
+        with self.assertRaisesRegex(ForgeServerAdapterError, 'selected instance'):
+            adapter._binding_for(request)
+        provider.binding = 'untrusted'
+        with self.assertRaisesRegex(ForgeServerAdapterError, 'selected instance'):
+            adapter._binding_for(request)
+        with self.assertRaisesRegex(ForgeServerAdapterError, 'staged update wheel'):
+            adapter._run_update(request, binding=binding)
+        self.assertEqual(provider.calls, [request.operation_id] * 4)
+        with self.assertRaisesRegex(ValueError, 'ambiguous'):
+            ForgeServerProductAdapter(
+                forge_executable=root / 'venv/bin/forge', target=target,
+                installed_artifact=ARTIFACT, staged_artifacts={},
+                supervisor=MacOSForgeLaunchDaemonSupervisor(root / 'LaunchDaemons'),
+                update_binding=binding, update_binding_provider=provider,
+            )
+        with self.assertRaisesRegex(TypeError, 'provider is invalid'):
+            ForgeServerProductAdapter(
+                forge_executable=root / 'venv/bin/forge', target=target,
+                installed_artifact=ARTIFACT, staged_artifacts={},
+                supervisor=MacOSForgeLaunchDaemonSupervisor(root / 'LaunchDaemons'),
+                update_binding_provider='untrusted',
+            )
+
     def test_exact_release_receipt_rechecks_bytes_and_rejects_unsafe_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
