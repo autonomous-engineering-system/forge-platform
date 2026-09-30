@@ -16,6 +16,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentLifecyclePreserve(String, operationID: String, component: String)
     case deploymentLifecyclePurge(String, operationID: String, component: String)
     case deploymentLifecycleRecover(String, component: String)
+    case deploymentLifecycleRecoverPurge(String, operationID: String)
 }
 
 public struct InstallerCLIOptions: Equatable, Sendable {
@@ -122,6 +123,7 @@ public enum InstallerCLIParser {
       forge-platform-installer deployment lifecycle preserve --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--review-fingerprint <sha256:...> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment lifecycle purge --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> --confirm-instance-id <id> [--review-fingerprint <sha256:...> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment lifecycle recover --deployment <id> --component <forge-runtime|engineering-platform-server> [--json]
+      forge-platform-installer deployment lifecycle recover-purge --deployment <id> --operation-id <id> [--json]
 
     Security:
       --non-interactive never bypasses provider authentication, installer update
@@ -324,6 +326,16 @@ public enum InstallerCLIParser {
                   ["forge-runtime", "engineering-platform-server"].contains(component)
             else { throw InstallerCLIParseError.invalidArguments }
             command = .deploymentLifecycleRecover(deployment, component: component)
+        case ["deployment", "lifecycle", "recover-purge"]:
+            guard let deployment, deployment != "new",
+                  let operationID,
+                  ManagedInstallerPreservedLifecycleReviewIntent.isID(operationID),
+                  component == nil, reviewFingerprint == nil, !assumeYes,
+                  confirmedInstanceID == nil, !acceptInstallerUpdate
+            else { throw InstallerCLIParseError.invalidArguments }
+            command = .deploymentLifecycleRecoverPurge(
+                deployment, operationID: operationID
+            )
         default:
             throw InstallerCLIParseError.invalidArguments
         }
@@ -333,7 +345,7 @@ public enum InstallerCLIParser {
             case .deploymentPlan, .deploymentApply, .deploymentRemove,
                  .deploymentRemovePlan, .deploymentLifecyclePlan,
                  .deploymentLifecyclePreserve, .deploymentLifecyclePurge,
-                 .deploymentLifecycleRecover:
+                 .deploymentLifecycleRecover, .deploymentLifecycleRecoverPurge:
                 break
             default:
                 throw InstallerCLIParseError.invalidArguments
@@ -343,7 +355,7 @@ public enum InstallerCLIParser {
             switch command {
             case .deploymentRemovePlan, .deploymentRemove, .deploymentLifecyclePlan,
                  .deploymentLifecyclePreserve, .deploymentLifecyclePurge,
-                 .deploymentLifecycleRecover: break
+                 .deploymentLifecycleRecover, .deploymentLifecycleRecoverPurge: break
             default:
                 throw InstallerCLIParseError.invalidArguments
             }
@@ -672,6 +684,47 @@ public struct InstallerCLIWorkflow: Sendable {
                     "component": completion.intent.component,
                     "instance_id": completion.intent.instanceID,
                     "review_fingerprint": completion.receipt.reviewFingerprint,
+                    "registry_revision": String(completion.receipt.registryRevision),
+                    "receipt_digest": completion.receipt.receiptDigest,
+                ]
+            )
+        }
+    }
+
+    public func recoverPurgedComponent(
+        deploymentID: String, operationID: String
+    ) async -> InstallerCLIResult {
+        switch await coordinator.readTerminalPurgeRecovery(
+            deploymentID: deploymentID, operationID: operationID,
+            installerRelease: currentRelease
+        ) {
+        case .failure(let failure):
+            return InstallerCLIResult(
+                exitCode: .blocked, status: "lifecycle-purge-recovery-blocked",
+                message: "Exact terminal PURGE-bewijs is niet beschikbaar.",
+                details: ["reason": String(describing: failure)]
+            )
+        case .success(let completion):
+            let request = completion.request
+            let intent = request.execution.intent
+            guard intent.deploymentID == deploymentID,
+                  intent.operationID == operationID,
+                  intent.operation == "PURGE",
+                  intent.installerRelease == currentRelease,
+                  (try? ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+                    completion.receipt.canonicalJSONData(), request: request
+                  )) == completion.receipt else {
+                return Self.blocked("Het PURGE-herstelbewijs hoort niet bij dit doel.")
+            }
+            return InstallerCLIResult(
+                exitCode: .success, status: "lifecycle-purge-recovered",
+                message: "PURGE is alleen-lezen bevestigd uit helperjournal en exact herstelverzoek.",
+                details: [
+                    "operation_id": intent.operationID,
+                    "deployment_id": intent.deploymentID,
+                    "component": intent.component,
+                    "instance_id": intent.instanceID,
+                    "review_fingerprint": request.execution.proposal.reviewFingerprint,
                     "registry_revision": String(completion.receipt.registryRevision),
                     "receipt_digest": completion.receipt.receiptDigest,
                 ]

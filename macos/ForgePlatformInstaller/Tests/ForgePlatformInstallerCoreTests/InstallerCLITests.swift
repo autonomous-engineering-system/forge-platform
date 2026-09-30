@@ -113,6 +113,30 @@ final class InstallerCLITests: XCTestCase {
             ]).command,
             .deploymentLifecycleRecover("production", component: "forge-runtime")
         )
+        XCTAssertEqual(
+            try InstallerCLIParser.parse([
+                "deployment", "lifecycle", "recover-purge", "--deployment", "production",
+                "--operation-id", "purge-one", "--non-interactive", "--json",
+            ]).command,
+            .deploymentLifecycleRecoverPurge("production", operationID: "purge-one")
+        )
+        for extra in [
+            ["--component", "forge-runtime"], ["--yes"],
+            ["--review-fingerprint", "sha256:" + String(repeating: "a", count: 64)],
+            ["--confirm-instance-id", "forge-prod"], ["--accept-installer-update"],
+        ] {
+            XCTAssertThrowsError(try InstallerCLIParser.parse([
+                "deployment", "lifecycle", "recover-purge", "--deployment", "production",
+                "--operation-id", "purge-one",
+            ] + extra))
+        }
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "lifecycle", "recover-purge", "--deployment", "production",
+        ]))
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "deployment", "lifecycle", "recover-purge", "--deployment", "new",
+            "--operation-id", "purge-one",
+        ]))
         let purge = try InstallerCLIParser.parse([
             "deployment", "lifecycle", "purge", "--deployment", "production",
             "--operation-id", "purge-one", "--component", "forge-runtime",
@@ -304,6 +328,98 @@ final class InstallerCLITests: XCTestCase {
             coordinator: CLIWizardCoordinator(session: try session())
         ).recoverPreservedComponent(deploymentID: "production", component: "forge-runtime")
         XCTAssertEqual(unavailable.status, "lifecycle-recovery-blocked")
+    }
+
+    func testCLIPurgeRecoveryReportsExactTerminalEvidenceAndRejectsForeignTarget() async throws {
+        let current = try release("1.2.3")
+        let intent = try ManagedInstallerPreservedLifecycleReviewIntent(
+            operationID: "purge-prod", deploymentID: "production",
+            operation: "PURGE", component: "forge-runtime", instanceID: "forge-prod",
+            installedCompositionIdentity: "forge-qualified",
+            installedManifestSHA256: "sha256:" + String(repeating: "a", count: 64),
+            installerRelease: current
+        )
+        var review: [String: StrictJSONResourceValue] = [
+            "deployment_id": .string(intent.deploymentID),
+            "registry_revision": .integer("1"),
+            "registry_fingerprint": .string("sha256:" + String(repeating: "b", count: 64)),
+            "composition_id": .string(intent.installedCompositionIdentity),
+            "composition_digest": .string(intent.installedManifestSHA256),
+            "operation": .string(intent.operation),
+            "operation_id": .string(intent.operationID),
+            "component": .string(intent.component),
+            "instance_id": .string(intent.instanceID),
+            "artifact": .object([
+                "version": .string("2.7.35"),
+                "source_revision": .string(String(repeating: "e", count: 40)),
+                "source": .string("https://example.invalid/forge.whl"),
+                "digest": .string("sha256:" + String(repeating: "c", count: 64)),
+                "qualification": .string("https://example.invalid/receipt"),
+            ]),
+            "previous_receipt_reference": .string("receipt:forge-prod"),
+            "preserve_operation_id": .null,
+            "preserve_receipt_digest": .null,
+            "historical_peer_reference": .null,
+            "destructive_confirmation_required": .boolean(true),
+        ]
+        let unsigned = StrictSignedJSON.canonicalPayload(from: .object(review))
+        let digest = SHA256.hash(data: unsigned).map { String(format: "%02x", $0) }.joined()
+        review["review_fingerprint"] = .string("sha256:" + digest)
+        let proposalBytes = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPreservedLifecycleReviewProposal.schema),
+            "intent_fingerprint": .string(intent.intentFingerprint),
+            "review": .object(review),
+        ]))
+        let proposal = try ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+            proposalBytes, intent: intent
+        )
+        let execution = try ManagedInstallerPreservedLifecycleRequest(
+            intent: intent, proposal: proposal, confirmedInstanceID: intent.instanceID
+        )
+        let request = try ManagedInstallerPurgeRecoveryRequest(execution: execution)
+        let receiptBytes = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPurgeRecoveryReceipt.schema),
+            "request_fingerprint": .string(request.requestFingerprint),
+            "execution_request_fingerprint": .string(execution.requestFingerprint),
+            "record": .object([
+                "operation_id": .string(intent.operationID),
+                "deployment_id": .string(intent.deploymentID),
+                "review_fingerprint": .string(proposal.reviewFingerprint),
+                "component": .string(intent.component),
+                "instance_id": .string(intent.instanceID),
+                "state": .string("COMPLETE"),
+                "receipt_digest": .string("sha256:" + String(repeating: "d", count: 64)),
+                "registry_revision": .integer("2"),
+            ]),
+        ]))
+        let receipt = try ManagedInstallerPurgeRecoveryReceipt.decodeJSON(
+            receiptBytes, request: request
+        )
+        let coordinator = CLIWizardCoordinator(
+            session: try session(),
+            purgeRecovery: ManagedInstallerPurgeRecoveryCompletion(
+                request: request, receipt: receipt
+            )
+        )
+        let workflow = InstallerCLIWorkflow(currentRelease: current, coordinator: coordinator)
+        let recovered = await workflow.recoverPurgedComponent(
+            deploymentID: "production", operationID: "purge-prod"
+        )
+        XCTAssertEqual(recovered.exitCode, .success)
+        XCTAssertEqual(recovered.status, "lifecycle-purge-recovered")
+        XCTAssertEqual(recovered.details["instance_id"], "forge-prod")
+        XCTAssertEqual(recovered.details["receipt_digest"], receipt.receiptDigest)
+        for (deployment, operation) in [("other", "purge-prod"), ("production", "other")] {
+            let wrong = await workflow.recoverPurgedComponent(
+                deploymentID: deployment, operationID: operation
+            )
+            XCTAssertEqual(wrong.exitCode, .blocked)
+        }
+        let missing = await InstallerCLIWorkflow(
+            currentRelease: current,
+            coordinator: CLIWizardCoordinator(session: try session())
+        ).recoverPurgedComponent(deploymentID: "production", operationID: "purge-prod")
+        XCTAssertEqual(missing.status, "lifecycle-purge-recovery-blocked")
     }
 
     func testRemovalPlanDisplaysExactHelperDiffWithoutExecuting() async throws {
@@ -792,6 +908,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private let preservedInventory: Bool
     private let removalState: String
     private let recovery: ManagedInstallerPreserveRecoveryCompletion?
+    private let purgeRecovery: ManagedInstallerPurgeRecoveryCompletion?
     private let lifecycleEnabled: Bool
     private var recordedCalls: [String] = []
     private var recordedProviderActions: [ProviderAction] = []
@@ -813,6 +930,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         preservedInventory: Bool = false,
         removalState: String = "COMPLETE",
         recovery: ManagedInstallerPreserveRecoveryCompletion? = nil,
+        purgeRecovery: ManagedInstallerPurgeRecoveryCompletion? = nil,
         lifecycleEnabled: Bool = false
     ) {
         selectedSession = session
@@ -823,6 +941,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         self.preservedInventory = preservedInventory
         self.removalState = removalState
         self.recovery = recovery
+        self.purgeRecovery = purgeRecovery
         self.lifecycleEnabled = lifecycleEnabled
         self.execution = execution ?? .completed(
             stages: [
@@ -1085,6 +1204,21 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         _ = component
         _ = installerRelease
         return .success(recovery)
+    }
+
+    func readTerminalPurgeRecovery(
+        deploymentID: String, operationID: String,
+        installerRelease: VerifiedInstallerRelease
+    ) async -> Result<
+        ManagedInstallerPurgeRecoveryCompletion,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        recordedCalls.append("purge-recovery")
+        guard let purgeRecovery else { return .failure(.rejected) }
+        _ = deploymentID
+        _ = operationID
+        _ = installerRelease
+        return .success(purgeRecovery)
     }
 
     func prepareVerifiedCompositionSession(
