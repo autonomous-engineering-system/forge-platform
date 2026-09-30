@@ -217,6 +217,56 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         XCTAssertEqual(repeated, receipt)
     }
 
+    func testReviewedProviderStageStopsBeforePythonAndRetainsExactTarget() async throws {
+        let runtime = try ProviderRuntimeRequirement(
+            version: InstallerVersion("1.2.3"), archiveKind: .tarGzip,
+            artifactURL: "https://example.invalid/codex.tar.gz",
+            artifactSHA256: "sha256:" + String(repeating: "a", count: 64),
+            executableRelativePath: "bin/codex",
+            executableSHA256: "sha256:" + String(repeating: "b", count: 64)
+        )
+        let requirement = ProviderRequirement(
+            provider: .codex, isRequired: true, minimumVersion: runtime.version,
+            credentialScope: .component, ownerComponent: .forgeRuntime,
+            targetIdentity: "deployment-a", runtime: runtime
+        )
+        let fixture = try FreshRuntimeFixture(providers: [requirement])
+        let events = FreshRuntimeEvents()
+        let coordinator = ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
+            material: fixture.material,
+            materialAdmission: FreshRuntimeMaterialAdmission(
+                result: .success(fixture.material), events: events
+            ),
+            preprovider: FreshRuntimePreprovider(
+                result: .success(fixture.preprovider), events: events
+            ),
+            providers: FreshRuntimeProviderBuilder(
+                provider: FreshRuntimeProvider(
+                    result: .success(try XCTUnwrap(fixture.provider)), events: events
+                ), events: events
+            ),
+            providerProbeAccess: FreshRuntimeProbeAccess(events: events),
+            managedPython: FreshRuntimePython(result: .success(fixture.python), events: events)
+        )
+        let stage = try await coordinator.stageProviders(stablePlan: fixture.plan).get()
+        XCTAssertEqual(stage.stablePlanFingerprint, fixture.plan.fingerprint)
+        XCTAssertEqual(stage.operationID, fixture.plan.activationPlan.operationID)
+        XCTAssertEqual(stage.providerTargetIDs, [requirement.id])
+        XCTAssertEqual(events.values, [
+            "material", "preprovider", "provider-build", "provider", "provider-access",
+        ])
+        let repeated = try await coordinator.stageProviders(stablePlan: fixture.plan).get()
+        XCTAssertEqual(repeated, stage)
+        XCTAssertFalse(events.values.contains("python"))
+        let foreign = try FreshRuntimeFixture(
+            wheelBytes: Data("changed-wheel-for-stage".utf8), providers: [requirement]
+        )
+        XCTAssertThrowsError(try ManagedInstallerFreshProviderStageReceipt(
+            stablePlan: fixture.plan, material: foreign.material,
+            preprovider: stage.preprovider, providers: stage.providers
+        ))
+    }
+
     func testFailedPreproviderOrProviderStopsNextBoundary() async throws {
         let fixture = try FreshRuntimeFixture()
         let events = FreshRuntimeEvents()

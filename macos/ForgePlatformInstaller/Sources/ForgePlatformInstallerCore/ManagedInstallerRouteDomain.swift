@@ -214,6 +214,36 @@ public extension InstallerWizardState {
         }
     }
 
+    /// Forms the same exact operation for helper-owned provider preparation,
+    /// while remaining on the review screen. This grants no product-execution
+    /// authority and is available only for a provider-bound fresh install.
+    func reviewedProviderStageOperation() -> ReviewedManagedDeploymentOperation? {
+        guard step == .review,
+              hasAcceptedSessionPlan,
+              preflight.isPassed,
+              providerRequirementsAreProjected,
+              !enabledProviders.isEmpty,
+              !enabledProvidersVerified,
+              composition.isReadyForExecution,
+              let plan = acceptedSessionPlan,
+              let selected = selectedDeploymentRouteContext,
+              !selected.target.exists,
+              case .current(let release) = preMutationCurrency else {
+            return nil
+        }
+        return ReviewedManagedDeploymentOperation(
+            sessionID: plan.sessionID,
+            compositionIdentity: plan.compositionIdentity,
+            manifestSHA256: plan.manifestSHA256,
+            deploymentID: selected.target.id,
+            deploymentExists: false,
+            inventoryEvidenceReference: selected.evidenceReference,
+            currentInstallerRelease: release,
+            enabledProviderRequirements: enabledProviders.map(\.requirement),
+            components: composition.components
+        )
+    }
+
     /// Crosses the final reviewed/current gate exactly once. Execution starts
     /// with a running stage so navigation cannot claim success before bounded
     /// terminal evidence is returned.

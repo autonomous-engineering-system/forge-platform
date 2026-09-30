@@ -113,9 +113,23 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
                 review: compatibleReview(for: session)
             )
         )))
-        XCTAssertFalse(state.setCompositionAcknowledged(true))
-        XCTAssertFalse(state.beginPreMutationCurrencyCheck())
+        XCTAssertTrue(state.setCompositionAcknowledged(true))
+        XCTAssertTrue(state.beginPreMutationCurrencyCheck())
         XCTAssertNil(state.beginManagedDeploymentExecution())
+        XCTAssertNil(state.reviewedProviderStageOperation())
+        XCTAssertTrue(state.recordPreMutationCurrencyCheck(
+            .current(try makeRelease("1.2.3"))
+        ))
+        let staged = try XCTUnwrap(state.reviewedProviderStageOperation())
+        XCTAssertEqual(staged.enabledProviderRequirements,
+                       [ProviderRequirement(provider: .codex, isRequired: true)])
+        XCTAssertEqual(staged.deploymentID, "deployment-new")
+        XCTAssertEqual(state.step, .review)
+        XCTAssertNil(state.beginManagedDeploymentExecution())
+
+        var stale = state
+        XCTAssertTrue(stale.goBack())
+        XCTAssertNil(stale.reviewedProviderStageOperation())
     }
 
     func testExecutionUpdateRequiredInvalidatesReviewedSession() throws {

@@ -1470,16 +1470,15 @@ public struct InstallerWizardState: Equatable, Sendable {
         applyProviderTargetActionResult(result, for: matches[0].id, action: action)
     }
 
-    /// A review acknowledgement is meaningful only after the accepted
-    /// composition session, host/tool evidence and provider gate have all
-    /// passed. The UI cannot acknowledge a diff while it is still on the
-    /// selection screen.
+    /// Review acknowledgement precedes helper-owned provider preparation for
+    /// a fresh install. It does not grant product execution: that still needs
+    /// independently verified providers and fresh currency.
     @discardableResult
     public mutating func setCompositionAcknowledged(_ acknowledged: Bool) -> Bool {
         guard step == .review,
               hasAcceptedSessionPlan,
               preflight.isPassed,
-              enabledProvidersVerified else {
+              providerRequirementsAreProjected else {
             return false
         }
         composition.isAcknowledged = acknowledged
@@ -1487,13 +1486,14 @@ public struct InstallerWizardState: Equatable, Sendable {
         return true
     }
 
-    /// The operator may request the final currency check only after the exact
-    /// reviewed diff is acknowledged. Nothing mutable happens at this point.
+    /// The operator may request a currency check after acknowledging the exact
+    /// diff, including before helper-owned provider staging. Product execution
+    /// separately requires a fresh current result and verified providers.
     public var canBeginPreMutationCurrencyCheck: Bool {
         step == .review
             && hasAcceptedSessionPlan
             && preflight.isPassed
-            && enabledProvidersVerified
+            && providerRequirementsAreProjected
             && composition.isReadyForExecution
             && !preMutationCurrency.isChecking
     }
