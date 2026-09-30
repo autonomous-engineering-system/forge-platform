@@ -134,6 +134,84 @@ def _single_authority(component: str) -> dict:
 
 
 class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
+    def test_exact_238_to_239_route_gets_request_bound_helper_provider(self) -> None:
+        old = _manifest_payload()
+        new = json.loads(json.dumps(old))
+        new["composition_id"] = "forge-ep-next"
+        old_forge = next(item for item in old["components"] if item["identity"] == "forge-runtime")
+        new_forge = next(item for item in new["components"] if item["identity"] == "forge-runtime")
+        old_forge["artifact"].update({
+            "version": "2.7.38",
+            "source_revision": "0a3d6e35b01da93bb5a674ae7795558655c16c7d",
+            "digest": "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8",
+        })
+        new_forge["artifact"].update({
+            "version": "2.7.39",
+            "source_revision": "ebc43dc12da27353f85c991a26da9852aa790f05",
+            "digest": "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+        })
+        payload = _authority()
+        payload["candidate_manifests"] = [{
+            "digest": "sha256:" + sha256(_canonical(new)).hexdigest(), "payload": new,
+        }]
+        payload["installed_manifests"] = [{
+            "digest": "sha256:" + sha256(_canonical(old)).hexdigest(), "payload": old,
+        }]
+        payload["routes"][0]["forge_artifact_sha256"] = old_forge["artifact"]["digest"]
+        self.write(payload)
+        worker = self.root / "Signed.app/Contents/Resources/forge-platform-product-worker.pyz"
+        python = self.root / "managed-python-runtime-slots/slot/bin/python3"
+        loader = ProductWorkerAuthorityLoader(
+            root=self.root, expected_owner_uid=self.owner,
+            launch_daemons_directory=self.launchd,
+            worker_path=worker, base_python=python,
+        )
+        forge = loader.load().dispatcher.resolver._routes["production"].adapters["forge-runtime"]
+        provider = forge.update_binding_provider
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.target.instance_id, "forge-prod")
+        self.assertEqual(provider.installation_id, "forge-installation-prod")
+        self.assertEqual(provider.expected_pairing_binding_id, "ep-primary")
+        self.assertEqual(provider.expected_ep_consumer_id, "forge-consumer")
+        self.assertEqual(provider.worker, worker)
+        self.assertIsNone(self.loader().load().dispatcher.resolver._routes[
+            "production"
+        ].adapters["forge-runtime"].update_binding_provider)
+
+    def test_single_forge_update_provider_has_no_pairing_authority(self) -> None:
+        payload = _single_authority("forge-runtime")
+        old = payload["candidate_manifests"][0]["payload"]
+        old_forge = old["components"][0]["artifact"]
+        old_forge.update({
+            "version": "2.7.38",
+            "source_revision": "0a3d6e35b01da93bb5a674ae7795558655c16c7d",
+            "digest": "sha256:e9a5609969b8e49476f44e99a6cf72b8edf60280a77e010effe55a3bc1b33af8",
+        })
+        new = json.loads(json.dumps(old))
+        new["composition_id"] = "forge-only-next"
+        new["components"][0]["artifact"].update({
+            "version": "2.7.39",
+            "source_revision": "ebc43dc12da27353f85c991a26da9852aa790f05",
+            "digest": "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+        })
+        payload["installed_manifests"] = [{
+            "digest": "sha256:" + sha256(_canonical(old)).hexdigest(), "payload": old,
+        }]
+        payload["candidate_manifests"] = [{
+            "digest": "sha256:" + sha256(_canonical(new)).hexdigest(), "payload": new,
+        }]
+        payload["single_routes"][0]["artifact_sha256"] = old_forge["digest"]
+        self.write(payload)
+        forge = ProductWorkerAuthorityLoader(
+            root=self.root, expected_owner_uid=self.owner,
+            launch_daemons_directory=self.launchd,
+            worker_path=self.root / "Signed.app/Contents/Resources/forge-platform-product-worker.pyz",
+            base_python=self.root / "managed-python-runtime-slots/slot/bin/python3",
+        ).load().dispatcher.resolver._routes["production"].adapters["forge-runtime"]
+        self.assertIsNotNone(forge.update_binding_provider)
+        self.assertIsNone(forge.update_binding_provider.expected_pairing_binding_id)
+        self.assertIsNone(forge.update_binding_provider.expected_ep_consumer_id)
+
     def test_v5_uses_helper_owned_product_venv_slots_for_pair_and_single(self) -> None:
         paired = _authority()
         paired["schema"] = PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA

@@ -21,6 +21,7 @@ from typing import Callable, Mapping
 from .engineering_platform_system_adapter import EPSystemInstanceTarget
 from .forge_ep_pairing_executor import ForgeEPProductPairingBinding
 from .forge_server_adapter import ForgeServerTarget, ForgeUninstallBinding
+from .forge_update_binding_provider import ReleasedForge239UpdateBindingProvider
 from .managed_deployments import ManagedDeploymentRegistry
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
 from .managed_product_operation_admission import NativeInstallerReleaseBinding
@@ -32,6 +33,7 @@ from .released_product_routes import (
     ReleasedManagedProductRouteConfiguration,
     ReleasedManagedSingleProductRouteConfiguration,
 )
+from .qualified_forge_lifecycle import qualified_forge_239_update_selection
 from .universal_installer import CompositionManifest, UniversalInstallerError
 
 
@@ -126,6 +128,8 @@ class ProductWorkerAuthorityLoader:
         root: Path = PRODUCT_WORKER_ROOT,
         expected_owner_uid: int = 0,
         launch_daemons_directory: Path = Path("/Library/LaunchDaemons"),
+        worker_path: Path | None = None,
+        base_python: Path | None = None,
     ) -> None:
         if (
             not isinstance(root, Path)
@@ -135,11 +139,19 @@ class ProductWorkerAuthorityLoader:
             or expected_owner_uid < 0
             or not isinstance(launch_daemons_directory, Path)
             or not launch_daemons_directory.is_absolute()
+            or worker_path is not None and (
+                not isinstance(worker_path, Path) or not worker_path.is_absolute()
+            )
+            or base_python is not None and (
+                not isinstance(base_python, Path) or not base_python.is_absolute()
+            )
         ):
             raise ValueError("product-worker loader configuration is invalid")
         self.root = root
         self.expected_owner_uid = expected_owner_uid
         self.launch_daemons_directory = launch_daemons_directory
+        self.worker_path = worker_path
+        self.base_python = base_python
         self.authority_path = root / PRODUCT_WORKER_AUTHORITY_FILE
 
     def load(self) -> ManagedProductOperationHelperService:
@@ -345,17 +357,22 @@ class ProductWorkerAuthorityLoader:
             digest: self.root / "staged" / f"{digest.removeprefix('sha256:')}.artifact"
             for digest in artifacts
         }
+        forge_target = ForgeServerTarget(
+            forge_instance, instances / forge_instance, instances,
+            forge_account, forge_port,
+            self.root / "credentials/forge" / f"{forge_instance}.token",
+        )
+        provider = self._forge_239_provider(
+            artifact=forge_artifact, candidates=tuple(artifacts.values()),
+            executable=forge_venv / "bin/forge", target=forge_target,
+            installation=forge_installation,
+            pairing_id=_pairing_string(pairing, "binding_id"),
+            ep_consumer_id=_pairing_string(pairing, "consumer_id"),
+        )
         return ReleasedManagedProductRouteConfiguration(
             deployment_id=deployment,
             forge_executable=forge_venv / "bin/forge",
-            forge_target=ForgeServerTarget(
-                forge_instance,
-                instances / forge_instance,
-                instances,
-                forge_account,
-                forge_port,
-                self.root / "credentials/forge" / f"{forge_instance}.token",
-            ),
+            forge_target=forge_target,
             forge_installed_artifact=forge_artifact,
             engineering_platform_installed_artifact=ep_artifact,
             engineering_platform_provisioner=(
@@ -386,6 +403,7 @@ class ProductWorkerAuthorityLoader:
             forge_uninstall_binding=ForgeUninstallBinding(
                 forge_instance, forge_installation
             ),
+            forge_update_binding_provider=provider,
             launch_daemons_directory=self.launch_daemons_directory,
         )
 
@@ -433,18 +451,24 @@ class ProductWorkerAuthorityLoader:
                 wire["forge_installation_id"], "Forge installation id"
             )
             instances = self.root / "instances/forge"
+            forge_target = ForgeServerTarget(
+                instance, instances / instance, instances, account, port,
+                self.root / "credentials/forge" / f"{instance}.token",
+            )
             return ReleasedManagedSingleProductRouteConfiguration(
                 deployment_id=deployment,
                 component_identity=component,
                 executable=venv / "bin/forge",
-                target=ForgeServerTarget(
-                    instance, instances / instance, instances, account, port,
-                    self.root / "credentials/forge" / f"{instance}.token",
-                ),
+                target=forge_target,
                 installed_artifact=artifact,
                 staged_artifacts=staged,
                 forge_lifecycle_executable=venv / "bin/forge",
                 forge_uninstall_binding=ForgeUninstallBinding(instance, installation),
+                forge_update_binding_provider=self._forge_239_provider(
+                    artifact=artifact, candidates=tuple(artifacts.values()),
+                    executable=venv / "bin/forge", target=forge_target,
+                    installation=installation,
+                ),
                 launch_daemons_directory=self.launch_daemons_directory,
             )
         if wire["forge_installation_id"] is not None:
@@ -462,6 +486,26 @@ class ProductWorkerAuthorityLoader:
             installed_artifact=artifact,
             staged_artifacts=staged,
             engineering_platform_product_root=self.root / "products/engineering-platform",
+        )
+
+    def _forge_239_provider(
+        self, *, artifact, candidates, executable: Path,
+        target: ForgeServerTarget, installation: str,
+        pairing_id: str | None = None, ep_consumer_id: str | None = None,
+    ) -> ReleasedForge239UpdateBindingProvider | None:
+        if self.worker_path is None or self.base_python is None or not any(
+            qualified_forge_239_update_selection(artifact, candidate)
+            for candidate in candidates
+        ):
+            return None
+        return ReleasedForge239UpdateBindingProvider(
+            root=self.root, worker=self.worker_path,
+            forge_executable=executable, target=target,
+            installed_artifact=artifact, installation_id=installation,
+            base_python=self.base_python,
+            expected_owner_uid=self.expected_owner_uid,
+            expected_pairing_binding_id=pairing_id,
+            expected_ep_consumer_id=ep_consumer_id,
         )
 
     def _read_secure_authority(self) -> bytes:

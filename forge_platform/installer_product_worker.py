@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import BinaryIO, Callable
 import json
 import sys
+from pathlib import Path
 
 from .managed_product_operation_admission import MAXIMUM_NATIVE_PRODUCT_OPERATION_REQUEST_BYTES
 from .managed_product_removal_admission import (
@@ -88,7 +89,9 @@ def load_released_product_service() -> ManagedProductOperationHelperService:
     """Load only the fixed root-owned released product authority."""
 
     try:
-        return ProductWorkerAuthorityLoader().load()
+        return ProductWorkerAuthorityLoader(
+            worker_path=Path(sys.argv[0]), base_python=Path(sys.executable),
+        ).load()
     except Exception as error:
         raise InstallerProductWorkerUnavailable(
             "released product-worker authority is unavailable"
