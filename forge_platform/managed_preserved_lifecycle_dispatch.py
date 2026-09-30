@@ -26,6 +26,7 @@ from .managed_preserve_execution import (
     ManagedPreserveExecutionCoordinator, ManagedPreserveExecutionRecord,
     ManagedPurgeExecutionCoordinator, read_terminal_preserve_evidence,
 )
+from .managed_ep_restore_execution import ManagedEPRestoreExecutionCoordinator
 from .managed_preserved_lifecycle_request import NativePreservedLifecycleRequest
 from .managed_preserved_lifecycle_proposal import NativePreservedLifecycleReviewIntent
 from .managed_preserved_lifecycle_plan import (
@@ -278,6 +279,53 @@ class ManagedPreservedLifecycleDispatcher:
             review_fingerprint=record.review_fingerprint,
         )
 
+    def _dispatch_ep_restore(
+        self, request: NativePreservedLifecycleRequest, *,
+        installed_manifest: CompositionManifest,
+    ) -> ManagedPreserveExecutionRecord:
+        review = request.review
+        config = self.configurations.get(review.deployment_id)
+        if (
+            review.component != EP_COMPONENT
+            or not isinstance(config, ReleasedManagedSingleProductRouteConfiguration)
+            or config.component_identity != EP_COMPONENT
+            or config.installed_artifact != review.artifact
+            or config.target.instance_id != review.instance_id
+            or (review.composition_id, review.composition_digest) !=
+                (installed_manifest.composition_id, installed_manifest.manifest_digest)
+            or [item.artifact for item in installed_manifest.components
+                if item.identity == EP_COMPONENT] != [review.artifact]
+        ):
+            raise ManagedPreservedLifecycleDispatchError("sealed EP restore route changed")
+        self.require_restore_review_preflight(
+            request.intent, installed_manifest=installed_manifest,
+            review_fingerprint=review.review_fingerprint,
+        )
+        wheel = config.staged_artifacts.get(review.artifact.digest)
+        if wheel is None or config.engineering_platform_product_root is None:
+            raise ManagedPreservedLifecycleDispatchError("EP restore artifact route changed")
+        lifecycle = EPPreservedProductAdapter(
+            provisioner_executable=config.executable,
+            product_root=config.engineering_platform_product_root,
+            target=config.target, artifact=review.artifact, staged_wheel=wheel,
+            launch_daemons_directory=config.launch_daemons_directory,
+        )
+        system = EngineeringPlatformSystemProvisionerAdapter(
+            provisioner_executable=config.executable,
+            product_root=config.engineering_platform_product_root,
+            target=config.target, staged_artifacts=config.staged_artifacts,
+            launch_daemons_directory=config.launch_daemons_directory,
+        )
+        return ManagedEPRestoreExecutionCoordinator(
+            operations_root=self.operations_root / "ep-restore",
+            preserve_operations_root=self.operations_root,
+            registry=self.registry, currency_guard=self.currency_guard,
+            expected_owner_uid=self.expected_owner_uid,
+        ).restore(
+            review, installed_manifest=installed_manifest,
+            lifecycle=lifecycle, system=system,
+        )
+
     def _paired_revocation_after_purge(
         self, review: ManagedPreservedLifecycleReview, current: ManagedDeployment,
         config: ReleasedManagedProductRouteConfiguration,
@@ -489,6 +537,14 @@ class ManagedPreservedLifecycleDispatcher:
         self, request: NativePreservedLifecycleRequest, *,
         installed_manifest: CompositionManifest,
     ) -> ManagedPreserveExecutionRecord:
+        if (
+            isinstance(request, NativePreservedLifecycleRequest)
+            and request.review.operation == "RESTORE"
+            and isinstance(installed_manifest, CompositionManifest)
+        ):
+            return self._dispatch_ep_restore(
+                request, installed_manifest=installed_manifest,
+            )
         if (
             not isinstance(request, NativePreservedLifecycleRequest)
             or request.review.operation not in {"PRESERVE", "PURGE"}
