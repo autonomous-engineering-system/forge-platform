@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import ForgePlatformInstallerCore
@@ -82,6 +83,40 @@ final class ManagedInstallerPairingRepairPreflightTests: XCTestCase {
         await transport.invalidate()
     }
 
+    func testSealedWorkerRunnerAdmitsCanonicalReviewAndConfirmedPreflight() async throws {
+        let request = try makeRequest()
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = root.appendingPathComponent("worker.pyz")
+        let source = Data("import sys\nsys.stdout.buffer.write(sys.stdin.buffer.read())\n".utf8)
+        try source.write(to: worker)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: worker.path
+        )
+        let workerDigest = SHA256.hash(data: source)
+            .map { String(format: "%02x", $0) }.joined()
+        let invocation = ManagedInstallerProductWorkerInvocation(
+            interpreterURL: URL(fileURLWithPath: "/usr/bin/python3"),
+            workerURL: worker, workerSHA256: "sha256:" + workerDigest,
+            expectedInterpreterOwner: 0, requireSingleInterpreterLink: false,
+            timeoutNanoseconds: 5_000_000_000
+        )
+        let runner = MacOSManagedInstallerProductWorkerRunner()
+        for canonical in [request.intent.canonicalJSONData(), request.canonicalJSONData()] {
+            let echoed = try await runner.runProductWorker(
+                invocation, canonicalRequest: canonical
+            ).get()
+            XCTAssertEqual(echoed, canonical)
+            let changed = Data(" ".utf8) + canonical
+            let rejected = await runner.runProductWorker(
+                invocation, canonicalRequest: changed
+            )
+            XCTAssertEqual(rejected.workerFailure, .rejected)
+        }
+    }
+
     private func makeRequest() throws -> ManagedInstallerPairingRepairRequest {
         let target = try ManagedDeploymentTarget(
             id: "deployment-one", exists: true,
@@ -159,6 +194,13 @@ private actor RepairPreflightExecutor: ManagedInstallerProductOperationHelperExe
 
 private extension Result where Failure == ManagedInstallerProductOperationBridgeFailure {
     var failure: ManagedInstallerProductOperationBridgeFailure? {
+        guard case .failure(let value) = self else { return nil }
+        return value
+    }
+}
+
+private extension Result where Failure == ManagedInstallerProductWorkerFailure {
+    var workerFailure: ManagedInstallerProductWorkerFailure? {
         guard case .failure(let value) = self else { return nil }
         return value
     }

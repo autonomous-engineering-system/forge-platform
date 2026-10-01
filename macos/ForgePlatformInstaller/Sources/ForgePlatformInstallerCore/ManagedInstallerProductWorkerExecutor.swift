@@ -193,6 +193,12 @@ struct MacOSManagedInstallerProductWorkerRunner:
         let reviewIntent = try? ManagedInstallerProductRemovalReviewIntent.decodeJSON(
             canonicalRequest
         )
+        let repairReviewIntent = try? ManagedInstallerPairingRepairReviewIntent.decodeJSON(
+            canonicalRequest
+        )
+        let repairPreflightRequest = try? ManagedInstallerPairingRepairRequest.decodeJSON(
+            canonicalRequest
+        )
         let lifecycleIntent = try? ManagedInstallerPreservedLifecycleReviewIntent.decodeJSON(
             canonicalRequest
         )
@@ -210,6 +216,8 @@ struct MacOSManagedInstallerProductWorkerRunner:
               productRequest?.canonicalJSONData() == canonicalRequest
                 || removalRequest?.canonicalJSONData() == canonicalRequest
                 || reviewIntent?.canonicalJSONData() == canonicalRequest
+                || repairReviewIntent?.canonicalJSONData() == canonicalRequest
+                || repairPreflightRequest?.canonicalJSONData() == canonicalRequest
                 || lifecycleIntent?.canonicalJSONData() == canonicalRequest
                 || lifecycleRequest?.canonicalJSONData() == canonicalRequest
                 || preserveRecovery?.canonicalJSONData() == canonicalRequest
