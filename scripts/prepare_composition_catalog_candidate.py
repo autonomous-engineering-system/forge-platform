@@ -30,6 +30,7 @@ from forge_platform.universal_installer import (
 
 
 SCHEMA = "forge-platform.composition-catalog-candidate/v1"
+MULTI_SCHEMA = "forge-platform.composition-catalog-candidate/v2"
 ASSIGNMENT = "L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923"
 REPOSITORY = "autonomous-engineering-system/forge-platform"
 STABLE_TAG = "forge-platform-composition-catalog-stable"
@@ -230,40 +231,195 @@ def prepare(
     return candidate
 
 
+def prepare_many(
+    *,
+    manifests: tuple[tuple[Path, str], ...],
+    index_path: Path,
+    output_directory: Path,
+    source_sha: str,
+    sequence: int,
+    published_at: str,
+    expires_at: str,
+    index_asset_name: str,
+    key_ids: tuple[str, ...],
+) -> Mapping[str, object]:
+    """Bind several reviewed compositions into one unsigned stable catalog.
+
+    Signing and publication of this v2 candidate require the matching offline
+    finalizer; this function never signs or publishes any bytes.
+    """
+    if SHA.fullmatch(source_sha) is None:
+        raise ValueError("source SHA must be one full lowercase Git SHA")
+    if type(sequence) is not int or sequence <= 0 or sequence > (2**64) - 1:
+        raise ValueError("catalog sequence must be a positive UInt64")
+    if not 2 <= len(manifests) <= 8:
+        raise ValueError("multi-composition candidate requires 2-8 manifests")
+    if not key_ids or tuple(sorted(set(key_ids))) != key_ids or any(
+        KEY_ID.fullmatch(key_id) is None for key_id in key_ids
+    ):
+        raise ValueError("catalog key IDs must be unique, sorted and safe")
+    if _timestamp(expires_at, "catalog expires_at") <= _timestamp(
+        published_at, "catalog published_at"
+    ):
+        raise ValueError("catalog expires_at must be later than published_at")
+    index_asset_name = _asset_name(index_asset_name, "index asset name")
+    names = [name for _, name in manifests]
+    if len(set(names)) != len(names) or index_asset_name in names:
+        raise ValueError("catalog asset names must be unique")
+    immutable_tag = f"forge-platform-composition-catalog-v{sequence}"
+    base = f"https://github.com/{REPOSITORY}/releases/download/{immutable_tag}"
+    entries: list[dict[str, object]] = []
+    records: list[dict[str, str]] = []
+    parsed: list[CompositionManifest] = []
+    for path, raw_name in manifests:
+        name = _asset_name(raw_name, "manifest asset name")
+        raw, value = _read(path, "composition manifest")
+        required = value.get("requires_installer")
+        if value.get("schema") != "forge-platform.composition/v3" or not isinstance(required, Mapping):
+            raise ValueError("multi-composition manifest must use v3")
+        capabilities = required.get("capabilities")
+        if not isinstance(capabilities, list) or "composition/v3" not in capabilities:
+            raise ValueError("multi-composition manifest must require composition/v3")
+        requirement = InstallerRequirement(
+            SemanticVersion.parse(required.get("minimum_version"), "minimum installer version"),
+            frozenset(capabilities),
+        )
+        url = f"{base}/{name}"
+        digest = _digest(raw)
+        manifest = CompositionManifest.from_catalog_bytes(
+            CompositionCatalogEntry(
+                value.get("composition_id"), value.get("channel"),
+                DownloadIdentity(url, digest), requirement,
+            ), raw,
+        )
+        parsed.append(manifest)
+        records.append({
+            "composition_id": manifest.composition_id,
+            "asset_name": name, "url": url, "digest": digest,
+        })
+        entries.append({
+            "composition_id": manifest.composition_id,
+            "channel": manifest.channel, "url": url, "digest": digest,
+            "requires_installer": {
+                "minimum_version": str(requirement.minimum_version),
+                "capabilities": sorted(requirement.capabilities),
+            },
+        })
+    identities = [manifest.composition_id for manifest in parsed]
+    if identities != sorted(set(identities)):
+        raise ValueError("composition identities must be unique and sorted")
+    channels = {manifest.channel for manifest in parsed}
+    runtimes = {manifest.python_runtime.identity_digest for manifest in parsed}
+    if channels != {"stable"} or len(runtimes) != 1:
+        raise ValueError("all compositions must share stable channel and Python runtime")
+
+    index_raw, index_value = _read(index_path, "component-combination catalog")
+    if set(index_value) != {
+        "schema", "sequence", "channel", "published_at", "expires_at", "compositions"
+    } or index_value["schema"] != "forge-platform.component-combination-catalog/v1" or (
+        index_value["sequence"], index_value["channel"],
+        index_value["published_at"], index_value["expires_at"]
+    ) != (sequence, "stable", published_at, expires_at):
+        raise ValueError("component-combination catalog identity differs")
+    indexed = index_value["compositions"]
+    if not isinstance(indexed, list) or len(indexed) != len(parsed):
+        raise ValueError("component-combination catalog count differs")
+    for item, manifest, record in zip(indexed, parsed, records):
+        selected = ComponentCombinationCatalogEntry.from_mapping(item)
+        if (
+            selected.composition_id != manifest.composition_id
+            or selected.channel != manifest.channel
+            or selected.manifest != DownloadIdentity(record["url"], record["digest"])
+            or selected.installer_requirement != manifest.installer_requirement
+            or selected.upgrade_from != manifest.upgrade_from
+            or selected.component_identities
+                != frozenset(component.identity for component in manifest.components)
+        ):
+            raise ValueError("component-combination entry does not exactly bind the composition manifest")
+    index_digest = _digest(index_raw)
+    unsigned = _canonical({
+        "schema": "forge-platform.composition-catalog/v1",
+        "sequence": sequence, "channel": "stable",
+        "published_at": published_at, "expires_at": expires_at,
+        "approved_python_runtime_identity": next(iter(runtimes)),
+        "compositions": entries,
+        "component_combination_catalog": {
+            "url": f"{base}/{index_asset_name}", "digest": index_digest,
+        },
+    })
+    candidate: dict[str, object] = {
+        "schema": MULTI_SCHEMA, "assignment_id": ASSIGNMENT,
+        "repository": REPOSITORY, "source_sha": source_sha,
+        "sequence": sequence, "channel": "stable",
+        "published_at": published_at, "expires_at": expires_at,
+        "immutable_release_tag": immutable_tag,
+        "stable_release_tag": STABLE_TAG,
+        "catalog_asset_name": CATALOG_ASSET,
+        "manifests": records,
+        "component_combination_catalog_asset_name": index_asset_name,
+        "component_combination_catalog_url": f"{base}/{index_asset_name}",
+        "component_combination_catalog_digest": index_digest,
+        "unsigned_catalog_digest": _digest(unsigned),
+        "catalog_key_ids": list(key_ids),
+        "approved_python_runtime_identity": next(iter(runtimes)),
+    }
+    if output_directory.exists():
+        raise ValueError("output directory already exists")
+    output_directory.mkdir(mode=0o700, parents=True)
+    for (path, _), record in zip(manifests, records):
+        shutil.copyfile(path, output_directory / record["asset_name"])
+    shutil.copyfile(index_path, output_directory / index_asset_name)
+    (output_directory / "composition-catalog-unsigned.json").write_bytes(unsigned)
+    (output_directory / "composition-catalog-candidate.json").write_bytes(
+        _canonical(candidate, newline=True)
+    )
+    return candidate
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--manifest", action="append", required=True)
     parser.add_argument("--component-index", required=True)
     parser.add_argument("--output-directory", required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--sequence", required=True, type=int)
     parser.add_argument("--published-at", required=True)
     parser.add_argument("--expires-at", required=True)
-    parser.add_argument("--manifest-asset-name", required=True)
+    parser.add_argument("--manifest-asset-name", action="append", required=True)
     parser.add_argument("--index-asset-name", required=True)
     parser.add_argument("--key-id", action="append", required=True)
     args = parser.parse_args(argv)
     try:
-        candidate = prepare(
-            manifest_path=Path(args.manifest),
+        if len(args.manifest) != len(args.manifest_asset_name):
+            raise ValueError("manifest paths and asset names must pair exactly")
+        shared = dict(
             index_path=Path(args.component_index),
             output_directory=Path(args.output_directory),
             source_sha=args.source_sha,
             sequence=args.sequence,
             published_at=args.published_at,
             expires_at=args.expires_at,
-            manifest_asset_name=args.manifest_asset_name,
             index_asset_name=args.index_asset_name,
             key_ids=tuple(args.key_id),
         )
+        if len(args.manifest) == 1:
+            candidate = prepare(
+                manifest_path=Path(args.manifest[0]),
+                manifest_asset_name=args.manifest_asset_name[0],
+                **shared,
+            )
+        else:
+            candidate = prepare_many(
+                manifests=tuple(zip(map(Path, args.manifest), args.manifest_asset_name)),
+                **shared,
+            )
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         print(f"COMPOSITION_CATALOG_CANDIDATE=FAIL reason={error}", file=sys.stderr)
         return 1
     print(
         "COMPOSITION_CATALOG_CANDIDATE=PASS"
         f" sequence={candidate['sequence']}"
-        f" composition_id={candidate['composition_id']}"
-        f" manifest_digest={candidate['manifest_digest']}"
+        f" compositions={len(candidate['manifests']) if 'manifests' in candidate else 1}"
         f" index_digest={candidate['component_combination_catalog_digest']}"
     )
     return 0

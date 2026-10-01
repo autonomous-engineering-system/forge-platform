@@ -91,6 +91,92 @@ class CompositionCatalogReleaseTests(unittest.TestCase):
         index_path.write_bytes(self.canonical(index) + b"\n")
         return manifest_path, index_path
 
+    def write_multi_inputs(self, root: Path) -> tuple[tuple[tuple[Path, str], ...], Path]:
+        manifests = []
+        selections = []
+        runtime = {
+            "version": "1.0.0", "archive_kind": "tar.gz",
+            "artifact": {"url": "https://example.invalid/codex.tar.gz",
+                         "digest": "sha256:" + "a" * 64},
+            "executable_relative_path": "bin/codex",
+            "executable_digest": "sha256:" + "b" * 64,
+        }
+        for position, identity in enumerate(("composition-a", "composition-b"), 1):
+            manifest = manifest_payload(
+                composition_id=identity,
+                upgrade_from=(),
+                capabilities=("catalog-component-set/v1", "composition/v3", "managed-python-runtime/v1"),
+                providers=[{
+                    "identity": "codex", "required": True, "minimum_version": "1.0.0",
+                    "credential_scope": "component",
+                    "owner_component": "engineering-platform-server",
+                    "target_identity": "selected-deployment", "runtime": runtime,
+                }],
+            )
+            manifest["schema"] = "forge-platform.composition/v3"
+            name = f"ForgePlatformComposition-1-{identity}.json"
+            path = root / name
+            path.write_bytes(self.canonical(manifest))
+            manifests.append((path, name))
+            url = (
+                "https://github.com/autonomous-engineering-system/forge-platform/releases/"
+                f"download/forge-platform-composition-catalog-v1/{name}"
+            )
+            selections.append({
+                "composition_id": identity, "selection_sequence": position,
+                "channel": "stable",
+                "manifest": {"url": url, "digest": "sha256:" + sha256(path.read_bytes()).hexdigest()},
+                "components": [{
+                    "identity": "engineering-platform-server",
+                    "requires_capabilities": ["composition/v3"],
+                }],
+                "requires_installer": manifest["requires_installer"],
+                "upgrade_from": [],
+            })
+        index = {
+            "schema": "forge-platform.component-combination-catalog/v1",
+            "sequence": 1, "channel": "stable",
+            "published_at": self.published_at, "expires_at": self.expires_at,
+            "compositions": selections,
+        }
+        index_path = root / "multi-index.json"
+        index_path.write_bytes(self.canonical(index))
+        return tuple(manifests), index_path
+
+    def test_multi_candidate_binds_all_manifest_bytes_and_index_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifests, index = self.write_multi_inputs(root)
+            candidate = PREPARE.prepare_many(
+                manifests=manifests, index_path=index,
+                output_directory=root / "candidate", source_sha=self.source_sha,
+                sequence=1, published_at=self.published_at, expires_at=self.expires_at,
+                index_asset_name="ForgePlatformComponentCombinationCatalog-1.json",
+                key_ids=(self.key_id,),
+            )
+            self.assertEqual(candidate["schema"], PREPARE.MULTI_SCHEMA)
+            self.assertEqual(len(candidate["manifests"]), 2)
+            self.assertEqual([item["composition_id"] for item in candidate["manifests"]],
+                             ["composition-a", "composition-b"])
+            unsigned = (root / "candidate/composition-catalog-unsigned.json").read_bytes()
+            self.assertEqual(candidate["unsigned_catalog_digest"],
+                             "sha256:" + sha256(unsigned).hexdigest())
+            self.assertEqual(len(json.loads(unsigned)["compositions"]), 2)
+            for _, name in manifests:
+                self.assertEqual((root / "candidate" / name).read_bytes(), (root / name).read_bytes())
+
+            wrong = json.loads(index.read_text())
+            wrong["compositions"][1]["manifest"]["digest"] = "sha256:" + "f" * 64
+            index.write_bytes(self.canonical(wrong))
+            with self.assertRaisesRegex(ValueError, "does not exactly bind"):
+                PREPARE.prepare_many(
+                    manifests=manifests, index_path=index,
+                    output_directory=root / "rejected", source_sha=self.source_sha,
+                    sequence=1, published_at=self.published_at, expires_at=self.expires_at,
+                    index_asset_name="ForgePlatformComponentCombinationCatalog-1.json",
+                    key_ids=(self.key_id,),
+                )
+
     def generate_key_and_trust(self, root: Path) -> tuple[Path, bytes]:
         private_key = root / "private.pem"
         public_der = root / "public.der"
