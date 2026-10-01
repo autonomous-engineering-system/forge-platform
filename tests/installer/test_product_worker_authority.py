@@ -166,7 +166,13 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
             launch_daemons_directory=self.launchd,
             worker_path=worker, base_python=python,
         )
-        forge = loader.load().dispatcher.resolver._routes["production"].adapters["forge-runtime"]
+        service = loader.load()
+        from forge_platform.managed_system_keychain_store import ManagedSystemKeychainCredentialStore
+        self.assertIsInstance(
+            service.dispatcher.coordinator.secure_store,
+            ManagedSystemKeychainCredentialStore,
+        )
+        forge = service.dispatcher.resolver._routes["production"].adapters["forge-runtime"]
         provider = forge.update_binding_provider
         self.assertIsNotNone(provider)
         self.assertEqual(provider.target.instance_id, "forge-prod")

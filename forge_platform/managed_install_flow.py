@@ -13,7 +13,7 @@ previous mutation already completed, it is read back instead of being repeated.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -89,6 +89,19 @@ class ForgeEPPairingExecutor(Protocol):
         forge_adapter: ProductOperationAdapter,
         ep_adapter: ProductOperationAdapter,
     ) -> ManagedPairingEvidence: ...
+
+
+class EPInitialCredentialIssuer(Protocol):
+    """Exact helper-owned EP issue/recovery gate before product pairing."""
+
+    def ensure(
+        self, *, operation_id: str, reviewed_current: ManagedDeployment,
+        reviewed_fingerprint: str, credential_reference: str,
+    ) -> object: ...
+
+    def read_terminal(
+        self, *, operation_id: str | None, deployment: ManagedDeployment,
+    ) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -260,13 +273,23 @@ class ManagedForgeEPInstallationCoordinator:
         component_operations_root: Path,
         registry: ManagedDeploymentRegistry,
         currency_guard: InstallerMutationCurrencyGuard,
+        secure_store: object | None = None,
+        expected_owner_uid: int = 0,
     ) -> None:
         if not operations_root.is_absolute() or not component_operations_root.is_absolute():
             raise ValueError("managed Forge+EP operation roots must be absolute")
+        if secure_store is not None and not all(callable(getattr(secure_store, name, None)) for name in (
+            "clear_owned", "put_verified", "fingerprint",
+        )):
+            raise TypeError("native secure credential store is invalid")
+        if isinstance(expected_owner_uid, bool) or not isinstance(expected_owner_uid, int) or expected_owner_uid < 0:
+            raise ValueError("managed Forge+EP root owner is invalid")
         self.operations_root = operations_root.resolve(strict=False)
         self.component_operations_root = component_operations_root.resolve(strict=False)
         self.registry = registry
         self.currency_guard = currency_guard
+        self.secure_store = secure_store
+        self.expected_owner_uid = expected_owner_uid
 
     def execute(
         self,
@@ -279,6 +302,8 @@ class ManagedForgeEPInstallationCoordinator:
         pairing_executor: ForgeEPPairingExecutor,
         composition_id: str,
         composition_manifest_digest: str,
+        credential_issuer: EPInitialCredentialIssuer | None = None,
+        credential_reference: str | None = None,
     ) -> ManagedForgeEPInstallationResult:
         desired = self._validate_route(
             plan,
@@ -332,6 +357,26 @@ class ManagedForgeEPInstallationCoordinator:
                 "deployment registry commit was not observable after product operations"
             )
         self._require_exact_component_binding(current, desired)
+
+        if credential_issuer is not None:
+            if not isinstance(credential_reference, str) or not credential_reference:
+                raise ManagedForgeEPInstallationError("initial EP credential reference is absent")
+            if current.peer_binding is None:
+                fingerprint = "sha256:" + sha256(json.dumps(
+                    asdict(current), sort_keys=True, separators=(",", ":"),
+                    allow_nan=False,
+                ).encode()).hexdigest()
+                issued = credential_issuer.ensure(
+                    operation_id=operation_id, reviewed_current=current,
+                    reviewed_fingerprint=fingerprint,
+                    credential_reference=credential_reference,
+                )
+            else:
+                issued = credential_issuer.read_terminal(
+                    operation_id=None, deployment=current,
+                )
+            if getattr(issued, "state", None) != "COMPLETE":
+                raise ManagedForgeEPInstallationError("initial EP credential is not terminal")
 
         pairing_reference: str
         expected_forge = desired.by_component[FORGE_COMPONENT].instance_id

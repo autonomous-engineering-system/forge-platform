@@ -24,6 +24,7 @@ from .forge_server_adapter import ForgeServerTarget, ForgeUninstallBinding
 from .forge_update_binding_provider import ReleasedForge239UpdateBindingProvider
 from .managed_deployments import ManagedDeploymentRegistry
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
+from .managed_system_keychain_store import ManagedSystemKeychainCredentialStore
 from .managed_product_operation_admission import NativeInstallerReleaseBinding
 from .managed_product_operation_service import (
     ManagedProductOperationHelperBuilder,
@@ -223,6 +224,11 @@ class ProductWorkerAuthorityLoader:
             currency_guard=_StableAuthorityCurrencyGuard(
                 self._read_secure_authority, authority_digest
             ),
+            secure_store=(
+                ManagedSystemKeychainCredentialStore(worker_path=self.worker_path)
+                if self.worker_path is not None else None
+            ),
+            expected_owner_uid=self.expected_owner_uid,
         )
         return ManagedProductOperationHelperBuilder.build_pinned(
             current_installer_release=snapshot.release,
