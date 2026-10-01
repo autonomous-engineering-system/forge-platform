@@ -11,6 +11,11 @@ on:
         description: Reviewed repository-relative composition/v3 manifest
         required: true
         type: string
+      additional_composition_manifests:
+        description: JSON array of 0-7 additional reviewed manifest paths, ordered by composition ID
+        required: false
+        default: '[]'
+        type: string
       component_combination_catalog:
         description: Reviewed repository-relative component-combination index
         required: true
@@ -51,6 +56,7 @@ jobs:
       source_sha: ${{ steps.context.outputs.source_sha }}
       sequence: ${{ steps.context.outputs.sequence }}
       manifest: ${{ steps.context.outputs.manifest }}
+      manifests_json: ${{ steps.context.outputs.manifests_json }}
       index: ${{ steps.context.outputs.index }}
       manifest_asset: ${{ steps.context.outputs.manifest_asset }}
       index_asset: ${{ steps.context.outputs.index_asset }}
@@ -66,10 +72,13 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
           SEQUENCE: ${{ inputs.catalog_sequence }}
           MANIFEST: ${{ inputs.composition_manifest }}
+          ADDITIONAL_MANIFESTS: ${{ inputs.additional_composition_manifests }}
           INDEX: ${{ inputs.component_combination_catalog }}
         run: |
           set -euo pipefail
           python3 - "$SOURCE_SHA" "$SEQUENCE" "$MANIFEST" "$INDEX" <<'PY'
+          import json
+          import os
           from pathlib import Path
           import re
           import sys
@@ -79,10 +88,25 @@ jobs:
               raise SystemExit("source_sha must be one full lowercase Git SHA")
           if re.fullmatch(r"[1-9][0-9]*", sequence) is None or int(sequence) > (2**64) - 1:
               raise SystemExit("catalog_sequence must be a positive UInt64")
+          try:
+              additional = json.loads(os.environ['ADDITIONAL_MANIFESTS'])
+          except (TypeError, ValueError) as error:
+              raise SystemExit('additional manifests must be a JSON array') from error
+          if not isinstance(additional, list) or len(additional) > 7 or any(
+              not isinstance(value, str) for value in additional
+          ):
+              raise SystemExit('additional manifest list is invalid')
+          paths = [paths[0], *additional, paths[1]]
+          if len(paths) != len(set(paths)):
+              raise SystemExit('catalog input paths must be unique')
           for value in paths:
               path = Path(value)
-              if path.is_absolute() or ".." in path.parts or path.name != value.split("/")[-1]:
+              if (not value or path.is_absolute() or ".." in path.parts
+                      or any(ord(char) < 33 or ord(char) == 127 for char in value)
+                      or path.name != value.split("/")[-1]):
                   raise SystemExit("catalog input path must remain within the checkout")
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('manifests_json=' + json.dumps(paths[:-1], separators=(',', ':')) + '\n')
           PY
           test -z "$(git status --porcelain)"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
@@ -90,6 +114,15 @@ jobs:
           test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
           test "$(git ls-files -- "$MANIFEST")" = "$MANIFEST"
           test "$(git ls-files -- "$INDEX")" = "$INDEX"
+          while IFS= read -r path; do
+            test "$(git ls-files -- "$path")" = "$path"
+          done < <(python3 - <<'PY'
+          import json
+          import os
+          for path in json.loads(os.environ['ADDITIONAL_MANIFESTS']):
+              print(path)
+          PY
+          )
           MANIFEST_ASSET="ForgePlatformComposition-$SEQUENCE.json"
           INDEX_ASSET="ForgePlatformComponentCombinationCatalog-$SEQUENCE.json"
           CANDIDATE_ARTIFACT="forge-platform-composition-catalog-candidate-$SEQUENCE-$SOURCE_SHA"
@@ -122,6 +155,7 @@ jobs:
           SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
           SEQUENCE: ${{ needs.release-context.outputs.sequence }}
           MANIFEST: ${{ needs.release-context.outputs.manifest }}
+          MANIFESTS_JSON: ${{ needs.release-context.outputs.manifests_json }}
           INDEX: ${{ needs.release-context.outputs.index }}
           MANIFEST_ASSET: ${{ needs.release-context.outputs.manifest_asset }}
           INDEX_ASSET: ${{ needs.release-context.outputs.index_asset }}
@@ -148,15 +182,31 @@ jobs:
           mkdir catalog-input
           key_args=()
           for key_id in $KEY_IDS; do key_args+=(--key-id "$key_id"); done
+          manifest_args=()
+          manifest_count="$(python3 -c 'import json,os; print(len(json.loads(os.environ["MANIFESTS_JSON"])))')"
+          index=0
+          while IFS= read -r path; do
+            index=$((index + 1))
+            asset="ForgePlatformComposition-$SEQUENCE-$index.json"
+            if (( index == 1 && manifest_count == 1 )); then
+              asset="$MANIFEST_ASSET"
+            fi
+            manifest_args+=(--manifest "$path" --manifest-asset-name "$asset")
+          done < <(python3 - <<'PY'
+          import json
+          import os
+          for path in json.loads(os.environ['MANIFESTS_JSON']):
+              print(path)
+          PY
+          )
           python3 scripts/prepare_composition_catalog_candidate.py \
-            --manifest "$MANIFEST" \
+            "${manifest_args[@]}" \
             --component-index "$INDEX" \
             --output-directory catalog-input/candidate \
             --source-sha "$SOURCE_SHA" \
             --sequence "$SEQUENCE" \
             --published-at "$PUBLISHED_AT" \
             --expires-at "$EXPIRES_AT" \
-            --manifest-asset-name "$MANIFEST_ASSET" \
             --index-asset-name "$INDEX_ASSET" \
             "${key_args[@]}"
           CANDIDATE_DIGEST="sha256:$(shasum -a 256 catalog-input/candidate/composition-catalog-candidate.json | awk '{print $1}')"
