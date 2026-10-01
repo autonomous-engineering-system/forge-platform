@@ -222,6 +222,24 @@ struct RegisteredInstallerHelperParentReader: Sendable {
     }
 }
 
+/// Rechecks the one fixed ServiceManagement parent immediately before a
+/// client request can resume or use its privileged Mach connection. The
+/// expected version comes from sealed release provenance, never the request.
+struct ManagedInstallerHelperXPCParentAdmission: Sendable {
+    let expectedVersion: InstallerVersion?
+    let readVersion: @Sendable () -> InstallerVersion?
+
+    static func production(expectedVersion: InstallerVersion?) -> Self {
+        Self(expectedVersion: expectedVersion,
+             readVersion: { RegisteredInstallerHelperParentReader().readVersion() })
+    }
+
+    func admits() -> Bool {
+        guard let expectedVersion else { return false }
+        return readVersion() == expectedVersion
+    }
+}
+
 /// Registers the bundled system daemon once and immediately reads its state
 /// back from ServiceManagement. A successful API call is never treated as
 /// readiness by itself: only an exact `.enabled` readback grants the helper

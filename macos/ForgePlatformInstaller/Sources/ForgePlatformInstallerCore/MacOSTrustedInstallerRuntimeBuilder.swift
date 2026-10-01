@@ -147,7 +147,7 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
     private let stateRoot: URL
     private let architecture: String
     private let routeLoaderFactory: @Sendable (
-        ManagedInstallerPostToolXPCHelperIdentity
+        ManagedInstallerPostToolXPCHelperIdentity, InstallerVersion
     ) -> any ManagedInstallerReleasedRouteSnapshotLoading
 
     /// Creates a builder only for an existing private installer-owned root.
@@ -168,7 +168,11 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
         try self.init(
             stateRoot: stateRoot,
             platformFacts: platformFacts,
-            routeLoaderFactory: { MacOSManagedInstallerReleasedRouteXPCTransport(helperIdentity: $0) }
+            routeLoaderFactory: {
+                MacOSManagedInstallerReleasedRouteXPCTransport(
+                    helperIdentity: $0, expectedParentVersion: $1
+                )
+            }
         )
     }
 
@@ -176,7 +180,7 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
         stateRoot: URL,
         platformFacts: MacOSInstallerPlatformFacts,
         routeLoaderFactory: @escaping @Sendable (
-            ManagedInstallerPostToolXPCHelperIdentity
+            ManagedInstallerPostToolXPCHelperIdentity, InstallerVersion
         ) -> any ManagedInstallerReleasedRouteSnapshotLoading
     ) throws {
         try MacOSInstallerPlatformContract.requireSupported(platformFacts)
@@ -230,10 +234,13 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 releaseTrust: sealedTrustConfiguration
             )
             let routeCoordinator = ManagedInstallerReleasedRouteCoordinator(
-                loader: routeLoaderFactory(helperIdentity)
+                loader: routeLoaderFactory(
+                    helperIdentity, sealedReleaseProvenance.installerVersion
+                )
             )
             let productTransport = MacOSManagedInstallerProductOperationXPCTransport(
-                helperIdentity: helperIdentity
+                helperIdentity: helperIdentity,
+                expectedParentVersion: sealedReleaseProvenance.installerVersion
             )
             let releaseFeed = try GitHubSignedInstallerReleaseFeed(
                 trustConfiguration: sealedTrustConfiguration,
@@ -291,7 +298,8 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 ),
                 preservedRegistryReadTransport:
                     MacOSManagedInstallerReleasedRouteXPCTransport(
-                        helperIdentity: helperIdentity
+                        helperIdentity: helperIdentity,
+                        expectedParentVersion: sealedReleaseProvenance.installerVersion
                     )
             ))
         } catch {

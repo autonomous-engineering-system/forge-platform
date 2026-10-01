@@ -3,6 +3,23 @@ import ServiceManagement
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
+    func testXPCParentAdmissionRequiresExactFreshRegisteredVersion() throws {
+        let expected = try InstallerVersion("0.3.6")
+        let legacy = try InstallerVersion("0.2.4")
+        XCTAssertFalse(ManagedInstallerHelperXPCParentAdmission(
+            expectedVersion: nil, readVersion: { expected }
+        ).admits())
+        XCTAssertFalse(ManagedInstallerHelperXPCParentAdmission(
+            expectedVersion: expected, readVersion: { nil }
+        ).admits())
+        XCTAssertFalse(ManagedInstallerHelperXPCParentAdmission(
+            expectedVersion: expected, readVersion: { legacy }
+        ).admits())
+        XCTAssertTrue(ManagedInstallerHelperXPCParentAdmission(
+            expectedVersion: expected, readVersion: { expected }
+        ).admits())
+    }
+
     func testEnabledServiceReturnsExactReadyReceiptWithoutRegistration() async throws {
         let service = HelperServiceController(statuses: [.enabled])
         let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
