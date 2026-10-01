@@ -546,6 +546,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     private let providerCoordinator: any ProviderActionCoordinating
     private let managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating
     private let removalReviewTransport: (any ManagedInstallerProductRemovalReviewTransporting)?
+    private let pairingRepairReviewTransport:
+        (any ManagedInstallerPairingRepairReviewTransporting)?
     private let removalTransport: (any ManagedInstallerProductRemovalTransporting)?
     private let preservedLifecycleReviewTransport:
         (any ManagedInstallerPreservedLifecycleReviewTransporting)?
@@ -595,6 +597,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator(),
         managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator(),
         removalReviewTransport: (any ManagedInstallerProductRemovalReviewTransporting)? = nil,
+        pairingRepairReviewTransport:
+            (any ManagedInstallerPairingRepairReviewTransporting)? = nil,
         removalTransport: (any ManagedInstallerProductRemovalTransporting)? = nil,
         preservedLifecycleReviewTransport:
             (any ManagedInstallerPreservedLifecycleReviewTransporting)? = nil,
@@ -620,6 +624,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.providerCoordinator = providerCoordinator
         self.managedDeploymentRouteCoordinator = managedDeploymentRouteCoordinator
         self.removalReviewTransport = removalReviewTransport
+        self.pairingRepairReviewTransport = pairingRepairReviewTransport
         self.removalTransport = removalTransport
         self.preservedLifecycleReviewTransport = preservedLifecycleReviewTransport
         self.preservedLifecycleTransport = preservedLifecycleTransport
@@ -757,6 +762,38 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             guard let proposal = try? ManagedInstallerProductRemovalReviewProposal.decodeJSON(
                 response, intent: intent
             ), proposal.canonicalJSONData() == response else {
+                return .failure(.rejected)
+            }
+            return .success(proposal)
+        }
+    }
+
+    public func preparePairingRepairReview(
+        _ intent: ManagedInstallerPairingRepairReviewIntent
+    ) async -> Result<
+        ManagedInstallerPairingRepairReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard let currentVerifiedReleaseRecord,
+              currentVerifiedReleaseRecord.release == intent.installerRelease,
+              let pairingRepairReviewTransport,
+              (try? ManagedInstallerPairingRepairReviewIntent.decodeJSON(
+                  intent.canonicalJSONData()
+              )) == intent else {
+            return .failure(.rejected)
+        }
+        let result = await pairingRepairReviewTransport.preparePairingRepairReview(
+            intent.canonicalJSONData()
+        )
+        guard self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+            return .failure(.rejected)
+        }
+        switch result {
+        case .failure(let failure): return .failure(failure)
+        case .success(let bytes):
+            guard let proposal = try? ManagedInstallerPairingRepairReviewProposal.decodeJSON(
+                bytes, intent: intent
+            ), proposal.canonicalJSONData() == bytes else {
                 return .failure(.rejected)
             }
             return .success(proposal)

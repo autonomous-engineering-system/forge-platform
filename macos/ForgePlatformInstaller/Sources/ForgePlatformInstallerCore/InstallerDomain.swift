@@ -1684,6 +1684,12 @@ public protocol InstallerWizardCoordinator: Sendable {
         ManagedInstallerProductRemovalReviewProposal,
         ManagedInstallerProductOperationBridgeFailure
     >
+    func preparePairingRepairReview(
+        _ intent: ManagedInstallerPairingRepairReviewIntent
+    ) async -> Result<
+        ManagedInstallerPairingRepairReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    >
     /// Read-only product-owned PRESERVE/RESTORE/PURGE proposal. Execution has
     /// its own reviewed and currency-bound boundary.
     func preparePreservedLifecycleReview(
@@ -1906,6 +1912,16 @@ public extension InstallerWizardCoordinator {
         _ intent: ManagedInstallerProductRemovalReviewIntent
     ) async -> Result<
         ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = intent
+        return .failure(.rejected)
+    }
+
+    func preparePairingRepairReview(
+        _ intent: ManagedInstallerPairingRepairReviewIntent
+    ) async -> Result<
+        ManagedInstallerPairingRepairReviewProposal,
         ManagedInstallerProductOperationBridgeFailure
     > {
         _ = intent
