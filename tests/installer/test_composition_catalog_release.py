@@ -177,6 +177,58 @@ class CompositionCatalogReleaseTests(unittest.TestCase):
                     key_ids=(self.key_id,),
                 )
 
+    def test_multi_candidate_signs_every_exact_manifest_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifests, index = self.write_multi_inputs(root)
+            candidate_dir = root / "candidate"
+            candidate = PREPARE.prepare_many(
+                manifests=manifests, index_path=index,
+                output_directory=candidate_dir, source_sha=self.source_sha,
+                sequence=1, published_at=self.published_at, expires_at=self.expires_at,
+                index_asset_name="ForgePlatformComponentCombinationCatalog-1.json",
+                key_ids=(self.key_id,),
+            )
+            signature, public = self.sign_candidate(root, candidate_dir)
+            output = root / "release"
+            self.assertEqual(FINALIZE.main([
+                "--candidate-directory", str(candidate_dir),
+                "--signature", str(signature),
+                "--catalog-trust", str(root / "catalog-trust.json"),
+                "--output-directory", str(output),
+                "--workflow-run-id", "123",
+                "--workflow-run-attempt", "1",
+            ]), 0)
+            operation = json.loads((output / "composition-catalog-operation.json").read_text())
+            self.assertEqual(operation["schema"], FINALIZE.MULTI_OPERATION_SCHEMA)
+            self.assertEqual(operation["manifests"], candidate["manifests"])
+            for _, name in manifests:
+                self.assertEqual((output / name).read_bytes(), (root / name).read_bytes())
+            catalog = CompositionCatalog.from_signed_bytes(
+                (output / "ForgePlatformInstallerCompositionCatalog.json").read_bytes(),
+                FINALIZE._OpenSSLVerifier({self.key_id: public}),
+                signature_policy=SignatureThresholdPolicy(
+                    algorithm="ed25519", trusted_key_ids=frozenset({self.key_id}), threshold=1
+                ),
+            )
+            self.assertEqual([entry.composition_id for entry in catalog.entries],
+                             ["composition-a", "composition-b"])
+
+            tampered = root / "tampered"
+            tampered.mkdir()
+            for path in candidate_dir.iterdir():
+                (tampered / path.name).write_bytes(path.read_bytes())
+            changed = tampered / manifests[1][1]
+            changed.write_bytes(changed.read_bytes() + b" ")
+            with self.assertRaisesRegex(ValueError, "bytes changed"):
+                FINALIZE.finalize(
+                    candidate_directory=tampered,
+                    signature_paths=(signature,),
+                    catalog_trust_path=root / "catalog-trust.json",
+                    output_directory=root / "rejected",
+                    workflow_run_id=123, workflow_run_attempt=1,
+                )
+
     def generate_key_and_trust(self, root: Path) -> tuple[Path, bytes]:
         private_key = root / "private.pem"
         public_der = root / "public.der"
