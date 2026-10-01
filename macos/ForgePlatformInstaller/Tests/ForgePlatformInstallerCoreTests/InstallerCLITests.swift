@@ -82,6 +82,20 @@ final class InstallerCLITests: XCTestCase {
                 "production", operationID: "remove-one", component: "forge-runtime"
             )
         )
+        XCTAssertEqual(
+            try InstallerCLIParser.parse([
+                "deployment", "pairing", "repair", "plan",
+                "--deployment", "production", "--operation-id", "repair-one", "--json",
+            ]).command,
+            .deploymentPairingRepairPlan("production", operationID: "repair-one")
+        )
+        for extra in [["--yes"], ["--component", "forge-runtime"],
+                      ["--review-fingerprint", String(repeating: "a", count: 64)]] {
+            XCTAssertThrowsError(try InstallerCLIParser.parse([
+                "deployment", "pairing", "repair", "plan",
+                "--deployment", "production", "--operation-id", "repair-one",
+            ] + extra))
+        }
         for operation in ["preserve", "restore", "purge"] {
             XCTAssertEqual(
                 try InstallerCLIParser.parse([
@@ -441,6 +455,28 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(result.records.map { $0["action"] }, ["NO_CHANGE", "REMOVE_COMPONENT"])
         let calls = await coordinator.calls()
         XCTAssertEqual(calls, ["inventory", "removal-review", "inventory"])
+        let executions = await coordinator.executionCallCount()
+        XCTAssertEqual(executions, 0)
+    }
+
+    func testPairingRepairPlanDisplaysOnlyCanonicalPublicReview() async throws {
+        let coordinator = CLIWizardCoordinator(
+            session: try session(), removalInventory: true
+        )
+        let result = await InstallerCLIWorkflow(
+            currentRelease: try release("1.2.3"), coordinator: coordinator
+        ).planPairingRepair(
+            deploymentID: "production", operationID: "repair-one"
+        )
+        XCTAssertEqual(result.exitCode, .success)
+        XCTAssertEqual(result.status, "pairing-repair-planned")
+        XCTAssertEqual(result.details["operation_id"], "repair-one")
+        XCTAssertEqual(result.details["forge_instance_id"], "forge-prod")
+        XCTAssertEqual(result.details["engineering_platform_instance_id"], "ep-prod")
+        XCTAssertEqual(result.details["confirmation_required"], "true")
+        XCTAssertEqual(result.records.map { $0["action"] }, ["NO_CHANGE", "REPAIR"])
+        let calls = await coordinator.calls()
+        XCTAssertEqual(calls, ["inventory", "pairing-repair-review", "inventory"])
         let executions = await coordinator.executionCallCount()
         XCTAssertEqual(executions, 0)
     }
@@ -1063,6 +1099,45 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         } catch {
             return .failure(.rejected)
         }
+    }
+
+    func preparePairingRepairReview(
+        _ intent: ManagedInstallerPairingRepairReviewIntent
+    ) async -> Result<
+        ManagedInstallerPairingRepairReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        recordedCalls.append("pairing-repair-review")
+        guard removalInventory else { return .failure(.rejected) }
+        let digest = String(repeating: "a", count: 64)
+        let data = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPairingRepairReviewProposal.schema),
+            "intent_fingerprint": .string(intent.intentFingerprint),
+            "operation_id": .string(intent.operationID),
+            "deployment_id": .string(intent.deploymentID),
+            "reviewed_revision": .integer("3"),
+            "reviewed_deployment_sha256": .string(digest),
+            "reviewed_plan_fingerprint": .string("sha256:" + digest),
+            "deployment_action": .string("CREATE_OR_UPDATE"),
+            "confirmation_required": .boolean(true),
+            "component_diffs": .array([
+                .object([
+                    "component": .string("engineering-platform-server"),
+                    "instance_id": .string(intent.engineeringPlatformInstanceID),
+                    "action": .string("NO_CHANGE"),
+                ]),
+                .object([
+                    "component": .string("forge-runtime"),
+                    "instance_id": .string(intent.forgeInstanceID),
+                    "action": .string("REPAIR"),
+                ]),
+            ]),
+        ]))
+        do {
+            return .success(try ManagedInstallerPairingRepairReviewProposal.decodeJSON(
+                data, intent: intent
+            ))
+        } catch { return .failure(.rejected) }
     }
 
     func executeReviewedProductRemoval(
