@@ -218,6 +218,9 @@ struct MacOSManagedInstallerProductWorkerRunner:
                 || reviewIntent?.canonicalJSONData() == canonicalRequest
                 || repairReviewIntent?.canonicalJSONData() == canonicalRequest
                 || repairPreflightRequest?.canonicalJSONData() == canonicalRequest
+                || ManagedInstallerEPProviderRegistrationRequest.isCanonicalWorkerRequest(
+                    canonicalRequest
+                )
                 || lifecycleIntent?.canonicalJSONData() == canonicalRequest
                 || lifecycleRequest?.canonicalJSONData() == canonicalRequest
                 || preserveRecovery?.canonicalJSONData() == canonicalRequest

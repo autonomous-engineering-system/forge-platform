@@ -62,6 +62,41 @@ struct ManagedInstallerEPProviderRegistrationRequest: Equatable, Sendable {
             "physical_evidence_reference": .string(physicalEvidenceReference),
         ]))
     }
+
+    /// Schema gate for the sealed worker runner. The worker still rechecks
+    /// the request against its root-owned plan and product readback.
+    static func isCanonicalWorkerRequest(_ data: Data) -> Bool {
+        guard !data.isEmpty, data.count <= 4 * 1_024,
+              var reader = try? StrictJSONResourceReader(data: data),
+              let fields = try? reader.parseDocument().objectValue,
+              Set(fields.keys) == Set([
+                  "schema", "operation_id", "stable_plan_fingerprint",
+                  "composition_id", "manifest_digest", "deployment_id",
+                  "ep_instance_id", "provider", "physical_evidence_reference",
+              ]), fields["schema"]?.stringValue == schema,
+              let operationID = fields["operation_id"]?.stringValue,
+              ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+              let stable = fields["stable_plan_fingerprint"]?.stringValue,
+              CompositionCatalogValidation.isTaggedSHA256(stable),
+              let composition = fields["composition_id"]?.stringValue,
+              CompositionCatalogValidation.isCompositionIdentity(composition),
+              let manifest = fields["manifest_digest"]?.stringValue,
+              CompositionCatalogValidation.isTaggedSHA256(manifest),
+              let deployment = fields["deployment_id"]?.stringValue,
+              ManagedPythonRuntimeStagingValidation.isOperationID(deployment),
+              let instance = fields["ep_instance_id"]?.stringValue,
+              ManagedPythonRuntimeStagingValidation.isOperationID(instance),
+              let providerRaw = fields["provider"]?.stringValue,
+              ProviderID(rawValue: providerRaw) != nil,
+              let physical = fields["physical_evidence_reference"]?.stringValue,
+              physical.range(
+                  of: "^receipt:provider-observation-[0-9a-f]{64}$",
+                  options: .regularExpression
+              ) != nil,
+              StrictSignedJSON.canonicalPayload(from: .object(fields)) == data
+        else { return false }
+        return true
+    }
 }
 
 public struct ManagedInstallerEPProviderRegistrationReceipt: Equatable, Sendable {
