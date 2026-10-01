@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -155,6 +158,25 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
             self.local_release.index("read_forge_update_resources(worker)"),
             self.local_release.index("codesign --force"),
         )
+
+    def test_local_signer_resolves_symlinked_macos_temp_directory(self) -> None:
+        work_assignment = next(
+            line for line in self.local_release.splitlines() if line.startswith('WORK=')
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            real = Path(temporary) / 'real'
+            real.mkdir()
+            alias = Path(temporary) / 'alias'
+            alias.symlink_to(real, target_is_directory=True)
+            result = subprocess.run(
+                ['bash', '-c', work_assignment + '\nprintf "%s" "$WORK"'],
+                env={**os.environ, 'TMPDIR': str(alias)},
+                capture_output=True, text=True, check=True,
+            )
+            work = Path(result.stdout)
+            self.assertEqual(work.parent, real.resolve())
+            self.assertTrue(work.is_dir())
+            work.rmdir()
 
     def test_offline_signer_packages_worker_before_apple_signing(self) -> None:
         builder = self.offline_release.index("scripts/build_installer_product_worker.py")
