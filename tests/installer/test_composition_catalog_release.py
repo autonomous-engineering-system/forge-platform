@@ -441,6 +441,20 @@ class CompositionCatalogReleaseTests(unittest.TestCase):
         self.assertNotIn("security export", local)
         self.assertNotIn("set-key-partition-list", local)
 
+    def test_protected_catalog_workflow_binds_each_reviewed_manifest_path(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        for required in (
+            "additional_composition_manifests:",
+            "len(additional) > 7",
+            "catalog input paths must be unique",
+            "manifests_json=",
+            "git ls-files -- \"$path\"",
+            "MANIFESTS_JSON:",
+            'manifest_args+=(--manifest "$path" --manifest-asset-name "$asset")',
+            '"${manifest_args[@]}"',
+        ):
+            self.assertIn(required, workflow)
+
     def test_catalog_and_installer_share_one_exclusive_signing_lock(self) -> None:
         installer = (ROOT / "scripts/run_local_macos_installer_release.sh").read_text(encoding="utf-8")
         catalog = LOCAL_RELEASE.read_text(encoding="utf-8")
