@@ -138,6 +138,17 @@ fi
 
 xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
+# Stapling may materialize the legacy top-level CodeResources copy under the
+# offline signer's umask. Qualify both manifests again after the last bundle
+# mutation so the published archive remains readable when installed root-owned.
+for code_resource in "$APP/Contents/_CodeSignature/CodeResources" "$APP/Contents/CodeResources"; do
+  if [[ "$code_resource" == "$APP/Contents/CodeResources" && ! -e "$code_resource" && ! -L "$code_resource" ]]; then
+    continue
+  fi
+  test -f "$code_resource" && test ! -L "$code_resource" || fail stapled-code-resource-invalid
+  chmod 644 "$code_resource"
+  test "$(stat -f %Lp "$code_resource")" = 644 || fail stapled-code-resource-mode-invalid
+done
 spctl --assess --type execute --verbose=4 "$APP" >"$WORK/metadata/gatekeeper.txt" 2>&1 ||
   fail gatekeeper-assessment-failed
 codesign --verify --strict --deep "$APP"

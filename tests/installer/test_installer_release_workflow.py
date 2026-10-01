@@ -168,6 +168,9 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('chmod 644 "$code_resource"', signer)
         self.assertIn('signed-code-resource-mode-invalid', signer)
         self.assertIn('final-archive-code-resource-mode-invalid', signer)
+        self.assertIn('stapled-code-resource-mode-invalid', signer)
+        self.assertLess(signer.index('xcrun stapler validate "$APP"'), signer.index('stapled-code-resource-mode-invalid'))
+        self.assertLess(signer.index('stapled-code-resource-mode-invalid'), signer.index('spctl --assess'))
         self.assertLess(signer.index('chmod 644 "$code_resource"'), signer.index('codesign --verify --strict --deep "$APP"'))
         self.assertLess(signer.index('final-archive-code-resource-mode-invalid'), signer.index('xcrun stapler validate -v "$CARRIER_APP"'))
 
