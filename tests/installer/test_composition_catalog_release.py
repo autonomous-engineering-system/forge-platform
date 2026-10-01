@@ -440,6 +440,9 @@ class CompositionCatalogReleaseTests(unittest.TestCase):
             self.assertIn(required, local)
         self.assertNotIn("security export", local)
         self.assertNotIn("set-key-partition-list", local)
+        # The finalizer creates its output directory and rejects an existing one.
+        setup = local.split('finalize_signed_composition_catalog.py', 1)[0]
+        self.assertNotIn('"$WORK/release"', setup.split('mkdir -p "$WORK/metadata"', 1)[1].split('\n', 1)[0])
 
     def test_local_publisher_enumerates_every_safe_manifest_asset(self) -> None:
         local = LOCAL_RELEASE.read_text(encoding="utf-8")
