@@ -27,6 +27,10 @@ from .managed_preserved_lifecycle_proposal import (
     decode_native_preserved_lifecycle_review_intent,
     decode_native_preserved_lifecycle_review_proposal,
 )
+from .released_pairing_repair_review import (
+    INTENT_SCHEMA as REPAIR_REVIEW_INTENT_SCHEMA,
+    decode_repair_review_intent, decode_repair_review_proposal,
+)
 from .managed_preserved_lifecycle_request import (
     NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
     MAXIMUM_NATIVE_PRESERVED_LIFECYCLE_RECEIPT_BYTES,
@@ -298,6 +302,26 @@ def execute_removal_review_intent(
     return response
 
 
+def execute_repair_review_intent(
+    canonical_intent: bytes,
+    *,
+    service_loader: ServiceLoader = load_released_product_service,
+) -> bytes:
+    """Return only an independently correlated read-only repair proposal."""
+    intent = decode_repair_review_intent(canonical_intent)
+    service = service_loader()
+    if not isinstance(service, ManagedProductOperationHelperService):
+        raise InstallerProductWorkerUnavailable("repair review service is unavailable")
+    response = service.prepare_repair_review(canonical_intent)
+    try:
+        decode_repair_review_proposal(response, intent=intent)
+    except Exception as error:
+        raise InstallerProductWorkerUnavailable(
+            "repair review proposal was rejected"
+        ) from error
+    return response
+
+
 def execute_preserved_lifecycle_review_intent(
     canonical_intent: bytes,
     *,
@@ -408,6 +432,8 @@ def run(
             response = execute_ep_provider_registration(request, service_loader=service_loader)
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRODUCT_REMOVAL_REVIEW_INTENT_SCHEMA:
             response = execute_removal_review_intent(request, service_loader=service_loader)
+        elif isinstance(envelope, dict) and envelope.get("schema") == REPAIR_REVIEW_INTENT_SCHEMA:
+            response = execute_repair_review_intent(request, service_loader=service_loader)
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVED_LIFECYCLE_REVIEW_INTENT_SCHEMA:
             response = execute_preserved_lifecycle_review_intent(
                 request, service_loader=service_loader,

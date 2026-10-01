@@ -3,12 +3,15 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from hashlib import sha256
 import json
+from io import BytesIO
 import unittest
 
 from forge_platform.released_pairing_repair_review import (
     INTENT_SCHEMA, PROPOSAL_SCHEMA, ReleasedPairingRepairReviewError,
     decode_repair_review_intent, prepare_repair_review,
+    decode_repair_review_proposal,
 )
+from forge_platform.installer_product_worker import execute_repair_review_intent, run
 from forge_platform.managed_product_operation_dispatch import ManagedProductOperationDispatcher
 from forge_platform.managed_product_operation_service import (
     ManagedProductOperationHelperService, ManagedProductOperationServiceError,
@@ -79,6 +82,9 @@ class ReleasedRepairReviewTests(unittest.TestCase):
         self.assertNotIn(str(self.route.forge_target.data_root).encode(), first)
         self.assertEqual(self.fixture.registry.load("deployment-a"), before)
         self.assertEqual(self.fixture.registry.load("deployment-b"), sibling)
+        self.assertEqual(decode_repair_review_proposal(
+            first, intent=decode_repair_review_intent(self.intent()),
+        ), result)
 
     def test_malformed_or_stale_intent_fails_closed(self):
         valid = self.intent()
@@ -128,6 +134,25 @@ class ReleasedRepairReviewTests(unittest.TestCase):
             service.prepare_repair_review(
                 self.intent(installed_manifest_sha256="sha256:" + "0" * 64)
             )
+        raw = execute_repair_review_intent(self.intent(), service_loader=lambda: service)
+        self.assertEqual(json.loads(raw)["schema"], PROPOSAL_SCHEMA)
+        output = BytesIO()
+        self.assertEqual(run(BytesIO(self.intent()), output, service_loader=lambda: service), 0)
+        self.assertEqual(output.getvalue(), raw)
+
+    def test_worker_rejects_substituted_proposal(self):
+        original = json.loads(self.prepare(self.intent()))
+        for change in (
+            {"operation_id": "repair-b"},
+            {"confirmation_required": False},
+            {"component_diffs": []},
+            {"reviewed_plan_fingerprint": "sha256:invalid"},
+        ):
+            with self.subTest(change=change), self.assertRaises(ReleasedPairingRepairReviewError):
+                decode_repair_review_proposal(
+                    canonical(original | change),
+                    intent=decode_repair_review_intent(self.intent()),
+                )
 
 
 if __name__ == "__main__":
