@@ -570,6 +570,51 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertEqual(readyCalls, 1)
     }
 
+    func testLegacyHelperReplacementRequiresConsentAndExactNativeResult() async throws {
+        let current = try release("1.2.3")
+        let registrar = CLIHelperRegistrarSpy(result: .ready(
+            try ManagedInstallerPrivilegedHelperRegistrationReceipt(status: .enabled)
+        ))
+        let startup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator())
+        )
+        let denied = await run(
+            ["helper", "replace-qualification", "--non-interactive"],
+            startup: startup, version: "1.2.3",
+            replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(denied.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let callsAfterDenial = await registrar.calls()
+        XCTAssertEqual(callsAfterDenial, 0)
+
+        let replaced = await run(
+            ["helper", "replace-qualification", "--yes", "--non-interactive", "--json"],
+            startup: startup, version: "1.2.3",
+            replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(replaced.code, InstallerCLIExitCode.success.rawValue)
+        XCTAssertTrue(replaced.stdout.joined().contains("helper-enabled"))
+        let callsAfterReplacement = await registrar.calls()
+        XCTAssertEqual(callsAfterReplacement, 1)
+
+        let interactivelyConfirmed = await run(
+            ["helper", "replace-qualification", "--json"],
+            startup: startup, version: "1.2.3",
+            replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(interactivelyConfirmed.code, InstallerCLIExitCode.success.rawValue)
+        let callsAfterInteractiveConfirmation = await registrar.calls()
+        XCTAssertEqual(callsAfterInteractiveConfirmation, 2)
+
+        let mismatch = await run(
+            ["helper", "replace-qualification", "--yes", "--json"],
+            startup: startup, version: "1.2.3",
+            replacement: { _ in .failed(.registeredParentMismatch) }
+        )
+        XCTAssertEqual(mismatch.code, InstallerCLIExitCode.executionFailed.rawValue)
+        XCTAssertTrue(mismatch.stdout.joined().contains("registered-parent-mismatch"))
+    }
+
     func testHelperRegistrationPreservesApprovalFailureAndReleaseDrift() async throws {
         let current = try release("1.2.3")
         let next = try release("1.2.4")
@@ -592,6 +637,8 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             .serviceUnavailable,
             .statusDrift,
             .registeredParentMismatch,
+            .unregistrationFailed,
+            .transitionBusy,
         ] {
             let failed = await run(
                 ["helper", "register", "--yes"],
@@ -642,6 +689,9 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         confirmation: Bool = true,
         registration: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
             .failed(.serviceUnavailable)
+        },
+        replacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
+            .failed(.serviceUnavailable)
         }
     ) async -> (code: Int32, stdout: [String], stderr: [String]) {
         let output = LockedStrings()
@@ -655,6 +705,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             },
             confirm: { _ in confirmation },
             registerHelper: registration,
+            replaceQualificationHelper: replacement,
             stdout: { output.append($0) },
             stderr: { errors.append($0) }
         )

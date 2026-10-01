@@ -109,13 +109,19 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
             let controller = MacOSManagedInstallerPrivilegedHelperServiceController(
                 statusReader: { native },
                 registrar: { registered.increment() },
-                parentVersionReader: { try? InstallerVersion("0.3.5") }
+                parentVersionReader: { try? InstallerVersion("0.3.5") },
+                idleParentVersionReader: { try? InstallerVersion("0.2.4") },
+                jobAbsenceReader: { false },
+                unregistrar: { registered.increment() }
             )
             XCTAssertEqual(controller.readStatus(), expected)
             XCTAssertEqual(controller.readRegisteredParentVersion(), try InstallerVersion("0.3.5"))
+            XCTAssertEqual(controller.readIdleRegisteredParentVersion(), try InstallerVersion("0.2.4"))
+            XCTAssertFalse(controller.readSystemJobAbsent())
             try controller.register()
+            try controller.unregister()
         }
-        XCTAssertEqual(registered.value(), 4)
+        XCTAssertEqual(registered.value(), 8)
     }
 
     func testEnabledOldOrUnreadableParentFailsClosed() async throws {
@@ -143,6 +149,23 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
         """
         XCTAssertEqual(RegisteredInstallerHelperParentReader.parse(valid),
                        try InstallerVersion("0.3.5"))
+        XCTAssertEqual(RegisteredInstallerHelperParentReader.parseIdle(
+            valid + "\nstate = not running\nruns = 0\n"
+        ), try InstallerVersion("0.3.5"))
+        XCTAssertNil(RegisteredInstallerHelperParentReader.parseIdle(valid))
+        XCTAssertNil(RegisteredInstallerHelperParentReader.parseIdle(
+            valid + "\nstate = running\nruns = 1\n"
+        ))
+        let absentOutput = "Bad request.\nCould not find service \"\(label)\" in domain for system\n"
+        XCTAssertTrue(RegisteredInstallerHelperParentReader.isAbsent(
+            status: 113, output: absentOutput
+        ))
+        XCTAssertFalse(RegisteredInstallerHelperParentReader.isAbsent(
+            status: 0, output: absentOutput
+        ))
+        XCTAssertFalse(RegisteredInstallerHelperParentReader.isAbsent(
+            status: 113, output: absentOutput + "extra"
+        ))
         XCTAssertNil(RegisteredInstallerHelperParentReader.parse(
             valid.replacingOccurrences(of: "0.3.5", with: "garbage")
         ))
@@ -161,10 +184,215 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
         // CI hosts may have no installer daemon. Either result is an observation;
         // the coordinator still rejects nil or a version other than its own.
         let observed = RegisteredInstallerHelperParentReader().readVersion()
+        _ = RegisteredInstallerHelperParentReader().readIdleVersion()
+        XCTAssertFalse(RegisteredInstallerHelperParentReader().readAbsent())
         if let observed {
             XCTAssertFalse(observed.description.isEmpty)
         }
     }
+
+    func testLegacyQualificationTransitionRequiresIdleExactParentAndIsIdempotent() async throws {
+        let current = try InstallerVersion("0.3.6")
+        let service = LegacyTransitionService()
+        let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator(service: service)
+        let first = await coordinator.replaceLegacyQualification(expectedVersion: current)
+        XCTAssertNotNil(first.readyReceipt)
+        XCTAssertEqual(service.counts(), [1, 1])
+        let absent = LegacyTransitionService(notFoundAfterUnregister: true)
+        let absentResult = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: absent
+        ).replaceLegacyQualification(expectedVersion: current)
+        XCTAssertNotNil(absentResult.readyReceipt)
+        XCTAssertEqual(absent.counts(), [1, 1])
+        let appScopedStatus = LegacyTransitionService(reportedStatusInitiallyNotRegistered: true)
+        let appScopedResult = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: appScopedStatus
+        ).replaceLegacyQualification(expectedVersion: current)
+        XCTAssertNotNil(appScopedResult.readyReceipt)
+        XCTAssertEqual(appScopedStatus.counts(), [1, 1])
+        let duplicate = await coordinator.replaceLegacyQualification(expectedVersion: current)
+        XCTAssertEqual(duplicate.failure, .registeredParentMismatch)
+        XCTAssertEqual(service.counts(), [1, 1])
+
+        for candidate in [
+            LegacyTransitionService(idle: false),
+            LegacyTransitionService(oldVersion: "0.2.3"),
+        ] {
+            let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+                service: candidate
+            ).replaceLegacyQualification(expectedVersion: current)
+            XCTAssertEqual(result.failure, .registeredParentMismatch)
+            XCTAssertEqual(candidate.counts(), [0, 0])
+        }
+    }
+
+    func testLegacyQualificationTransitionFailureAndRegistrationResume() async throws {
+        let current = try InstallerVersion("0.3.6")
+        let denied = LegacyTransitionService(unregisterFails: true)
+        let deniedResult = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: denied
+        ).replaceLegacyQualification(expectedVersion: current)
+        XCTAssertEqual(deniedResult.failure, .unregistrationFailed)
+        XCTAssertEqual(denied.counts(), [1, 0])
+
+        let drift = LegacyTransitionService(staysEnabledAfterUnregister: true)
+        let driftResult = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: drift
+        ).replaceLegacyQualification(expectedVersion: current)
+        XCTAssertEqual(driftResult.failure, .statusDrift)
+        XCTAssertEqual(drift.counts(), [1, 0])
+        let ambiguousAbsence = LegacyTransitionService(jobAbsentReadbackFails: true)
+        let ambiguousResult = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: ambiguousAbsence
+        ).replaceLegacyQualification(expectedVersion: current)
+        XCTAssertEqual(ambiguousResult.failure, .statusDrift)
+        XCTAssertEqual(ambiguousAbsence.counts(), [1, 0])
+
+        let interrupted = LegacyTransitionService(registerFails: true)
+        let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator(service: interrupted)
+        let interruptedResult = await coordinator.replaceLegacyQualification(
+            expectedVersion: current
+        )
+        XCTAssertEqual(interruptedResult.failure, .registrationFailed)
+        XCTAssertEqual(interrupted.counts(), [1, 1])
+        interrupted.allowRegistration()
+        let resumed = await coordinator.ensureRegistered(expectedVersion: current)
+        XCTAssertNotNil(resumed.readyReceipt)
+        XCTAssertEqual(interrupted.counts(), [1, 2])
+    }
+
+    func testRegistrationAndTransitionShareCrossProcessLease() async throws {
+        let version = try InstallerVersion("0.3.6")
+        let busy = RegistrationLockStub(failsAcquisition: true)
+        let old = LegacyTransitionService()
+        let blocked = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: old, operationLock: busy
+        ).replaceLegacyQualification(expectedVersion: version)
+        XCTAssertEqual(blocked.failure, .transitionBusy)
+        XCTAssertEqual(old.counts(), [0, 0])
+
+        let lease = RegistrationLockStub()
+        let transition = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: old, operationLock: lease
+        ).replaceLegacyQualification(expectedVersion: version)
+        XCTAssertNotNil(transition.readyReceipt)
+        XCTAssertEqual(lease.counts(), [1, 1])
+        let ready = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: old, operationLock: lease
+        ).ensureRegistered(expectedVersion: version)
+        XCTAssertNotNil(ready.readyReceipt)
+        XCTAssertEqual(lease.counts(), [2, 2])
+
+        let badRelease = RegistrationLockStub(failsRelease: true)
+        let releaseFailure = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: old, operationLock: badRelease
+        ).ensureRegistered(expectedVersion: version)
+        XCTAssertEqual(releaseFailure.failure, .transitionBusy)
+    }
+}
+
+private final class RegistrationLockStub:
+    InstallerSelfUpdateOperationLocking, InstallerSelfUpdateOperationLock, @unchecked Sendable {
+    private let lock = NSLock()
+    private let failsAcquisition: Bool
+    private let failsRelease: Bool
+    private var acquisitions = 0
+    private var releases = 0
+
+    init(failsAcquisition: Bool = false, failsRelease: Bool = false) {
+        self.failsAcquisition = failsAcquisition
+        self.failsRelease = failsRelease
+    }
+
+    func acquireExclusiveSelfUpdateOperationLock()
+        -> Result<any InstallerSelfUpdateOperationLock, InstallerSelfUpdateFailure> {
+        lock.withLock { acquisitions += 1 }
+        return failsAcquisition
+            ? .failure(InstallerSelfUpdateFailure(.selfUpdateOperationLockUnavailable))
+            : .success(self)
+    }
+
+    func releaseExclusiveSelfUpdateOperationLock() -> Result<Void, InstallerSelfUpdateFailure> {
+        lock.withLock { releases += 1 }
+        return failsRelease
+            ? .failure(InstallerSelfUpdateFailure(.selfUpdateOperationLockUnavailable))
+            : .success(())
+    }
+
+    func counts() -> [Int] { lock.withLock { [acquisitions, releases] } }
+}
+
+private final class LegacyTransitionService:
+    ManagedInstallerPrivilegedHelperServiceControlling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var enabled = true
+    private var currentIsNew = false
+    private var unregisterCount = 0
+    private var registerCount = 0
+    private var registerFails: Bool
+    private let unregisterFails: Bool
+    private let staysEnabledAfterUnregister: Bool
+    private let notFoundAfterUnregister: Bool
+    private let reportedStatusInitiallyNotRegistered: Bool
+    private let jobAbsentReadbackFails: Bool
+    private let idle: Bool
+    private let oldVersion: String
+
+    init(idle: Bool = true, oldVersion: String = "0.2.4",
+         unregisterFails: Bool = false, registerFails: Bool = false,
+         staysEnabledAfterUnregister: Bool = false,
+         notFoundAfterUnregister: Bool = false,
+         reportedStatusInitiallyNotRegistered: Bool = false,
+         jobAbsentReadbackFails: Bool = false) {
+        self.idle = idle
+        self.oldVersion = oldVersion
+        self.unregisterFails = unregisterFails
+        self.registerFails = registerFails
+        self.staysEnabledAfterUnregister = staysEnabledAfterUnregister
+        self.notFoundAfterUnregister = notFoundAfterUnregister
+        self.reportedStatusInitiallyNotRegistered = reportedStatusInitiallyNotRegistered
+        self.jobAbsentReadbackFails = jobAbsentReadbackFails
+    }
+
+    func readStatus() -> ManagedInstallerPrivilegedHelperStatus {
+        lock.withLock {
+            if enabled && currentIsNew { return .enabled }
+            if enabled { return reportedStatusInitiallyNotRegistered ? .notRegistered : .enabled }
+            return notFoundAfterUnregister ? .notFound : .notRegistered
+        }
+    }
+
+    func readRegisteredParentVersion() -> InstallerVersion? {
+        lock.withLock { try? InstallerVersion(currentIsNew ? "0.3.6" : oldVersion) }
+    }
+
+    func readIdleRegisteredParentVersion() -> InstallerVersion? {
+        lock.withLock { idle && enabled && !currentIsNew ? try? InstallerVersion(oldVersion) : nil }
+    }
+
+    func readSystemJobAbsent() -> Bool {
+        lock.withLock { !enabled && !jobAbsentReadbackFails }
+    }
+
+    func unregister() throws {
+        try lock.withLock {
+            unregisterCount += 1
+            if unregisterFails { throw ManagedInstallerPrivilegedHelperRegistrationFailure.unregistrationFailed }
+            if !staysEnabledAfterUnregister { enabled = false }
+        }
+    }
+
+    func register() throws {
+        try lock.withLock {
+            registerCount += 1
+            if registerFails { throw ManagedInstallerPrivilegedHelperRegistrationFailure.registrationFailed }
+            enabled = true
+            currentIsNew = true
+        }
+    }
+
+    func allowRegistration() { lock.withLock { registerFails = false } }
+    func counts() -> [Int] { lock.withLock { [unregisterCount, registerCount] } }
 }
 
 private final class LockedCounter: @unchecked Sendable {
@@ -202,6 +430,8 @@ private final class HelperServiceController:
     }
 
     func readRegisteredParentVersion() -> InstallerVersion? { parentVersion }
+    func readIdleRegisteredParentVersion() -> InstallerVersion? { parentVersion }
+    func readSystemJobAbsent() -> Bool { false }
 
     func register() throws {
         try lock.withLock {
@@ -211,6 +441,8 @@ private final class HelperServiceController:
             }
         }
     }
+
+    func unregister() throws {}
 
     func registerCount() -> Int { lock.withLock { registrations } }
     func statusReadCount() -> Int { lock.withLock { statusReads } }

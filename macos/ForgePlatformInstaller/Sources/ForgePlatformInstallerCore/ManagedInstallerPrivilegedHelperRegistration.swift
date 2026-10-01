@@ -26,6 +26,8 @@ public enum ManagedInstallerPrivilegedHelperRegistrationFailure:
     case serviceUnavailable
     case statusDrift
     case registeredParentMismatch
+    case unregistrationFailed
+    case transitionBusy
 }
 
 public struct ManagedInstallerPrivilegedHelperRegistrationReceipt:
@@ -58,7 +60,10 @@ public enum ManagedInstallerPrivilegedHelperRegistrationResult:
 public protocol ManagedInstallerPrivilegedHelperServiceControlling: Sendable {
     func readStatus() -> ManagedInstallerPrivilegedHelperStatus
     func readRegisteredParentVersion() -> InstallerVersion?
+    func readIdleRegisteredParentVersion() -> InstallerVersion?
+    func readSystemJobAbsent() -> Bool
     func register() throws
+    func unregister() throws
 }
 
 /// Thin ServiceManagement adapter. The daemon plist name is fixed by the
@@ -68,7 +73,10 @@ public final class MacOSManagedInstallerPrivilegedHelperServiceController:
     ManagedInstallerPrivilegedHelperServiceControlling, @unchecked Sendable {
     private let statusReader: @Sendable () -> SMAppService.Status
     private let registrar: @Sendable () throws -> Void
+    private let unregistrar: @Sendable () throws -> Void
     private let parentVersionReader: @Sendable () -> InstallerVersion?
+    private let idleParentVersionReader: @Sendable () -> InstallerVersion?
+    private let jobAbsenceReader: @Sendable () -> Bool
 
     public init() {
         let service = SMAppService.daemon(
@@ -76,17 +84,26 @@ public final class MacOSManagedInstallerPrivilegedHelperServiceController:
         )
         statusReader = { service.status }
         registrar = { try service.register() }
+        unregistrar = { try service.unregister() }
         parentVersionReader = { RegisteredInstallerHelperParentReader().readVersion() }
+        idleParentVersionReader = { RegisteredInstallerHelperParentReader().readIdleVersion() }
+        jobAbsenceReader = { RegisteredInstallerHelperParentReader().readAbsent() }
     }
 
     init(
         statusReader: @escaping @Sendable () -> SMAppService.Status,
         registrar: @escaping @Sendable () throws -> Void,
-        parentVersionReader: @escaping @Sendable () -> InstallerVersion? = { nil }
+        parentVersionReader: @escaping @Sendable () -> InstallerVersion? = { nil },
+        idleParentVersionReader: @escaping @Sendable () -> InstallerVersion? = { nil },
+        jobAbsenceReader: @escaping @Sendable () -> Bool = { false },
+        unregistrar: @escaping @Sendable () throws -> Void = {}
     ) {
         self.statusReader = statusReader
         self.registrar = registrar
+        self.unregistrar = unregistrar
         self.parentVersionReader = parentVersionReader
+        self.idleParentVersionReader = idleParentVersionReader
+        self.jobAbsenceReader = jobAbsenceReader
     }
 
     public func readStatus() -> ManagedInstallerPrivilegedHelperStatus {
@@ -106,12 +123,39 @@ public final class MacOSManagedInstallerPrivilegedHelperServiceController:
     public func readRegisteredParentVersion() -> InstallerVersion? {
         parentVersionReader()
     }
+
+    public func readIdleRegisteredParentVersion() -> InstallerVersion? {
+        idleParentVersionReader()
+    }
+
+    public func readSystemJobAbsent() -> Bool {
+        jobAbsenceReader()
+    }
+
+    public func unregister() throws {
+        try unregistrar()
+    }
 }
 
 /// Inspects only the fixed system job. The parent identity is an independent
 /// ServiceManagement readback, never a version supplied by the CLI caller.
 struct RegisteredInstallerHelperParentReader: Sendable {
     func readVersion() -> InstallerVersion? {
+        guard let observation = readObservation(), observation.status == 0 else { return nil }
+        return Self.parse(observation.output)
+    }
+
+    func readIdleVersion() -> InstallerVersion? {
+        guard let observation = readObservation(), observation.status == 0 else { return nil }
+        return Self.parseIdle(observation.output)
+    }
+
+    func readAbsent() -> Bool {
+        guard let observation = readObservation() else { return false }
+        return Self.isAbsent(status: observation.status, output: observation.output)
+    }
+
+    private func readObservation() -> (status: Int32, output: String)? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         process.arguments = ["print", "system/" + ManagedInstallerPrivilegedHelperContract.label]
@@ -138,10 +182,22 @@ struct RegisteredInstallerHelperParentReader: Sendable {
         }
         guard drained.wait(timeout: .now() + .seconds(2)) == .success,
               process.terminationReason == .exit,
-              process.terminationStatus == 0,
               let data = collector.collectedData(),
               let output = String(data: data, encoding: .utf8) else { return nil }
-        return Self.parse(output)
+        return (process.terminationStatus, output)
+    }
+
+    static func isAbsent(status: Int32, output: String) -> Bool {
+        guard status == 113 else { return false }
+        return output.trimmingCharacters(in: .whitespacesAndNewlines) ==
+            "Bad request.\nCould not find service \"\(ManagedInstallerPrivilegedHelperContract.label)\" in domain for system"
+    }
+
+    static func parseIdle(_ output: String) -> InstallerVersion? {
+        let lines = output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard lines.filter({ $0 == "state = not running" }).count == 1,
+              lines.filter({ $0 == "runs = 0" }).count == 1 else { return nil }
+        return parse(output)
     }
 
     static func parse(_ output: String) -> InstallerVersion? {
@@ -155,7 +211,7 @@ struct RegisteredInstallerHelperParentReader: Sendable {
         }
         guard lines.first == "system/\(ManagedInstallerPrivilegedHelperContract.label) = {",
               uniqueValue("managed_by") == "com.apple.xpc.ServiceManagement",
-              lines.filter({ $0 == "\"team-identifier\" => \"ZEML4LPXH4\"" }).count == 1,
+              lines.filter({ $0 == "\"team-identifier\" => \"\(ManagedInstallerHelperSignedParentBundleLocator.teamIdentifier)\"" }).count == 1,
               lines.filter({ $0 == "\"signing-identifier\" => \"\(ManagedInstallerPrivilegedHelperContract.label)\"" }).count == 1,
               uniqueValue("parent bundle identifier") ==
                 ManagedInstallerHelperSignedParentBundleLocator.bundleIdentifier,
@@ -172,12 +228,33 @@ struct RegisteredInstallerHelperParentReader: Sendable {
 /// route. User approval remains an explicit non-ready state.
 public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
     private let service: any ManagedInstallerPrivilegedHelperServiceControlling
+    private let operationLock: (any InstallerSelfUpdateOperationLocking)?
 
-    public init(service: any ManagedInstallerPrivilegedHelperServiceControlling) {
+    public init(
+        service: any ManagedInstallerPrivilegedHelperServiceControlling,
+        operationLock: (any InstallerSelfUpdateOperationLocking)? = nil
+    ) {
         self.service = service
+        self.operationLock = operationLock
+    }
+
+    public static func production(
+        service: any ManagedInstallerPrivilegedHelperServiceControlling
+    ) -> ManagedInstallerPrivilegedHelperRegistrationCoordinator? {
+        guard let root = try? MacOSInstallerUserStateRoot.prepare() else { return nil }
+        return Self(service: service,
+                    operationLock: FileInstallerSelfUpdateOperationLock(rootDirectory: root))
     }
 
     public func ensureRegistered(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            ensureRegisteredWhileLocked(expectedVersion: expectedVersion)
+        }
+    }
+
+    private func ensureRegisteredWhileLocked(
         expectedVersion: InstallerVersion
     ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
         switch service.readStatus() {
@@ -209,6 +286,62 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
                 return .failed(.serviceUnavailable)
             }
         }
+    }
+
+    /// One-time transition from the known idle 0.2.4 qualification daemon.
+    /// A crash after unregister leaves a visible NOT_REGISTERED state; the
+    /// ordinary fixed-label `register` route can safely finish from there.
+    public func replaceLegacyQualification(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            replaceLegacyQualificationWhileLocked(expectedVersion: expectedVersion)
+        }
+    }
+
+    private func replaceLegacyQualificationWhileLocked(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        let initialStatus = service.readStatus()
+        guard let legacy = try? InstallerVersion("0.2.4"),
+              legacy < expectedVersion,
+              initialStatus != .requiresApproval,
+              service.readRegisteredParentVersion() == legacy,
+              service.readIdleRegisteredParentVersion() == legacy,
+              service.readStatus() == initialStatus,
+              service.readRegisteredParentVersion() == legacy,
+              service.readIdleRegisteredParentVersion() == legacy else {
+            return .failed(.registeredParentMismatch)
+        }
+        do {
+            try service.unregister()
+        } catch {
+            return .failed(.unregistrationFailed)
+        }
+        guard service.readSystemJobAbsent() else {
+            return .failed(.statusDrift)
+        }
+        switch service.readStatus() {
+        case .notRegistered, .notFound:
+            return ensureRegisteredWhileLocked(expectedVersion: expectedVersion)
+        case .enabled, .requiresApproval:
+            return .failed(.statusDrift)
+        }
+    }
+
+    private func withRegistrationLock(
+        _ operation: () -> ManagedInstallerPrivilegedHelperRegistrationResult
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        guard let operationLock else { return operation() }
+        guard case .success(let lease) = operationLock
+            .acquireExclusiveSelfUpdateOperationLock() else {
+            return .failed(.transitionBusy)
+        }
+        let result = operation()
+        guard case .success = lease.releaseExclusiveSelfUpdateOperationLock() else {
+            return .failed(.transitionBusy)
+        }
+        return result
     }
 
     private func verifiedReady(

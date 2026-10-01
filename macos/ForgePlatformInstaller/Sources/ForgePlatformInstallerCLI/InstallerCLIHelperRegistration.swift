@@ -7,9 +7,18 @@ enum InstallerCLIHelperRegistration {
 
     static let liveRegistrar: Registrar = { expectedVersion in
         let service = MacOSManagedInstallerPrivilegedHelperServiceController()
-        return await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+        guard let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator.production(
             service: service
-        ).ensureRegistered(expectedVersion: expectedVersion)
+        ) else { return .failed(.transitionBusy) }
+        return await coordinator.ensureRegistered(expectedVersion: expectedVersion)
+    }
+
+    static let liveQualificationReplacer: Registrar = { expectedVersion in
+        let service = MacOSManagedInstallerPrivilegedHelperServiceController()
+        guard let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator.production(
+            service: service
+        ) else { return .failed(.transitionBusy) }
+        return await coordinator.replaceLegacyQualification(expectedVersion: expectedVersion)
     }
 
     static func run(
@@ -18,11 +27,14 @@ enum InstallerCLIHelperRegistration {
         currentRelease: VerifiedInstallerRelease,
         options: InstallerCLIOptions,
         confirm: ForgePlatformInstallerCLIApplication.Confirmation,
-        register: Registrar
+        register: Registrar,
+        replacingQualification: Bool = false
     ) async -> InstallerCLIResult {
         if !options.assumeYes {
             let accepted = options.nonInteractive ? false : await confirm(
-                "Registreer de geverifieerde installer-helper als systeemdaemon?"
+                replacingQualification
+                    ? "Vervang de exacte inactieve 0.2.4-kwalificatiehelper door de geverifieerde systeemhelper?"
+                    : "Registreer de geverifieerde installer-helper als systeemdaemon?"
             )
             if !accepted {
                 return InstallerCLIResult(
@@ -72,6 +84,8 @@ enum InstallerCLIHelperRegistration {
             case .serviceUnavailable: reason = "service-unavailable"
             case .statusDrift: reason = "status-drift"
             case .registeredParentMismatch: reason = "registered-parent-mismatch"
+            case .unregistrationFailed: reason = "unregistration-failed"
+            case .transitionBusy: reason = "transition-busy"
             }
             return InstallerCLIResult(
                 exitCode: .executionFailed,
