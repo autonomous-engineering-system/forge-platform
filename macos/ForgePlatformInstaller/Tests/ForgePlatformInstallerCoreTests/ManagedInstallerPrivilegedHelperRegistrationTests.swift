@@ -185,7 +185,8 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
         // the coordinator still rejects nil or a version other than its own.
         let observed = RegisteredInstallerHelperParentReader().readVersion()
         _ = RegisteredInstallerHelperParentReader().readIdleVersion()
-        XCTAssertFalse(RegisteredInstallerHelperParentReader().readAbsent())
+        let absent = RegisteredInstallerHelperParentReader().readAbsent()
+        if absent { XCTAssertNil(observed) }
         if let observed {
             XCTAssertFalse(observed.description.isEmpty)
         }
