@@ -11,6 +11,7 @@ struct ManagedCompositionSessionPlanBuilder {
     private static let schemaV1 = "forge-platform.composition/v1"
     private static let schemaV2 = "forge-platform.composition/v2"
     private static let schemaV3 = "forge-platform.composition/v3"
+    private static let selectedDeploymentTarget = "selected-deployment"
     private static let rootFields: Set<String> = [
         "schema", "composition_id", "channel", "requires_installer",
         "host_requirements", "managed_tools", "python_runtime", "product_venvs",
@@ -94,7 +95,9 @@ struct ManagedCompositionSessionPlanBuilder {
             )
             let managedTools = try Self.managedTools(fields["managed_tools"])
             let requirements = try providerValues.map {
-                try Self.providerRequirement($0, schema: schema)
+                try Self.providerRequirement(
+                    $0, schema: schema, deployment: selectedDeployment
+                )
             }
             guard Set(requirements.map(\.id)).count == requirements.count,
                   Self.providerRequirements(requirements, bindTo: selectedDeployment) else {
@@ -277,7 +280,8 @@ struct ManagedCompositionSessionPlanBuilder {
 
     private static func providerRequirement(
         _ value: StrictJSONResourceValue,
-        schema: String
+        schema: String,
+        deployment: ManagedDeploymentTarget
     ) throws -> ProviderRequirement {
         guard let fields = value.objectValue else {
             throw ManagedCompositionSessionPlanFailure.rejected
@@ -368,13 +372,31 @@ struct ManagedCompositionSessionPlanBuilder {
         } else {
             runtime = nil
         }
+        let boundTarget: String
+        if target == selectedDeploymentTarget && schema == schemaV3 {
+            switch owner {
+            case .forgeRuntime:
+                boundTarget = deployment.exists
+                    ? deployment.forgeInstanceID ?? "" : deployment.id
+            case .engineeringPlatformServer:
+                boundTarget = deployment.exists
+                    ? deployment.engineeringPlatformInstanceID ?? "" : deployment.id
+            case .engineeringPlatformProjectAgent:
+                throw ManagedCompositionSessionPlanFailure.rejected
+            }
+            guard isSafeTargetIdentity(boundTarget) else {
+                throw ManagedCompositionSessionPlanFailure.rejected
+            }
+        } else {
+            boundTarget = target
+        }
         return ProviderRequirement(
             provider: provider,
             isRequired: required,
             minimumVersion: minimumVersion,
             credentialScope: scope,
             ownerComponent: owner,
-            targetIdentity: target,
+            targetIdentity: boundTarget,
             runtime: runtime
         )
     }

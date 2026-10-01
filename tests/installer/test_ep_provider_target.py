@@ -40,7 +40,7 @@ class ProductRunner:
         args = tuple(argv)
         self.calls.append(args)
         provider = args[args.index("--provider") + 1]
-        context = Path(args[args.index("--product-root") + 1]) / "instances" / "ep-prod" / "providers" / provider
+        context = Path(args[args.index("--product-root") + 1]) / "instances" / self.instance_id / "providers" / provider
         payload = {
             "provider": provider,
             "instance_id": self.instance_id,

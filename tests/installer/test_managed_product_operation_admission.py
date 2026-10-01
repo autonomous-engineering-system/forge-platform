@@ -27,6 +27,8 @@ from forge_platform.universal_installer import (
     CompositionManifest,
     DownloadIdentity,
     InstallerRequirement,
+    ProviderRequirement,
+    ProviderRuntimeRequirement,
     SemanticVersion,
 )
 from tests.installer.test_universal_installer import manifest_payload
@@ -365,6 +367,45 @@ class ManagedProductOperationAuthorityTests(unittest.TestCase):
                 current_installer_release=installer_release(),
             )
             self.assertIsNone(admitted.current_deployment)
+
+    def test_signed_provider_template_binds_each_reviewed_deployment(self) -> None:
+        runtime = ProviderRuntimeRequirement(
+            SemanticVersion.parse("1.0.0"), "tar.gz",
+            DownloadIdentity("https://example.invalid/provider.tar.gz", "sha256:" + "a" * 64),
+            "bin/provider", "sha256:" + "b" * 64,
+        )
+        template = replace(self.candidate, providers=(
+            ProviderRequirement("codex", True, None, "component", "forge-runtime",
+                                "selected-deployment", runtime),
+            ProviderRequirement("github-cli", True, None, "component",
+                                "engineering-platform-server", "selected-deployment", runtime),
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            registry = self._registry(Path(directory).resolve(), create=False)
+            for deployment in ("deployment-a", "deployment-b"):
+                payload = request_payload(template, installed=None, exists=False)
+                payload["deployment_id"] = deployment
+                payload["provider_target_ids"] = [
+                    f"codex:forge-runtime:{deployment}",
+                    f"github-cli:engineering-platform-server:{deployment}",
+                ]
+                payload["request_fingerprint"] = sha256(canonical({
+                    key: value for key, value in payload.items() if key != "request_fingerprint"
+                })).hexdigest()
+                admitted = admit_native_product_operation(
+                    decoded(payload), manifest=template, registry=registry,
+                    current_installer_release=installer_release(),
+                )
+                self.assertEqual(admitted.request.deployment_id, deployment)
+                payload["provider_target_ids"][0] = "codex:forge-runtime:other"
+                payload["request_fingerprint"] = sha256(canonical({
+                    key: value for key, value in payload.items() if key != "request_fingerprint"
+                })).hexdigest()
+                with self.assertRaises(ManagedProductOperationAdmissionError):
+                    admit_native_product_operation(
+                        decoded(payload), manifest=template, registry=registry,
+                        current_installer_release=installer_release(),
+                    )
 
     def test_admits_exact_single_component_install_and_existing_update(self) -> None:
         for identity in ("forge-runtime", "engineering-platform-server"):

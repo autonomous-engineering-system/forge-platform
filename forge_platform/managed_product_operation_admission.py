@@ -9,7 +9,7 @@ adapter, path, command, environment value, or credential can be selected.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 from pathlib import PurePosixPath
@@ -27,6 +27,7 @@ NATIVE_PRODUCT_OPERATION_REQUEST_SCHEMA = (
 )
 MAXIMUM_NATIVE_PRODUCT_OPERATION_REQUEST_BYTES = 128 * 1_024
 _COMPONENTS = frozenset({"forge-runtime", "engineering-platform-server"})
+_SELECTED_DEPLOYMENT_TARGET = "selected-deployment"
 _CHANGES = frozenset({"install", "update", "repair", "retain"})
 _FIELDS = frozenset({
     "schema", "stable_plan_fingerprint", "operation_id", "session_id",
@@ -315,8 +316,24 @@ def admit_native_product_operation(
         ):
             raise ManagedProductOperationAdmissionError("candidate artifact changed after review")
 
-    allowed_providers = {provider.key for provider in manifest.providers}
-    required_providers = {provider.key for provider in manifest.providers if provider.required}
+    bound_providers = []
+    for provider in manifest.providers:
+        if provider.target_identity != _SELECTED_DEPLOYMENT_TARGET:
+            bound_providers.append(provider)
+            continue
+        if provider.runtime is None or provider.owner_component not in _COMPONENTS:
+            raise ManagedProductOperationAdmissionError("provider target template is unsupported")
+        target = request.deployment_id
+        if request.deployment_exists:
+            target = (
+                request.forge_instance_id if provider.owner_component == "forge-runtime"
+                else request.engineering_platform_instance_id
+            )
+        if target is None:
+            raise ManagedProductOperationAdmissionError("provider target is unavailable")
+        bound_providers.append(replace(provider, target_identity=target))
+    allowed_providers = {provider.key for provider in bound_providers}
+    required_providers = {provider.key for provider in bound_providers if provider.required}
     requested_providers = set(request.provider_target_ids)
     if not required_providers <= requested_providers or not requested_providers <= allowed_providers:
         raise ManagedProductOperationAdmissionError("provider selection changed after review")

@@ -128,6 +128,50 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
         XCTAssertEqual(parsedRuntime.executableRelativePath, "codex-aarch64-apple-darwin")
     }
 
+    func testV3SignedProviderTemplateBindsTwoDeploymentsIndependently() throws {
+        let runtime: [String: Any] = [
+            "version": "0.147.0", "archive_kind": "tar.gz",
+            "artifact": ["url": "https://example.invalid/codex.tar.gz",
+                         "digest": "sha256:" + String(repeating: "a", count: 64)],
+            "executable_relative_path": "bin/codex",
+            "executable_digest": "sha256:" + String(repeating: "b", count: 64),
+        ]
+        let manifest = manifestData(
+            schema: "forge-platform.composition/v3",
+            providers: ["forge-runtime", "engineering-platform-server"].map { owner in
+                ["identity": "codex", "required": true, "minimum_version": "0.147.0",
+                 "credential_scope": "component", "owner_component": owner,
+                 "target_identity": "selected-deployment", "runtime": runtime] as [String: Any]
+            }
+        )
+        let freshA = try ManagedDeploymentTarget(id: "deployment-a", exists: false)
+        let freshB = try ManagedDeploymentTarget(id: "deployment-b", exists: false)
+        let existingB = try ManagedDeploymentTarget(
+            id: "deployment-b", exists: true,
+            forgeInstanceID: "forge-b", engineeringPlatformInstanceID: "ep-b"
+        )
+        for (target, expected) in [
+            (freshA, Set(["deployment-a"])),
+            (freshB, Set(["deployment-b"])),
+            (existingB, Set(["forge-b", "ep-b"])),
+        ] {
+            guard case .success(let plan) = try buildResult(manifest, deployment: target) else {
+                return XCTFail("expected exact target binding")
+            }
+            XCTAssertEqual(Set(plan.providerRequirements.compactMap(\.targetIdentity)), expected)
+            XCTAssertEqual(Set(plan.providerRequirements.map(\.id)).count, 2)
+            XCTAssertTrue(plan.providerRequirements.allSatisfy {
+                $0.targetIdentity != "selected-deployment"
+            })
+        }
+        let missingEP = try ManagedDeploymentTarget(
+            id: "deployment-b", exists: true, forgeInstanceID: "forge-b"
+        )
+        XCTAssertEqual(
+            try buildResult(manifest, deployment: missingEP), .failure(.rejected)
+        )
+    }
+
     func testV3ManifestRejectsUnsafeProviderExecutablePath() throws {
         let manifest = manifestData(
             schema: "forge-platform.composition/v3",
@@ -352,7 +396,8 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
 
     private func buildResult(
         _ manifest: Data,
-        approvedRuntime: String = managedPythonTestRuntime.identitySHA256
+        approvedRuntime: String = managedPythonTestRuntime.identitySHA256,
+        deployment: ManagedDeploymentTarget? = nil
     ) throws -> Result<VerifiedCompositionSessionPlan, ManagedCompositionSessionPlanFailure> {
         ManagedCompositionSessionPlanBuilder().build(
             sessionID: "managed-session-runtime-binding",
@@ -366,7 +411,7 @@ final class ManagedCompositionSessionPlanTests: XCTestCase {
             ),
             approvedPythonRuntimeIdentity: approvedRuntime,
             currentInstaller: try currentContext(),
-            selectedDeployment: existingDeployment()
+            selectedDeployment: deployment ?? existingDeployment()
         )
     }
 
