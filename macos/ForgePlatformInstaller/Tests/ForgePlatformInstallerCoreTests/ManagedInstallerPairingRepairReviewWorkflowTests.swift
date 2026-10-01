@@ -27,6 +27,34 @@ final class ManagedInstallerPairingRepairReviewWorkflowTests: XCTestCase {
         XCTAssertEqual(calls[0].engineeringPlatformInstanceID, "ep-one")
     }
 
+    func testOperationIdentityIsStableForRetryAndChangesWithInventoryEpoch() throws {
+        let target = try makeInventory().existing[0]
+        let release = VerifiedInstallerRelease(
+            version: try InstallerVersion("0.2.4"),
+            releasePage: "https://github.com/autonomous-engineering-system/forge-platform/releases/tag/installer-v0.2.4",
+            assetName: "forge-platform-installer-0.2.4-arm64.zip",
+            sha256: digest, signingKeyID: "installer-release-key"
+        )
+        let first = try ManagedInstallerPairingRepairOperationIdentity.derive(
+            target: target, inventoryEvidenceReference: "sha256:" + digest,
+            installerRelease: release
+        )
+        XCTAssertEqual(first, try ManagedInstallerPairingRepairOperationIdentity.derive(
+            target: target, inventoryEvidenceReference: "sha256:" + digest,
+            installerRelease: release
+        ))
+        XCTAssertNotEqual(first, try ManagedInstallerPairingRepairOperationIdentity.derive(
+            target: target,
+            inventoryEvidenceReference: "sha256:" + String(repeating: "b", count: 64),
+            installerRelease: release
+        ))
+        XCTAssertThrowsError(try ManagedInstallerPairingRepairOperationIdentity.derive(
+            target: makeInventory(paired: false).existing[0],
+            inventoryEvidenceReference: "sha256:" + digest,
+            installerRelease: release
+        ))
+    }
+
     func testUnavailableMalformedAndWrongTargetNeverReachReview() async throws {
         let inventory = try makeInventory()
         let coordinator = PairingRepairWorkflowCoordinator(

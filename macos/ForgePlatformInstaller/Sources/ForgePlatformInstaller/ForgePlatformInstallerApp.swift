@@ -40,6 +40,13 @@ final class InstallerWizardViewModel: ObservableObject {
         case blocked(String)
     }
 
+    enum PairingRepairReviewState {
+        case idle
+        case loading
+        case prepared(ManagedInstallerPairingRepairReviewSession)
+        case blocked(String)
+    }
+
     enum LifecycleReviewState {
         case idle
         case loading
@@ -63,6 +70,7 @@ final class InstallerWizardViewModel: ObservableObject {
 
     @Published private(set) var state: InstallerWizardState
     @Published private(set) var removalReview: RemovalReviewState = .idle
+    @Published private(set) var pairingRepairReview: PairingRepairReviewState = .idle
     @Published private(set) var lifecycleReview: LifecycleReviewState = .idle
     @Published private(set) var purgeRecovery: PurgeRecoveryState = .idle
     @Published private(set) var providerStage: ProviderStageState = .idle
@@ -78,12 +86,14 @@ final class InstallerWizardViewModel: ObservableObject {
     @Published private(set) var isReviewRequestInFlight = false
     @Published private(set) var isExecutionRequestInFlight = false
     @Published private(set) var isRemovalReviewRequestInFlight = false
+    @Published private(set) var isPairingRepairReviewInFlight = false
     @Published private(set) var isRemovalExecutionInFlight = false
     @Published private(set) var isLifecycleReviewRequestInFlight = false
     @Published private(set) var isLifecycleExecutionInFlight = false
     @Published private(set) var isPurgeRecoveryInFlight = false
     private var removalOperationKey: String?
     private var removalOperationID: String?
+    private var pairingRepairReviewGeneration = 0
 
     init(
         state: InstallerWizardState,
@@ -119,6 +129,7 @@ final class InstallerWizardViewModel: ObservableObject {
             return
         }
         resetRemovalReview()
+        resetPairingRepairReview()
         resetLifecycleReview()
         purgeRecovery = .idle
         let coordinator = coordinator
@@ -132,6 +143,7 @@ final class InstallerWizardViewModel: ObservableObject {
         guard !isRemovalExecutionInFlight else { return }
         if state.selectManagedDeployment(deploymentID) {
             resetRemovalReview()
+            resetPairingRepairReview()
             resetLifecycleReview()
             purgeRecovery = .idle
         }
@@ -261,6 +273,73 @@ final class InstallerWizardViewModel: ObservableObject {
         removalOperationKey = nil
         removalOperationID = nil
         isRemovalReviewRequestInFlight = false
+    }
+
+    func preparePairingRepairReview() {
+        guard state.step == .deployment,
+              case .selected(let deployment, let inventoryEvidence) =
+                  state.deploymentSelection,
+              deployment.exists,
+              deployment.forgeInstanceID != nil,
+              deployment.engineeringPlatformInstanceID != nil,
+              case .current(let release) = state.selfUpdate,
+              !isPairingRepairReviewInFlight,
+              !isRemovalExecutionInFlight,
+              !isLifecycleExecutionInFlight else { return }
+        let operationID: String
+        do {
+            operationID = try ManagedInstallerPairingRepairOperationIdentity.derive(
+                target: deployment,
+                inventoryEvidenceReference: inventoryEvidence,
+                installerRelease: release
+            )
+        } catch {
+            pairingRepairReview = .blocked(
+                "De exacte reparatie-identiteit kon niet worden bepaald."
+            )
+            return
+        }
+        isPairingRepairReviewInFlight = true
+        pairingRepairReview = .loading
+        pairingRepairReviewGeneration += 1
+        let generation = pairingRepairReviewGeneration
+        let workflow = ManagedInstallerPairingRepairReviewWorkflow(
+            coordinator: coordinator, currentRelease: release
+        )
+        Task { @MainActor [weak self] in
+            let result = await workflow.prepare(
+                operationID: operationID, deploymentID: deployment.id
+            )
+            guard let self,
+                  self.pairingRepairReviewGeneration == generation else { return }
+            self.isPairingRepairReviewInFlight = false
+            guard self.state.step == .deployment,
+                  case .selected(let current, let currentEvidence) =
+                      self.state.deploymentSelection,
+                  current == deployment,
+                  currentEvidence == inventoryEvidence,
+                  case .current(let currentRelease) = self.state.selfUpdate,
+                  currentRelease == release else {
+                self.pairingRepairReview = .blocked(
+                    "De selectie of installer-release is gewijzigd. Lees de inventaris opnieuw."
+                )
+                return
+            }
+            switch result {
+            case .success(let session):
+                self.pairingRepairReview = .prepared(session)
+            case .failure:
+                self.pairingRepairReview = .blocked(
+                    "Het exacte helpervoorstel is niet beschikbaar. Lees de inventaris opnieuw."
+                )
+            }
+        }
+    }
+
+    private func resetPairingRepairReview() {
+        pairingRepairReviewGeneration += 1
+        pairingRepairReview = .idle
+        isPairingRepairReviewInFlight = false
     }
 
     func prepareLifecycleReview(operation: String, component: String) {
@@ -705,6 +784,7 @@ final class InstallerWizardViewModel: ObservableObject {
             providerStage = .idle
         }
         resetRemovalReview()
+        resetPairingRepairReview()
     }
 }
 
@@ -1021,6 +1101,11 @@ private struct ManagedDeploymentSelectionScreen: View {
                 if deployment.exists, deployment.forgeInstanceID != nil {
                     removalReviewPanel(for: deployment)
                 }
+                if deployment.exists,
+                   deployment.forgeInstanceID != nil,
+                   deployment.engineeringPlatformInstanceID != nil {
+                    pairingRepairReviewPanel()
+                }
                 if deployment.exists {
                     lifecycleReviewPanel(for: deployment)
                 }
@@ -1187,6 +1272,41 @@ private struct ManagedDeploymentSelectionScreen: View {
             confirmingRemoval = true
         }
         .disabled(viewModel.isRemovalExecutionInFlight)
+    }
+
+    @ViewBuilder
+    private func pairingRepairReviewPanel() -> some View {
+        GroupBox("Forge↔EP-koppeling beoordelen") {
+            VStack(alignment: .leading, spacing: 10) {
+                Button("Lees reparatievoorstel") {
+                    viewModel.preparePairingRepairReview()
+                }
+                .disabled(viewModel.isPairingRepairReviewInFlight
+                    || viewModel.isRemovalExecutionInFlight
+                    || viewModel.isLifecycleExecutionInFlight)
+                switch viewModel.pairingRepairReview {
+                case .idle:
+                    Text("Er is nog geen exact helpervoorstel gelezen.")
+                        .foregroundStyle(.secondary)
+                case .loading:
+                    ProgressView("Exacte inventaris en helper-diff worden gelezen…")
+                case .blocked(let reason):
+                    FailureCallout(reason: reason)
+                case .prepared(let session):
+                    Text("EP / \(session.intent.engineeringPlatformInstanceID): NO_CHANGE")
+                    Text("Forge / \(session.intent.forgeInstanceID): REPAIR")
+                    Text("Operation ID: \(session.operationID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Registerrevisie: \(session.proposal.reviewedRevision)")
+                        .font(.caption.monospaced())
+                    Text("Planvingerafdruk: \(session.proposal.reviewedPlanFingerprint)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    Text("Dit voorstel leest alleen. Reparatie-uitvoering is nog niet beschikbaar.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     @ViewBuilder

@@ -405,6 +405,44 @@ final class InstallerWizardViewModelTests: XCTestCase {
         XCTAssertEqual(restarted.operationID, session.operationID)
     }
 
+    func testSelectedPairedDeploymentShowsStableReadOnlyRepairProposal() async throws {
+        let (state, inventory) = try removalSelectionState()
+        let coordinator = RemovalReviewGUICoordinator(inventory: inventory)
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.preparePairingRepairReview()
+        await waitForPairingRepairReview(on: model)
+        guard case .prepared(let session) = model.pairingRepairReview else {
+            return XCTFail("Exact helper repair review should be visible")
+        }
+        XCTAssertEqual(session.intent.forgeInstanceID, "forge-prod")
+        XCTAssertEqual(session.intent.engineeringPlatformInstanceID, "ep-prod")
+        XCTAssertEqual(session.proposal.reviewedRevision, 3)
+        let calls = await coordinator.pairingReviewCalls()
+        XCTAssertEqual(calls, [session.intent])
+        let executions = await coordinator.executionCallCount()
+        XCTAssertEqual(executions, 0)
+
+        let restarted = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        restarted.preparePairingRepairReview()
+        await waitForPairingRepairReview(on: restarted)
+        guard case .prepared(let again) = restarted.pairingRepairReview else {
+            return XCTFail("Restarted review should resolve the same operation")
+        }
+        XCTAssertEqual(again.operationID, session.operationID)
+    }
+
+    func testPairingRepairReviewBlocksUnavailableHelperInventory() async throws {
+        let (state, _) = try removalSelectionState()
+        let model = InstallerWizardViewModel(
+            state: state, coordinator: UnavailableInstallerWizardCoordinator()
+        )
+        model.preparePairingRepairReview()
+        await waitForPairingRepairReview(on: model)
+        guard case .blocked = model.pairingRepairReview else {
+            return XCTFail("Unavailable helper inventory must block repair review")
+        }
+    }
+
     func testRemovalReviewFailsClosedWhenHelperInventoryIsUnavailable() async throws {
         let (state, _) = try removalSelectionState()
         let model = InstallerWizardViewModel(
@@ -662,6 +700,16 @@ final class InstallerWizardViewModelTests: XCTestCase {
         XCTFail("The view model did not receive the removal review result")
     }
 
+    private func waitForPairingRepairReview(on model: InstallerWizardViewModel) async {
+        for _ in 0..<400 {
+            switch model.pairingRepairReview {
+            case .prepared, .blocked: return
+            case .idle, .loading: try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        XCTFail("The view model did not receive the pairing repair review")
+    }
+
     private func waitForLifecycleReview(on model: InstallerWizardViewModel) async {
         for _ in 0..<400 {
             switch model.lifecycleReview {
@@ -875,6 +923,7 @@ private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
     private let inventory: ManagedDeploymentInventory
     private let removalState: String
     private var intents: [ManagedInstallerProductRemovalReviewIntent] = []
+    private var pairingIntents: [ManagedInstallerPairingRepairReviewIntent] = []
     private var executionCalls = 0
 
     init(inventory: ManagedDeploymentInventory, removalState: String = "COMPLETE") {
@@ -947,6 +996,40 @@ private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
         }
     }
 
+    func preparePairingRepairReview(
+        _ intent: ManagedInstallerPairingRepairReviewIntent
+    ) async -> Result<
+        ManagedInstallerPairingRepairReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        pairingIntents.append(intent)
+        let digest = String(repeating: "a", count: 64)
+        let data = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPairingRepairReviewProposal.schema),
+            "intent_fingerprint": .string(intent.intentFingerprint),
+            "operation_id": .string(intent.operationID),
+            "deployment_id": .string(intent.deploymentID),
+            "reviewed_revision": .integer("3"),
+            "reviewed_deployment_sha256": .string(digest),
+            "reviewed_plan_fingerprint": .string("sha256:" + digest),
+            "deployment_action": .string("CREATE_OR_UPDATE"),
+            "confirmation_required": .boolean(true),
+            "component_diffs": .array([
+                .object(["component": .string("engineering-platform-server"),
+                         "instance_id": .string(intent.engineeringPlatformInstanceID),
+                         "action": .string("NO_CHANGE")]),
+                .object(["component": .string("forge-runtime"),
+                         "instance_id": .string(intent.forgeInstanceID),
+                         "action": .string("REPAIR")]),
+            ]),
+        ]))
+        do {
+            return .success(try ManagedInstallerPairingRepairReviewProposal.decodeJSON(
+                data, intent: intent
+            ))
+        } catch { return .failure(.rejected) }
+    }
+
     func executeReviewedProductRemoval(
         _ session: ManagedInstallerRemovalReviewSession
     ) async -> Result<
@@ -1003,6 +1086,7 @@ private actor RemovalReviewGUICoordinator: InstallerWizardCoordinator {
     }
 
     func reviewCalls() -> [ManagedInstallerProductRemovalReviewIntent] { intents }
+    func pairingReviewCalls() -> [ManagedInstallerPairingRepairReviewIntent] { pairingIntents }
     func executionCallCount() -> Int { executionCalls }
 }
 
