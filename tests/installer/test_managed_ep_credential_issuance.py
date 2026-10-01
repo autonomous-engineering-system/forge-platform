@@ -152,6 +152,44 @@ class EPCredentialIssuanceTests(unittest.TestCase):
         self.assertEqual(self.store.material, TOKEN_A)
         self.assertGreaterEqual(self.guard.require_current.call_count, 3)
 
+    def test_terminal_readback_survives_registry_commit_without_reissue(self):
+        issued = self.run_issue()
+        self.registry.load.return_value = None
+        self.assertEqual(self.coordinator.read_terminal(
+            operation_id="repair-A", reviewed_current=self.deployment,
+            credential_reference=REFERENCE,
+        ), issued)
+        self.assertEqual(self.issued, 1)
+
+    def test_terminal_readback_rejects_scope_store_and_journal_drift(self):
+        self.run_issue()
+        with self.assertRaisesRegex(ManagedEPCredentialIssuanceError, "selector"):
+            self.coordinator.read_terminal(
+                operation_id="repair-A", reviewed_current=self.deployment,
+                credential_reference="keychain://forge.ep/other",
+            )
+        self.registration.old.status.return_value = {"status": "ACTIVE"}
+        with self.assertRaisesRegex(ManagedEPCredentialIssuanceError, "consumer status"):
+            self.coordinator.read_terminal(
+                operation_id="repair-A", reviewed_current=self.deployment,
+                credential_reference=REFERENCE,
+            )
+        self.registration.old.status.return_value = {
+            "status": "REVOKED", "revoked_at": "2026-09-30 11:00:00",
+        }
+        self.store.material = TOKEN_B
+        with self.assertRaisesRegex(ManagedEPCredentialIssuanceError, "secure store changed"):
+            self.coordinator.read_terminal(
+                operation_id="repair-A", reviewed_current=self.deployment,
+                credential_reference=REFERENCE,
+            )
+        (self.root / "repair-A.json").write_text('{"changed":true}')
+        with self.assertRaisesRegex(ManagedEPCredentialIssuanceError, "journal is invalid"):
+            self.coordinator.read_terminal(
+                operation_id="repair-A", reviewed_current=self.deployment,
+                credential_reference=REFERENCE,
+            )
+
     def test_lost_issue_response_revokes_uncertain_id_on_replay(self):
         original = self.registration.new._command.side_effect
 

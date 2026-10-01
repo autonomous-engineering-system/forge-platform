@@ -37,6 +37,9 @@ def digest(value):
     ).encode()).hexdigest()
 
 
+DETACH_OPERATION = "peer-repair-detach-" + sha256(b"repair-a").hexdigest()[:40]
+
+
 class RepairExecutionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -89,12 +92,15 @@ class RepairExecutionTests(unittest.TestCase):
             digest(self.current), (), "COMPLETE", "production-" + "a" * 32,
             "b" * 64, "2026-10-01T00:00:00Z",
         )
+        self.credential.issuance.read_terminal.return_value = (
+            self.credential.issue_after_revoke.return_value
+        )
         self.detach = Mock(spec=ManagedPairingRepairDetachCoordinator)
         self.detach.registry = self.registry
         self.detach.currency_guard = self.guard
         self.detach.operations_root = self.root / "detach"
         self.detach.repair_detach.return_value = PairingDetachRecord(
-            "repair-a", "peer-repair-detach-a", "deployment-a", digest(self.plan),
+            "repair-a", DETACH_OPERATION, "deployment-a", digest(self.plan),
             digest(self.current), "forge-a", "ep-a", "old-binding", "old-consumer",
             "operator-a", 3, "sha256:" + "c" * 64, "COMPLETE", "sha256:" + "d" * 64,
         )
@@ -145,6 +151,60 @@ class RepairExecutionTests(unittest.TestCase):
             credential_reference=self.new.credential_reference,
         )
         return self.coordinator.replace_peer(**(arguments | changes))
+
+    def read_terminal(self, **changes):
+        arguments = dict(
+            operation_id="repair-a", plan=self.plan, reviewed_current=self.current,
+            old_binding=self.old, new_binding=self.new,
+            forge_adapter=self.forge, ep_adapter=self.ep,
+            forge_request=self.forge_request, ep_request=self.ep_request,
+        )
+        return self.coordinator.read_terminal(**(arguments | changes))
+
+    def test_terminal_readback_survives_registry_change_without_configure(self):
+        with patch.object(
+            ForgeEPProductPairingExecutor, "pair_after_product_detach",
+            return_value=self.evidence,
+        ) as configure, patch.object(
+            ForgeEPProductPairingExecutor, "recover_after_product_replace",
+            return_value=self.evidence,
+        ) as recover:
+            first = self.run_replace()
+            self.registry.remove("deployment-a", expected_revision=1)
+            self.assertEqual(self.read_terminal(), first)
+            configure.assert_called_once()
+            recover.assert_called_once()
+            self.credential.issue_after_revoke.assert_called_once()
+
+    def test_terminal_readback_rejects_changed_binding_or_evidence(self):
+        with patch.object(
+            ForgeEPProductPairingExecutor, "pair_after_product_detach",
+            return_value=self.evidence,
+        ), patch.object(
+            ForgeEPProductPairingExecutor, "recover_after_product_replace",
+            return_value=replace(self.evidence, ep_readiness_reference="ep-status:changed"),
+        ):
+            self.run_replace()
+            with self.assertRaisesRegex(ManagedPairingRepairExecutionError, "identity changed"):
+                self.read_terminal(new_binding=replace(self.new, binding_id="other"))
+            with self.assertRaisesRegex(ManagedPairingRepairExecutionError, "evidence changed"):
+                self.read_terminal()
+
+    def test_terminal_readback_rejects_changed_product_detach_receipt(self):
+        with patch.object(
+            ForgeEPProductPairingExecutor, "pair_after_product_detach",
+            return_value=self.evidence,
+        ), patch.object(
+            ForgeEPProductPairingExecutor, "recover_after_product_replace",
+            return_value=self.evidence,
+        ):
+            self.run_replace()
+            self.forge.read_historical_detach_ep_peer.return_value = {
+                "current_peer_status": "CONFIGURED",
+                "receipt": {"receipt_digest": "sha256:" + "0" * 64},
+            }
+            with self.assertRaisesRegex(ManagedPairingRepairExecutionError, "detach receipt changed"):
+                self.read_terminal()
 
     def test_exact_replace_and_terminal_readback_leave_registry_unchanged(self):
         with patch.object(
