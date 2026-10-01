@@ -22,6 +22,7 @@ python3 -m unittest tests.installer.test_managed_ep_credential_issuance
 python3 -m unittest tests.installer.test_managed_pairing_repair_credential
 python3 -m unittest tests.installer.test_managed_pairing_repair_execution
 python3 -m unittest tests.installer.test_managed_pairing_repair_commit
+python3 -m unittest tests.installer.test_released_pairing_repair_selection
 python3 tests/component_operations/test_forge_server_adapter.py
 python3 tests/installer/test_universal_installer.py
 python3 tests/installer/test_managed_deployments.py
