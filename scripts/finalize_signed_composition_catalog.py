@@ -22,10 +22,13 @@ from forge_platform.universal_installer import (
 
 
 CANDIDATE_SCHEMA = "forge-platform.composition-catalog-candidate/v1"
+MULTI_CANDIDATE_SCHEMA = "forge-platform.composition-catalog-candidate/v2"
 OPERATION_SCHEMA = "forge-platform.composition-catalog-publication/v1"
+MULTI_OPERATION_SCHEMA = "forge-platform.composition-catalog-publication/v2"
 CATALOG_ASSET = "ForgePlatformInstallerCompositionCatalog.json"
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 KEY_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+ASSET_NAME = re.compile(r"^ForgePlatformComposition-[1-9][0-9]*-[a-z0-9][a-z0-9._-]*\.json$")
 SIGNATURE = re.compile(r"^[A-Za-z0-9_-]{86}$")
 SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 
@@ -139,7 +142,7 @@ def finalize(
     candidate = _load(
         candidate_directory / "composition-catalog-candidate.json", "catalog candidate"
     )
-    if candidate.get("schema") != CANDIDATE_SCHEMA:
+    if candidate.get("schema") not in {CANDIDATE_SCHEMA, MULTI_CANDIDATE_SCHEMA}:
         raise ValueError("catalog candidate schema is unsupported")
     unsigned_path = candidate_directory / "composition-catalog-unsigned.json"
     if unsigned_path.is_symlink() or not unsigned_path.is_file():
@@ -229,16 +232,68 @@ def finalize(
     if verified.sequence != candidate.get("sequence") or verified.catalog_digest != _sha(signed_raw):
         raise ValueError("signed catalog parser did not reproduce the candidate identity")
 
-    manifest_name = candidate.get("manifest_asset_name")
     index_name = candidate.get("component_combination_catalog_asset_name")
-    if not isinstance(manifest_name, str) or not isinstance(index_name, str):
+    if not isinstance(index_name, str) or Path(index_name).name != index_name:
         raise ValueError("candidate publication asset names are invalid")
-    manifest_raw = (candidate_directory / manifest_name).read_bytes()
     index_raw = (candidate_directory / index_name).read_bytes()
-    if _sha(manifest_raw) != candidate.get("manifest_digest") or _sha(index_raw) != candidate.get(
-        "component_combination_catalog_digest"
-    ):
+    if _sha(index_raw) != candidate.get("component_combination_catalog_digest"):
         raise ValueError("candidate immutable asset digests changed before signing")
+    manifest_assets: list[tuple[str, bytes]] = []
+    if candidate["schema"] == MULTI_CANDIDATE_SCHEMA:
+        records = candidate.get("manifests")
+        compositions = unsigned.get("compositions")
+        if (
+            not isinstance(records, list) or not 2 <= len(records) <= 8
+            or not isinstance(compositions, list) or len(compositions) != len(records)
+        ):
+            raise ValueError("multi-composition candidate assets are incomplete")
+        seen_names: set[str] = set()
+        seen_ids: list[str] = []
+        for record, composition in zip(records, compositions):
+            if not isinstance(record, dict) or set(record) != {
+                "composition_id", "asset_name", "url", "digest"
+            } or not isinstance(composition, dict):
+                raise ValueError("multi-composition record is invalid")
+            name = record["asset_name"]
+            identity = record["composition_id"]
+            expected_url = (
+                f"https://github.com/{candidate['repository']}/releases/download/"
+                f"{candidate['immutable_release_tag']}/{name}"
+            )
+            if (
+                not isinstance(name, str) or ASSET_NAME.fullmatch(name) is None
+                or name in seen_names or not isinstance(identity, str)
+                or not isinstance(record["digest"], str)
+                or DIGEST.fullmatch(record["digest"]) is None
+                or record["url"] != expected_url
+                or composition.get("composition_id") != identity
+                or composition.get("url") != expected_url
+                or composition.get("digest") != record["digest"]
+            ):
+                raise ValueError("multi-composition catalog target differs")
+            path = candidate_directory / name
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 512 * 1024:
+                raise ValueError("multi-composition manifest asset is unavailable")
+            raw = path.read_bytes()
+            if _sha(raw) != record["digest"]:
+                raise ValueError("multi-composition manifest bytes changed before signing")
+            seen_names.add(name)
+            seen_ids.append(identity)
+            manifest_assets.append((name, raw))
+        if seen_ids != sorted(set(seen_ids)):
+            raise ValueError("multi-composition identities are ambiguous")
+        if unsigned.get("approved_python_runtime_identity") != candidate.get(
+            "approved_python_runtime_identity"
+        ):
+            raise ValueError("multi-composition Python authority changed")
+    else:
+        manifest_name = candidate.get("manifest_asset_name")
+        if not isinstance(manifest_name, str) or Path(manifest_name).name != manifest_name:
+            raise ValueError("candidate publication asset names are invalid")
+        manifest_raw = (candidate_directory / manifest_name).read_bytes()
+        if _sha(manifest_raw) != candidate.get("manifest_digest"):
+            raise ValueError("candidate immutable asset digests changed before signing")
+        manifest_assets.append((manifest_name, manifest_raw))
 
     operation: dict[str, object] = {
         "schema": OPERATION_SCHEMA,
@@ -246,13 +301,10 @@ def finalize(
         "repository": candidate["repository"],
         "source_sha": candidate["source_sha"],
         "sequence": candidate["sequence"],
-        "composition_id": candidate["composition_id"],
         "immutable_release_tag": candidate["immutable_release_tag"],
         "stable_release_tag": candidate["stable_release_tag"],
         "catalog_asset_name": CATALOG_ASSET,
         "catalog_digest": _sha(signed_raw),
-        "manifest_asset_name": manifest_name,
-        "manifest_digest": candidate["manifest_digest"],
         "component_combination_catalog_asset_name": index_name,
         "component_combination_catalog_digest": candidate[
             "component_combination_catalog_digest"
@@ -262,11 +314,19 @@ def finalize(
         "workflow_run_attempt": workflow_run_attempt,
         "state": "QUALIFIED",
     }
+    if candidate["schema"] == MULTI_CANDIDATE_SCHEMA:
+        operation["schema"] = MULTI_OPERATION_SCHEMA
+        operation["manifests"] = candidate["manifests"]
+    else:
+        operation["composition_id"] = candidate["composition_id"]
+        operation["manifest_asset_name"] = candidate["manifest_asset_name"]
+        operation["manifest_digest"] = candidate["manifest_digest"]
     if output_directory.exists():
         raise ValueError("output directory already exists")
     output_directory.mkdir(mode=0o700, parents=True)
     (output_directory / CATALOG_ASSET).write_bytes(signed_raw)
-    (output_directory / manifest_name).write_bytes(manifest_raw)
+    for name, raw in manifest_assets:
+        (output_directory / name).write_bytes(raw)
     (output_directory / index_name).write_bytes(index_raw)
     (output_directory / "composition-catalog-operation.json").write_bytes(
         _canonical(operation, newline=True)
