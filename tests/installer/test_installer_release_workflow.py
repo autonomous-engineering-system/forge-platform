@@ -159,6 +159,16 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
             self.local_release.index("codesign --force"),
         )
 
+    def test_signed_resources_remain_readable_after_root_owned_install(self) -> None:
+        signer = self.local_release
+        self.assertIn('"$APP/Contents/CodeResources" "$APP/Contents/_CodeSignature/CodeResources"', signer)
+        self.assertIn('test -f "$code_resource" && test ! -L "$code_resource"', signer)
+        self.assertIn('chmod 644 "$code_resource"', signer)
+        self.assertIn('signed-code-resource-mode-invalid', signer)
+        self.assertIn('final-archive-code-resource-mode-invalid', signer)
+        self.assertLess(signer.index('chmod 644 "$code_resource"'), signer.index('codesign --verify --strict --deep "$APP"'))
+        self.assertLess(signer.index('final-archive-code-resource-mode-invalid'), signer.index('xcrun stapler validate -v "$CARRIER_APP"'))
+
     def test_local_signer_resolves_symlinked_macos_temp_directory(self) -> None:
         work_assignment = next(
             line for line in self.local_release.splitlines() if line.startswith('WORK=')

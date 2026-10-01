@@ -102,6 +102,14 @@ codesign --force --options runtime --timestamp \
 HELPER_REQUIREMENT="anchor apple generic and certificate leaf[subject.OU] = \"$TEAM_IDENTIFIER\" and identifier \"com.autonomous-engineering-system.forge-platform-installer.helper\""
 codesign --verify --strict "-R=$HELPER_REQUIREMENT" "$HELPER" || fail signed-helper-identity-invalid
 codesign --force --options runtime --timestamp   --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP"
+# codesign inherits the offline signer's restrictive umask for CodeResources.
+# The published app may later be installed root-owned; both sealed signature
+# manifests must remain readable to an ordinary user in that layout.
+for code_resource in "$APP/Contents/CodeResources" "$APP/Contents/_CodeSignature/CodeResources"; do
+  test -f "$code_resource" && test ! -L "$code_resource" || fail signed-code-resource-invalid
+  chmod 644 "$code_resource"
+  test "$(stat -f %Lp "$code_resource")" = 644 || fail signed-code-resource-mode-invalid
+done
 codesign --verify --strict --deep "$APP"
 codesign --display --verbose=6 "$APP" >"$WORK/metadata/codesign.txt" 2>&1
 grep -Fxq "Identifier=$BUNDLE_IDENTIFIER" "$WORK/metadata/codesign.txt" || fail signed-bundle-mismatch
@@ -134,6 +142,10 @@ mkdir "$WORK/carrier-readback"
 ditto -x -k "$WORK/release/$ARCHIVE_NAME" "$WORK/carrier-readback"
 CARRIER_APP="$WORK/carrier-readback/ForgePlatformInstaller.app"
 test -d "$CARRIER_APP" || fail final-archive-app-layout-invalid
+for code_resource in "$CARRIER_APP/Contents/CodeResources" "$CARRIER_APP/Contents/_CodeSignature/CodeResources"; do
+  test -f "$code_resource" && test ! -L "$code_resource" || fail final-archive-code-resource-invalid
+  test "$(stat -f %Lp "$code_resource")" = 644 || fail final-archive-code-resource-mode-invalid
+done
 xcrun stapler validate -v "$CARRIER_APP" || fail final-archive-lost-stapled-ticket
 spctl --assess --type execute --verbose=4 "$CARRIER_APP" || fail final-archive-gatekeeper-rejected
 codesign --verify --strict --deep "$CARRIER_APP" || fail final-archive-signature-invalid
