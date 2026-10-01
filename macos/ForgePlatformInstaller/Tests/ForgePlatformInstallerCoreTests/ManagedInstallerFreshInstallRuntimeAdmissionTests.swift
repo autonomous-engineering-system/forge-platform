@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import XCTest
@@ -710,6 +711,75 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                 canonicalIntent: bytes, providerTargetID: requirement.id
             )
             XCTAssertNil(rejected)
+        }
+    }
+
+    func testSealedRunnerAdmitsOnlyCanonicalEPProviderRegistration() async throws {
+        let forgeProvider = try stagedProviderRequirement()
+        let requirement = ProviderRequirement(
+            provider: .codex, isRequired: true,
+            minimumVersion: forgeProvider.minimumVersion,
+            credentialScope: .component,
+            ownerComponent: .engineeringPlatformServer,
+            targetIdentity: "deployment-a", runtime: forgeProvider.runtime
+        )
+        let fixture = try FreshRuntimeFixture(
+            providers: [requirement], components: ["engineering-platform-server"]
+        )
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: fixture.plan)
+        let observed = try ManagedInstallerReviewedProviderReadback(
+            operationID: intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: [try .init(
+                id: requirement.id, state: .verified,
+                evidenceReference: "receipt:provider-observation-"
+                    + String(repeating: "a", count: 64)
+            )]
+        )
+        let request = try XCTUnwrap(ManagedInstallerEPProviderRegistrationRequest(
+            plan: fixture.plan, requirement: requirement, readback: observed
+        ))
+        let canonical = request.canonicalJSONData()
+        XCTAssertTrue(ManagedInstallerEPProviderRegistrationRequest
+            .isCanonicalWorkerRequest(canonical))
+
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = root.appendingPathComponent("worker.pyz")
+        let source = Data("import sys\nsys.stdout.buffer.write(sys.stdin.buffer.read())\n".utf8)
+        try source.write(to: worker)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: worker.path
+        )
+        let digest = SHA256.hash(data: source)
+            .map { String(format: "%02x", $0) }.joined()
+        let invocation = ManagedInstallerProductWorkerInvocation(
+            interpreterURL: URL(fileURLWithPath: "/usr/bin/python3"),
+            workerURL: worker, workerSHA256: "sha256:" + digest,
+            expectedInterpreterOwner: 0, requireSingleInterpreterLink: false,
+            timeoutNanoseconds: 5_000_000_000
+        )
+        let runner = MacOSManagedInstallerProductWorkerRunner()
+        let echoed = try await runner.runProductWorker(
+            invocation, canonicalRequest: canonical
+        ).get()
+        XCTAssertEqual(echoed, canonical)
+        let text = String(decoding: canonical, as: UTF8.self)
+        for invalid in [
+            Data(" ".utf8) + canonical,
+            Data(text.replacingOccurrences(of: "\"schema\":",
+                with: "\"path\":\"/tmp/x\",\"schema\":").utf8),
+            Data(text.replacingOccurrences(of: "receipt:provider-observation-",
+                with: "receipt:unverified-").utf8),
+        ] {
+            XCTAssertFalse(ManagedInstallerEPProviderRegistrationRequest
+                .isCanonicalWorkerRequest(invalid))
+            let result = await runner.runProductWorker(
+                invocation, canonicalRequest: invalid
+            )
+            XCTAssertEqual(result.failure, .rejected)
         }
     }
 
