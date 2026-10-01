@@ -77,6 +77,54 @@ class SubprocessForgeCommandRunner:
         return ForgeCommandResult(completed.returncode, completed.stdout, completed.stderr)
 
 
+class SubprocessForgeServiceAccountCommandRunner:
+    """Read Forge peer readiness as the account that runs its LaunchDaemon."""
+
+    def __init__(self, target: ForgeServerTarget, executable: Path) -> None:
+        self.target = target
+        self.executable = executable
+
+    def run(self, argv: Sequence[str]) -> ForgeCommandResult:
+        if (
+            os.geteuid() != 0 or not argv or argv[0] != str(self.executable)
+            or len(argv) != 5
+            or tuple(argv[1:]) != (
+                "--data-root", str(self.target.data_root), "execution-host", "preflight"
+            )
+        ):
+            raise ForgeServerAdapterError("Forge service-account preflight authority is invalid")
+        try:
+            account = pwd.getpwnam(self.target.service_account)
+        except KeyError as error:
+            raise ForgeServerAdapterError("Forge service account is unavailable") from error
+        if (
+            account.pw_uid <= 0 or account.pw_gid <= 0
+            or not isinstance(account.pw_dir, str)
+            or not Path(account.pw_dir).is_absolute()
+        ):
+            raise ForgeServerAdapterError("Forge service account must be non-root")
+        try:
+            completed = subprocess.run(
+                tuple(argv), text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, check=False,
+                timeout=30, user=account.pw_uid, group=account.pw_gid,
+                extra_groups=(), cwd=str(self.target.data_root),
+                env={
+                    "HOME": account.pw_dir,
+                    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                    "PYTHONNOUSERSITE": "1",
+                    "PYTHONSAFEPATH": "1",
+                },
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            raise ForgeServerAdapterError(
+                "Forge service-account preflight is unavailable"
+            ) from None
+        if len(completed.stdout) > 1_048_576:
+            raise ForgeServerAdapterError("Forge service-account preflight exceeded its response bound")
+        return ForgeCommandResult(completed.returncode, completed.stdout, "")
+
+
 @dataclass(frozen=True)
 class ForgePreparedInstance:
     instance_id: str
@@ -470,6 +518,11 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self.staged_artifacts = dict(staged_artifacts)
         self.supervisor = supervisor
         self.runner = runner or SubprocessForgeCommandRunner()
+        self.service_account_runner = (
+            runner if runner is not None else SubprocessForgeServiceAccountCommandRunner(
+                target, forge_executable
+            )
+        )
         self.readiness_probe = readiness_probe or ForgeHTTPReadinessProbe()
         self.update_binding = update_binding
         if update_binding is not None and update_binding_provider is not None:
@@ -754,9 +807,13 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         return self._run(*args)
 
     def preflight_ep_peer(self) -> Mapping[str, object]:
-        """Run Forge's authenticated, read-only EP compatibility preflight."""
+        """Check authenticated EP readiness under Forge's actual daemon account."""
 
-        return self._run("execution-host", "preflight")
+        result = self.service_account_runner.run((
+            str(self.forge_executable), "--data-root", str(self.target.data_root),
+            "execution-host", "preflight",
+        ))
+        return self._json_result(result, "Forge service-account preflight")
 
     def _peer_detach_request(
         self, *, operation_id: str, binding_id: str, revision: int,

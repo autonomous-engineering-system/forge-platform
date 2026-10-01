@@ -7,6 +7,7 @@ import tempfile
 import json
 import hashlib
 import plistlib
+import subprocess
 import sys
 import unittest
 from types import SimpleNamespace
@@ -28,6 +29,7 @@ from forge_platform.forge_server_adapter import (
     ForgeUpdateBinding,
     MacOSForgeLaunchDaemonSupervisor,
     SubprocessForgeCommandRunner,
+    SubprocessForgeServiceAccountCommandRunner,
     _verified_forge_238_controller,
     _verified_forge_238_release_receipt,
     _verified_forge_239_controller,
@@ -43,6 +45,125 @@ ARTIFACT = QualifiedArtifact(
     "sha256:" + "a" * 64,
     "https://evidence.example.invalid/forge-2.7.34",
 )
+
+
+class ForgeServiceAccountPreflightTests(unittest.TestCase):
+    def setUp(self) -> None:
+        root = Path("/private/tmp/forge-service-preflight-fixture")
+        self.target = ForgeServerTarget(
+            "forge-a", root / "instances/forge-a", root / "instances",
+            "_forge_a", 8811, root / "credentials/forge-a.token",
+        )
+        self.argv = (
+            str(root / "venv/bin/forge"), "--data-root", str(self.target.data_root),
+            "execution-host", "preflight",
+        )
+        self.runner = SubprocessForgeServiceAccountCommandRunner(
+            self.target, Path(self.argv[0])
+        )
+
+    def test_preflight_uses_exact_nonroot_service_account_without_secret_environment(self) -> None:
+        account = SimpleNamespace(pw_uid=501, pw_gid=502, pw_dir="/var/empty")
+        completed = SimpleNamespace(returncode=0, stdout='{"status":"PASS"}', stderr="")
+        with patch("forge_platform.forge_server_adapter.os.geteuid", return_value=0), \
+             patch("forge_platform.forge_server_adapter.pwd.getpwnam", return_value=account) as lookup, \
+             patch("forge_platform.forge_server_adapter.subprocess.run", return_value=completed) as run:
+            result = self.runner.run(self.argv)
+        self.assertEqual(result, ForgeCommandResult(0, completed.stdout, ""))
+        lookup.assert_called_once_with("_forge_a")
+        call_args, call_kwargs = run.call_args
+        self.assertEqual(call_args, (self.argv,))
+        self.assertEqual(call_kwargs["user"], 501)
+        self.assertEqual(call_kwargs["group"], 502)
+        self.assertEqual(call_kwargs["extra_groups"], ())
+        self.assertEqual(call_kwargs["cwd"], str(self.target.data_root))
+        self.assertEqual(call_kwargs["timeout"], 30)
+        self.assertEqual(call_kwargs["stdout"], subprocess.PIPE)
+        self.assertEqual(call_kwargs["stderr"], subprocess.DEVNULL)
+        self.assertEqual(call_kwargs["env"]["HOME"], "/var/empty")
+        self.assertNotIn("credential", str(call_kwargs["env"]).lower())
+
+    def test_default_adapter_preflight_uses_service_runner_and_rejects_product_failure(self) -> None:
+        adapter = ForgeServerProductAdapter(
+            forge_executable=Path(self.argv[0]), target=self.target,
+            installed_artifact=ARTIFACT, staged_artifacts={},
+            supervisor=MacOSForgeLaunchDaemonSupervisor(
+                Path("/private/tmp/forge-service-preflight-fixture/LaunchDaemons")
+            ),
+        )
+        self.assertIsInstance(
+            adapter.service_account_runner, SubprocessForgeServiceAccountCommandRunner
+        )
+        with patch.object(
+            adapter.service_account_runner, "run",
+            return_value=ForgeCommandResult(0, '{"status":"PASS"}', ""),
+        ) as service_run:
+            self.assertEqual(adapter.preflight_ep_peer(), {"status": "PASS"})
+        service_run.assert_called_once_with(self.argv)
+        with patch.object(
+            adapter.service_account_runner, "run",
+            return_value=ForgeCommandResult(1, '{"status":"BLOCKED"}', ""),
+        ):
+            with self.assertRaises(ForgeServerAdapterError):
+                adapter.preflight_ep_peer()
+
+    def test_wrong_command_or_unprivileged_helper_never_spawns(self) -> None:
+        for argv in (
+            self.argv[:-1] + ("configure",),
+            self.argv[:2] + ("/another/instance",) + self.argv[3:],
+            self.argv + ("--interactive",),
+            ("relative/forge",) + self.argv[1:],
+            ("/another/forge",) + self.argv[1:],
+        ):
+            with patch("forge_platform.forge_server_adapter.os.geteuid", return_value=0), \
+                 patch("forge_platform.forge_server_adapter.subprocess.run") as run:
+                with self.assertRaises(ForgeServerAdapterError):
+                    self.runner.run(argv)
+                run.assert_not_called()
+        with patch("forge_platform.forge_server_adapter.os.geteuid", return_value=501), \
+             patch("forge_platform.forge_server_adapter.subprocess.run") as run:
+            with self.assertRaises(ForgeServerAdapterError):
+                self.runner.run(self.argv)
+            run.assert_not_called()
+
+    def test_missing_or_root_account_fails_closed(self) -> None:
+        with patch("forge_platform.forge_server_adapter.os.geteuid", return_value=0), \
+             patch("forge_platform.forge_server_adapter.pwd.getpwnam", side_effect=KeyError), \
+             patch("forge_platform.forge_server_adapter.subprocess.run") as run:
+            with self.assertRaises(ForgeServerAdapterError):
+                self.runner.run(self.argv)
+            run.assert_not_called()
+        for uid, gid in ((0, 501), (501, 0)):
+            account = SimpleNamespace(pw_uid=uid, pw_gid=gid, pw_dir="/var/empty")
+            with patch("forge_platform.forge_server_adapter.os.geteuid", return_value=0), \
+                 patch("forge_platform.forge_server_adapter.pwd.getpwnam", return_value=account), \
+                 patch("forge_platform.forge_server_adapter.subprocess.run") as run:
+                with self.assertRaises(ForgeServerAdapterError):
+                    self.runner.run(self.argv)
+                run.assert_not_called()
+        account = SimpleNamespace(pw_uid=501, pw_gid=502, pw_dir="relative/home")
+        with patch("forge_platform.forge_server_adapter.os.geteuid", return_value=0), \
+             patch("forge_platform.forge_server_adapter.pwd.getpwnam", return_value=account), \
+             patch("forge_platform.forge_server_adapter.subprocess.run") as run:
+            with self.assertRaises(ForgeServerAdapterError):
+                self.runner.run(self.argv)
+            run.assert_not_called()
+
+    def test_timeout_os_error_and_oversized_output_fail_closed(self) -> None:
+        account = SimpleNamespace(pw_uid=501, pw_gid=502, pw_dir="/var/empty")
+        with patch("forge_platform.forge_server_adapter.os.geteuid", return_value=0), \
+             patch("forge_platform.forge_server_adapter.pwd.getpwnam", return_value=account):
+            for error in (
+                OSError("private path"),
+                subprocess.TimeoutExpired(self.argv, 30),
+            ):
+                with patch("forge_platform.forge_server_adapter.subprocess.run", side_effect=error):
+                    with self.assertRaisesRegex(ForgeServerAdapterError, "unavailable"):
+                        self.runner.run(self.argv)
+            oversized = SimpleNamespace(returncode=0, stdout="x" * 1_048_577, stderr="")
+            with patch("forge_platform.forge_server_adapter.subprocess.run", return_value=oversized):
+                with self.assertRaisesRegex(ForgeServerAdapterError, "response bound"):
+                    self.runner.run(self.argv)
 
 
 class ForgeProductPeerStatusReadbackTests(unittest.TestCase):
