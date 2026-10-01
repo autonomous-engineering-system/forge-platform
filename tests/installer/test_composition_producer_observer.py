@@ -128,8 +128,10 @@ class CompositionProducerObserverTests(unittest.TestCase):
         version: str,
         source: str,
     ) -> None:
-        wheel = "sha256:" + ("a" if product == "forge" else "b") * 64
-        sdist = "sha256:" + ("c" if product == "forge" else "d") * 64
+        wheel_bytes = f"{product}-{version}-wheel".encode()
+        sdist_bytes = f"{product}-{version}-sdist".encode()
+        wheel = "sha256:" + sha256(wheel_bytes).hexdigest()
+        sdist = "sha256:" + sha256(sdist_bytes).hexdigest()
         normalized = project.replace("-", "_")
         wheel_name = f"{normalized}-{version}-py3-none-any.whl"
         sdist_name = f"{normalized}-{version}.tar.gz"
@@ -188,6 +190,8 @@ class CompositionProducerObserverTests(unittest.TestCase):
         documents[f"https://api.github.com/repos/{repository}/releases/latest"] = canonical(release)
         documents[receipt_url] = receipt_raw
         documents[f"https://pypi.org/pypi/{project}/{version}/json"] = canonical(pypi)
+        documents[f"https://files.pythonhosted.org/{wheel_name}"] = wheel_bytes
+        documents[f"https://files.pythonhosted.org/{sdist_name}"] = sdist_bytes
 
     def add_workspace_release(self, documents: dict[str, bytes]) -> None:
         repository = "pcvantol/workspace"
@@ -299,15 +303,42 @@ class CompositionProducerObserverTests(unittest.TestCase):
     def test_valid_forge_ep_are_ready_for_review_without_optional_workspace(self) -> None:
         config, documents = self.inputs()
         config["external_inputs"] = []
+        fetch = FakeFetch(documents)
         with tempfile.TemporaryDirectory() as temporary:
             report = OBSERVER.observe(
                 config_path=self.write_config(Path(temporary), config),
                 observed_at=self.observed_at,
-                fetch=FakeFetch(documents),
+                fetch=fetch,
             )
         self.assertEqual(report["status"], "READY")
         self.assertEqual(report["manifest_generation"], "READY_FOR_REVIEW")
         self.assertEqual(report["blockers"], [])
+        self.assertEqual(
+            sorted(url for url in fetch.requests if url.startswith("https://files.pythonhosted.org/")),
+            sorted(url for url in documents if url.startswith("https://files.pythonhosted.org/")),
+        )
+
+    def test_producer_wheel_and_sdist_bytes_must_match_terminal_receipt(self) -> None:
+        for suffix in (".whl", ".tar.gz"):
+            with self.subTest(suffix=suffix):
+                config, documents = self.inputs()
+                url = next(url for url in documents
+                           if url.startswith("https://files.pythonhosted.org/forge_autonomy-")
+                           and url.endswith(suffix))
+                documents[url] = b"different published bytes"
+                with tempfile.TemporaryDirectory() as temporary:
+                    with self.assertRaisesRegex(OBSERVER.ObservationError, "artifact bytes drifted"):
+                        OBSERVER.observe(
+                            config_path=self.write_config(Path(temporary), config),
+                            observed_at=self.observed_at, fetch=FakeFetch(documents),
+                        )
+
+    def test_producer_artifact_byte_boundary_is_fail_closed(self) -> None:
+        with patch.object(OBSERVER, "MAXIMUM_EXTERNAL_ASSET_BYTES", 8):
+            for raw in (b"", b"x" * 9):
+                with self.subTest(size=len(raw)):
+                    with self.assertRaisesRegex(OBSERVER.ObservationError, "byte boundary"):
+                        OBSERVER._artifact_digest(raw)
 
     def test_missing_required_forge_release_blocks_review(self) -> None:
         config, documents = self.inputs()
