@@ -94,6 +94,7 @@ TARGETS = (
     "scripts/prepare_provider_runtime_pages.py",
     "scripts/build_provider_runtime_archives.py",
     "scripts/qualify_managed_python_runtime.py",
+    "scripts/qualify_product_wheels_managed_python.py",
 )
 
 TESTS = (
@@ -102,6 +103,7 @@ TESTS = (
     "tests/installer/test_provider_runtime_pages.py",
     "tests/installer/test_build_provider_runtime_archives.py",
     "tests/installer/test_qualify_managed_python_runtime.py",
+    "tests/installer/test_qualify_product_wheels_managed_python.py",
     "tests/component_operations/test_component_operations.py",
     "tests/component_operations/test_durable_component_operations.py",
     "tests/component_operations/test_ep_system_provisioner_adapter.py",

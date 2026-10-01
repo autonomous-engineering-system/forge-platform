@@ -44,6 +44,7 @@ python3 tests/installer/test_provider_fanout.py
 python3 scripts/check_managed_installer_python_coverage.py --minimum 80.2
 python3 tests/installer/test_managed_python_runtime_executor.py
 python3 -m unittest tests.installer.test_qualify_managed_python_runtime
+python3 -m unittest tests.installer.test_qualify_product_wheels_managed_python
 python3 tests/installer/test_component_combination_catalog.py
 python3 tests/installer/test_installer_version_preparation.py
 python3 tests/installer/test_installer_release_operation.py
