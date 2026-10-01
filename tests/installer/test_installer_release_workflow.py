@@ -207,6 +207,32 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
             signing,
         )
 
+    def test_both_signers_bind_cli_to_exact_helper_caller_identity(self) -> None:
+        for signer, identifier in (
+            (self.local_release, "$BUNDLE_IDENTIFIER"),
+            (self.offline_release, "$bundle_identifier"),
+        ):
+            self.assertIn(f'--identifier "{identifier}"', signer)
+            self.assertIn('certificate 1[field.1.2.840.113635.100.6.2.6] exists', signer)
+            self.assertIn('certificate leaf[field.1.2.840.113635.100.6.1.13] exists', signer)
+            self.assertIn('certificate leaf[subject.OU]', signer)
+            self.assertIn('signed-gui-caller-identity-', signer)
+            self.assertIn('signed-cli-caller-identity-', signer)
+            self.assertIn('final-archive-gui-caller-identity-', signer)
+            self.assertIn('final-archive-cli-caller-identity-', signer)
+            self.assertLess(
+                signer.index(f'--identifier "{identifier}"'),
+                signer.index('signed-cli-caller-identity-'),
+            )
+            self.assertLess(
+                signer.index('signed-cli-caller-identity-'),
+                signer.index('notarytool submit'),
+            )
+            self.assertLess(
+                signer.index('notarytool submit'),
+                signer.index('final-archive-cli-caller-identity-'),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

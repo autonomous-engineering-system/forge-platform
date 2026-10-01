@@ -37,6 +37,7 @@ git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main >/dev/null 
 
 python3 scripts/validate_installer_version.py >/dev/null || fail installer-version-invalid
 python3 scripts/validate_installer_release_identity.py --require-ready >/dev/null || fail release-identity-not-ready
+bundle_identifier="$(python3 scripts/validate_installer_release_identity.py --field bundle_identifier)" || fail bundle-identifier-unavailable
 python3 scripts/advance_installer_version.py \
   --verify-operation --require-operation --require-version-advance \
   --candidate-head "$SOURCE_SHA" >/dev/null || fail installer-version-operation-invalid
@@ -119,7 +120,7 @@ python3 scripts/package_macos_installer_app.py \
   --sealed-release-provenance-resource "$provenance" \
   --sealed-composition-catalog-trust-resource "$FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE" \
   --output "$app" \
-  --bundle-identifier "$(python3 scripts/validate_installer_release_identity.py --field bundle_identifier)" \
+  --bundle-identifier "$bundle_identifier" \
   >"$private/package-app.log" 2>&1 || fail final-app-packaging-failed
 [[ -f "$app/Contents/Resources/forge-platform-product-worker.pyz" ]] || fail product-worker-not-packaged
 python3 - "$app" <<'PY' || fail forge-update-resources-not-packaged
@@ -177,14 +178,19 @@ PY
 
 # Sign every executable code object explicitly, then seal the app bundle.
 bounded "$private/codesign-helper.log" codesign --force --options runtime --timestamp --identifier "com.autonomous-engineering-system.forge-platform-installer.helper" --sign "$selected_hash" "$app/Contents/Resources/forge-platform-installer-helper" || fail helper-signing-failed
-bounded "$private/codesign-cli.log" codesign --force --options runtime --timestamp --sign "$selected_hash" "$app/Contents/MacOS/forge-platform-installer" || fail cli-signing-failed
+# The helper admits the exact sealed app identifier. Sign the separately
+# executable CLI with that identifier instead of codesign's basename default.
+bounded "$private/codesign-cli.log" codesign --force --options runtime --timestamp --identifier "$bundle_identifier" --sign "$selected_hash" "$app/Contents/MacOS/forge-platform-installer" || fail cli-signing-failed
 bounded "$private/codesign-gui.log" codesign --force --options runtime --timestamp --sign "$selected_hash" "$app/Contents/MacOS/ForgePlatformInstaller" || fail gui-signing-failed
 bounded "$private/codesign-app.log" codesign --force --options runtime --timestamp --sign "$selected_hash" "$app" || fail app-signing-failed
 bounded "$private/codesign-verify.log" codesign --verify --strict --deep "$app" || fail signed-app-verification-failed
 helper_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"com.autonomous-engineering-system.forge-platform-installer.helper\""
 bounded "$private/codesign-helper-requirement.log" codesign --verify --strict "-R=$helper_requirement" "$app/Contents/Resources/forge-platform-installer-helper" || fail signed-helper-identity-failed
-requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"$(python3 scripts/validate_installer_release_identity.py --field bundle_identifier)\""
+requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"$bundle_identifier\""
 bounded "$private/codesign-requirement.log" codesign --verify --strict "-R=$requirement" "$app" || fail signed-app-identity-failed
+caller_requirement="anchor apple generic and identifier \"$bundle_identifier\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\""
+bounded "$private/codesign-gui-caller.log" codesign --verify --strict "-R=$caller_requirement" "$app/Contents/MacOS/ForgePlatformInstaller" || fail signed-gui-caller-identity-failed
+bounded "$private/codesign-cli-caller.log" codesign --verify --strict "-R=$caller_requirement" "$app/Contents/MacOS/forge-platform-installer" || fail signed-cli-caller-identity-failed
 
 submission="$private/notary-submission.zip"
 /usr/bin/ditto -c -k --keepParent "$app" "$submission" || fail notary-submission-packaging-failed
@@ -247,6 +253,8 @@ done < <(find "$carrier" -mindepth 1 -maxdepth 1 -type d -name '*.app' -print)
 [[ "$extracted_count" == 1 && -n "$extracted_app" ]] || fail final-archive-app-layout-invalid
 bounded "$private/carrier-staple-validate.log" xcrun stapler validate -v "$extracted_app" || fail final-archive-lost-stapled-ticket
 bounded "$private/carrier-gatekeeper.log" spctl --assess --type execute --verbose=4 "$extracted_app" || fail final-archive-gatekeeper-rejected
+bounded "$private/carrier-gui-caller.log" codesign --verify --strict "-R=$caller_requirement" "$extracted_app/Contents/MacOS/ForgePlatformInstaller" || fail final-archive-gui-caller-identity-failed
+bounded "$private/carrier-cli-caller.log" codesign --verify --strict "-R=$caller_requirement" "$extracted_app/Contents/MacOS/forge-platform-installer" || fail final-archive-cli-caller-identity-failed
 
 codesign -d --verbose=4 "$app" >"$private/codesign-display.txt" 2>&1 || fail codedirectory-readback-failed
 code_directory="$(python3 - "$private/codesign-display.txt" <<'PY'
