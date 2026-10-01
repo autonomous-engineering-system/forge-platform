@@ -20,7 +20,7 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
         )
         let builder = try MacOSTrustedInstallerRuntimeBuilder(
             stateRoot: root, platformFacts: supportedPlatformFacts(),
-            routeLoaderFactory: { identity in
+            routeLoaderFactory: { identity, _ in
                 BuilderRouteLoader(
                     teamIdentifier: identity.teamIdentifier,
                     expectedTeamIdentifier: configuration.expectedTeamIdentifier,
@@ -54,7 +54,7 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
         )
         let builder = try MacOSTrustedInstallerRuntimeBuilder(
             stateRoot: root, platformFacts: supportedPlatformFacts(),
-            routeLoaderFactory: { identity in
+            routeLoaderFactory: { identity, _ in
                 BuilderRouteLoader(
                     teamIdentifier: identity.teamIdentifier,
                     expectedTeamIdentifier: "WRONGTEAM",

@@ -1083,25 +1083,45 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
         "com.autonomous-engineering-system.forge-platform-installer.helper.released-route"
 
     private let connection: NSXPCConnection
+    private let parentAdmission: ManagedInstallerHelperXPCParentAdmission?
+    private var resumed: Bool
 
-    public init(helperIdentity: ManagedInstallerPostToolXPCHelperIdentity) {
+    public init(
+        helperIdentity: ManagedInstallerPostToolXPCHelperIdentity,
+        expectedParentVersion: InstallerVersion? = nil
+    ) {
+        parentAdmission = .production(expectedVersion: expectedParentVersion)
+        resumed = false
         connection = NSXPCConnection(machServiceName: Self.machServiceName, options: .privileged)
         connection.setCodeSigningRequirement(helperIdentity.codeSigningRequirement)
         connection.remoteObjectInterface = NSXPCInterface(
             with: ManagedInstallerReleasedRouteXPCService.self
         )
-        connection.resume()
     }
 
-    init(endpoint: NSXPCListenerEndpoint) {
+    init(
+        endpoint: NSXPCListenerEndpoint,
+        parentAdmission: ManagedInstallerHelperXPCParentAdmission? = nil
+    ) {
+        self.parentAdmission = parentAdmission
+        resumed = parentAdmission.map { _ in false } ?? true
         connection = NSXPCConnection(listenerEndpoint: endpoint)
         connection.remoteObjectInterface = NSXPCInterface(
             with: ManagedInstallerReleasedRouteXPCService.self
         )
-        connection.resume()
+        if resumed { connection.resume() }
     }
 
     public func invalidate() { connection.invalidate() }
+
+    private func admitConnection() -> Bool {
+        if let parentAdmission, !parentAdmission.admits() { return false }
+        if !resumed {
+            connection.resume()
+            resumed = true
+        }
+        return true
+    }
 
     public func loadManagedDeploymentInventory() async throws -> ManagedDeploymentInventory {
         let data = try await call { service, reply in
@@ -1259,7 +1279,8 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     ) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             let gate = ManagedInstallerReleasedRouteXPCReplyGate(continuation: continuation)
-            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard admitConnection(),
+                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
             }) as? ManagedInstallerReleasedRouteXPCService else {
                 gate.complete(.failure(.unavailable))

@@ -3,6 +3,25 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
+    func testStaleParentBlocksBeforeAnonymousXPCConnectionResumes() async throws {
+        let expected = try InstallerVersion("0.3.6")
+        let legacy = try InstallerVersion("0.2.4")
+        let listener = NSXPCListener.anonymous()
+        let transport = MacOSManagedInstallerReleasedRouteXPCTransport(
+            endpoint: listener.endpoint,
+            parentAdmission: ManagedInstallerHelperXPCParentAdmission(
+                expectedVersion: expected, readVersion: { legacy }
+            )
+        )
+        do {
+            _ = try await transport.loadManagedDeploymentInventory()
+            XCTFail("A stale parent must block the XPC request")
+        } catch {
+            XCTAssertEqual(error as? ManagedInstallerReleasedRouteXPCFailure, .unavailable)
+        }
+        await transport.invalidate()
+    }
+
     func testSingleComponentRouteCodecAndStoredEvidenceRemainExact() throws {
         let pair = try ReleasedRouteFixture()
         var pairReader = try StrictJSONResourceReader(
