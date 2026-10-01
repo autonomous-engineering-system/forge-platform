@@ -6,6 +6,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case status
     case helperRegister
     case helperReplaceQualification
+    case helperReplaceIdle
     case selfUpdateCheck
     case selfUpdateApply
     case deploymentList
@@ -115,6 +116,7 @@ public enum InstallerCLIParser {
       forge-platform-installer status [--json]
       forge-platform-installer helper register [--yes] [--non-interactive] [--json]
       forge-platform-installer helper replace-qualification [--yes] [--non-interactive] [--json]
+      forge-platform-installer helper replace-idle [--yes] [--non-interactive] [--json]
       forge-platform-installer self-update check [--json]
       forge-platform-installer self-update apply [--yes] [--json]
       forge-platform-installer deployment list [--json]
@@ -241,6 +243,8 @@ public enum InstallerCLIParser {
             command = .helperRegister
         case ["helper", "replace-qualification"]:
             command = .helperReplaceQualification
+        case ["helper", "replace-idle"]:
+            command = .helperReplaceIdle
         case ["self-update", "check"]:
             command = .selfUpdateCheck
         case ["self-update", "apply"]:

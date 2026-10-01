@@ -279,6 +279,47 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
         XCTAssertEqual(interrupted.counts(), [1, 2])
     }
 
+    func testIdleSignedOlderReleaseTransitionRequiresExactMonotonicParent() async throws {
+        let current = try InstallerVersion("0.3.8")
+        let service = LegacyTransitionService(oldVersion: "0.3.7", newVersion: "0.3.8")
+        let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator(service: service)
+        let first = await coordinator.replaceIdleOlderRegistration(expectedVersion: current)
+        XCTAssertNotNil(first.readyReceipt)
+        XCTAssertEqual(service.counts(), [1, 1])
+        let duplicate = await coordinator.replaceIdleOlderRegistration(expectedVersion: current)
+        XCTAssertEqual(duplicate.failure, .registeredParentMismatch)
+        XCTAssertEqual(service.counts(), [1, 1])
+
+        for candidate in [
+            LegacyTransitionService(idle: false, oldVersion: "0.3.7"),
+            LegacyTransitionService(oldVersion: "0.3.6"),
+            LegacyTransitionService(oldVersion: "0.3.8"),
+            LegacyTransitionService(oldVersion: "0.3.9"),
+            LegacyTransitionService(oldVersion: "0.2.4"),
+        ] {
+            let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+                service: candidate
+            ).replaceIdleOlderRegistration(expectedVersion: current)
+            XCTAssertEqual(result.failure, .registeredParentMismatch)
+            XCTAssertEqual(candidate.counts(), [0, 0])
+        }
+    }
+
+    func testIdleSignedOlderReleaseTransitionResumesAfterRegistrationFailure() async throws {
+        let current = try InstallerVersion("0.3.8")
+        let service = LegacyTransitionService(
+            oldVersion: "0.3.7", newVersion: "0.3.8", registerFails: true
+        )
+        let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator(service: service)
+        let interrupted = await coordinator.replaceIdleOlderRegistration(expectedVersion: current)
+        XCTAssertEqual(interrupted.failure, .registrationFailed)
+        XCTAssertEqual(service.counts(), [1, 1])
+        service.allowRegistration()
+        let resumed = await coordinator.ensureRegistered(expectedVersion: current)
+        XCTAssertNotNil(resumed.readyReceipt)
+        XCTAssertEqual(service.counts(), [1, 2])
+    }
+
     func testRegistrationAndTransitionShareCrossProcessLease() async throws {
         let version = try InstallerVersion("0.3.6")
         let busy = RegistrationLockStub(failsAcquisition: true)
@@ -355,8 +396,9 @@ private final class LegacyTransitionService:
     private let jobAbsentReadbackFails: Bool
     private let idle: Bool
     private let oldVersion: String
+    private let newVersion: String
 
-    init(idle: Bool = true, oldVersion: String = "0.2.4",
+    init(idle: Bool = true, oldVersion: String = "0.2.4", newVersion: String = "0.3.6",
          unregisterFails: Bool = false, registerFails: Bool = false,
          staysEnabledAfterUnregister: Bool = false,
          notFoundAfterUnregister: Bool = false,
@@ -364,6 +406,7 @@ private final class LegacyTransitionService:
          jobAbsentReadbackFails: Bool = false) {
         self.idle = idle
         self.oldVersion = oldVersion
+        self.newVersion = newVersion
         self.unregisterFails = unregisterFails
         self.registerFails = registerFails
         self.staysEnabledAfterUnregister = staysEnabledAfterUnregister
@@ -381,7 +424,7 @@ private final class LegacyTransitionService:
     }
 
     func readRegisteredParentVersion() -> InstallerVersion? {
-        lock.withLock { try? InstallerVersion(currentIsNew ? "0.3.6" : oldVersion) }
+        lock.withLock { try? InstallerVersion(currentIsNew ? newVersion : oldVersion) }
     }
 
     func readIdleRegisteredParentVersion() -> InstallerVersion? {

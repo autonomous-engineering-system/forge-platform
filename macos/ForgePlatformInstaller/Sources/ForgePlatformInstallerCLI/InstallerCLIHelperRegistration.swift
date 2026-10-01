@@ -6,19 +6,23 @@ enum InstallerCLIHelperRegistration {
     typealias Registrar = @Sendable (InstallerVersion) async -> ManagedInstallerPrivilegedHelperRegistrationResult
 
     static let liveRegistrar: Registrar = { expectedVersion in
-        let service = MacOSManagedInstallerPrivilegedHelperServiceController()
-        guard let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator.production(
-            service: service
-        ) else { return .failed(.transitionBusy) }
+        guard let coordinator = liveCoordinator() else { return .failed(.transitionBusy) }
         return await coordinator.ensureRegistered(expectedVersion: expectedVersion)
     }
 
     static let liveQualificationReplacer: Registrar = { expectedVersion in
-        let service = MacOSManagedInstallerPrivilegedHelperServiceController()
-        guard let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator.production(
-            service: service
-        ) else { return .failed(.transitionBusy) }
+        guard let coordinator = liveCoordinator() else { return .failed(.transitionBusy) }
         return await coordinator.replaceLegacyQualification(expectedVersion: expectedVersion)
+    }
+
+    static let liveIdleReplacer: Registrar = { expectedVersion in
+        guard let coordinator = liveCoordinator() else { return .failed(.transitionBusy) }
+        return await coordinator.replaceIdleOlderRegistration(expectedVersion: expectedVersion)
+    }
+
+    private static func liveCoordinator() -> ManagedInstallerPrivilegedHelperRegistrationCoordinator? {
+        let service = MacOSManagedInstallerPrivilegedHelperServiceController()
+        return ManagedInstallerPrivilegedHelperRegistrationCoordinator.production(service: service)
     }
 
     static func run(
@@ -28,13 +32,16 @@ enum InstallerCLIHelperRegistration {
         options: InstallerCLIOptions,
         confirm: ForgePlatformInstallerCLIApplication.Confirmation,
         register: Registrar,
-        replacingQualification: Bool = false
+        replacingQualification: Bool = false,
+        replacingOlder: Bool = false
     ) async -> InstallerCLIResult {
         if !options.assumeYes {
             let accepted = options.nonInteractive ? false : await confirm(
                 replacingQualification
                     ? "Vervang de exacte inactieve 0.2.4-kwalificatiehelper door de geverifieerde systeemhelper?"
-                    : "Registreer de geverifieerde installer-helper als systeemdaemon?"
+                    : replacingOlder
+                        ? "Vervang de exacte inactieve oudere installer-helper door de geverifieerde actuele systeemhelper?"
+                        : "Registreer de geverifieerde installer-helper als systeemdaemon?"
             )
             if !accepted {
                 return InstallerCLIResult(

@@ -61,6 +61,13 @@ final class InstallerCLITests: XCTestCase {
             try InstallerCLIParser.parse(["helper", "replace-qualification", "--yes"]).command,
             .helperReplaceQualification
         )
+        XCTAssertEqual(
+            try InstallerCLIParser.parse(["helper", "replace-idle", "--yes"]).command,
+            .helperReplaceIdle
+        )
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "helper", "replace-idle", "--deployment", "another-target",
+        ]))
         XCTAssertEqual(try InstallerCLIParser.parse(["self-update", "check"]).command, .selfUpdateCheck)
         XCTAssertEqual(try InstallerCLIParser.parse(["self-update", "apply"]).command, .selfUpdateApply)
         XCTAssertEqual(try InstallerCLIParser.parse(["deployment", "list"]).command, .deploymentList)
