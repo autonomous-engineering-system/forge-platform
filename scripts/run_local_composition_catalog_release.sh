@@ -41,7 +41,7 @@ trap 'exit 143' TERM
 command -v gh >/dev/null || fail gh-cli-unavailable
 command -v openssl >/dev/null || fail openssl-unavailable
 gh auth status --hostname github.com >/dev/null 2>&1 || fail github-auth-unavailable
-mkdir -p "$WORK/metadata" "$WORK/authorization" "$WORK/candidate" "$WORK/signatures" "$WORK/release" "$WORK/readback"
+mkdir -p "$WORK/metadata" "$WORK/authorization" "$WORK/candidate" "$WORK/signatures" "$WORK/readback"
 
 gh run view "$RUN_ID" --repo "$REPOSITORY" \
   --json databaseId,headBranch,headSha,event,conclusion,workflowName,jobs,url,createdAt \
