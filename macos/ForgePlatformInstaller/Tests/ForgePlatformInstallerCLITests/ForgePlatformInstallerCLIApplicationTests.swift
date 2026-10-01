@@ -615,6 +615,76 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertTrue(mismatch.stdout.joined().contains("registered-parent-mismatch"))
     }
 
+    func testIdleOlderHelperReplacementRequiresConsentAndExactNativeResult() async throws {
+        let current = try release("1.2.3")
+        let registrar = CLIHelperRegistrarSpy(result: .ready(
+            try ManagedInstallerPrivilegedHelperRegistrationReceipt(status: .enabled)
+        ))
+        let startup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator())
+        )
+        let denied = await run(
+            ["helper", "replace-idle", "--non-interactive"],
+            startup: startup, version: "1.2.3",
+            idleReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(denied.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let callsAfterDenial = await registrar.calls()
+        XCTAssertEqual(callsAfterDenial, 0)
+
+        let replaced = await run(
+            ["helper", "replace-idle", "--yes", "--non-interactive", "--json"],
+            startup: startup, version: "1.2.3",
+            idleReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(replaced.code, InstallerCLIExitCode.success.rawValue)
+        XCTAssertTrue(replaced.stdout.joined().contains("helper-enabled"))
+        let callsAfterReplacement = await registrar.calls()
+        XCTAssertEqual(callsAfterReplacement, 1)
+
+        let interactive = await run(
+            ["helper", "replace-idle", "--json"],
+            startup: startup, version: "1.2.3",
+            idleReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(interactive.code, InstallerCLIExitCode.success.rawValue)
+        let callsAfterInteractive = await registrar.calls()
+        XCTAssertEqual(callsAfterInteractive, 2)
+
+        let approvalReceipt = try ManagedInstallerPrivilegedHelperRegistrationReceipt(
+            status: .requiresApproval
+        )
+        let approval = await run(
+            ["helper", "replace-idle", "--yes", "--json"],
+            startup: startup, version: "1.2.3",
+            idleReplacement: { _ in .requiresApproval(approvalReceipt) }
+        )
+        XCTAssertEqual(approval.code, InstallerCLIExitCode.interactionRequired.rawValue)
+        XCTAssertTrue(approval.stdout.joined().contains("REQUIRES_APPROVAL"))
+
+        let newer = try release("1.2.4")
+        let stale = await run(
+            ["helper", "replace-idle", "--yes", "--json"],
+            startup: CLIStartupSpy(
+                outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+                recheckOutcome: .updateRequired(newer)
+            ),
+            version: "1.2.3",
+            idleReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(stale.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        let callsAfterStale = await registrar.calls()
+        XCTAssertEqual(callsAfterStale, 2)
+
+        let mismatch = await run(
+            ["helper", "replace-idle", "--yes", "--json"],
+            startup: startup, version: "1.2.3",
+            idleReplacement: { _ in .failed(.registeredParentMismatch) }
+        )
+        XCTAssertEqual(mismatch.code, InstallerCLIExitCode.executionFailed.rawValue)
+        XCTAssertTrue(mismatch.stdout.joined().contains("registered-parent-mismatch"))
+    }
+
     func testHelperRegistrationPreservesApprovalFailureAndReleaseDrift() async throws {
         let current = try release("1.2.3")
         let next = try release("1.2.4")
@@ -692,6 +762,9 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         },
         replacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
             .failed(.serviceUnavailable)
+        },
+        idleReplacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
+            .failed(.serviceUnavailable)
         }
     ) async -> (code: Int32, stdout: [String], stderr: [String]) {
         let output = LockedStrings()
@@ -706,6 +779,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             confirm: { _ in confirmation },
             registerHelper: registration,
             replaceQualificationHelper: replacement,
+            replaceIdleHelper: idleReplacement,
             stdout: { output.append($0) },
             stderr: { errors.append($0) }
         )

@@ -313,22 +313,51 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         expectedVersion: InstallerVersion
     ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
         withRegistrationLock {
-            replaceLegacyQualificationWhileLocked(expectedVersion: expectedVersion)
+            guard let legacy = try? InstallerVersion("0.2.4") else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceIdleParentWhileLocked(
+                expectedVersion: expectedVersion,
+                minimumPriorVersion: legacy,
+                maximumPriorVersion: legacy
+            )
         }
     }
 
-    private func replaceLegacyQualificationWhileLocked(
+    /// Upgrade a previously released, signed installer helper only while its
+    /// fixed ServiceManagement job has never run since boot. The sealed CLI
+    /// supplies the target version; no request can choose a label or parent.
+    public func replaceIdleOlderRegistration(
         expectedVersion: InstallerVersion
     ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let firstSupported = try? InstallerVersion("0.3.7") else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceIdleParentWhileLocked(
+                expectedVersion: expectedVersion,
+                minimumPriorVersion: firstSupported,
+                maximumPriorVersion: nil
+            )
+        }
+    }
+
+    private func replaceIdleParentWhileLocked(
+        expectedVersion: InstallerVersion,
+        minimumPriorVersion: InstallerVersion,
+        maximumPriorVersion: InstallerVersion?
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
         let initialStatus = service.readStatus()
-        guard let legacy = try? InstallerVersion("0.2.4"),
-              legacy < expectedVersion,
+        guard let prior = service.readIdleRegisteredParentVersion(),
+              prior >= minimumPriorVersion,
+              maximumPriorVersion.map({ prior <= $0 }) ?? true,
+              prior < expectedVersion,
               initialStatus != .requiresApproval,
-              service.readRegisteredParentVersion() == legacy,
-              service.readIdleRegisteredParentVersion() == legacy,
+              service.readRegisteredParentVersion() == prior,
+              service.readIdleRegisteredParentVersion() == prior,
               service.readStatus() == initialStatus,
-              service.readRegisteredParentVersion() == legacy,
-              service.readIdleRegisteredParentVersion() == legacy else {
+              service.readRegisteredParentVersion() == prior,
+              service.readIdleRegisteredParentVersion() == prior else {
             return .failed(.registeredParentMismatch)
         }
         do {

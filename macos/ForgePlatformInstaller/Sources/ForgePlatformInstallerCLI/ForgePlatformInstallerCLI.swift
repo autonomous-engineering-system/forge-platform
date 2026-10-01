@@ -68,6 +68,8 @@ enum ForgePlatformInstallerCLIApplication {
             InstallerCLIHelperRegistration.liveRegistrar,
         replaceQualificationHelper: @escaping InstallerCLIHelperRegistration.Registrar =
             InstallerCLIHelperRegistration.liveQualificationReplacer,
+        replaceIdleHelper: @escaping InstallerCLIHelperRegistration.Registrar =
+            InstallerCLIHelperRegistration.liveIdleReplacer,
         challengeWriter: ChallengeWriter = writeChallengeToTTY,
         stdout: Writer,
         stderr: Writer
@@ -207,6 +209,16 @@ enum ForgePlatformInstallerCLIApplication {
                     confirm: confirm,
                     register: replaceQualificationHelper,
                     replacingQualification: true
+                )
+            case .helperReplaceIdle:
+                result = await InstallerCLIHelperRegistration.run(
+                    startup: startup,
+                    currentVersion: currentVersion,
+                    currentRelease: currentRelease,
+                    options: invocation.options,
+                    confirm: confirm,
+                    register: replaceIdleHelper,
+                    replacingOlder: true
                 )
             case .deploymentList:
                 result = await workflow.listDeployments()
