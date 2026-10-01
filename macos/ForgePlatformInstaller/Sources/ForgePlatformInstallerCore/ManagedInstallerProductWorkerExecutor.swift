@@ -777,6 +777,38 @@ public actor ManagedInstallerPythonProductOperationExecutor:
         return .success(proposal)
     }
 
+    public func preparePairingRepairReview(
+        _ intent: ManagedInstallerPairingRepairReviewIntent
+    ) async -> Result<
+        ManagedInstallerPairingRepairReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard !inFlight else { return .failure(.rejected) }
+        inFlight = true
+        defer { inFlight = false }
+        let invocation: ManagedInstallerProductWorkerInvocation
+        switch await resolver.resolveProductWorkerInvocation() {
+        case .success(let resolved): invocation = resolved
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        let response: Data
+        switch await runner.runProductWorker(
+            invocation, canonicalRequest: intent.canonicalJSONData()
+        ) {
+        case .success(let completed): response = completed
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        guard response.count <= ManagedInstallerPairingRepairReviewProposal.maximumBytes,
+              let proposal = try? ManagedInstallerPairingRepairReviewProposal.decodeJSON(
+                  response, intent: intent
+              ), proposal.canonicalJSONData() == response else {
+            return .failure(.rejected)
+        }
+        return .success(proposal)
+    }
+
     public func executePreservedLifecycle(
         _ request: ManagedInstallerPreservedLifecycleRequest
     ) async -> Result<

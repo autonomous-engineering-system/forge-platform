@@ -6,6 +6,7 @@ import Foundation
 public struct ManagedInstallerHelperLocalProductOperationTransport:
     ManagedInstallerProductOperationTransporting,
     ManagedInstallerProductRemovalReviewTransporting,
+    ManagedInstallerPairingRepairReviewTransporting,
     ManagedInstallerProductRemovalTransporting,
     ManagedInstallerPreservedLifecycleReviewTransporting,
     ManagedInstallerPreservedLifecycleTransporting,
@@ -83,6 +84,24 @@ public struct ManagedInstallerHelperLocalProductOperationTransport:
             validResponse: { bytes in
                 guard let proposal = try? ManagedInstallerPreservedLifecycleReviewProposal
                     .decodeJSON(bytes, intent: intent) else { return false }
+                return proposal.canonicalJSONData() == bytes
+            }
+        )
+    }
+
+    public func preparePairingRepairReview(_ canonicalIntent: Data) async
+        -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        guard let intent = try? ManagedInstallerPairingRepairReviewIntent.decodeJSON(
+            canonicalIntent
+        ) else { return .failure(.invalidRequest) }
+        return await call(
+            canonicalIntent, isCanonical: intent.canonicalJSONData() == canonicalIntent,
+            maximumResponseBytes: ManagedInstallerPairingRepairReviewProposal.maximumBytes,
+            send: service.preparePairingRepairReview,
+            validResponse: { bytes in
+                guard let proposal = try? ManagedInstallerPairingRepairReviewProposal.decodeJSON(
+                    bytes, intent: intent
+                ) else { return false }
                 return proposal.canonicalJSONData() == bytes
             }
         )

@@ -1,6 +1,12 @@
 import CryptoKit
 import Foundation
 
+public protocol ManagedInstallerPairingRepairReviewTransporting: Sendable {
+    func preparePairingRepairReview(
+        _ canonicalIntent: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure>
+}
+
 /// Public identity only. The helper derives the repair target from its sealed route.
 public struct ManagedInstallerPairingRepairReviewIntent: Equatable, Sendable {
     public static let schema = "forge-platform.native-pairing-repair-review-intent/v1"

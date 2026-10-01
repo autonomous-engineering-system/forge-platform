@@ -57,6 +57,58 @@ final class ManagedInstallerPairingRepairReviewBridgeTests: XCTestCase {
         }
     }
 
+    func testHelperLocalAndAuthenticatedXPCReviewUseSameCanonicalBytes() async throws {
+        let intent = try makeIntent()
+        let bytes = proposal(for: intent)
+        let proposal = try ManagedInstallerPairingRepairReviewProposal.decodeJSON(
+            bytes, intent: intent
+        )
+        let executor = RepairReviewExecutor(result: .success(proposal))
+        let local = ManagedInstallerHelperLocalProductOperationTransport(executor: executor)
+        let localResponse = try await local.preparePairingRepairReview(
+            intent.canonicalJSONData()
+        ).get()
+        XCTAssertEqual(localResponse, bytes)
+        let invalid = await local.preparePairingRepairReview(Data("{}".utf8))
+        XCTAssertEqual(invalid.failure, .invalidRequest)
+
+        let handler = ManagedInstallerProductOperationXPCServiceHandler(executor: executor)
+        let identity = try ManagedInstallerProductOperationXPCCallerIdentity(
+            bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
+            teamIdentifier: "ZEML4LPXH4"
+        )
+        let listener = MacOSManagedInstallerProductOperationXPCListener(
+            listener: .anonymous(), callerIdentity: identity,
+            serviceHandler: handler, installCodeSigningRequirement: { _, _ in }
+        )
+        listener.activate()
+        defer { listener.invalidate() }
+        let transport = MacOSManagedInstallerProductOperationXPCTransport(
+            endpoint: listener.endpoint
+        )
+        let xpcResponse = try await transport.preparePairingRepairReview(
+            intent.canonicalJSONData()
+        ).get()
+        let calls = await executor.calls()
+        XCTAssertEqual(xpcResponse, bytes)
+        XCTAssertEqual(calls, [intent, intent])
+        await transport.invalidate()
+    }
+
+    func testXPCRejectsWrongProposalBeforeReturningIt() async throws {
+        let intent = try makeIntent()
+        let changed = Data(String(decoding: proposal(for: intent), as: UTF8.self)
+            .replacingOccurrences(of: "NO_CHANGE", with: "REPAIR").utf8)
+        let service = RawProductOperationXPCService(responses: [changed])
+        let transport = MacOSManagedInstallerProductOperationXPCTransport(
+            endpoint: service.endpoint
+        )
+        let result = await transport.preparePairingRepairReview(intent.canonicalJSONData())
+        XCTAssertEqual(result.failure, .rejected)
+        XCTAssertEqual(service.capturedRequests(), [intent.canonicalJSONData()])
+        await transport.invalidate()
+    }
+
     private func makeIntent() throws -> ManagedInstallerPairingRepairReviewIntent {
         try ManagedInstallerPairingRepairReviewIntent(
             operationID: "repair-one", deploymentID: "deployment-one",
@@ -96,5 +148,39 @@ final class ManagedInstallerPairingRepairReviewBridgeTests: XCTestCase {
                 ]),
             ]),
         ]))
+    }
+}
+
+private actor RepairReviewExecutor: ManagedInstallerProductOperationHelperExecuting {
+    private let result: Result<ManagedInstallerPairingRepairReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure>
+    private var seen: [ManagedInstallerPairingRepairReviewIntent] = []
+
+    init(result: Result<ManagedInstallerPairingRepairReviewProposal,
+         ManagedInstallerProductOperationBridgeFailure>) {
+        self.result = result
+    }
+
+    func executeProductOperation(_ request: ManagedInstallerProductOperationRequest)
+        async -> Result<ManagedInstallerProductOperationReceipt,
+                        ManagedInstallerProductOperationBridgeFailure> {
+        _ = request
+        return .failure(.rejected)
+    }
+
+    func preparePairingRepairReview(_ intent: ManagedInstallerPairingRepairReviewIntent)
+        async -> Result<ManagedInstallerPairingRepairReviewProposal,
+                        ManagedInstallerProductOperationBridgeFailure> {
+        seen.append(intent)
+        return result
+    }
+
+    func calls() -> [ManagedInstallerPairingRepairReviewIntent] { seen }
+}
+
+private extension Result where Failure == ManagedInstallerProductOperationBridgeFailure {
+    var failure: ManagedInstallerProductOperationBridgeFailure? {
+        guard case .failure(let value) = self else { return nil }
+        return value
     }
 }

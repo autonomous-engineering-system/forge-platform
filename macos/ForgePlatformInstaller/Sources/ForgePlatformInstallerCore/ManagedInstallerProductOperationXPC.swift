@@ -22,6 +22,12 @@ public protocol ManagedInstallerProductOperationHelperExecuting: Sendable {
         ManagedInstallerProductRemovalReviewProposal,
         ManagedInstallerProductOperationBridgeFailure
     >
+    func preparePairingRepairReview(
+        _ intent: ManagedInstallerPairingRepairReviewIntent
+    ) async -> Result<
+        ManagedInstallerPairingRepairReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    >
     func preparePreservedLifecycleReview(
         _ intent: ManagedInstallerPreservedLifecycleReviewIntent
     ) async -> Result<
@@ -63,6 +69,16 @@ public extension ManagedInstallerProductOperationHelperExecuting {
         _ intent: ManagedInstallerProductRemovalReviewIntent
     ) async -> Result<
         ManagedInstallerProductRemovalReviewProposal,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        _ = intent
+        return .failure(.rejected)
+    }
+
+    func preparePairingRepairReview(
+        _ intent: ManagedInstallerPairingRepairReviewIntent
+    ) async -> Result<
+        ManagedInstallerPairingRepairReviewProposal,
         ManagedInstallerProductOperationBridgeFailure
     > {
         _ = intent
@@ -150,6 +166,10 @@ public protocol ManagedInstallerPurgeRecoveryTransporting: Sendable {
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     )
+    func preparePairingRepairReview(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    )
     func preparePreservedLifecycleReview(
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
@@ -208,6 +228,7 @@ public struct ManagedInstallerProductOperationXPCCallerIdentity: Equatable, Send
 public actor MacOSManagedInstallerProductOperationXPCTransport:
     ManagedInstallerProductOperationTransporting,
     ManagedInstallerProductRemovalReviewTransporting,
+    ManagedInstallerPairingRepairReviewTransporting,
     ManagedInstallerProductRemovalTransporting,
     ManagedInstallerPreservedLifecycleReviewTransporting,
     ManagedInstallerPreservedLifecycleTransporting,
@@ -373,6 +394,38 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
                 guard let response,
                       response.count <= ManagedInstallerPreservedLifecycleReviewProposal.maximumBytes,
                       let proposal = try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                          response, intent: intent
+                      ), proposal.canonicalJSONData() == response else {
+                    gate.complete(.failure(.rejected))
+                    return
+                }
+                gate.complete(.success(response))
+            }
+        }
+    }
+
+    public func preparePairingRepairReview(
+        _ canonicalIntent: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        guard let intent = try? ManagedInstallerPairingRepairReviewIntent.decodeJSON(
+            canonicalIntent
+        ), intent.canonicalJSONData() == canonicalIntent else {
+            return .failure(.invalidRequest)
+        }
+        return await withCheckedContinuation { continuation in
+            let gate = ManagedInstallerProductOperationXPCReplyGate(
+                continuation: continuation
+            )
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+                gate.complete(.failure(.unavailable))
+            }) as? ManagedInstallerProductOperationXPCService else {
+                gate.complete(.failure(.unavailable))
+                return
+            }
+            proxy.preparePairingRepairReview(canonicalIntent) { response in
+                guard let response,
+                      response.count <= ManagedInstallerPairingRepairReviewProposal.maximumBytes,
+                      let proposal = try? ManagedInstallerPairingRepairReviewProposal.decodeJSON(
                           response, intent: intent
                       ), proposal.canonicalJSONData() == response else {
                     gate.complete(.failure(.rejected))
@@ -613,6 +666,38 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
             let response = proposal.canonicalJSONData()
             guard response.count <= ManagedInstallerPreservedLifecycleReviewProposal.maximumBytes,
                   (try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
+                      response, intent: intent
+                  )) == proposal else {
+                gate.complete(nil)
+                return
+            }
+            gate.complete(response)
+        }
+    }
+
+    public func preparePairingRepairReview(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        let gate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
+        let executor = executor
+        Task {
+            guard let intent = try? ManagedInstallerPairingRepairReviewIntent.decodeJSON(
+                canonicalIntent
+            ), intent.canonicalJSONData() == canonicalIntent else {
+                gate.complete(nil)
+                return
+            }
+            let proposal: ManagedInstallerPairingRepairReviewProposal
+            switch await executor.preparePairingRepairReview(intent) {
+            case .success(let completed): proposal = completed
+            case .failure:
+                gate.complete(nil)
+                return
+            }
+            let response = proposal.canonicalJSONData()
+            guard response.count <= ManagedInstallerPairingRepairReviewProposal.maximumBytes,
+                  (try? ManagedInstallerPairingRepairReviewProposal.decodeJSON(
                       response, intent: intent
                   )) == proposal else {
                 gate.complete(nil)
