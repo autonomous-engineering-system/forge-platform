@@ -104,6 +104,7 @@ TESTS = (
     "tests/component_operations/test_ep_system_provisioner_adapter.py",
     "tests/component_operations/test_ep_consumer_revocation.py",
     "tests/component_operations/test_ep_consumer_registration.py",
+    "tests/installer/test_ep_initial_consumer_registration.py",
     "tests/component_operations/test_ep_credential_recovery.py",
     "tests/installer/test_managed_ep_credential_issuance.py",
     "tests/installer/test_managed_system_keychain_store.py",
