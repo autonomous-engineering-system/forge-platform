@@ -181,6 +181,7 @@ def main() -> None:
     required_installer_capabilities = {
         "composition/v1",
         "composition/v2",
+        "composition/v3",
         "managed-deployment/v1",
         "managed-python-runtime/v1",
         "provider-fanout/v1",
