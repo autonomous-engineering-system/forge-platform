@@ -2307,6 +2307,13 @@ final class RawProductOperationXPCService:
         executeProductOperation(canonicalIntent, withReply: reply)
     }
 
+    func preparePairingRepairReview(
+        _ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalIntent, withReply: reply)
+    }
+
     func preparePreservedLifecycleReview(
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
