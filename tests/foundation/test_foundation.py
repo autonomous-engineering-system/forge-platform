@@ -179,6 +179,7 @@ def main() -> None:
     if installer_version.get("product") != "forge-platform-installer":
         raise SystemExit("installer version authority is invalid")
     required_installer_capabilities = {
+        "catalog-component-set/v1",
         "composition/v1",
         "composition/v2",
         "composition/v3",

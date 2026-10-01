@@ -1,5 +1,6 @@
 {
   "capabilities": [
+    "catalog-component-set/v1",
     "composition/v1",
     "composition/v2",
     "composition/v3",
