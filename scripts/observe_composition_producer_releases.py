@@ -85,6 +85,12 @@ def _digest(raw: bytes) -> str:
     return "sha256:" + sha256(raw).hexdigest()
 
 
+def _artifact_digest(raw: bytes) -> str:
+    if not isinstance(raw, bytes) or not 0 < len(raw) <= MAXIMUM_EXTERNAL_ASSET_BYTES:
+        raise ObservationError("producer artifact exceeds the byte boundary")
+    return _digest(raw)
+
+
 def _network_fetch(url: str) -> bytes:
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "forge-platform-observer/1"}
     token = os.environ.get("GITHUB_TOKEN")
@@ -327,7 +333,8 @@ def _common_receipt(
 
 
 def _pypi_artifacts(
-    producer: Mapping[str, object], receipt: Mapping[str, object], version: str, fetch: Fetcher
+    producer: Mapping[str, object], receipt: Mapping[str, object], version: str,
+    fetch: Fetcher, digest_fetch: DigestFetcher,
 ) -> list[Mapping[str, object]]:
     artifacts = receipt["artifacts"]
     if set(artifacts) != {"wheel", "sdist"}:
@@ -369,6 +376,8 @@ def _pypi_artifacts(
         url = _require_https(item.get("url"), "PyPI artifact URL")
         if not isinstance(filename, str) or Path(filename).name != filename or readback.get(filename) != digest:
             raise ObservationError("PyPI artifact readback does not bind the registry file")
+        if digest_fetch(url) != digest:
+            raise ObservationError("PyPI producer artifact bytes drifted")
         observed.append({"kind": kind, "filename": filename, "url": url, "digest": digest})
     return sorted(observed, key=lambda item: str(item["kind"]))
 
@@ -398,7 +407,9 @@ def _github_source_bundle(
     return [{"kind": "source-bundle", "filename": name, "url": url, "digest": digest}]
 
 
-def _observe_producer(producer: Mapping[str, object], fetch: Fetcher) -> Mapping[str, object]:
+def _observe_producer(
+    producer: Mapping[str, object], fetch: Fetcher, digest_fetch: DigestFetcher,
+) -> Mapping[str, object]:
     repository = str(producer["repository"])
     try:
         release_raw = fetch(f"https://api.github.com/repos/{repository}/releases/latest")
@@ -413,7 +424,7 @@ def _observe_producer(producer: Mapping[str, object], fetch: Fetcher) -> Mapping
     receipt = _strict_json(receipt_raw, "producer terminal receipt")
     _common_receipt(producer, receipt, version, source)
     if producer["registry"] == "pypi":
-        artifacts = _pypi_artifacts(producer, receipt, version, fetch)
+        artifacts = _pypi_artifacts(producer, receipt, version, fetch, digest_fetch)
     else:
         artifacts = _github_source_bundle(producer, receipt, release)
     eligible = bool(producer["composition_eligible"])
@@ -464,11 +475,17 @@ def observe(
 ) -> Mapping[str, object]:
     observed_at = _require_timestamp(observed_at)
     config_raw, producers, external = _load_config(config_path)
+    digest_fetch = external_digest_fetch
+    if digest_fetch is None:
+        digest_fetch = (
+            _network_external_digest if fetch is _network_fetch
+            else lambda url: _artifact_digest(fetch(url))
+        )
     observations: list[Mapping[str, object]] = []
     blockers: list[str] = []
     for producer in producers:
         try:
-            observation = _observe_producer(producer, fetch)
+            observation = _observe_producer(producer, fetch, digest_fetch)
         except NoPublicRelease:
             observation = {
                 "identity": producer["identity"],
@@ -479,9 +496,6 @@ def observe(
         observations.append(observation)
         if producer["composition_eligible"] and observation["status"] != "READY":
             blockers.append(f'{producer["identity"]}:{observation["status"]}')
-    digest_fetch = external_digest_fetch
-    if digest_fetch is None and fetch is _network_fetch:
-        digest_fetch = _network_external_digest
     external_observations = [_observe_external(item, fetch, digest_fetch) for item in external]
     for item in external_observations:
         if item["status"] != "READY":
