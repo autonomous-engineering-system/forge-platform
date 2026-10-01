@@ -1,21 +1,27 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from hashlib import sha256
 import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
+from forge_platform.component_operations import QualifiedArtifact
 from forge_platform.ep_consumer_revocation import EPConsumerScope
+from forge_platform.forge_ep_pairing_executor import ForgeEPProductPairingBinding
+from forge_platform.forge_server_adapter import ForgeServerProductAdapter, ForgeServerTarget
 from forge_platform.managed_deployments import (
     ManagedComponentBinding, ManagedDeployment, ManagedDeploymentPlanner,
     ManagedDeploymentRegistry, ManagedPeerBinding,
 )
 from forge_platform.managed_pairing_revocation import (
     ManagedPairingRevocationCoordinator, ManagedPairingRevocationError,
+    ManagedPairingRepairRevocationCoordinator,
 )
+from forge_platform.managed_pairing_detach import ManagedPairingRepairDetachCoordinator
 
 
 RECEIPT = "ep-consumer-revoke:sha256:" + sha256(json.dumps({
@@ -127,6 +133,120 @@ class ManagedPairingRevocationTests(unittest.TestCase):
             operation, plan or self.full_plan,
             reviewed_current=self.current, revoker=self.revoker,
         )
+
+    def repair_setup(self):
+        desired = replace(
+            self.current, revision=2,
+            peer_binding=ManagedPeerBinding("forge-a", "ep-a", "receipt:pair-new"),
+        )
+        plan = ManagedDeploymentPlanner.plan(
+            self.current, desired,
+            product_actions={"forge-runtime": "REPAIR", "engineering-platform-server": "NO_CHANGE"},
+        )
+        artifact = QualifiedArtifact(
+            "2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
+            "released-wheel",
+            "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+            "release-complete",
+        )
+        root = self.operations.parent
+        forge = ForgeServerProductAdapter(
+            forge_executable=root / "bin/forge",
+            target=ForgeServerTarget(
+                "forge-a", root / "instances/forge-a", root / "instances",
+                "_forge_a", 9000, root / "credentials/forge-a.token",
+            ),
+            installed_artifact=artifact, staged_artifacts={}, supervisor=object(),
+        )
+        binding = ForgeEPProductPairingBinding(
+            "binding-a", "http://127.0.0.1:9001", "ep-a", "consumer-a",
+            "host-a", "project-a", "repo-a", "owner:repo",
+            "keychain://forge/ep-a", "operator-a", True,
+        )
+        detach = ManagedPairingRepairDetachCoordinator(
+            operations_root=root / "repair-detach", registry=self.registry,
+            currency_guard=self.guard, expected_owner_uid=root.stat().st_uid,
+        )
+        coordinator = ManagedPairingRepairRevocationCoordinator(
+            operations_root=root / "repair-revoke", registry=self.registry,
+            currency_guard=self.guard,
+            scope_claims={"deployment-a": self.scope, "deployment-b": self.other_scope},
+            expected_owner_uid=root.stat().st_uid,
+        )
+        return plan, forge, binding, detach, coordinator
+
+    def test_repair_revoke_requires_terminal_detach_and_replays_exact_ep_receipt(self):
+        plan, forge, binding, detach, coordinator = self.repair_setup()
+        terminal = SimpleNamespace(state="COMPLETE", receipt_digest="sha256:" + "a" * 64)
+        with patch.object(detach, "repair_detach", return_value=terminal) as prior:
+            first = coordinator.repair_revoke(
+                "repair-a", plan, reviewed_current=self.current,
+                revoker=self.revoker, detach_coordinator=detach,
+                forge_adapter=forge, old_binding=binding,
+            )
+            second = coordinator.repair_revoke(
+                "repair-a", plan, reviewed_current=self.current,
+                revoker=self.revoker, detach_coordinator=detach,
+                forge_adapter=forge, old_binding=binding,
+            )
+        self.assertEqual(first, second)
+        self.assertEqual(first.state, "COMPLETE")
+        self.assertEqual(first.receipt_reference, RECEIPT)
+        self.assertEqual(prior.call_count, 2)
+        self.assertEqual(self.revoker.calls, 1)
+        self.assertEqual(self.registry.load("deployment-b"), self.other)
+        self.assertEqual(len(self.guard.calls), 1)
+        self.assertNotIn("credential", (self.operations.parent / "repair-revoke/repair-a.json").read_text())
+
+    def test_repair_revoke_lost_reply_and_stale_currency_fail_closed(self):
+        plan, forge, binding, detach, coordinator = self.repair_setup()
+        terminal = SimpleNamespace(state="COMPLETE", receipt_digest="sha256:" + "a" * 64)
+        with patch.object(detach, "repair_detach", return_value=terminal):
+            self.guard.fail = True
+            with self.assertRaisesRegex(RuntimeError, "currency"):
+                coordinator.repair_revoke(
+                    "repair-a", plan, reviewed_current=self.current,
+                    revoker=self.revoker, detach_coordinator=detach,
+                    forge_adapter=forge, old_binding=binding,
+                )
+            self.assertEqual(self.revoker.calls, 0)
+            self.guard.fail = False
+            self.revoker.interrupt = True
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                coordinator.repair_revoke(
+                    "repair-a", plan, reviewed_current=self.current,
+                    revoker=self.revoker, detach_coordinator=detach,
+                    forge_adapter=forge, old_binding=binding,
+                )
+            result = coordinator.repair_revoke(
+                "repair-a", plan, reviewed_current=self.current,
+                revoker=self.revoker, detach_coordinator=detach,
+                forge_adapter=forge, old_binding=binding,
+            )
+        self.assertEqual(result.state, "COMPLETE")
+        self.assertEqual(self.revoker.calls, 1)
+
+    def test_repair_revoke_blocks_nonterminal_detach_or_wrong_old_scope(self):
+        plan, forge, binding, detach, coordinator = self.repair_setup()
+        with patch.object(detach, "repair_detach", return_value=SimpleNamespace(
+            state="PREPARED", receipt_digest=None,
+        )):
+            with self.assertRaisesRegex(ManagedPairingRevocationError, "detach is not terminal"):
+                coordinator.repair_revoke(
+                    "repair-a", plan, reviewed_current=self.current,
+                    revoker=self.revoker, detach_coordinator=detach,
+                    forge_adapter=forge, old_binding=binding,
+                )
+        with patch.object(detach, "repair_detach") as prior:
+            with self.assertRaisesRegex(ManagedPairingRevocationError, "target changed"):
+                coordinator.repair_revoke(
+                    "repair-a", plan, reviewed_current=self.current,
+                    revoker=self.revoker, detach_coordinator=detach,
+                    forge_adapter=forge,
+                    old_binding=replace(binding, consumer_id="foreign"),
+                )
+            prior.assert_not_called()
+        self.assertEqual(self.revoker.calls, 0)
 
     def test_full_remove_prepared_and_terminal_duplicate_are_exact(self):
         other_before = self.registry.load("deployment-b")
