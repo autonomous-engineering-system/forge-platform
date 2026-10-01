@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import sys
 import unittest
+from unittest.mock import Mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -239,6 +240,49 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
                     "composition-commit",
                 ],
             )
+
+    def test_initial_ep_credential_is_terminal_before_pairing_and_read_on_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (coordinator, registry, _guard, _forge, _ep, adapters,
+             reads, mutations, plan) = self._fixture(directory)
+            issuer = Mock()
+            issuer.ensure.return_value.state = "COMPLETE"
+            issuer.read_terminal.return_value.state = "COMPLETE"
+            pairer = Pairer()
+            args = dict(
+                mutation_requests=mutations, readback_requests=reads,
+                adapters=adapters, pairing_executor=pairer,
+                composition_id="forge-ep-qualified-v3",
+                composition_manifest_digest="sha256:" + "c" * 64,
+                credential_issuer=issuer,
+                credential_reference="keychain://forge.ep/production",
+            )
+            self.assertEqual(coordinator.execute("install-credential", plan, **args).state, "COMPLETE")
+            issuer.ensure.assert_called_once()
+            self.assertEqual(pairer.calls, 1)
+            self.assertEqual(coordinator.execute("install-credential", plan, **args).state, "COMPLETE")
+            issuer.read_terminal.assert_called_once()
+            self.assertEqual(pairer.calls, 1)
+
+    def test_initial_ep_credential_failure_prevents_pairing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (coordinator, registry, _guard, _forge, _ep, adapters,
+             reads, mutations, plan) = self._fixture(directory)
+            issuer = Mock()
+            issuer.ensure.return_value.state = "PREPARED"
+            pairer = Pairer()
+            with self.assertRaisesRegex(ManagedForgeEPInstallationError, "not terminal"):
+                coordinator.execute(
+                    "install-credential-fail", plan,
+                    mutation_requests=mutations, readback_requests=reads,
+                    adapters=adapters, pairing_executor=pairer,
+                    composition_id="forge-ep-qualified-v3",
+                    composition_manifest_digest="sha256:" + "c" * 64,
+                    credential_issuer=issuer,
+                    credential_reference="keychain://forge.ep/production",
+                )
+            self.assertIsNone(registry.load("production").peer_binding)
+            self.assertEqual(pairer.calls, 0)
 
     def test_currency_failure_before_second_product_prevents_that_mutation_and_registry_commit(self):
         class SecondProductGuard(Guard):

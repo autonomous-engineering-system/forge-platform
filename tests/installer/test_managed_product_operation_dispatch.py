@@ -5,8 +5,14 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock
+from types import SimpleNamespace
 
 from forge_platform.component_operations import ProductUpdateAssessment
+from forge_platform.ep_consumer_revocation import EPConsumerRevocationAdapter, EPConsumerScope
+from forge_platform.forge_ep_pairing_executor import (
+    ForgeEPProductPairingBinding, ForgeEPProductPairingExecutor,
+)
 from forge_platform.managed_deployments import ManagedDeploymentRegistry
 from forge_platform.managed_install_flow import ManagedForgeEPInstallationCoordinator
 from forge_platform.managed_product_operation_admission import (
@@ -89,6 +95,40 @@ def route(*, forge="forge-new", ep="ep-new", pending_ep=False, degrade_ep=False)
 
 
 class ManagedProductOperationDispatchTests(unittest.TestCase):
+    def test_released_pairing_fails_before_mutation_without_private_secure_store(self) -> None:
+        _installed, candidate = manifests()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            registry = ManagedDeploymentRegistry(root / "registry")
+            admitted = admit_native_product_operation(
+                decoded(request_payload(candidate, installed=None, exists=False)),
+                manifest=candidate, registry=registry,
+                current_installer_release=installer_release(),
+            )
+            selected = route()
+            ep = selected.adapters["engineering-platform-server"]
+            ep.target = SimpleNamespace(instance_id="ep-new")
+            ep.staged_artifacts = {EP_DIGEST: root / "ep.whl"}
+            pairer = Mock(spec=ForgeEPProductPairingExecutor)
+            pairer.binding = ForgeEPProductPairingBinding(
+                "ep-primary", "http://127.0.0.1:8876", "ep-new",
+                "consumer-a", "host-a", "project-a", "repository-a",
+                "owner:repo", "keychain://forge.ep/consumer-a", "installer", True,
+            )
+            revoker = Mock(spec=EPConsumerRevocationAdapter)
+            revoker.provisioner = ep
+            revoker.scope = EPConsumerScope("consumer-a", "project-a")
+            revoker.expected_artifact = SimpleNamespace(digest=EP_DIGEST)
+            selected = ResolvedManagedProductRoute(
+                "forge-new", "ep-new", selected.adapters, pairer, revoker,
+            )
+            dispatcher = ManagedProductOperationDispatcher(
+                coordinator=coordinator(root, registry), resolver=Resolver(selected),
+            )
+            with self.assertRaisesRegex(ManagedProductOperationDispatchError, "credential authority"):
+                dispatcher.dispatch(admitted)
+            self.assertIsNone(registry.load("production"))
+
     def test_forge_only_route_dispatches_exact_durable_product_saga(self) -> None:
         candidate = composition_manifest(
             composition_id="forge-only", forge_version="2.7.35",

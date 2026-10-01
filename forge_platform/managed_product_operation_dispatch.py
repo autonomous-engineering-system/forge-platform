@@ -17,6 +17,10 @@ from typing import Mapping, Protocol
 
 from .component_operations import ComponentOperationRequest, ProductOperationAdapter
 from .ep_consumer_revocation import EPConsumerRevocationAdapter
+from .ep_consumer_registration import EPInitialConsumerRegistrationAdapter
+from .ep_credential_recovery import EPCredentialRecoveryAdapter
+from .forge_ep_pairing_executor import ForgeEPProductPairingExecutor
+from .managed_ep_initial_credential import ManagedEPInitialCredentialCoordinator
 from .managed_deployments import (
     MANAGED_DEPLOYMENT_SCHEMA_V1,
     ManagedComponentBinding,
@@ -323,12 +327,39 @@ class ManagedProductOperationDispatcher:
             if operations[component].change != "retain"
         }
         if len(components) == 2:
+            credential_issuer = None
+            credential_reference = None
+            if isinstance(route.pairing_executor, ForgeEPProductPairingExecutor):
+                binding = route.pairing_executor.binding
+                if route.ep_consumer_revoker is None or self.coordinator.secure_store is None:
+                    raise ManagedProductOperationDispatchError(
+                        "released pairing credential authority is unavailable"
+                    )
+                registration = EPInitialConsumerRegistrationAdapter(route.ep_consumer_revoker)
+                credential_issuer = ManagedEPInitialCredentialCoordinator(
+                    operations_root=self.coordinator.operations_root / "initial-ep-credential",
+                    registry=self.coordinator.registry,
+                    currency_guard=self.coordinator.currency_guard,
+                    registration=registration,
+                    recovery=EPCredentialRecoveryAdapter(route.ep_consumer_revoker),
+                    store=self.coordinator.secure_store,
+                    scope_claims={
+                        request.deployment_id: route.ep_consumer_revoker.scope,
+                    },
+                    reference_claims={
+                        request.deployment_id: binding.credential_reference,
+                    },
+                    expected_owner_uid=self.coordinator.expected_owner_uid,
+                )
+                credential_reference = binding.credential_reference
             result = self.coordinator.execute(
                 request.operation_id, plan,
                 mutation_requests=mutations, readback_requests=readbacks,
                 adapters=route.adapters, pairing_executor=route.pairing_executor,
                 composition_id=admitted.manifest.composition_id,
                 composition_manifest_digest=admitted.manifest.manifest_digest,
+                credential_issuer=credential_issuer,
+                credential_reference=credential_reference,
             )
         else:
             result = self.single_coordinator.execute(
