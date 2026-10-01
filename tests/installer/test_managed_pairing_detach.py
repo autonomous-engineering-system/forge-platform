@@ -15,7 +15,8 @@ from forge_platform.managed_deployments import (
     ManagedDeploymentRegistry, ManagedPeerBinding,
 )
 from forge_platform.managed_pairing_detach import (
-    ManagedPairingDetachCoordinator, ManagedPairingDetachError, _read,
+    ManagedPairingDetachCoordinator, ManagedPairingDetachError,
+    ManagedPairingRepairDetachCoordinator, _read,
 )
 
 
@@ -216,6 +217,122 @@ class ManagedPairingDetachTests(unittest.TestCase):
                 self.detach()
             product.assert_not_called()
         self.assertEqual(self.registry.load("deployment-b"), self.sibling)
+
+    def repair(self, *, operation_id="repair-a", plan=None, binding=None):
+        desired = replace(
+            self.current, revision=2,
+            peer_binding=ManagedPeerBinding("forge-a", "ep-a", "receipt:pair-new"),
+        )
+        reviewed_plan = plan or ManagedDeploymentPlanner.plan(
+            self.current, desired,
+            product_actions={"forge-runtime": "REPAIR", "engineering-platform-server": "NO_CHANGE"},
+        )
+        coordinator = ManagedPairingRepairDetachCoordinator(
+            operations_root=self.root / "repair-operations", registry=self.registry,
+            currency_guard=self.guard, expected_owner_uid=os.getuid(),
+        )
+        record = coordinator.repair_detach(
+            operation_id, reviewed_plan, reviewed_current=self.current,
+            adapter=self.adapter, old_binding=binding or self.binding,
+        )
+        return record, coordinator, reviewed_plan
+
+    def test_repair_detach_persists_exact_target_and_read_only_terminal_replay(self):
+        with patch.object(
+            ForgeServerProductAdapter, "read_peer_configuration_generation",
+            return_value=self.generation,
+        ) as generation, patch.object(
+            self.adapter, "detach_ep_peer", return_value=self.status,
+        ) as product, patch.object(
+            self.adapter, "read_detach_ep_peer", return_value=self.status,
+        ) as read:
+            first, _, _ = self.repair()
+            replay, _, _ = self.repair()
+        self.assertEqual(first, replay)
+        self.assertEqual(first.state, "COMPLETE")
+        self.assertEqual(first.receipt_digest, self.receipt)
+        self.assertEqual(product.call_count, 1)
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(generation.call_count, 1)
+        self.assertEqual(product.call_args.kwargs["operation_id"], first.product_operation_id)
+        self.assertEqual(self.registry.load("deployment-a"), self.current)
+        self.assertEqual(self.registry.load("deployment-b"), self.sibling)
+        self.assertEqual(len(self.guard.calls), 1)
+        saved = _read(self.root / "repair-operations/repair-a.json", owner_uid=os.getuid())
+        self.assertEqual(saved, first)
+
+    def test_repair_detach_lost_reply_resumes_same_product_operation(self):
+        with patch.object(
+            ForgeServerProductAdapter, "read_peer_configuration_generation",
+            return_value=self.generation,
+        ) as generation, patch.object(
+            self.adapter, "detach_ep_peer", side_effect=[RuntimeError("lost"), self.status],
+        ) as product:
+            with self.assertRaisesRegex(RuntimeError, "lost"):
+                self.repair()
+            prepared = _read(self.root / "repair-operations/repair-a.json", owner_uid=os.getuid())
+            self.assertEqual(prepared.state, "PREPARED")
+            complete, _, _ = self.repair()
+        self.assertEqual(generation.call_count, 1)
+        self.assertEqual(product.call_count, 2)
+        self.assertEqual(complete.product_operation_id, prepared.product_operation_id)
+        self.assertEqual(self.registry.load("deployment-b"), self.sibling)
+
+    def test_repair_detach_historical_replay_keeps_new_peer_untouched(self):
+        with patch.object(
+            ForgeServerProductAdapter, "read_peer_configuration_generation",
+            return_value=self.generation,
+        ), patch.object(self.adapter, "detach_ep_peer", return_value=self.status) as product:
+            first, _, _ = self.repair()
+            with patch.object(
+                self.adapter, "read_detach_ep_peer", side_effect=RuntimeError("now configured"),
+            ), patch.object(
+                self.adapter, "read_historical_detach_ep_peer", return_value=self.status,
+            ) as historical:
+                replay, _, _ = self.repair()
+            self.assertEqual(replay, first)
+            historical.assert_called_once()
+            self.assertEqual(product.call_count, 1)
+
+    def test_repair_detach_stale_plan_currency_and_identity_fail_closed(self):
+        desired = replace(
+            self.current, revision=2,
+            peer_binding=ManagedPeerBinding("forge-a", "ep-a", "receipt:pair-new"),
+        )
+        wrong_plan = ManagedDeploymentPlanner.plan(self.current, desired)
+        with patch.object(
+            ForgeServerProductAdapter, "read_peer_configuration_generation",
+            return_value=self.generation,
+        ), patch.object(self.adapter, "detach_ep_peer") as product:
+            with self.assertRaisesRegex(ManagedPairingDetachError, "reviewed Forge repair"):
+                self.repair(plan=wrong_plan)
+            self.guard.fail = True
+            with self.assertRaisesRegex(RuntimeError, "currency"):
+                self.repair()
+            self.guard.fail = False
+            with self.assertRaisesRegex(ManagedPairingDetachError, "identity changed"):
+                self.repair(binding=replace(self.binding, consumer_id="foreign"))
+            product.assert_not_called()
+
+    def test_repair_detach_corrupt_journal_and_changed_receipt_fail_closed(self):
+        with patch.object(
+            ForgeServerProductAdapter, "read_peer_configuration_generation",
+            return_value=self.generation,
+        ), patch.object(self.adapter, "detach_ep_peer", return_value=self.status):
+            self.repair()
+        with patch.object(
+            self.adapter, "read_detach_ep_peer",
+            return_value={"receipt": {"receipt_digest": "sha256:" + "c" * 64}},
+        ), patch.object(self.adapter, "detach_ep_peer") as product:
+            with self.assertRaisesRegex(ManagedPairingDetachError, "terminal Forge repair"):
+                self.repair()
+            product.assert_not_called()
+        journal = self.root / "repair-operations/repair-a.json"
+        journal.write_bytes(b"changed")
+        with patch.object(self.adapter, "detach_ep_peer") as product:
+            with self.assertRaisesRegex(ManagedPairingDetachError, "journal is invalid"):
+                self.repair()
+            product.assert_not_called()
 
 
 if __name__ == "__main__":
