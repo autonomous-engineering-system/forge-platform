@@ -17,7 +17,9 @@ from forge_platform.managed_ep_credential_issuance import ManagedEPCredentialIss
 from forge_platform.managed_pairing_repair_credential import (
     ManagedPairingRepairCredentialCoordinator, ManagedPairingRepairCredentialError,
 )
-from forge_platform.managed_pairing_revocation import ManagedPairingRepairRevocationCoordinator
+from forge_platform.managed_pairing_revocation import (
+    ManagedPairingRepairRevocationCoordinator, PairingRevocationRecord,
+)
 
 
 def digest(value):
@@ -67,12 +69,10 @@ class RepairCredentialTests(unittest.TestCase):
         )
         self.revoker = SimpleNamespace(scope=self.old_scope)
         self.binding = SimpleNamespace(consumer_id="consumer-old")
-        self.terminal = SimpleNamespace(
-            state="COMPLETE", receipt_reference="ep-consumer-revoke:sha256:" + "a" * 64,
-            operation_id="repair-a", deployment_id="deployment-a",
-            plan_fingerprint=digest(self.plan), reviewed_fingerprint=digest(self.current),
-            forge_instance_id="forge-a", ep_instance_id="ep-a",
-            consumer_id="consumer-old", project_id="project-a",
+        self.terminal = PairingRevocationRecord(
+            "repair-a", "deployment-a", digest(self.plan), digest(self.current),
+            "forge-a", "ep-a", "consumer-old", "project-a", "COMPLETE",
+            "ep-consumer-revoke:sha256:" + "a" * 64,
         )
         self.revocation.repair_revoke.return_value = self.terminal
         self.issuance.issue.return_value = SimpleNamespace(state="COMPLETE")
@@ -144,12 +144,10 @@ class RepairCredentialTests(unittest.TestCase):
             {"plan_fingerprint": "sha256:" + "0" * 64},
             {"forge_instance_id": "forge-b"}, {"ep_instance_id": "ep-b"},
             {"consumer_id": "other"}, {"project_id": "other"},
-            {"reviewed_fingerprint": "sha256:" + "0" * 64},
+            {"reviewed_deployment_fingerprint": "sha256:" + "0" * 64},
         ):
             with self.subTest(alteration=alteration):
-                self.revocation.repair_revoke.return_value = SimpleNamespace(
-                    **(vars(self.terminal) | alteration),
-                )
+                self.revocation.repair_revoke.return_value = replace(self.terminal, **alteration)
                 with self.assertRaises(ManagedPairingRepairCredentialError):
                     self.run_issue()
         self.issuance.issue.assert_not_called()
