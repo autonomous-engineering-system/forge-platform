@@ -1,0 +1,180 @@
+name: Forge Platform exact product wheels on managed Python evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact protected main containing reviewed product/runtime qualification inputs
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-platform-product-managed-python-evidence
+  cancel-in-progress: false
+
+jobs:
+  exact-source:
+    if: >-
+      ${{ github.repository == 'autonomous-engineering-system/forge-platform' &&
+          github.ref == 'refs/heads/main' && github.ref_protected &&
+          github.sha == inputs.source_sha && github.workflow_sha == inputs.source_sha }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require exact current main and unclaimed immutable tag
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test -z "$(git status --porcelain)"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          if git ls-remote --exit-code --refs origin refs/tags/forge-platform-product-managed-python-evidence-v1; then
+            echo 'immutable product/runtime evidence tag already exists' >&2
+            exit 1
+          else
+            test "$?" -eq 2
+          fi
+
+  qualify:
+    needs: exact-source
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Qualify exact published product wheels in separate native managed-Python venvs
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          python3 -m unittest tests.installer.test_qualify_product_wheels_managed_python
+          python3 scripts/qualify_product_wheels_managed_python.py \
+            --config product-runtime-qualification-inputs.json \
+            --source-sha "$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/product-managed-python-evidence.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: product-managed-python-evidence
+          path: ${{ runner.temp }}/product-managed-python-evidence.json
+          if-no-files-found: error
+          retention-days: 2
+
+  publish:
+    needs: [exact-source, qualify]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: product-managed-python-evidence
+          path: ${{ runner.temp }}/product-evidence
+      - name: Publish immutable exact evidence and read public bytes back
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          TAG=forge-platform-product-managed-python-evidence-v1
+          ASSET="$RUNNER_TEMP/product-evidence/product-managed-python-evidence.json"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          python3 - "$ASSET" "$SOURCE_SHA" <<'PY'
+          import sys
+          from pathlib import Path
+          from scripts.qualify_managed_python_runtime import canonical, strict_object
+          from scripts.qualify_product_wheels_managed_python import SCHEMA, load_config
+          raw = Path(sys.argv[1]).read_bytes()
+          report = strict_object(raw)
+          config = load_config(Path('product-runtime-qualification-inputs.json'))
+          tools = strict_object(Path('managed-tool-pages.json').read_bytes())
+          runtime = next(item for item in tools['assets'] if item['kind'] == 'managed-python-runtime')
+          expected = [(item['identity'], item['version'], item['source_revision'], item['wheel']['digest'])
+                      for item in config['products']]
+          actual = [(item['identity'], item['version'], item['source_revision'], item['wheel_digest'])
+                    for item in report.get('products', [])]
+          if (raw != canonical(report) or report.get('schema') != SCHEMA
+                  or report.get('source_sha') != sys.argv[2] or report.get('outcome') != 'PASS'
+                  or report.get('qualification') != 'EXACT_RELEASED_WHEELS_MANAGED_PYTHON_CLI_SMOKE_V1'
+                  or report.get('runtime_identity_digest') != config['runtime_identity_digest']
+                  or report.get('runtime_archive_digest') != runtime['sha256']
+                  or actual != expected or any(item.get('venv_install') != 'PASS'
+                                                or item.get('metadata_readback') != 'PASS'
+                                                or item.get('cli_help') != 'PASS'
+                                                for item in report['products'])):
+              raise SystemExit('product/runtime qualification report differs')
+          PY
+          if git ls-remote --exit-code --refs origin "refs/tags/$TAG"; then
+            echo 'immutable product/runtime evidence tag already exists' >&2
+            exit 1
+          else
+            test "$?" -eq 2
+          fi
+          gh release create "$TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" --draft \
+            --title 'Forge and EP wheels on managed Python qualification v1' \
+            --notes 'Native Apple Silicon exact released-wheel install, metadata and CLI help in isolated managed Python 3.14.7 environments. No system service, provider auth, product readiness or live deployment claim.'
+          mkdir "$RUNNER_TEMP/draft-readback"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern product-managed-python-evidence.json --dir "$RUNNER_TEMP/draft-readback"
+          cmp "$ASSET" "$RUNNER_TEMP/draft-readback/product-managed-python-evidence.json"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,isPrerelease,targetCommitish,assets > "$RUNNER_TEMP/release.json"
+          python3 - "$RUNNER_TEMP/release.json" "$ASSET" "$SOURCE_SHA" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          release = json.loads(Path(sys.argv[1]).read_text())
+          expected = 'sha256:' + hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest()
+          assets = release['assets']
+          if (not release['isDraft'] or release['isPrerelease']
+                  or release['targetCommitish'] != sys.argv[3] or len(assets) != 1
+                  or assets[0]['name'] != 'product-managed-python-evidence.json'
+                  or assets[0]['digest'] != expected):
+              raise SystemExit('draft product/runtime evidence readback differs')
+          PY
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          mkdir "$RUNNER_TEMP/public-readback"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern product-managed-python-evidence.json --dir "$RUNNER_TEMP/public-readback"
+          cmp "$ASSET" "$RUNNER_TEMP/public-readback/product-managed-python-evidence.json"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,isPrerelease,targetCommitish,assets > "$RUNNER_TEMP/public-release.json"
+          python3 - "$RUNNER_TEMP/public-release.json" "$ASSET" "$SOURCE_SHA" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          release = json.loads(Path(sys.argv[1]).read_text())
+          expected = 'sha256:' + hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest()
+          assets = release['assets']
+          if (release['isDraft'] or release['isPrerelease']
+                  or release['targetCommitish'] != sys.argv[3] or len(assets) != 1
+                  or assets[0]['name'] != 'product-managed-python-evidence.json'
+                  or assets[0]['digest'] != expected):
+              raise SystemExit('public product/runtime evidence readback differs')
+          print('PRODUCT_MANAGED_PYTHON_EVIDENCE=PUBLISHED', expected)
+          PY
