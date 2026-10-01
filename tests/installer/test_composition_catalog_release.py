@@ -441,6 +441,44 @@ class CompositionCatalogReleaseTests(unittest.TestCase):
         self.assertNotIn("security export", local)
         self.assertNotIn("set-key-partition-list", local)
 
+    def test_local_publisher_enumerates_every_safe_manifest_asset(self) -> None:
+        local = LOCAL_RELEASE.read_text(encoding="utf-8")
+        source = local.split(
+            'python3 - "$CANDIDATE" >"$WORK/metadata/manifest-assets.txt" <<\'PY\'\n', 1
+        )[1].split("\nPY\n", 1)[0]
+        self.assertIn('for asset in "${release_assets[@]}"; do', local)
+        self.assertIn('"${readback_patterns[@]}"', local)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "candidate.json"
+            for candidate, expected in (
+                ({
+                    "schema": "forge-platform.composition-catalog-candidate/v1",
+                    "manifest_asset_name": "ForgePlatformComposition-1.json",
+                    "component_combination_catalog_asset_name": "index.json",
+                }, ["ForgePlatformComposition-1.json"]),
+                ({
+                    "schema": "forge-platform.composition-catalog-candidate/v2",
+                    "manifests": [
+                        {"asset_name": "ForgePlatformComposition-1-a.json"},
+                        {"asset_name": "ForgePlatformComposition-1-b.json"},
+                    ],
+                    "component_combination_catalog_asset_name": "index.json",
+                }, ["ForgePlatformComposition-1-a.json", "ForgePlatformComposition-1-b.json"]),
+            ):
+                path.write_text(json.dumps(candidate), encoding="utf-8")
+                result = subprocess.run(
+                    [sys.executable, "-c", source, str(path)], capture_output=True, text=True
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), expected)
+            candidate["manifests"][1]["asset_name"] = candidate["manifests"][0]["asset_name"]
+            path.write_text(json.dumps(candidate), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, "-c", source, str(path)], capture_output=True, text=True
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ambiguous", result.stderr)
+
     def test_protected_catalog_workflow_binds_each_reviewed_manifest_path(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         for required in (
