@@ -342,6 +342,102 @@ class ManagedPairingRepairExecutionCoordinator:
         finally:
             os.close(descriptor)
 
+    def read_terminal(
+        self, operation_id: str, plan: ManagedDeploymentPlan, *,
+        reviewed_current: ManagedDeployment, old_binding: ForgeEPProductPairingBinding,
+        new_binding: ForgeEPProductPairingBinding,
+        forge_adapter: ForgeServerProductAdapter,
+        ep_adapter: EngineeringPlatformSystemProvisionerAdapter,
+        forge_request: ComponentOperationRequest, ep_request: ComponentOperationRequest,
+    ) -> PairingRepairExecutionRecord:
+        """Read terminal replacement after the registry has advanced, without mutation."""
+        if (
+            not isinstance(operation_id, str) or _ID.fullmatch(operation_id) is None
+            or not isinstance(plan, ManagedDeploymentPlan)
+            or not isinstance(reviewed_current, ManagedDeployment)
+            or not isinstance(old_binding, ForgeEPProductPairingBinding)
+            or not isinstance(new_binding, ForgeEPProductPairingBinding)
+            or not isinstance(forge_adapter, ForgeServerProductAdapter)
+            or not isinstance(ep_adapter, EngineeringPlatformSystemProvisionerAdapter)
+            or not isinstance(forge_request, ComponentOperationRequest)
+            or not isinstance(ep_request, ComponentOperationRequest)
+            or reviewed_current.peer_binding is None
+        ):
+            raise ManagedPairingRepairExecutionError("terminal Forge repair selector changed")
+        issued = self.credential.issuance.read_terminal(
+            operation_id=operation_id, reviewed_current=reviewed_current,
+            credential_reference=new_binding.credential_reference,
+        )
+        try:
+            root = os.lstat(self.operations_root)
+            if (
+                not stat.S_ISDIR(root.st_mode) or root.st_uid != self.expected_owner_uid
+                or stat.S_IMODE(root.st_mode) != 0o700
+            ):
+                raise ValueError("unsafe root")
+            descriptor = os.open(
+                self.operations_root / f".{operation_id}.lock", os.O_RDONLY | os.O_NOFOLLOW,
+            )
+        except (OSError, ValueError) as error:
+            raise ManagedPairingRepairExecutionError("terminal Forge repair is unavailable") from error
+        try:
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode) or info.st_uid != self.expected_owner_uid
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                raise ManagedPairingRepairExecutionError("terminal Forge repair lock is unsafe")
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            record = _read(self.operations_root / f"{operation_id}.json", self.expected_owner_uid)
+            if (
+                record is None or record.state != "COMPLETE"
+                or record.operation_id != operation_id
+                or record.deployment_id != plan.deployment_id
+                or record.plan_fingerprint != _digest(asdict(plan))
+                or record.reviewed_fingerprint != _digest(asdict(reviewed_current))
+                or record.old_binding_fingerprint != _digest(asdict(old_binding))
+                or record.new_binding_fingerprint != _digest(asdict(new_binding))
+                or record.credential_id != issued.credential_id
+                or record.credential_fingerprint != issued.credential_fingerprint
+                or record.detach_product_operation_id != "peer-repair-detach-" + sha256(
+                    operation_id.encode(),
+                ).hexdigest()[:40]
+                or issued.new_consumer_id != new_binding.consumer_id
+                or issued.old_consumer_id != old_binding.consumer_id
+                or issued.ep_instance_id != new_binding.expected_ep_instance_id
+                or issued.forge_instance_id != reviewed_current.peer_binding.forge_instance_id
+            ):
+                raise ManagedPairingRepairExecutionError("terminal Forge repair identity changed")
+            detached_status = forge_adapter.read_historical_detach_ep_peer(
+                operation_id=record.detach_product_operation_id,
+                binding_id=old_binding.binding_id, revision=record.detach_revision,
+                configuration_digest=record.detach_configuration_digest,
+                operator_id=old_binding.operator_id,
+            )
+            if detached_status["receipt"]["receipt_digest"] != record.detach_receipt_digest:
+                raise ManagedPairingRepairExecutionError("terminal Forge detach receipt changed")
+            executor = ForgeEPProductPairingExecutor(new_binding)
+            evidence = executor.recover_after_product_replace(
+                operation_id=operation_id, deployment=reviewed_current,
+                forge_request=forge_request, ep_request=ep_request,
+                forge_adapter=forge_adapter, ep_adapter=ep_adapter,
+                old_binding_id=old_binding.binding_id,
+                old_consumer_id=old_binding.consumer_id,
+                detach_operation_id=record.detach_product_operation_id,
+                detach_revision=record.detach_revision,
+                detach_configuration_digest=record.detach_configuration_digest,
+                detach_operator_id=old_binding.operator_id,
+            )
+            if (
+                evidence.forge_configuration_reference != record.forge_configuration_reference
+                or evidence.forge_preflight_reference != record.forge_preflight_reference
+                or evidence.ep_readiness_reference != record.ep_readiness_reference
+            ):
+                raise ManagedPairingRepairExecutionError("terminal Forge repair evidence changed")
+            return record
+        finally:
+            os.close(descriptor)
+
     @staticmethod
     def _read_detach_status(
         adapter: ForgeServerProductAdapter, detached: object,

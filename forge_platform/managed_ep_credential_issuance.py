@@ -372,6 +372,72 @@ class ManagedEPCredentialIssuanceCoordinator:
         finally:
             os.close(descriptor)
 
+    def read_terminal(
+        self, *, operation_id: str, reviewed_current: ManagedDeployment,
+        credential_reference: str,
+    ) -> EPCredentialIssueRecord:
+        """Revalidate product and secure-store evidence after registry commit."""
+        peer = getattr(reviewed_current, "peer_binding", None)
+        old = self.registration.old.scope
+        new = self.registration.new.scope
+        if (
+            not isinstance(operation_id, str) or _ID.fullmatch(operation_id) is None
+            or not isinstance(reviewed_current, ManagedDeployment) or peer is None
+            or not isinstance(credential_reference, str)
+            or _REFERENCE.fullmatch(credential_reference) is None
+            or self.scope_claims.get(reviewed_current.deployment_id) != new
+            or self.reference_claims.get(reviewed_current.deployment_id) != credential_reference
+            or old.consumer_id == new.consumer_id or old.project_id != new.project_id
+        ):
+            raise ManagedEPCredentialIssuanceError("terminal EP credential selector changed")
+        try:
+            root = os.lstat(self.operations_root)
+            if (
+                not stat.S_ISDIR(root.st_mode) or root.st_uid != self.expected_owner_uid
+                or stat.S_IMODE(root.st_mode) != 0o700
+            ):
+                raise ValueError("unsafe root")
+            descriptor = os.open(
+                self.operations_root / f".{operation_id}.lock", os.O_RDONLY | os.O_NOFOLLOW,
+            )
+        except (OSError, ValueError) as error:
+            raise ManagedEPCredentialIssuanceError("terminal EP credential is unavailable") from error
+        try:
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode) or info.st_uid != self.expected_owner_uid
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                raise ManagedEPCredentialIssuanceError("terminal EP credential lock is unsafe")
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            record = _read(self.operations_root / f"{operation_id}.json", self.expected_owner_uid)
+            if (
+                record is None or record.state != "COMPLETE"
+                or record.operation_id != operation_id
+                or record.deployment_id != reviewed_current.deployment_id
+                or record.forge_instance_id != peer.forge_instance_id
+                or record.ep_instance_id != peer.ep_instance_id
+                or record.old_consumer_id != old.consumer_id
+                or record.new_consumer_id != new.consumer_id
+                or record.project_id != new.project_id
+                or record.credential_reference != credential_reference
+                or record.reviewed_fingerprint != _deployment_fingerprint(reviewed_current)
+            ):
+                raise ManagedEPCredentialIssuanceError("terminal EP credential identity changed")
+            old_status = self.registration.old.status()
+            new_status = self.registration.new.status()
+            if (
+                old_status.get("status") != "REVOKED" or not old_status.get("revoked_at")
+                or new_status.get("status") != "ACTIVE"
+                or new_status.get("consumer_id") != new.consumer_id
+                or new_status.get("project_id") != new.project_id
+            ):
+                raise ManagedEPCredentialIssuanceError("terminal EP consumer status changed")
+            self._check_complete(record)
+            return record
+        finally:
+            os.close(descriptor)
+
     def _require_current(self, record: EPCredentialIssueRecord) -> None:
         deployment = self.registry.load(record.deployment_id)
         if (
