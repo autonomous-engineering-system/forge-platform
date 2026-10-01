@@ -236,6 +236,15 @@ An `ENABLED` system job is accepted only after a fixed-label native readback
 confirms the registered parent bundle, Team, helper program and exact current
 installer version. An older registered helper fails closed; registration does
 not silently replace it. A separate reviewed transition is required.
+For the earlier 0.2.4 qualification daemon only, `helper
+replace-qualification` requires the fixed registered parent identity plus a
+fresh idle/zero-run system readback before `SMAppService.unregister()`.
+It then demands independent absence of that exact system job and a native
+`NOT_REGISTERED` or `NOT_FOUND` status before registering and reattesting the
+bundled helper. Registration and transition share the installer's exclusive
+host lock with self-update. An interrupted transition can resume through the ordinary
+`helper register` command once the system job is absent; another enabled
+parent or an ambiguous status remains blocked.
 On a Mac where the service has never been seen, native status can initially be
 `NOT_FOUND`; the fixed bundled service is registered once and its status read
 again. A registration error accompanied by native `REQUIRES_APPROVAL` remains
