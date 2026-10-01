@@ -69,6 +69,9 @@ from .released_product_routes import (
     ReleasedManagedProductRouteConfiguration,
     ReleasedManagedSingleProductRouteConfiguration,
 )
+from .released_pairing_repair_review import (
+    decode_repair_review_intent, prepare_repair_review,
+)
 from .universal_installer import (
     CompositionManifest,
     VerifiedCompositionSelection,
@@ -242,6 +245,16 @@ class PinnedManagedProductOperationAuthorityResolver:
             )
         return installed
 
+    def resolve_installed_repair_review(
+        self, composition_id: str, manifest_digest: str,
+    ) -> CompositionManifest:
+        installed = self._installed_manifests.get((composition_id, manifest_digest))
+        if installed is None:
+            raise ManagedProductOperationServiceError(
+                "installed repair composition authority is unavailable"
+            )
+        return installed
+
     def resolve_installed_lifecycle_review(
         self, intent: NativePreservedLifecycleReviewIntent,
     ) -> CompositionManifest:
@@ -363,6 +376,7 @@ class ManagedProductOperationHelperService:
         removal_dispatcher: ManagedProductRemovalDispatcher | None = None,
         preserved_dispatcher: ManagedPreservedLifecycleDispatcher | None = None,
         provider_routes: Mapping[str, EngineeringPlatformSystemProvisionerAdapter] | None = None,
+        repair_route_configurations: Mapping[str, ReleasedManagedProductRouteConfiguration] | None = None,
     ) -> None:
         if not callable(getattr(authority_resolver, "resolve", None)):
             raise TypeError("helper-owned authority resolver is required")
@@ -373,7 +387,32 @@ class ManagedProductOperationHelperService:
         self.removal_dispatcher = removal_dispatcher
         self.preserved_dispatcher = preserved_dispatcher
         self.provider_routes = MappingProxyType(dict(provider_routes or {}))
+        self.repair_route_configurations = MappingProxyType(dict(repair_route_configurations or {}))
         self.provider_currency_guard = dispatcher.coordinator.currency_guard
+
+    def prepare_repair_review(self, canonical_intent: bytes) -> bytes:
+        """Read-only repair proposal from signed manifest and sealed route."""
+        try:
+            if not isinstance(
+                self.authority_resolver,
+                PinnedManagedProductOperationAuthorityResolver,
+            ):
+                raise TypeError("released repair authority is unavailable")
+            intent = decode_repair_review_intent(canonical_intent)
+            manifest = self.authority_resolver.resolve_installed_repair_review(
+                intent["installed_composition_identity"],
+                intent["installed_manifest_sha256"],
+            )
+            return prepare_repair_review(
+                canonical_intent, registry=self.dispatcher.coordinator.registry,
+                installed_manifest=manifest,
+                current_installer_release=self.authority_resolver.current_installer_release,
+                routes=self.repair_route_configurations,
+            )
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "native pairing repair review was rejected"
+            ) from error
 
     def register_ep_provider(self, canonical_request: bytes) -> bytes:
         """Consume only helper-origin physical evidence with pinned EP authority."""
@@ -733,17 +772,22 @@ class ManagedProductOperationHelperBuilder:
 
         candidates = tuple(candidate_selections)
         installed = tuple(installed_selections)
+        configurations = tuple(route_configurations)
         routes = ReleasedManagedProductRouteBuilder.build(
-            configurations=route_configurations,
+            configurations=configurations,
             candidate_selections=candidates,
             installed_selections=installed,
         )
-        return ManagedProductOperationHelperBuilder.build(
+        authority_resolver = ReleasedManagedProductOperationAuthorityLoader.load(
             current_installer_context=current_installer_context,
             candidate_selections=candidates,
             installed_selections=installed,
+        )
+        return ManagedProductOperationHelperBuilder._compose(
+            authority_resolver=authority_resolver,
             coordinator=coordinator,
             routes=routes,
+            route_configurations=configurations,
         )
 
     @staticmethod
@@ -840,6 +884,10 @@ class ManagedProductOperationHelperBuilder:
             dispatcher=dispatcher,
             removal_dispatcher=removal_dispatcher,
             preserved_dispatcher=preserved_dispatcher,
+            repair_route_configurations={
+                config.deployment_id: config for config in route_configurations
+                if isinstance(config, ReleasedManagedProductRouteConfiguration)
+            },
             provider_routes={
                 deployment_id: adapter
                 for deployment_id, route in routes.items()
