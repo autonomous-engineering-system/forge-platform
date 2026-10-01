@@ -60,10 +60,10 @@ asset digests, registry readback and exact PyPI wheel/sdist identities. It does
 not create a branch, PR, manifest, signing authorization or release.
 
 `composition-producer-sources.json` is the reviewed binding from product roles
-to their public producer repositories and release contracts. Forge 2.7.38 and
+to their public producer repositories and release contracts. Forge 2.7.39 and
 Engineering Platform 2.3.106 are the required qualified producer baselines for
 the first functional installer release. The separately corrected external Forge
-2.7.38 update controller is bound by its own protected source and digest.
+2.7.39 update controller is bound by its own protected source and digest.
 Forge 2.7.36 and Engineering Platform 2.3.103 remain historical ownership-gap
 artifacts; Engineering Platform 2.3.104 and 2.3.105 are historical preservation
 or release evidence, not the active clean-install baseline. Workspace is an optional observation: it has no public
@@ -73,6 +73,19 @@ Forge plus Engineering Platform composition. Managed Git, managed Python and
 the pinned Codex/GitHub CLI provider runtime archives have public,
 digest-bound distribution evidence. Their external-input observations may
 report `READY` after a fresh direct public-byte readback.
+
+The managed Python 3.14.7 archive and build provenance also require a separate
+native Apple Silicon test record. The protected
+`forge-platform-managed-python-test-evidence.yml` workflow reads the exact
+already published bytes, checks the archive layout and interpreter digest,
+starts the interpreter with isolated standard-library probes, creates a new
+venv with bundled pip, and publishes a canonical report on a new immutable
+`forge-platform-managed-python-test-evidence-v1` release. The earlier
+`forge-platform-managed-tools-v1` release remains untouched. This test record
+is only runtime evidence; the reviewed production composition still needs
+product-specific build/test, compatibility, provider and service evidence.
+No manifest may reference the test record until its public asset digest and
+exact source have been independently read back.
 
 A Forge or Engineering Platform release is not automatically a safe
 composition. Promotion still needs an explicitly reviewed immutable composition

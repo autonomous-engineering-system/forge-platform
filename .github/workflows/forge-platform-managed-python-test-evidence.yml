@@ -1,0 +1,174 @@
+name: Forge Platform managed Python published-byte test evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact protected main commit containing this qualification route
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-platform-managed-python-test-evidence
+  cancel-in-progress: false
+
+jobs:
+  exact-source:
+    if: >-
+      ${{ github.repository == 'autonomous-engineering-system/forge-platform' &&
+          github.ref == 'refs/heads/main' && github.ref_protected &&
+          github.sha == inputs.source_sha && github.workflow_sha == inputs.source_sha }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require exact current main and unclaimed immutable tag
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test -z "$(git status --porcelain)"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          if git ls-remote --exit-code --refs origin refs/tags/forge-platform-managed-python-test-evidence-v1; then
+            echo 'immutable managed Python evidence tag already exists' >&2
+            exit 1
+          else
+            test "$?" -eq 2
+          fi
+
+  qualify:
+    needs: exact-source
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test exact public archive on native Apple Silicon
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          python3 -m unittest tests.installer.test_qualify_managed_python_runtime
+          python3 scripts/qualify_managed_python_runtime.py \
+            --config managed-tool-pages.json \
+            --source-sha "$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/managed-python-test-evidence.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: managed-python-test-evidence
+          path: ${{ runner.temp }}/managed-python-test-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [exact-source, qualify]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: managed-python-test-evidence
+          path: ${{ runner.temp }}/managed-python-evidence
+      - name: Publish once and read exact public bytes back
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          TAG=forge-platform-managed-python-test-evidence-v1
+          ASSET="$RUNNER_TEMP/managed-python-evidence/managed-python-test-evidence.json"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          python3 - "$ASSET" "$SOURCE_SHA" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from scripts.qualify_managed_python_runtime import SCHEMA, canonical, strict_object
+          report = strict_object(Path(sys.argv[1]).read_bytes())
+          tools = strict_object(Path('managed-tool-pages.json').read_bytes())
+          sources = strict_object(Path('composition-producer-sources.json').read_bytes())
+          assets = {entry['kind']: entry for entry in tools['assets']}
+          runtime = next(entry for entry in sources['external_inputs']
+                         if entry['identity'] == 'managed-python-runtime')
+          if (report.get('schema') != SCHEMA or report.get('source_sha') != sys.argv[2]
+                  or report.get('outcome') != 'PASS'
+                  or report.get('archive_digest') != assets['managed-python-runtime']['sha256']
+                  or report.get('build_provenance_digest') != assets['build-provenance']['sha256']
+                  or report.get('runtime_identity_digest') != runtime['evidence']['identity_digest']
+                  or Path(sys.argv[1]).read_bytes() != canonical(report)):
+              raise SystemExit('qualification artifact is not exact canonical PASS evidence')
+          PY
+          if git ls-remote --exit-code --refs origin "refs/tags/$TAG"; then
+            echo 'immutable evidence tag already exists' >&2
+            exit 1
+          else
+            test "$?" -eq 2
+          fi
+          gh release create "$TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" \
+            --draft \
+            --title 'Managed Python 3.14.7 published-byte test evidence v1' \
+            --notes 'Native Apple Silicon qualification of the exact public managed Python 3.14.7 runtime archive and build provenance. This is runtime test evidence, not a production composition or live product installation.'
+          mkdir "$RUNNER_TEMP/draft-readback"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern managed-python-test-evidence.json --dir "$RUNNER_TEMP/draft-readback"
+          cmp "$ASSET" "$RUNNER_TEMP/draft-readback/managed-python-test-evidence.json"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,isPrerelease,targetCommitish,assets > "$RUNNER_TEMP/release.json"
+          python3 - "$RUNNER_TEMP/release.json" "$ASSET" "$SOURCE_SHA" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          release = json.loads(Path(sys.argv[1]).read_text())
+          assets = release['assets']
+          expected = 'sha256:' + hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest()
+          if (not release['isDraft'] or release['isPrerelease']
+                  or release['targetCommitish'] != sys.argv[3]
+                  or len(assets) != 1 or assets[0]['name'] != 'managed-python-test-evidence.json'
+                  or assets[0]['digest'] != expected):
+              raise SystemExit('draft qualification release readback differs')
+          PY
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          mkdir "$RUNNER_TEMP/public-readback"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern managed-python-test-evidence.json --dir "$RUNNER_TEMP/public-readback"
+          cmp "$ASSET" "$RUNNER_TEMP/public-readback/managed-python-test-evidence.json"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,isPrerelease,targetCommitish,assets > "$RUNNER_TEMP/public-release.json"
+          python3 - "$RUNNER_TEMP/public-release.json" "$ASSET" "$SOURCE_SHA" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          release = json.loads(Path(sys.argv[1]).read_text())
+          assets = release['assets']
+          expected = 'sha256:' + hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest()
+          if (release['isDraft'] or release['isPrerelease']
+                  or release['targetCommitish'] != sys.argv[3]
+                  or len(assets) != 1 or assets[0]['name'] != 'managed-python-test-evidence.json'
+                  or assets[0]['digest'] != expected):
+              raise SystemExit('public qualification release readback differs')
+          print('MANAGED_PYTHON_TEST_EVIDENCE=PUBLISHED', expected)
+          PY
