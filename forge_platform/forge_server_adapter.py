@@ -788,6 +788,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
     @staticmethod
     def _validate_peer_detach_status(
         request: Mapping[str, object], status: Mapping[str, object],
+        *, current_peer_status: str = "DETACHED",
     ) -> Mapping[str, object]:
         receipt = status.get("receipt")
         if not isinstance(receipt, Mapping):
@@ -823,7 +824,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             or status.get("instance_id") != request["instance_id"]
             or status.get("request_digest") != request_digest
             or status.get("phase") != "COMPLETE"
-            or status.get("current_peer_status") != "DETACHED"
+            or status.get("current_peer_status") != current_peer_status
             or status.get("receipt") != receipt
         ):
             raise ForgeServerAdapterError("Forge peer detach terminal status changed")
@@ -843,6 +844,32 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             "execution-host", "detach-status", "--operation-id", operation_id,
         )
         return self._validate_peer_detach_status(request, status)
+
+    def read_historical_detach_ep_peer(
+        self, *, operation_id: str, binding_id: str, revision: int,
+        configuration_digest: str, operator_id: str,
+    ) -> Mapping[str, object]:
+        """Read the same terminal detach after a new peer became CONFIGURED."""
+        request = self._peer_detach_request(
+            operation_id=operation_id, binding_id=binding_id, revision=revision,
+            configuration_digest=configuration_digest, operator_id=operator_id,
+        )
+        status = self._run(
+            "execution-host", "detach-status", "--operation-id", operation_id,
+        )
+        return self._validate_peer_detach_status(
+            request, status, current_peer_status="CONFIGURED",
+        )
+
+    def read_configured_ep_peer(self) -> Mapping[str, object]:
+        """Read only the product-validated secret-free configured peer."""
+        result = self._run("execution-host", "show")
+        if (
+            result.get("status") != "CONFIGURED"
+            or not isinstance(result.get("configuration"), Mapping)
+        ):
+            raise ForgeServerAdapterError("Forge configured peer is unavailable")
+        return result
 
     def detach_ep_peer(
         self, *, operation_id: str, binding_id: str, revision: int,

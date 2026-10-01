@@ -379,6 +379,11 @@ class ForgeServerAdapterTests(unittest.TestCase):
             def run(self, argv):
                 args = tuple(argv)
                 self.calls.append(args)
+                if args[-2:] == ("execution-host", "show"):
+                    return ForgeCommandResult(0, json.dumps({
+                        "status": "CONFIGURED",
+                        "configuration": {"binding_id": "binding-new"},
+                    }), "")
                 request = {
                     "contract": "forge-ep-peer-detach/v1",
                     "operation_id": "detach-1",
@@ -473,6 +478,17 @@ class ForgeServerAdapterTests(unittest.TestCase):
         runner.status_change = {"current_peer_status": "CONFIGURED"}
         with self.assertRaisesRegex(ForgeServerAdapterError, "terminal status changed"):
             detach()
+        historical = adapter.read_historical_detach_ep_peer(
+            operation_id="detach-1", binding_id="binding-1", revision=2,
+            configuration_digest=digest, operator_id="operator-1",
+        )
+        self.assertEqual(historical["current_peer_status"], "CONFIGURED")
+        self.assertEqual(adapter.read_configured_ep_peer()["configuration"]["binding_id"], "binding-new")
+        with self.assertRaisesRegex(ForgeServerAdapterError, "terminal status changed"):
+            adapter.read_detach_ep_peer(
+                operation_id="detach-1", binding_id="binding-1", revision=2,
+                configuration_digest=digest, operator_id="operator-1",
+            )
         runner.status_change = {"instance_id": "forge-other"}
         with self.assertRaisesRegex(ForgeServerAdapterError, "terminal status changed"):
             detach()
