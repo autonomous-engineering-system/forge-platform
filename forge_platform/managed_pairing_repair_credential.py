@@ -108,7 +108,7 @@ class ManagedPairingRepairCredentialCoordinator:
             asdict(reviewed_current), sort_keys=True, separators=(",", ":"),
             allow_nan=False,
         ).encode()).hexdigest()
-        if revoked.reviewed_fingerprint != fingerprint:
+        if revoked.reviewed_deployment_fingerprint != fingerprint:
             raise ManagedPairingRepairCredentialError("reviewed repair deployment changed")
         return self.issuance.issue(
             operation_id=operation_id, reviewed_current=reviewed_current,
