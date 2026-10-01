@@ -827,6 +827,75 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(finalCalls.count, 1)
     }
 
+    func testCurrentReleasedRuntimeAcceptsOnlyExactPairingRepairReview() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let digest = String(repeating: "a", count: 64)
+        let intent = try ManagedInstallerPairingRepairReviewIntent(
+            operationID: "repair-one", deploymentID: "deployment-one",
+            forgeInstanceID: "forge-one", engineeringPlatformInstanceID: "ep-one",
+            installedCompositionIdentity: "forge-ep-qualified",
+            installedManifestSHA256: "sha256:" + digest,
+            installerRelease: record.release
+        )
+        let bytes = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerPairingRepairReviewProposal.schema),
+            "intent_fingerprint": .string(intent.intentFingerprint),
+            "operation_id": .string(intent.operationID),
+            "deployment_id": .string(intent.deploymentID),
+            "reviewed_revision": .integer("3"),
+            "reviewed_deployment_sha256": .string(digest),
+            "reviewed_plan_fingerprint": .string("sha256:" + digest),
+            "deployment_action": .string("CREATE_OR_UPDATE"),
+            "confirmation_required": .boolean(true),
+            "component_diffs": .array([
+                .object([
+                    "component": .string("engineering-platform-server"),
+                    "instance_id": .string("ep-one"), "action": .string("NO_CHANGE"),
+                ]),
+                .object([
+                    "component": .string("forge-runtime"),
+                    "instance_id": .string("forge-one"), "action": .string("REPAIR"),
+                ]),
+            ]),
+        ]))
+        let proposal = try ManagedInstallerPairingRepairReviewProposal.decodeJSON(
+            bytes, intent: intent
+        )
+        let transport = ReviewTransportSpy(response: .success(bytes))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(record)),
+            inspector: InspectorSpy(responses: [.success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            pairingRepairReviewTransport: transport
+        )
+        let before = await coordinator.preparePairingRepairReview(intent)
+        XCTAssertEqual(before, .failure(.rejected))
+        let current = await coordinator.recheckInstallerBeforeMutation(
+            currentVersion: identity.version
+        )
+        XCTAssertEqual(current, .current(record.release))
+        let accepted = await coordinator.preparePairingRepairReview(intent)
+        XCTAssertEqual(accepted, .success(proposal))
+        let calls = await transport.calls()
+        XCTAssertEqual(calls, [intent.canonicalJSONData()])
+
+        await transport.setResponse(.success(Data("{}".utf8)))
+        let drifted = await coordinator.preparePairingRepairReview(intent)
+        XCTAssertEqual(drifted, .failure(.rejected))
+        let newer = try makeReleaseRecord(version: "1.2.4", sequence: 21)
+        let wrongRelease = try ManagedInstallerPairingRepairReviewIntent(
+            operationID: intent.operationID, deploymentID: intent.deploymentID,
+            forgeInstanceID: intent.forgeInstanceID,
+            engineeringPlatformInstanceID: intent.engineeringPlatformInstanceID,
+            installedCompositionIdentity: intent.installedCompositionIdentity,
+            installedManifestSHA256: intent.installedManifestSHA256,
+            installerRelease: newer.release
+        )
+        let rejected = await coordinator.preparePairingRepairReview(wrongRelease)
+        XCTAssertEqual(rejected, .failure(.rejected))
+    }
+
     func testReleasedRuntimeRejectsUnavailableAndDriftedReviewReplies() async throws {
         let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
         let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
@@ -1964,6 +2033,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         providerCoordinator: any ProviderActionCoordinating = UnavailableProviderActionCoordinator(),
         managedDeploymentRouteCoordinator: any ManagedDeploymentRouteCoordinating = UnavailableManagedDeploymentRouteCoordinator(),
         removalReviewTransport: (any ManagedInstallerProductRemovalReviewTransporting)? = nil,
+        pairingRepairReviewTransport:
+            (any ManagedInstallerPairingRepairReviewTransporting)? = nil,
         removalTransport: (any ManagedInstallerProductRemovalTransporting)? = nil,
         preservedLifecycleReviewTransport:
             (any ManagedInstallerPreservedLifecycleReviewTransporting)? = nil,
@@ -1990,6 +2061,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             providerCoordinator: providerCoordinator,
             managedDeploymentRouteCoordinator: managedDeploymentRouteCoordinator,
             removalReviewTransport: removalReviewTransport,
+            pairingRepairReviewTransport: pairingRepairReviewTransport,
             removalTransport: removalTransport,
             preservedLifecycleReviewTransport: preservedLifecycleReviewTransport,
             preservedLifecycleTransport: preservedLifecycleTransport,
@@ -2801,7 +2873,9 @@ private final class OperationLockLeaseSpy: InstallerSelfUpdateOperationLock, @un
     }
 }
 
-private actor ReviewTransportSpy: ManagedInstallerProductRemovalReviewTransporting {
+private actor ReviewTransportSpy:
+    ManagedInstallerProductRemovalReviewTransporting,
+    ManagedInstallerPairingRepairReviewTransporting {
     private var response: Result<Data, ManagedInstallerProductOperationBridgeFailure>
     private var requests: [Data] = []
 
@@ -2810,6 +2884,13 @@ private actor ReviewTransportSpy: ManagedInstallerProductRemovalReviewTransporti
     }
 
     func prepareProductRemovalReview(
+        _ canonicalIntent: Data
+    ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
+        requests.append(canonicalIntent)
+        return response
+    }
+
+    func preparePairingRepairReview(
         _ canonicalIntent: Data
     ) async -> Result<Data, ManagedInstallerProductOperationBridgeFailure> {
         requests.append(canonicalIntent)

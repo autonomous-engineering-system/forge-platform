@@ -280,6 +280,7 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 compositionSessionPreparer: compositionSessionPreparer,
                 managedDeploymentRouteCoordinator: routeCoordinator,
                 removalReviewTransport: productTransport,
+                pairingRepairReviewTransport: productTransport,
                 removalTransport: productTransport,
                 preservedLifecycleReviewTransport: productTransport,
                 preservedLifecycleTransport: productTransport,
