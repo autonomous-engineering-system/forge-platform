@@ -105,7 +105,12 @@ codesign --force --options runtime --timestamp   --sign "$FORGE_PLATFORM_CODESIG
 # codesign inherits the offline signer's restrictive umask for CodeResources.
 # The published app may later be installed root-owned; both sealed signature
 # manifests must remain readable to an ordinary user in that layout.
-for code_resource in "$APP/Contents/CodeResources" "$APP/Contents/_CodeSignature/CodeResources"; do
+for code_resource in "$APP/Contents/_CodeSignature/CodeResources" "$APP/Contents/CodeResources"; do
+  # Current macOS codesign emits only _CodeSignature/CodeResources. Older
+  # bundles can also carry the legacy top-level copy; qualify it when present.
+  if [[ "$code_resource" == "$APP/Contents/CodeResources" && ! -e "$code_resource" && ! -L "$code_resource" ]]; then
+    continue
+  fi
   test -f "$code_resource" && test ! -L "$code_resource" || fail signed-code-resource-invalid
   chmod 644 "$code_resource"
   test "$(stat -f %Lp "$code_resource")" = 644 || fail signed-code-resource-mode-invalid
@@ -142,7 +147,10 @@ mkdir "$WORK/carrier-readback"
 ditto -x -k "$WORK/release/$ARCHIVE_NAME" "$WORK/carrier-readback"
 CARRIER_APP="$WORK/carrier-readback/ForgePlatformInstaller.app"
 test -d "$CARRIER_APP" || fail final-archive-app-layout-invalid
-for code_resource in "$CARRIER_APP/Contents/CodeResources" "$CARRIER_APP/Contents/_CodeSignature/CodeResources"; do
+for code_resource in "$CARRIER_APP/Contents/_CodeSignature/CodeResources" "$CARRIER_APP/Contents/CodeResources"; do
+  if [[ "$code_resource" == "$CARRIER_APP/Contents/CodeResources" && ! -e "$code_resource" && ! -L "$code_resource" ]]; then
+    continue
+  fi
   test -f "$code_resource" && test ! -L "$code_resource" || fail final-archive-code-resource-invalid
   test "$(stat -f %Lp "$code_resource")" = 644 || fail final-archive-code-resource-mode-invalid
 done
