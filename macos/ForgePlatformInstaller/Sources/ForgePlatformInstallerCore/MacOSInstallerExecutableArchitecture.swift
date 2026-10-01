@@ -13,11 +13,16 @@ enum MacOSInstallerExecutableArchitecture {
     static func requireThinARM64Executable(in bundleURL: URL) throws {
         guard bundleURL.isFileURL,
               let bundle = Bundle(url: bundleURL),
-              let executableURL = bundle.executableURL,
-              executableURL.deletingLastPathComponent().lastPathComponent == "MacOS",
-              executableURL.lastPathComponent == "ForgePlatformInstaller" else {
+              bundle.infoDictionary?["CFBundleExecutable"] as? String ==
+                "ForgePlatformInstaller" else {
             throw MacOSInstallerExecutableArchitectureError.invalidBundleExecutable
         }
+        // Foundation's `executableURL` points at the *running* CLI when it is
+        // the second executable in this app. The sealed Info.plist instead
+        // identifies the one fixed GUI executable covered by this contract.
+        let executableURL = bundleURL.appendingPathComponent(
+            "Contents/MacOS/ForgePlatformInstaller", isDirectory: false
+        )
         try requireThinARM64Executable(at: executableURL)
     }
 
