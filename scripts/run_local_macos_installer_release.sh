@@ -30,7 +30,7 @@ mkdir -p "$STATE_ROOT/locks" "$STATE_ROOT/journal" "$STATE_ROOT/receipts"
 chmod 700 "$STATE_ROOT" "$STATE_ROOT/locks" "$STATE_ROOT/journal" "$STATE_ROOT/receipts"
 LOCK="$STATE_ROOT/locks/exclusive-offline-signing"
 mkdir "$LOCK" 2>/dev/null || fail signing-concurrency-lock-held
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/forge-platform-local-release.XXXXXX")"
+WORK="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/forge-platform-local-release.XXXXXX")" && pwd -P)"
 cleanup() {
   rm -rf "$WORK"
   rmdir "$LOCK" 2>/dev/null || true
