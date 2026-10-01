@@ -391,6 +391,21 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
+    func testPairingRepairPlanCommandFailsClosedWithoutInstalledProvenance() async throws {
+        let startup = CLIStartupSpy(outcome: .ready(
+            currentRelease: try release("1.2.3"),
+            coordinator: CLIReadyCoordinator()
+        ))
+        let result = await run(
+            ["deployment", "pairing", "repair", "plan",
+             "--deployment", "production", "--operation-id", "repair-one", "--json"],
+            startup: startup, version: "1.2.3"
+        )
+        XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(result.stdout.joined().contains("pairing-repair-review-blocked"))
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
     func testLifecyclePlanCommandUsesSharedReviewAndFailsClosedWithoutInstalledProvenance() async throws {
         let startup = CLIStartupSpy(outcome: .ready(
             currentRelease: try release("1.2.3"),

@@ -220,6 +220,10 @@ enum ForgePlatformInstallerCLIApplication {
                     operationID: operationID,
                     component: component
                 )
+            case .deploymentPairingRepairPlan(let deployment, let operationID):
+                result = await workflow.planPairingRepair(
+                    deploymentID: deployment, operationID: operationID
+                )
             case .deploymentLifecyclePlan(
                 let deployment, let operationID, let operation, let component
             ):

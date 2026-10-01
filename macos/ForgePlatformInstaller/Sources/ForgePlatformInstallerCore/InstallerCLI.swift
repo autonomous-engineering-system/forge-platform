@@ -12,6 +12,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentApply(String)
     case deploymentRemove(String, operationID: String, component: String?)
     case deploymentRemovePlan(String, operationID: String, component: String?)
+    case deploymentPairingRepairPlan(String, operationID: String)
     case deploymentLifecyclePlan(String, operationID: String, operation: String, component: String)
     case deploymentLifecyclePreserve(String, operationID: String, component: String)
     case deploymentLifecyclePurge(String, operationID: String, component: String)
@@ -119,6 +120,7 @@ public enum InstallerCLIParser {
       forge-platform-installer deployment apply --deployment <id|new> [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--yes] [--non-interactive] [--accept-installer-update] [--json]
       forge-platform-installer deployment remove --deployment <id> --operation-id <id> [--component forge-runtime] [--review-fingerprint <sha256> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment remove plan --deployment <id> --operation-id <id> [--component forge-runtime] [--json]
+      forge-platform-installer deployment pairing repair plan --deployment <id> --operation-id <id> [--json]
       forge-platform-installer deployment lifecycle plan <preserve|restore|purge> --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--json]
       forge-platform-installer deployment lifecycle preserve --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--review-fingerprint <sha256:...> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment lifecycle purge --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> --confirm-instance-id <id> [--review-fingerprint <sha256:...> --yes] [--non-interactive] [--json]
@@ -274,6 +276,16 @@ public enum InstallerCLIParser {
             command = .deploymentRemovePlan(
                 deployment, operationID: operationID, component: component
             )
+        case ["deployment", "pairing", "repair", "plan"]:
+            guard let deployment, deployment != "new",
+                  let operationID,
+                  ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+                  component == nil, reviewFingerprint == nil,
+                  confirmedInstanceID == nil, !assumeYes,
+                  !acceptInstallerUpdate else {
+                throw InstallerCLIParseError.invalidArguments
+            }
+            command = .deploymentPairingRepairPlan(deployment, operationID: operationID)
         case _ where positional.count == 4
             && Array(positional.prefix(3)) == ["deployment", "lifecycle", "plan"]:
             let operation = positional[3]
@@ -343,7 +355,8 @@ public enum InstallerCLIParser {
         if deployment != nil {
             switch command {
             case .deploymentPlan, .deploymentApply, .deploymentRemove,
-                 .deploymentRemovePlan, .deploymentLifecyclePlan,
+                 .deploymentRemovePlan, .deploymentPairingRepairPlan,
+                 .deploymentLifecyclePlan,
                  .deploymentLifecyclePreserve, .deploymentLifecyclePurge,
                  .deploymentLifecycleRecover, .deploymentLifecycleRecoverPurge:
                 break
@@ -353,7 +366,8 @@ public enum InstallerCLIParser {
         }
         if operationID != nil || component != nil || reviewFingerprint != nil {
             switch command {
-            case .deploymentRemovePlan, .deploymentRemove, .deploymentLifecyclePlan,
+            case .deploymentRemovePlan, .deploymentRemove,
+                 .deploymentPairingRepairPlan, .deploymentLifecyclePlan,
                  .deploymentLifecyclePreserve, .deploymentLifecyclePurge,
                  .deploymentLifecycleRecover, .deploymentLifecycleRecoverPurge: break
             default:
@@ -447,6 +461,55 @@ public struct InstallerCLIWorkflow: Sendable {
                 message: "Managed deployments gelezen.",
                 details: ["count": String(inventory.existing.count)],
                 records: Self.inventoryRecords(inventory)
+            )
+        }
+    }
+
+    public func planPairingRepair(
+        deploymentID: String,
+        operationID: String
+    ) async -> InstallerCLIResult {
+        let workflow = ManagedInstallerPairingRepairReviewWorkflow(
+            coordinator: coordinator, currentRelease: currentRelease
+        )
+        switch await workflow.prepare(
+            operationID: operationID, deploymentID: deploymentID
+        ) {
+        case .failure(let failure):
+            return InstallerCLIResult(
+                exitCode: .blocked, status: "pairing-repair-review-blocked",
+                message: "Het exacte Forge↔EP-reparatievoorstel is niet beschikbaar.",
+                details: ["reason": String(describing: failure)]
+            )
+        case .success(let session):
+            return InstallerCLIResult(
+                exitCode: .success, status: "pairing-repair-planned",
+                message: "Het helpervoorstel is alleen gelezen; er is geen productmutatie uitgevoerd.",
+                details: [
+                    "operation_id": session.operationID,
+                    "deployment_id": session.deploymentID,
+                    "forge_instance_id": session.intent.forgeInstanceID,
+                    "engineering_platform_instance_id":
+                        session.intent.engineeringPlatformInstanceID,
+                    "installed_composition_identity":
+                        session.intent.installedCompositionIdentity,
+                    "installed_manifest_sha256": session.intent.installedManifestSHA256,
+                    "reviewed_revision": String(session.proposal.reviewedRevision),
+                    "reviewed_deployment_sha256":
+                        session.proposal.reviewedDeploymentSHA256,
+                    "reviewed_plan_fingerprint":
+                        session.proposal.reviewedPlanFingerprint,
+                    "inventory_evidence_reference": session.inventoryEvidenceReference,
+                    "confirmation_required": "true",
+                ],
+                records: [
+                    ["component": "engineering-platform-server",
+                     "instance_id": session.intent.engineeringPlatformInstanceID,
+                     "action": "NO_CHANGE"],
+                    ["component": "forge-runtime",
+                     "instance_id": session.intent.forgeInstanceID,
+                     "action": "REPAIR"],
+                ]
             )
         }
     }
