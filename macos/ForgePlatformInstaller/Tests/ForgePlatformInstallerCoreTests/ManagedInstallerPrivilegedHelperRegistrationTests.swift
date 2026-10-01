@@ -7,7 +7,7 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
         let service = HelperServiceController(statuses: [.enabled])
         let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
             service: service
-        ).ensureRegistered()
+        ).ensureRegistered(expectedVersion: try! InstallerVersion("0.3.5"))
         let receipt = try XCTUnwrap(result.readyReceipt)
 
         XCTAssertEqual(receipt.label, ManagedInstallerPostToolXPCHelperIdentity.signingIdentifier)
@@ -32,11 +32,11 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
             let service = HelperServiceController(statuses: [initial, .enabled])
             let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
                 service: service
-            ).ensureRegistered()
+            ).ensureRegistered(expectedVersion: try! InstallerVersion("0.3.5"))
 
             XCTAssertNotNil(result.readyReceipt)
             XCTAssertEqual(service.registerCount(), 1)
-            XCTAssertEqual(service.statusReadCount(), 2)
+            XCTAssertEqual(service.statusReadCount(), 3)
         }
     }
 
@@ -49,7 +49,7 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
             let service = HelperServiceController(statuses: statuses)
             let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
                 service: service
-            ).ensureRegistered()
+            ).ensureRegistered(expectedVersion: try! InstallerVersion("0.3.5"))
             let receipt = try XCTUnwrap(result.approvalReceipt)
             XCTAssertEqual(receipt.status, .requiresApproval)
             XCTAssertEqual(service.registerCount(), statuses.count == 1 ? 0 : 1)
@@ -63,7 +63,7 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
         )
         let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
             service: service
-        ).ensureRegistered()
+        ).ensureRegistered(expectedVersion: try! InstallerVersion("0.3.5"))
 
         XCTAssertEqual(try XCTUnwrap(result.approvalReceipt).status, .requiresApproval)
         XCTAssertEqual(service.registerCount(), 1)
@@ -81,7 +81,7 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
         for (service, expected) in cases {
             let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
                 service: service
-            ).ensureRegistered()
+            ).ensureRegistered(expectedVersion: try! InstallerVersion("0.3.5"))
             XCTAssertEqual(result.failure, expected)
         }
     }
@@ -108,12 +108,62 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
         ] {
             let controller = MacOSManagedInstallerPrivilegedHelperServiceController(
                 statusReader: { native },
-                registrar: { registered.increment() }
+                registrar: { registered.increment() },
+                parentVersionReader: { try? InstallerVersion("0.3.5") }
             )
             XCTAssertEqual(controller.readStatus(), expected)
+            XCTAssertEqual(controller.readRegisteredParentVersion(), try InstallerVersion("0.3.5"))
             try controller.register()
         }
         XCTAssertEqual(registered.value(), 4)
+    }
+
+    func testEnabledOldOrUnreadableParentFailsClosed() async throws {
+        for parent in [try InstallerVersion("0.2.4"), nil] {
+            let service = HelperServiceController(statuses: [.enabled], parentVersion: parent)
+            let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+                service: service
+            ).ensureRegistered(expectedVersion: try InstallerVersion("0.3.5"))
+            XCTAssertEqual(result.failure, .registeredParentMismatch)
+            XCTAssertEqual(service.registerCount(), 0)
+        }
+    }
+
+    func testFixedSystemJobParserRejectsWrongAndAmbiguousParent() throws {
+        let label = ManagedInstallerPrivilegedHelperContract.label
+        let valid = """
+        system/\(label) = {
+            managed_by = com.apple.xpc.ServiceManagement
+            "signing-identifier" => "\(label)"
+            "team-identifier" => "ZEML4LPXH4"
+            program identifier = Contents/Resources/forge-platform-installer-helper (mode: 2)
+            parent bundle identifier = com.autonomous-engineering-system.forge-platform-installer
+            parent bundle version = 0.3.5
+        }
+        """
+        XCTAssertEqual(RegisteredInstallerHelperParentReader.parse(valid),
+                       try InstallerVersion("0.3.5"))
+        XCTAssertNil(RegisteredInstallerHelperParentReader.parse(
+            valid.replacingOccurrences(of: "0.3.5", with: "garbage")
+        ))
+        XCTAssertNil(RegisteredInstallerHelperParentReader.parse(
+            valid + "\nparent bundle version = 0.3.5\n"
+        ))
+        XCTAssertNil(RegisteredInstallerHelperParentReader.parse(
+            valid.replacingOccurrences(of: "ServiceManagement", with: "other")
+        ))
+        XCTAssertNil(RegisteredInstallerHelperParentReader.parse(
+            valid.replacingOccurrences(of: "system/\(label)", with: "user/\(label)")
+        ))
+    }
+
+    func testNativeParentReadbackIsObservationOnly() {
+        // CI hosts may have no installer daemon. Either result is an observation;
+        // the coordinator still rejects nil or a version other than its own.
+        let observed = RegisteredInstallerHelperParentReader().readVersion()
+        if let observed {
+            XCTAssertFalse(observed.description.isEmpty)
+        }
     }
 }
 
@@ -131,13 +181,16 @@ private final class HelperServiceController:
     private let registrationFails: Bool
     private var registrations = 0
     private var statusReads = 0
+    private let parentVersion: InstallerVersion?
 
     init(
         statuses: [ManagedInstallerPrivilegedHelperStatus],
-        registrationFails: Bool = false
+        registrationFails: Bool = false,
+        parentVersion: InstallerVersion? = try! InstallerVersion("0.3.5")
     ) {
         self.statuses = statuses
         self.registrationFails = registrationFails
+        self.parentVersion = parentVersion
     }
 
     func readStatus() -> ManagedInstallerPrivilegedHelperStatus {
@@ -147,6 +200,8 @@ private final class HelperServiceController:
             return statuses.first ?? .notFound
         }
     }
+
+    func readRegisteredParentVersion() -> InstallerVersion? { parentVersion }
 
     func register() throws {
         try lock.withLock {

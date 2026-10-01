@@ -544,7 +544,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             ["helper", "register", "--non-interactive"],
             startup: deniedStartup,
             version: "1.2.3",
-            registration: { await registrar.invoke() }
+            registration: { _ in await registrar.invoke() }
         )
         XCTAssertEqual(denied.code, InstallerCLIExitCode.confirmationRequired.rawValue)
         let deniedStarts = await deniedStartup.startCalls()
@@ -559,7 +559,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             ["helper", "register", "--yes", "--non-interactive", "--json"],
             startup: readyStartup,
             version: "1.2.3",
-            registration: { await registrar.invoke() }
+            registration: { _ in await registrar.invoke() }
         )
         XCTAssertEqual(enabled.code, InstallerCLIExitCode.success.rawValue)
         XCTAssertTrue(enabled.stdout.joined().contains("helper-enabled"))
@@ -582,7 +582,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
                 currentRelease: current, coordinator: CLIReadyCoordinator()
             )),
             version: "1.2.3",
-            registration: { await approval.invoke() }
+            registration: { _ in await approval.invoke() }
         )
         XCTAssertEqual(approved.code, InstallerCLIExitCode.interactionRequired.rawValue)
         XCTAssertTrue(approved.stderr.joined().contains("REQUIRES_APPROVAL"))
@@ -591,6 +591,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             ManagedInstallerPrivilegedHelperRegistrationFailure.registrationFailed,
             .serviceUnavailable,
             .statusDrift,
+            .registeredParentMismatch,
         ] {
             let failed = await run(
                 ["helper", "register", "--yes"],
@@ -598,7 +599,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
                     currentRelease: current, coordinator: CLIReadyCoordinator()
                 )),
                 version: "1.2.3",
-                registration: { .failed(failure) }
+                registration: { _ in .failed(failure) }
             )
             XCTAssertEqual(failed.code, InstallerCLIExitCode.executionFailed.rawValue)
             XCTAssertTrue(failed.stderr.joined().contains("helper-registration-failed"))
@@ -612,7 +613,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             ["helper", "register", "--yes"],
             startup: recheck,
             version: "1.2.3",
-            registration: { await approval.invoke() }
+            registration: { _ in await approval.invoke() }
         )
         XCTAssertEqual(denied.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
         let recheckStarts = await recheck.startCalls()
@@ -627,7 +628,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
                 recheckOutcome: .ready(currentRelease: next, coordinator: CLIReadyCoordinator())
             ),
             version: "1.2.3",
-            registration: { await approval.invoke() }
+            registration: { _ in await approval.invoke() }
         )
         XCTAssertEqual(drift.code, InstallerCLIExitCode.blocked.rawValue)
         let driftCalls = await approval.calls()
@@ -639,7 +640,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         startup: CLIStartupSpy,
         version: String?,
         confirmation: Bool = true,
-        registration: @escaping InstallerCLIHelperRegistration.Registrar = {
+        registration: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
             .failed(.serviceUnavailable)
         }
     ) async -> (code: Int32, stdout: [String], stderr: [String]) {

@@ -3,13 +3,13 @@ import ForgePlatformInstallerCore
 /// Registers the bundled helper only after the released CLI has passed trusted
 /// startup, an explicit operator decision and a fresh installer-currency read.
 enum InstallerCLIHelperRegistration {
-    typealias Registrar = @Sendable () async -> ManagedInstallerPrivilegedHelperRegistrationResult
+    typealias Registrar = @Sendable (InstallerVersion) async -> ManagedInstallerPrivilegedHelperRegistrationResult
 
-    static let liveRegistrar: Registrar = {
+    static let liveRegistrar: Registrar = { expectedVersion in
         let service = MacOSManagedInstallerPrivilegedHelperServiceController()
         return await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
             service: service
-        ).ensureRegistered()
+        ).ensureRegistered(expectedVersion: expectedVersion)
     }
 
     static func run(
@@ -35,7 +35,8 @@ enum InstallerCLIHelperRegistration {
 
         switch await startup.start(currentVersion: currentVersion) {
         case .ready(let freshRelease, _):
-            guard freshRelease == currentRelease else {
+            guard freshRelease == currentRelease,
+                  freshRelease.version == currentVersion else {
                 return blocked("De geverifieerde installerrelease veranderde vóór helperregistratie.")
             }
         case .updateRequired(let release), .relaunching(let release):
@@ -49,7 +50,7 @@ enum InstallerCLIHelperRegistration {
             return blocked(reason)
         }
 
-        switch await register() {
+        switch await register(currentVersion) {
         case .ready(let receipt):
             return InstallerCLIResult(
                 exitCode: .success,
@@ -70,6 +71,7 @@ enum InstallerCLIHelperRegistration {
             case .registrationFailed: reason = "registration-failed"
             case .serviceUnavailable: reason = "service-unavailable"
             case .statusDrift: reason = "status-drift"
+            case .registeredParentMismatch: reason = "registered-parent-mismatch"
             }
             return InstallerCLIResult(
                 exitCode: .executionFailed,
