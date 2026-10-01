@@ -138,6 +138,7 @@ class ForgeEPProductPairingExecutor:
             forge_request=forge_request, ep_request=ep_request,
             forge_adapter=forge_adapter, ep_adapter=ep_adapter,
             detached_revision=None, detached_digest=None,
+            configured_readback=None,
         )
 
     def _pair(
@@ -147,6 +148,7 @@ class ForgeEPProductPairingExecutor:
         forge_adapter: ProductOperationAdapter,
         ep_adapter: ProductOperationAdapter,
         detached_revision: int | None, detached_digest: str | None,
+        configured_readback: Mapping[str, object] | None,
     ) -> ManagedPairingEvidence:
         _identifier(operation_id, "operation_id")
         if not isinstance(deployment, ManagedDeployment):
@@ -173,21 +175,23 @@ class ForgeEPProductPairingExecutor:
         ):
             raise ForgeEPProductPairingError("pairing route does not match exact product instances")
 
-        configured = forge_adapter.configure_ep_peer(
-            binding_id=self.binding.binding_id,
-            endpoint=self.binding.endpoint,
-            expected_instance_id=self.binding.expected_ep_instance_id,
-            consumer_id=self.binding.consumer_id,
-            host_id=self.binding.host_id,
-            project_id=self.binding.project_id,
-            repository_id=self.binding.repository_id,
-            repository_identity=self.binding.repository_identity,
-            credential_reference=self.binding.credential_reference,
-            operator_id=self.binding.operator_id,
-            allow_loopback_http=self.binding.allow_loopback_http,
-            expected_revision=detached_revision,
-            expected_digest=detached_digest,
-        )
+        configured = configured_readback
+        if configured is None:
+            configured = forge_adapter.configure_ep_peer(
+                binding_id=self.binding.binding_id,
+                endpoint=self.binding.endpoint,
+                expected_instance_id=self.binding.expected_ep_instance_id,
+                consumer_id=self.binding.consumer_id,
+                host_id=self.binding.host_id,
+                project_id=self.binding.project_id,
+                repository_id=self.binding.repository_id,
+                repository_identity=self.binding.repository_identity,
+                credential_reference=self.binding.credential_reference,
+                operator_id=self.binding.operator_id,
+                allow_loopback_http=self.binding.allow_loopback_http,
+                expected_revision=detached_revision,
+                expected_digest=detached_digest,
+            )
         configuration = _mapping(configured.get("configuration"), "Forge peer configuration")
         expected_configuration = {
             "binding_id": self.binding.binding_id,
@@ -260,6 +264,96 @@ class ForgeEPProductPairingExecutor:
         The caller must separately prove EP OLD revoke, NEW issue/secure-store
         terminal readback, reviewed plan currency and durable operation resume.
         """
+        self._require_replacement_target(
+            deployment=deployment, forge_adapter=forge_adapter, ep_adapter=ep_adapter,
+            old_binding_id=old_binding_id, old_consumer_id=old_consumer_id,
+            detach_operation_id=detach_operation_id, detach_revision=detach_revision,
+            detach_configuration_digest=detach_configuration_digest,
+            detach_operator_id=detach_operator_id,
+        )
+        status = forge_adapter.read_detach_ep_peer(
+            operation_id=detach_operation_id, binding_id=old_binding_id,
+            revision=detach_revision,
+            configuration_digest=detach_configuration_digest,
+            operator_id=detach_operator_id,
+        )
+        if not isinstance(status, Mapping):
+            raise ForgeEPProductPairingError("exact Forge detach status is unavailable")
+        receipt = status.get("receipt")
+        if (
+            status.get("current_peer_status") != "DETACHED"
+            or not isinstance(receipt, Mapping)
+            or receipt.get("next_configuration_revision") != detach_revision + 1
+            or not isinstance(receipt.get("receipt_digest"), str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", receipt["receipt_digest"])
+        ):
+            raise ForgeEPProductPairingError("exact Forge detach status is unavailable")
+        return self._pair(
+            operation_id=operation_id, deployment=deployment,
+            forge_request=forge_request, ep_request=ep_request,
+            forge_adapter=forge_adapter, ep_adapter=ep_adapter,
+            detached_revision=receipt["next_configuration_revision"],
+            detached_digest=receipt["receipt_digest"],
+            configured_readback=None,
+        )
+
+    def recover_after_product_replace(
+        self, *, operation_id: str, deployment: ManagedDeployment,
+        forge_request: ComponentOperationRequest,
+        ep_request: ComponentOperationRequest,
+        forge_adapter: ForgeServerProductAdapter,
+        ep_adapter: EngineeringPlatformSystemProvisionerAdapter,
+        old_binding_id: str, old_consumer_id: str,
+        detach_operation_id: str, detach_revision: int,
+        detach_configuration_digest: str, detach_operator_id: str,
+    ) -> ManagedPairingEvidence:
+        """Recover a lost configure response by product-owned reads only."""
+        self._require_replacement_target(
+            deployment=deployment, forge_adapter=forge_adapter, ep_adapter=ep_adapter,
+            old_binding_id=old_binding_id, old_consumer_id=old_consumer_id,
+            detach_operation_id=detach_operation_id, detach_revision=detach_revision,
+            detach_configuration_digest=detach_configuration_digest,
+            detach_operator_id=detach_operator_id,
+        )
+        status = forge_adapter.read_historical_detach_ep_peer(
+            operation_id=detach_operation_id, binding_id=old_binding_id,
+            revision=detach_revision,
+            configuration_digest=detach_configuration_digest,
+            operator_id=detach_operator_id,
+        )
+        if not isinstance(status, Mapping):
+            raise ForgeEPProductPairingError("replacement product generation changed")
+        receipt = status.get("receipt")
+        configured = forge_adapter.read_configured_ep_peer()
+        if not isinstance(configured, Mapping):
+            raise ForgeEPProductPairingError("replacement product generation changed")
+        configuration = configured.get("configuration")
+        if (
+            status.get("current_peer_status") != "CONFIGURED"
+            or not isinstance(receipt, Mapping)
+            or receipt.get("next_configuration_revision") != detach_revision + 1
+            or not isinstance(configuration, Mapping)
+            or configuration.get("configuration_revision") != detach_revision + 2
+            or not isinstance(configuration.get("configuration_digest"), str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", configuration["configuration_digest"]) is None
+        ):
+            raise ForgeEPProductPairingError("replacement product generation changed")
+        return self._pair(
+            operation_id=operation_id, deployment=deployment,
+            forge_request=forge_request, ep_request=ep_request,
+            forge_adapter=forge_adapter, ep_adapter=ep_adapter,
+            detached_revision=None, detached_digest=None,
+            configured_readback=configured,
+        )
+
+    def _require_replacement_target(
+        self, *, deployment: ManagedDeployment,
+        forge_adapter: ForgeServerProductAdapter,
+        ep_adapter: EngineeringPlatformSystemProvisionerAdapter,
+        old_binding_id: str, old_consumer_id: str,
+        detach_operation_id: str, detach_revision: int,
+        detach_configuration_digest: str, detach_operator_id: str,
+    ) -> None:
         if (
             not isinstance(forge_adapter, ForgeServerProductAdapter)
             or not isinstance(ep_adapter, EngineeringPlatformSystemProvisionerAdapter)
@@ -284,30 +378,6 @@ class ForgeEPProductPairingExecutor:
             or old_consumer_id == self.binding.consumer_id
         ):
             raise ForgeEPProductPairingError("replacement product target or binding changed")
-        status = forge_adapter.read_detach_ep_peer(
-            operation_id=detach_operation_id, binding_id=old_binding_id,
-            revision=detach_revision,
-            configuration_digest=detach_configuration_digest,
-            operator_id=detach_operator_id,
-        )
-        if not isinstance(status, Mapping):
-            raise ForgeEPProductPairingError("exact Forge detach status is unavailable")
-        receipt = status.get("receipt")
-        if (
-            status.get("current_peer_status") != "DETACHED"
-            or not isinstance(receipt, Mapping)
-            or receipt.get("next_configuration_revision") != detach_revision + 1
-            or not isinstance(receipt.get("receipt_digest"), str)
-            or not re.fullmatch(r"sha256:[0-9a-f]{64}", receipt["receipt_digest"])
-        ):
-            raise ForgeEPProductPairingError("exact Forge detach status is unavailable")
-        return self._pair(
-            operation_id=operation_id, deployment=deployment,
-            forge_request=forge_request, ep_request=ep_request,
-            forge_adapter=forge_adapter, ep_adapter=ep_adapter,
-            detached_revision=receipt["next_configuration_revision"],
-            detached_digest=receipt["receipt_digest"],
-        )
 
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:

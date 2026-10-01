@@ -410,6 +410,69 @@ class ForgeEPProductPairingExecutorTests(unittest.TestCase):
             self.executor.pair_after_product_detach(**arguments)
         self.assertEqual(self.forge_runner.calls, [])
 
+    def test_lost_replacement_response_recovers_from_product_reads_only(self):
+        arguments = self.replacement()
+        historical = {
+            "current_peer_status": "CONFIGURED",
+            "receipt": {"next_configuration_revision": 4},
+        }
+        configured = {
+            "status": "CONFIGURED",
+            "configuration": {
+                "binding_id": self.binding.binding_id,
+                "endpoint": self.binding.endpoint,
+                "expected_ep_instance_id": self.binding.expected_ep_instance_id,
+                "ep_consumer_id": self.binding.consumer_id,
+                "execution_host_id": self.binding.host_id,
+                "ep_project_id": self.binding.project_id,
+                "ep_repository_id": self.binding.repository_id,
+                "repository_identity": self.binding.repository_identity,
+                "credential_reference": self.binding.credential_reference,
+                "allow_loopback_http": self.binding.allow_loopback_http,
+                "configuration_revision": 5,
+                "configuration_digest": "sha256:" + "c" * 64,
+            },
+        }
+        with patch.object(self.forge, "read_historical_detach_ep_peer", return_value=historical) as detached:
+            with patch.object(self.forge, "read_configured_ep_peer", return_value=configured) as shown:
+                evidence = self.executor.recover_after_product_replace(**arguments)
+        self.assertEqual(evidence.forge_instance_id, "forge-prod")
+        detached.assert_called_once_with(
+            operation_id="detach-old", binding_id="old-binding", revision=3,
+            configuration_digest="sha256:" + "a" * 64, operator_id="installer",
+        )
+        shown.assert_called_once_with()
+        self.assertEqual(len(self.forge_runner.calls), 1)
+        self.assertEqual(self.forge_runner.calls[0][-2:], ("execution-host", "preflight"))
+        self.assertEqual(len(self.ep_runner.calls), 2)
+
+        for drift in (
+            {"configuration_revision": 4},
+            {"configuration_digest": "bad"},
+            {"credential_reference": "keychain://foreign/credential"},
+            {"ep_consumer_id": "foreign-consumer"},
+        ):
+            with self.subTest(drift=drift):
+                self.forge_runner.calls.clear()
+                self.ep_runner.calls.clear()
+                changed = {**configured, "configuration": {**configured["configuration"], **drift}}
+                with patch.object(self.forge, "read_historical_detach_ep_peer", return_value=historical):
+                    with patch.object(self.forge, "read_configured_ep_peer", return_value=changed):
+                        with self.assertRaises(ForgeEPProductPairingError):
+                            self.executor.recover_after_product_replace(**arguments)
+                self.assertEqual(self.forge_runner.calls, [])
+                self.assertEqual(self.ep_runner.calls, [])
+
+    def test_recovery_rejects_missing_historical_receipt(self):
+        arguments = self.replacement()
+        for historical in (None, {"current_peer_status": "DETACHED", "receipt": None}):
+            with self.subTest(historical=historical):
+                with patch.object(self.forge, "read_historical_detach_ep_peer", return_value=historical):
+                    with patch.object(self.forge, "read_configured_ep_peer", return_value={"configuration": {}}):
+                        with self.assertRaises(ForgeEPProductPairingError):
+                            self.executor.recover_after_product_replace(**arguments)
+                self.assertEqual(self.forge_runner.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()
