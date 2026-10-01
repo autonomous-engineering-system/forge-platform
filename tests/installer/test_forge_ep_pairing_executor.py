@@ -1,6 +1,8 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from forge_platform.component_operations import ComponentOperationRequest, QualifiedArtifact
 from forge_platform.engineering_platform_system_adapter import (
@@ -15,11 +17,13 @@ from forge_platform.forge_ep_pairing_executor import (
     ForgeEPProductPairingExecutor,
 )
 from forge_platform.forge_server_adapter import (
-    ForgeCommandResult,
+    ForgeCommandResult, ForgeServerAdapterError,
     ForgeServerProductAdapter,
     ForgeServerTarget,
 )
-from forge_platform.managed_deployments import ManagedComponentBinding, ManagedDeployment
+from forge_platform.managed_deployments import (
+    ManagedComponentBinding, ManagedDeployment, ManagedPeerBinding,
+)
 
 
 ARTIFACT = QualifiedArtifact(
@@ -28,6 +32,12 @@ ARTIFACT = QualifiedArtifact(
     "https://example.invalid/release.whl",
     "sha256:" + "b" * 64,
     "qualification:release",
+)
+FORGE_239 = QualifiedArtifact(
+    "2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
+    "released-wheel",
+    "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+    "release-complete",
 )
 
 
@@ -308,6 +318,97 @@ class ForgeEPProductPairingExecutorTests(unittest.TestCase):
                 ForgeEPProductPairingBinding(*candidate)
         with self.assertRaises(TypeError):
             ForgeEPProductPairingExecutor(object())
+
+    def replacement(self, **overrides):
+        self.forge.installed_artifact = FORGE_239
+        reviewed = replace(
+            self.deployment,
+            peer_binding=ManagedPeerBinding("forge-prod", "ep-prod", "receipt:old-peer"),
+        )
+        arguments = {
+            "operation_id": "repair-pairing", "deployment": reviewed,
+            "forge_request": self.forge_request, "ep_request": self.ep_request,
+            "forge_adapter": self.forge, "ep_adapter": self.ep,
+            "old_binding_id": "old-binding", "old_consumer_id": "old-consumer",
+            "detach_operation_id": "detach-old", "detach_revision": 3,
+            "detach_configuration_digest": "sha256:" + "a" * 64,
+            "detach_operator_id": "installer",
+        }
+        arguments.update(overrides)
+        return arguments
+
+    def test_guarded_replacement_consumes_exact_detach_status_and_product_flags(self):
+        arguments = self.replacement()
+        status = {
+            "current_peer_status": "DETACHED",
+            "receipt": {
+                "next_configuration_revision": 4,
+                "receipt_digest": "sha256:" + "b" * 64,
+            },
+        }
+        with patch.object(self.forge, "read_detach_ep_peer", return_value=status) as read:
+            evidence = self.executor.pair_after_product_detach(**arguments)
+        self.assertEqual(evidence.forge_instance_id, "forge-prod")
+        read.assert_called_once_with(
+            operation_id="detach-old", binding_id="old-binding", revision=3,
+            configuration_digest="sha256:" + "a" * 64, operator_id="installer",
+        )
+        configure = self.forge_runner.calls[0]
+        self.assertEqual(configure[-5:], (
+            "--replace", "--expected-revision", "4",
+            "--expected-digest", "sha256:" + "b" * 64,
+        ))
+        self.assertEqual(len(self.ep_runner.calls), 2)
+
+    def test_replacement_rejects_changed_target_or_old_identity_before_product_read(self):
+        for change in (
+            {"old_binding_id": self.binding.binding_id},
+            {"old_consumer_id": self.binding.consumer_id},
+            {"detach_revision": 0},
+            {"detach_configuration_digest": "not-a-digest"},
+            {"deployment": self.deployment},
+            {"deployment": replace(
+                self.deployment,
+                components=(
+                    ManagedComponentBinding("forge-runtime", "forge-other", "receipt:forge"),
+                    self.deployment.components[1],
+                ),
+                peer_binding=ManagedPeerBinding("forge-other", "ep-prod", "receipt:old-peer"),
+            )},
+        ):
+            with self.subTest(change=change):
+                arguments = self.replacement(**change)
+                with patch.object(self.forge, "read_detach_ep_peer") as read:
+                    with self.assertRaisesRegex(ForgeEPProductPairingError, "replacement product target"):
+                        self.executor.pair_after_product_detach(**arguments)
+                    read.assert_not_called()
+                self.assertEqual(self.forge_runner.calls, [])
+
+    def test_replacement_rejects_nonterminal_or_mismatched_detach_readback(self):
+        arguments = self.replacement()
+        for status in (
+            None,
+            {"current_peer_status": "PAIRED", "receipt": {}},
+            {"current_peer_status": "DETACHED", "receipt": None},
+            {"current_peer_status": "DETACHED", "receipt": {
+                "next_configuration_revision": 5, "receipt_digest": "sha256:" + "b" * 64,
+            }},
+            {"current_peer_status": "DETACHED", "receipt": {
+                "next_configuration_revision": 4, "receipt_digest": "bad",
+            }},
+        ):
+            with self.subTest(status=status):
+                with patch.object(self.forge, "read_detach_ep_peer", return_value=status):
+                    with self.assertRaisesRegex(ForgeEPProductPairingError, "detach status"):
+                        self.executor.pair_after_product_detach(**arguments)
+                self.assertEqual(self.forge_runner.calls, [])
+
+    def test_replacement_requires_exact_qualified_forge_producer(self):
+        arguments = self.replacement()
+        self.forge.installed_artifact = ARTIFACT
+        with self.assertRaisesRegex(ForgeServerAdapterError, "detach authority"):
+            self.executor.pair_after_product_detach(**arguments)
+        self.assertEqual(self.forge_runner.calls, [])
 
 
 if __name__ == "__main__":
