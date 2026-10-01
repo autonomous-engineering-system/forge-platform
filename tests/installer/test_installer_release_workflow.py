@@ -161,7 +161,9 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
 
     def test_signed_resources_remain_readable_after_root_owned_install(self) -> None:
         signer = self.local_release
-        self.assertIn('"$APP/Contents/CodeResources" "$APP/Contents/_CodeSignature/CodeResources"', signer)
+        self.assertIn('"$APP/Contents/_CodeSignature/CodeResources" "$APP/Contents/CodeResources"', signer)
+        self.assertIn('"$CARRIER_APP/Contents/_CodeSignature/CodeResources" "$CARRIER_APP/Contents/CodeResources"', signer)
+        self.assertIn('! -e "$code_resource" && ! -L "$code_resource"', signer)
         self.assertIn('test -f "$code_resource" && test ! -L "$code_resource"', signer)
         self.assertIn('chmod 644 "$code_resource"', signer)
         self.assertIn('signed-code-resource-mode-invalid', signer)
