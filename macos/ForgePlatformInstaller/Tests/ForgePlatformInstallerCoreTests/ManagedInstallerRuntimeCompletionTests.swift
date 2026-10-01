@@ -2314,6 +2314,13 @@ final class RawProductOperationXPCService:
         executeProductOperation(canonicalIntent, withReply: reply)
     }
 
+    func preflightPairingRepair(
+        _ canonicalRequest: Data,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        executeProductOperation(canonicalRequest, withReply: reply)
+    }
+
     func preparePreservedLifecycleReview(
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void

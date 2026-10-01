@@ -809,6 +809,37 @@ public actor ManagedInstallerPythonProductOperationExecutor:
         return .success(proposal)
     }
 
+    public func preflightPairingRepair(
+        _ request: ManagedInstallerPairingRepairRequest
+    ) async -> Result<
+        ManagedInstallerPairingRepairPreflight,
+        ManagedInstallerProductOperationBridgeFailure
+    > {
+        guard !inFlight else { return .failure(.rejected) }
+        inFlight = true
+        defer { inFlight = false }
+        let invocation: ManagedInstallerProductWorkerInvocation
+        switch await resolver.resolveProductWorkerInvocation() {
+        case .success(let resolved): invocation = resolved
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        let response: Data
+        switch await runner.runProductWorker(
+            invocation, canonicalRequest: request.canonicalJSONData()
+        ) {
+        case .success(let completed): response = completed
+        case .failure(.unavailable): return .failure(.unavailable)
+        case .failure(.rejected): return .failure(.rejected)
+        }
+        guard let preflight = try? ManagedInstallerPairingRepairPreflight.decodeJSON(
+            response, request: request
+        ), preflight.canonicalJSONData() == response else {
+            return .failure(.rejected)
+        }
+        return .success(preflight)
+    }
+
     public func executePreservedLifecycle(
         _ request: ManagedInstallerPreservedLifecycleRequest
     ) async -> Result<
