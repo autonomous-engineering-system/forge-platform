@@ -25,7 +25,9 @@ from .universal_installer import CompositionManifest
 
 
 REQUEST_SCHEMA = "forge-platform.native-pairing-repair-request/v1"
+PREFLIGHT_SCHEMA = "forge-platform.native-pairing-repair-preflight/v1"
 MAXIMUM_REQUEST_BYTES = 12 * 1024
+MAXIMUM_PREFLIGHT_BYTES = 2 * 1024
 _FIELDS = frozenset({
     "schema", "review_intent", "reviewed_revision",
     "reviewed_deployment_sha256", "reviewed_plan_fingerprint",
@@ -141,3 +143,43 @@ def admit_repair_request(
         raise ReleasedPairingRepairAdmissionError(
             "confirmed repair authority is unavailable"
         ) from error
+
+
+def encode_repair_preflight(admitted: AdmittedPairingRepair) -> bytes:
+    """Report current admission only; this is never a mutation receipt."""
+    if not isinstance(admitted, AdmittedPairingRepair):
+        raise ReleasedPairingRepairAdmissionError("repair admission is unavailable")
+    selection = admitted.selection
+    return _canonical({
+        "schema": PREFLIGHT_SCHEMA,
+        "request_fingerprint": admitted.request_fingerprint,
+        "operation_id": selection.operation_id,
+        "deployment_id": selection.deployment_id,
+        "reviewed_plan_fingerprint": selection.reviewed_plan_fingerprint,
+        "state": "REVIEW_CURRENT_NO_MUTATION",
+    })
+
+
+def decode_repair_preflight(raw: bytes, *, request: Mapping[str, object]) -> dict[str, object]:
+    """Reject substituted or terminal-looking worker responses."""
+    try:
+        if not isinstance(raw, bytes) or not 0 < len(raw) <= MAXIMUM_PREFLIGHT_BYTES:
+            raise ValueError("repair preflight size")
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique,
+                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        intent = request["review_intent"]
+        if (not isinstance(value, dict) or not isinstance(intent, dict)
+                or frozenset(value) != frozenset({
+                    "schema", "request_fingerprint", "operation_id", "deployment_id",
+                    "reviewed_plan_fingerprint", "state",
+                }) or _canonical(value) != raw
+                or value["schema"] != PREFLIGHT_SCHEMA
+                or value["state"] != "REVIEW_CURRENT_NO_MUTATION"
+                or value["request_fingerprint"] != request["request_fingerprint"]
+                or value["operation_id"] != intent["operation_id"]
+                or value["deployment_id"] != intent["deployment_id"]
+                or value["reviewed_plan_fingerprint"] != request["reviewed_plan_fingerprint"]):
+            raise ValueError("repair preflight mismatch")
+        return value
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as error:
+        raise ReleasedPairingRepairAdmissionError("repair preflight is invalid") from error

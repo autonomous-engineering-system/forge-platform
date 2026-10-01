@@ -31,6 +31,10 @@ from .released_pairing_repair_review import (
     INTENT_SCHEMA as REPAIR_REVIEW_INTENT_SCHEMA,
     decode_repair_review_intent, decode_repair_review_proposal,
 )
+from .released_pairing_repair_admission import (
+    REQUEST_SCHEMA as REPAIR_REQUEST_SCHEMA,
+    decode_repair_preflight, decode_repair_request,
+)
 from .managed_preserved_lifecycle_request import (
     NATIVE_CONFIRMED_PURGE_REQUEST_SCHEMA,
     MAXIMUM_NATIVE_PRESERVED_LIFECYCLE_RECEIPT_BYTES,
@@ -322,6 +326,24 @@ def execute_repair_review_intent(
     return response
 
 
+def preflight_repair_request(
+    canonical_request: bytes,
+    *,
+    service_loader: ServiceLoader = load_released_product_service,
+) -> bytes:
+    """Return only fresh public admission evidence, never a mutation receipt."""
+    request = decode_repair_request(canonical_request)
+    service = service_loader()
+    if not isinstance(service, ManagedProductOperationHelperService):
+        raise InstallerProductWorkerUnavailable("repair preflight service is unavailable")
+    response = service.preflight_pairing_repair(canonical_request)
+    try:
+        decode_repair_preflight(response, request=request)
+    except Exception as error:
+        raise InstallerProductWorkerUnavailable("repair preflight was rejected") from error
+    return response
+
+
 def execute_preserved_lifecycle_review_intent(
     canonical_intent: bytes,
     *,
@@ -434,6 +456,8 @@ def run(
             response = execute_removal_review_intent(request, service_loader=service_loader)
         elif isinstance(envelope, dict) and envelope.get("schema") == REPAIR_REVIEW_INTENT_SCHEMA:
             response = execute_repair_review_intent(request, service_loader=service_loader)
+        elif isinstance(envelope, dict) and envelope.get("schema") == REPAIR_REQUEST_SCHEMA:
+            response = preflight_repair_request(request, service_loader=service_loader)
         elif isinstance(envelope, dict) and envelope.get("schema") == NATIVE_PRESERVED_LIFECYCLE_REVIEW_INTENT_SCHEMA:
             response = execute_preserved_lifecycle_review_intent(
                 request, service_loader=service_loader,

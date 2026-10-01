@@ -72,6 +72,9 @@ from .released_product_routes import (
 from .released_pairing_repair_review import (
     decode_repair_review_intent, prepare_repair_review,
 )
+from .released_pairing_repair_admission import (
+    admit_repair_request, decode_repair_request, encode_repair_preflight,
+)
 from .universal_installer import (
     CompositionManifest,
     VerifiedCompositionSelection,
@@ -412,6 +415,32 @@ class ManagedProductOperationHelperService:
         except Exception as error:
             raise ManagedProductOperationServiceError(
                 "native pairing repair review was rejected"
+            ) from error
+
+    def preflight_pairing_repair(self, canonical_request: bytes) -> bytes:
+        """Recheck a confirmed review using pinned authority; never mutate."""
+        try:
+            if not isinstance(
+                self.authority_resolver,
+                PinnedManagedProductOperationAuthorityResolver,
+            ):
+                raise TypeError("released repair authority is unavailable")
+            request = decode_repair_request(canonical_request)
+            intent = request["review_intent"]
+            manifest = self.authority_resolver.resolve_installed_repair_review(
+                intent["installed_composition_identity"],
+                intent["installed_manifest_sha256"],
+            )
+            admitted = admit_repair_request(
+                canonical_request, registry=self.dispatcher.coordinator.registry,
+                installed_manifest=manifest,
+                current_installer_release=self.authority_resolver.current_installer_release,
+                routes=self.repair_route_configurations,
+            )
+            return encode_repair_preflight(admitted)
+        except Exception as error:
+            raise ManagedProductOperationServiceError(
+                "native pairing repair preflight was rejected"
             ) from error
 
     def register_ep_provider(self, canonical_request: bytes) -> bytes:
