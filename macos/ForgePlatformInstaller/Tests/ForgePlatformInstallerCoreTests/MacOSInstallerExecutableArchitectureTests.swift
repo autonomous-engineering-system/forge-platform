@@ -42,6 +42,26 @@ final class MacOSInstallerExecutableArchitectureTests: XCTestCase {
             try MacOSInstallerExecutableArchitecture.requireThinARM64Executable(in: bundle)
         )
 
+        let validBundle = root.appendingPathComponent("ValidInstaller.app", isDirectory: true)
+        try FileManager.default.copyItem(at: bundle, to: validBundle)
+        try thinARM64Header().write(to: validBundle.appendingPathComponent(
+            "Contents/MacOS/ForgePlatformInstaller"
+        ))
+        XCTAssertNoThrow(
+            try MacOSInstallerExecutableArchitecture.requireThinARM64Executable(in: validBundle)
+        )
+
+        let wrongInfoBundle = root.appendingPathComponent("WrongInfo.app", isDirectory: true)
+        try FileManager.default.copyItem(at: validBundle, to: wrongInfoBundle)
+        var wrongInfo = info
+        wrongInfo["CFBundleExecutable"] = "forge-platform-installer"
+        try PropertyListSerialization.data(
+            fromPropertyList: wrongInfo, format: .xml, options: 0
+        ).write(to: wrongInfoBundle.appendingPathComponent("Contents/Info.plist"))
+        XCTAssertThrowsError(
+            try MacOSInstallerExecutableArchitecture.requireThinARM64Executable(in: wrongInfoBundle)
+        )
+
         // Use a separate inode for the positive path so this assertion does
         // not depend on Foundation's Bundle or file-resource caches after the
         // rejected bundle inspection above.

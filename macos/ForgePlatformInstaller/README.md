@@ -228,6 +228,10 @@ startup. It asks for explicit confirmation without `--yes`, rechecks installer
 currency immediately before `SMAppService` registration, and reports native
 `ENABLED` or `REQUIRES_APPROVAL` separately. Registration never implies that
 the product-operation backend or reboot persistence is ready.
+The CLI is a second executable inside the signed app. Current-bundle
+architecture admission reads the sealed `CFBundleExecutable` and checks the
+fixed GUI executable rather than using Foundation's process-relative
+`executableURL`, which can point at the running CLI.
 An `ENABLED` system job is accepted only after a fixed-label native readback
 confirms the registered parent bundle, Team, helper program and exact current
 installer version. An older registered helper fails closed; registration does
