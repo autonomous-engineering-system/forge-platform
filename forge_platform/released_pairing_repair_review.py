@@ -126,3 +126,41 @@ def prepare_repair_review(
         return raw
     except Exception as error:
         raise ReleasedPairingRepairReviewError("repair review proposal is unavailable") from error
+
+
+def decode_repair_review_proposal(raw: bytes, *, intent: dict[str, object]) -> dict[str, object]:
+    """Independently bound the public proposal emitted by the worker."""
+    try:
+        if not isinstance(raw, bytes) or not 0 < len(raw) <= 8192:
+            raise ValueError("repair review proposal size")
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique,
+                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        if (not isinstance(value, dict) or frozenset(value) != frozenset({
+                "schema", "intent_fingerprint", "operation_id", "deployment_id",
+                "reviewed_revision", "reviewed_deployment_sha256",
+                "reviewed_plan_fingerprint", "deployment_action", "component_diffs",
+                "confirmation_required",
+            }) or value["schema"] != PROPOSAL_SCHEMA or _canonical(value) != raw
+                or value["intent_fingerprint"] != intent["intent_fingerprint"]
+                or value["operation_id"] != intent["operation_id"]
+                or value["deployment_id"] != intent["deployment_id"]
+                or type(value["reviewed_revision"]) is not int
+                or value["reviewed_revision"] < 1
+                or not isinstance(value["reviewed_deployment_sha256"], str)
+                or not _HASH.fullmatch(value["reviewed_deployment_sha256"])
+                or not isinstance(value["reviewed_plan_fingerprint"], str)
+                or not _DIGEST.fullmatch(value["reviewed_plan_fingerprint"])
+                or value["deployment_action"] != "CREATE_OR_UPDATE"
+                or value["confirmation_required"] is not True
+                or value["component_diffs"] != [
+                    {"component": "engineering-platform-server",
+                     "instance_id": intent["engineering_platform_instance_id"],
+                     "action": "NO_CHANGE"},
+                    {"component": "forge-runtime",
+                     "instance_id": intent["forge_instance_id"],
+                     "action": "REPAIR"},
+                ]):
+            raise ValueError("repair review proposal changed")
+        return value
+    except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as error:
+        raise ReleasedPairingRepairReviewError("repair review proposal is invalid") from error
