@@ -24,11 +24,12 @@ an exact protected `main` commit and two already reviewed, committed inputs:
 1. one immutable `forge-platform.composition/v3` manifest;
 2. one immutable `forge-platform.component-combination-catalog/v1` index.
 
-The candidate preparer, protected build workflow and offline finalizer also
-support a separate multi-composition/v2 candidate containing two to eight
-exact v3 manifests. That candidate is not publishable until the local public-byte
-readback binds every manifest asset. The single-manifest release route remains
-the current publication boundary.
+The candidate preparer, protected build workflow, offline finalizer and local
+publisher also support a multi-composition/v2 candidate containing two to
+eight exact v3 manifests. The publisher uploads and independently reads back
+every manifest asset before advancing the stable catalog locator. Production
+publication still requires reviewed immutable producer and compatibility
+evidence for each selected topology.
 
 The credentialless Apple Silicon runner runs the repository gates, proves that
 the catalog Keychain key is absent, validates both documents with the runtime

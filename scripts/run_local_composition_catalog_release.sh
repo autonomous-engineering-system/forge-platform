@@ -66,8 +66,34 @@ CANDIDATE="$WORK/candidate/composition-catalog-candidate.json"
 SEQUENCE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sequence"])' "$CANDIDATE")"
 IMMUTABLE_TAG="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["immutable_release_tag"])' "$CANDIDATE")"
 STABLE_TAG="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stable_release_tag"])' "$CANDIDATE")"
-MANIFEST_ASSET="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["manifest_asset_name"])' "$CANDIDATE")"
 INDEX_ASSET="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["component_combination_catalog_asset_name"])' "$CANDIDATE")"
+python3 - "$CANDIDATE" >"$WORK/metadata/manifest-assets.txt" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+candidate = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if candidate.get("schema") == "forge-platform.composition-catalog-candidate/v1":
+    names = [candidate.get("manifest_asset_name")]
+    pattern = re.compile(r"ForgePlatformComposition-[1-9][0-9]*\.json")
+elif candidate.get("schema") == "forge-platform.composition-catalog-candidate/v2":
+    records = candidate.get("manifests")
+    if not isinstance(records, list) or not 2 <= len(records) <= 8:
+        raise SystemExit("multi-composition manifest assets are unavailable")
+    names = [entry.get("asset_name") if isinstance(entry, dict) else None for entry in records]
+    pattern = re.compile(r"ForgePlatformComposition-[1-9][0-9]*-[a-z0-9][a-z0-9._-]*\.json")
+else:
+    raise SystemExit("catalog candidate schema is unsupported")
+if any(not isinstance(name, str) or pattern.fullmatch(name) is None for name in names):
+    raise SystemExit("catalog manifest asset name is unsafe")
+if len(names) != len(set(names)) or candidate["component_combination_catalog_asset_name"] in names:
+    raise SystemExit("catalog manifest asset names are ambiguous")
+sys.stdout.write("\n".join(names) + "\n")
+PY
+mapfile -t manifest_assets <"$WORK/metadata/manifest-assets.txt"
+(( ${#manifest_assets[@]} >= 1 )) || fail missing-manifest-assets
+release_assets=("${manifest_assets[@]}" "$INDEX_ASSET" "$CATALOG_ASSET")
 [[ "$SEQUENCE" =~ ^[1-9][0-9]*$ ]] || fail invalid-catalog-sequence
 [[ "$IMMUTABLE_TAG" == "forge-platform-composition-catalog-v$SEQUENCE" ]] || fail immutable-tag-mismatch
 [[ "$STABLE_TAG" == "forge-platform-composition-catalog-stable" ]] || fail stable-tag-mismatch
@@ -116,7 +142,7 @@ else
   IMMUTABLE_RELEASE_DRAFT=true
 fi
 
-for asset in "$MANIFEST_ASSET" "$INDEX_ASSET" "$CATALOG_ASSET"; do
+for asset in "${release_assets[@]}"; do
   existing="$(gh release view "$IMMUTABLE_TAG" --repo "$REPOSITORY" --json assets --jq ".assets[] | select(.name == \"$asset\") | .name")"
   if [[ "$existing" == "$asset" ]]; then
     mkdir -p "$WORK/readback/immutable-existing"
@@ -151,10 +177,14 @@ else
     "$WORK/release/composition-catalog-operation.json"
 fi
 mkdir -p "$WORK/readback/immutable"
+readback_patterns=()
+for asset in "${release_assets[@]}"; do
+  readback_patterns+=(--pattern "$asset")
+done
 gh release download "$IMMUTABLE_TAG" --repo "$REPOSITORY" \
-  --pattern "$MANIFEST_ASSET" --pattern "$INDEX_ASSET" --pattern "$CATALOG_ASSET" \
+  "${readback_patterns[@]}" \
   --pattern composition-catalog-operation.json --dir "$WORK/readback/immutable"
-for asset in "$MANIFEST_ASSET" "$INDEX_ASSET" "$CATALOG_ASSET"; do
+for asset in "${release_assets[@]}"; do
   cmp "$WORK/release/$asset" "$WORK/readback/immutable/$asset" || fail immutable-release-readback-mismatch
 done
 python3 - "$WORK/release/composition-catalog-operation.json" "$WORK/readback/immutable/composition-catalog-operation.json" <<'PY'
