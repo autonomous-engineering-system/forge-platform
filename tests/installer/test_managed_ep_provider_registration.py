@@ -169,6 +169,34 @@ class EPProviderWorkerTests(unittest.TestCase):
             register_ep_provider(self.request, manifest=wrong, adapter=self.adapter)
         self.assertEqual(self.runner.calls, [])
 
+    def test_same_signed_template_routes_only_to_selected_ep_instance(self) -> None:
+        template = replace(self.manifest, providers=(replace(
+            self.manifest.providers[0], target_identity="selected-deployment"
+        ),))
+        receipt_a = json.loads(register_ep_provider(
+            self.request, manifest=template, adapter=self.adapter
+        ))
+        self.assertEqual(receipt_a["provider_target"], "codex:engineering-platform-server:ep-prod")
+        self.assertEqual(len(self.runner.calls), 1)
+        root = Path(self.private.name).resolve()
+        runner_b = ProductRunner()
+        runner_b.instance_id = "ep-b"
+        adapter_b = EngineeringPlatformSystemProvisionerAdapter(
+            provisioner_executable=root / "bin/engineering-platform-system-provisioner",
+            product_root=root / "product-b",
+            target=EPSystemInstanceTarget("ep-b", "Other", "_ep_b", 8877),
+            staged_artifacts={}, runner=runner_b,
+        )
+        request_b = replace(self.request, deployment_id="deployment-b", ep_instance_id="ep-b")
+        receipt_b = json.loads(register_ep_provider(
+            request_b, manifest=template, adapter=adapter_b
+        ))
+        self.assertEqual(receipt_b["provider_target"], "codex:engineering-platform-server:ep-b")
+        self.assertEqual(len(runner_b.calls), 1)
+        with self.assertRaisesRegex(ValueError, "released authority"):
+            register_ep_provider(request_b, manifest=template, adapter=self.adapter)
+        self.assertEqual(len(self.runner.calls), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

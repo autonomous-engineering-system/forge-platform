@@ -384,6 +384,7 @@
         },
         "target_identity": {
           "type": "string",
+          "description": "Exact opaque target or selected-deployment, a signed template bound to the reviewed deployment ID for a fresh install and to the owning product instance ID for an existing deployment. Only server-owned component-scope providers may use the template.",
           "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
         },
         "runtime": {

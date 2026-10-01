@@ -25,6 +25,7 @@ from .universal_installer import CompositionManifest
 
 SCHEMA = "forge-platform.ep-provider-registration/v1"
 RECEIPT_SCHEMA = "forge-platform.ep-provider-registration-receipt/v1"
+SELECTED_DEPLOYMENT_TARGET = "selected-deployment"
 MAXIMUM_BYTES = 4 * 1024
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -105,16 +106,15 @@ def register_ep_provider(
     matching = [provider for provider in manifest.providers if (
         provider.identity == request.provider
         and provider.owner_component == "engineering-platform-server"
-        and provider.target_identity == request.deployment_id
+        and provider.target_identity in {request.deployment_id, SELECTED_DEPLOYMENT_TARGET}
         and provider.credential_scope == "component"
         and provider.required
         and provider.runtime is not None
     )]
     if len(matching) != 1:
         raise ValueError("EP provider manifest target is unavailable")
-    # The signed composition binds the deployment target. The product route
-    # binds the derived EP instance; translating only after both checks avoids
-    # treating a catalog deployment ID as a product instance ID.
+    # A signed v3 template is bound to the exact helper-reviewed deployment;
+    # the pinned product route independently binds its EP instance.
     requirement = replace(matching[0], target_identity=request.ep_instance_id)
     runtime = requirement.runtime
     if runtime is None:
