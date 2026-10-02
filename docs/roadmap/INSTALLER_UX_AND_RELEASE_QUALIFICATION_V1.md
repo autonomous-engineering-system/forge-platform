@@ -369,10 +369,18 @@ active work, concurrent updaters, admission races, crash/response loss and
 partial registration must be qualified. Native PASS requires real signed
 macOS candidates and unchanged boot identity; source fixtures remain separate.
 
+PR #575 added the source-level `ManagedInstallerHelperUpgradeAdmissionGate`
+lease/drain primitive. It is not connected to every mutation ingress or the
+durable service-transition coordinator; source coverage and green CI for that
+primitive do not satisfy native qualification.
+
 The currently registered 0.3.13 helper has no drain/close protocol and its
 direct product XPC worker path is not covered by an external admission latch.
-The existing idle replacement requires `runs = 0`; current readback has
-`RUNNING`, `runs = 1`. The first live transition is therefore
+The existing idle replacement requires `runs = 0`; it previously showed
+`RUNNING`, `runs = 1`. After a separately observed host boot change it shows
+`not running`, `runs = 0`, still bound to parent 0.3.13. That state does not
+prove old operation quiescence or a same-boot used-helper transition. The first
+live transition is therefore
 `BLOCKED_LEGACY_TRANSITION` pending an actually reviewed and proven migration
 route. This state is not a general macOS reboot requirement. The owner directive
 does not authorize a reboot, kill, global launchd/BTM reset, credential replay

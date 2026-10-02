@@ -400,6 +400,12 @@ permit through each operation's terminal product-owned receipt or resumable
 checkpoint. A request racing the close either owns a counted permit or gets
 `BUSY`; unknown state and timeout get `BLOCKED` without stopping the helper.
 
+`ManagedInstallerHelperUpgradeAdmissionGate` landed on `main` in PR #575 as
+an in-process lease and drain primitive. Its exact operation/epoch checks do
+not yet cover the mutating XPC routes, asynchronous worker effects or a durable
+root-owned transition. It therefore supplies no live quiescence or replacement
+authority by itself.
+
 The gate must durably bind one operation ID and generation to the exact source
 and target signed artifacts, fixed SMAppService label, bundle/Team/signing
 identities and caller audit/process identity. Closing admission and proving
@@ -425,8 +431,11 @@ endpoints race-free. [Apple's SMAppService unregister contract](https://develope
 states that unregister terminates a running LaunchDaemon, so unregister before
 quiescence cannot itself serve as a graceful drain. The 0.3.14 target being
 separately signed and staged does not alter the 0.3.13 registered parent.
-Until a reviewed, supported legacy
-adapter proves both admission closure and no active effects, this exact first
+After an externally observed host boot change, the fixed-label job still
+reports parent 0.3.13 but now `not running`, `runs = 0`; this is not evidence
+that root-private operations completed or that a used helper was upgraded
+within one boot. Until a reviewed, supported legacy adapter proves both
+admission closure and no active effects, this exact first
 transition is `BLOCKED_LEGACY_TRANSITION`; no unregister, process signal,
 reboot or product mutation follows from this document. This is a bound on the
 observed old version, not a claim that macOS generally requires a reboot for
