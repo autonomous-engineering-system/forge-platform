@@ -42,16 +42,48 @@ public final class GitHubReleaseDescriptorTransport: NSObject, GitHubInstallerRe
             return .failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable))
         }
         do {
-            let response = try await fetch(
-                endpoint,
-                maximumBytes: maximumLocatorBytes,
-                allowedFinalHosts: ["api.github.com"]
+            var request = URLRequest(
+                url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData,
+                timeoutInterval: timeout
             )
-            guard let object = try JSONSerialization.jsonObject(with: response.data) as? [String: Any],
-                  let tag = object["tag_name"] as? String else {
+            request.httpMethod = "HEAD"
+            request.setValue("ForgePlatformInstaller-release-feed/1", forHTTPHeaderField: "User-Agent")
+            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.httpShouldSetCookies = false
+            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            configuration.urlCache = nil
+            configuration.timeoutIntervalForRequest = timeout
+            configuration.timeoutIntervalForResource = timeout
+            if !protocolClassesForTesting.isEmpty {
+                configuration.protocolClasses = protocolClassesForTesting
+            }
+            let session = URLSession(
+                configuration: configuration,
+                delegate: GitHubReleaseRedirectDelegate(
+                    permittedHosts: ["github.com"], maximumRedirects: 0
+                ),
+                delegateQueue: nil
+            )
+            defer { session.invalidateAndCancel() }
+            let (_, urlResponse) = try await session.bytes(for: request)
+            guard let response = urlResponse as? HTTPURLResponse,
+                  response.statusCode == 302,
+                  response.url == endpoint,
+                  let location = response.value(forHTTPHeaderField: "Location"),
+                  location.utf8.count <= maximumLocatorBytes,
+                  let tag = GitHubReleaseTransportEndpoint.latestTag(
+                    repository: repository,
+                    location: location
+                  ),
+                  let observedAt = GitHubReleaseHTTPDate.parse(
+                    response.value(forHTTPHeaderField: "Date")
+                  ) else {
                 throw GitHubReleaseDescriptorTransportError.invalidResponse
             }
-            return .success(try GitHubInstallerReleaseTagReadback(tag: tag, observedAt: response.observedAt))
+            return .success(try GitHubInstallerReleaseTagReadback(
+                tag: tag, observedAt: observedAt
+            ))
         } catch {
             return .failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable))
         }
@@ -165,7 +197,20 @@ enum GitHubReleaseTransportEndpoint {
         guard InstallerSelfUpdateValidation.isGitHubRepository(repository) else {
             return nil
         }
-        return URL(string: "https://api.github.com/repos/\(repository)/releases/latest")
+        return URL(string: "https://github.com/\(repository)/releases/latest")
+    }
+
+    static func latestTag(repository: String, location: String?) -> String? {
+        guard InstallerSelfUpdateValidation.isGitHubRepository(repository),
+              let location, let target = URL(string: location),
+              isHTTPS(target), target.host?.lowercased() == "github.com",
+              target.query == nil, target.fragment == nil else { return nil }
+        let prefix = "https://github.com/\(repository)/releases/tag/"
+        guard target.absoluteString.hasPrefix(prefix) else { return nil }
+        let tag = String(target.absoluteString.dropFirst(prefix.count))
+        guard InstallerSelfUpdateValidation.isGitHubTag(tag),
+              target.absoluteString == prefix + tag else { return nil }
+        return tag
     }
 
     static func descriptorURL(repository: String, tag: String, descriptorAssetName: String) -> URL? {

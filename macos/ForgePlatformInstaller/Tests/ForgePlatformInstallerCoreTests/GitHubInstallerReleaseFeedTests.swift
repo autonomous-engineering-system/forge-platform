@@ -239,7 +239,7 @@ final class GitHubInstallerReleaseFeedTests: XCTestCase {
             GitHubReleaseTransportEndpoint.latestReleaseURL(
                 repository: "example-owner/forge-platform-installer"
             )?.absoluteString,
-            "https://api.github.com/repos/example-owner/forge-platform-installer/releases/latest"
+            "https://github.com/example-owner/forge-platform-installer/releases/latest"
         )
         XCTAssertEqual(
             GitHubReleaseTransportEndpoint.descriptorURL(
@@ -249,6 +249,26 @@ final class GitHubInstallerReleaseFeedTests: XCTestCase {
             )?.absoluteString,
             "https://github.com/example-owner/forge-platform-installer/releases/download/installer-0.2.0/forge-platform-installer-release.json"
         )
+        XCTAssertEqual(
+            GitHubReleaseTransportEndpoint.latestTag(
+                repository: "example-owner/forge-platform-installer",
+                location: "https://github.com/example-owner/forge-platform-installer/releases/tag/installer-0.2.0"
+            ),
+            "installer-0.2.0"
+        )
+        for location in [
+            "http://github.com/example-owner/forge-platform-installer/releases/tag/installer-0.2.0",
+            "https://evil.example/example-owner/forge-platform-installer/releases/tag/installer-0.2.0",
+            "https://github.com/other/repository/releases/tag/installer-0.2.0",
+            "https://github.com/example-owner/forge-platform-installer/releases/tag/installer-0.2.0?next=1",
+            "https://github.com/example-owner/forge-platform-installer/releases/tag/installer-0.2.0/extra",
+            "https://github.com/example-owner/forge-platform-installer/releases/tag/bad%2Ftag",
+        ] {
+            XCTAssertNil(GitHubReleaseTransportEndpoint.latestTag(
+                repository: "example-owner/forge-platform-installer",
+                location: location
+            ))
+        }
         XCTAssertNil(GitHubReleaseTransportEndpoint.latestReleaseURL(repository: "example-owner/../evil"))
         XCTAssertNil(GitHubReleaseTransportEndpoint.latestReleaseURL(repository: ".owner/repository"))
         XCTAssertNil(GitHubReleaseTransportEndpoint.latestReleaseURL(repository: "owner/.repository"))
