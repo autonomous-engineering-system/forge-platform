@@ -188,6 +188,85 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
                        CurrentVerifiedInstallerCompositionContext(release: record))
     }
 
+    func testUpgradeTargetIdentityBindsExactVerifiedReleaseAndSealedResources() throws {
+        let resources = try makeResources()
+        let sealed = ManagedInstallerHelperSealedTrustContext(
+            codeSigning: try signingEvidence(version: resources.provenance.installerVersion),
+            resources: resources
+        )
+        let release = try makeReleaseRecord(for: sealed)
+        let target = ManagedInstallerHelperUpgradeTargetIdentity(
+            installerVersion: sealed.codeSigning.installerVersion,
+            helperSHA256: String(repeating: "e", count: 64),
+            codeDirectorySHA256: sealed.codeSigning.codeDirectorySHA256
+        )
+        let binding = ManagedInstallerHelperUpgradeTargetReleaseBinding()
+        XCTAssertTrue(binding.matches(target: target, release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: .init(
+            installerVersion: try InstallerVersion("1.2.4"),
+            helperSHA256: target.helperSHA256,
+            codeDirectorySHA256: target.codeDirectorySHA256
+        ), release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: .init(
+            installerVersion: target.installerVersion,
+            helperSHA256: target.helperSHA256,
+            codeDirectorySHA256: String(repeating: "f", count: 64)
+        ), release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: .init(
+            installerVersion: target.installerVersion,
+            helperSHA256: target.helperSHA256,
+            codeDirectorySHA256: "bad"
+        ), release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: .init(
+            installerVersion: target.installerVersion,
+            helperSHA256: "bad",
+            codeDirectorySHA256: target.codeDirectorySHA256
+        ), release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: target,
+                                      release: try makeReleaseRecord(for: sealed, sequence: 2),
+                                      resources: resources))
+        XCTAssertFalse(binding.matches(target: target,
+                                      release: try makeReleaseRecord(for: sealed,
+                                                                 sourceRevision: String(repeating: "f", count: 40)),
+                                      resources: resources))
+    }
+
+    func testUpgradeTargetRejectsCrossBoundSealedPolicies() throws {
+        let resources = try makeResources()
+        let sealed = ManagedInstallerHelperSealedTrustContext(
+            codeSigning: try signingEvidence(version: resources.provenance.installerVersion),
+            resources: resources
+        )
+        let release = try makeReleaseRecord(for: sealed)
+        let target = ManagedInstallerHelperUpgradeTargetIdentity(
+            installerVersion: sealed.codeSigning.installerVersion,
+            helperSHA256: String(repeating: "e", count: 64),
+            codeDirectorySHA256: sealed.codeSigning.codeDirectorySHA256
+        )
+        let binding = ManagedInstallerHelperUpgradeTargetReleaseBinding()
+        let otherTrust = String(repeating: "f", count: 64)
+        let badProvenance = ManagedInstallerHelperSealedResources(
+            releaseTrust: resources.releaseTrust,
+            provenance: try makeProvenance(
+                trustDigest: otherTrust, version: target.installerVersion
+            ),
+            compositionTrust: resources.compositionTrust
+        )
+        XCTAssertFalse(binding.matches(target: target, release: release,
+                                       resources: badProvenance))
+        let badComposition = ManagedInstallerHelperSealedResources(
+            releaseTrust: resources.releaseTrust,
+            provenance: resources.provenance,
+            compositionTrust: try makeCompositionTrust(trustDigest: otherTrust)
+        )
+        XCTAssertFalse(binding.matches(target: target, release: release,
+                                       resources: badComposition))
+        XCTAssertFalse(binding.matches(target: target,
+                                      release: try makeReleaseRecord(for: sealed,
+                                                                 trustDigest: otherTrust),
+                                      resources: resources))
+    }
+
     func testProductionCurrentReleaseAssemblyUsesFixedHelperInputsWithoutAdmission() {
         // Construction alone reads no release feed, accepts no descriptor and
         // performs no helper or product operation from this test process.
