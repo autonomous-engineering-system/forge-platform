@@ -356,6 +356,39 @@ and [Apple notarization](https://developer.apple.com/documentation/security/nota
 
 ## IUR-RELEASE and IUR-INSTALL-Q: finish lines
 
+### Used-helper upgrade gate in the existing installer delivery
+
+The helper/product-adapter, GUI/CLI parity, release and live-install nodes below
+also carry `L1-HELPER-UPGRADE-WITHOUT-REBOOT-V1-20261002` in the same #141
+assignment and PR #75 lineage. The first deliverable is a previously used
+signed helper replaced within the same boot, with admission closed across every
+mutating entry, active effects completed or product-owned checkpointed, one
+durable exclusive transition, supported macOS service action, and independent
+new-helper/XPC readback. Duplicate/retry, a subsequent supported upgrade,
+active work, concurrent updaters, admission races, crash/response loss and
+partial registration must be qualified. Native PASS requires real signed
+macOS candidates and unchanged boot identity; source fixtures remain separate.
+
+The currently registered 0.3.13 helper has no drain/close protocol and its
+direct product XPC worker path is not covered by an external admission latch.
+The existing idle replacement requires `runs = 0`; current readback has
+`RUNNING`, `runs = 1`. The first live transition is therefore
+`BLOCKED_LEGACY_TRANSITION` pending an actually reviewed and proven migration
+route. This state is not a general macOS reboot requirement. The owner directive
+does not authorize a reboot, kill, global launchd/BTM reset, credential replay
+or weakened product/signing admission. The root-private active-operation state
+and any agreed one-time migration authority require separate exact readback;
+unknown state stays blocked. The target 0.3.14 artifact is only staged/public,
+not live-qualified.
+
+Preserve the original installer DoD: independent Quality/Security on exact
+head, strict >80.2% executable-line coverage per changed production file,
+protected checks/merge, signed/notarized release, remote byte readback,
+EP/Forge installation, provider/pairing, full lifecycle and cold-boot/no-login
+acceptance. The latter needs its own explicit reboot approval. After a native
+same-boot helper PASS, #141 must give LANE_2 an exact signed candidate/service
+identity and conflict-free resource handoff before r30 credential tests resume.
+
 Extend the existing installer release operation, not a second release script:
 exact reviewed source/toolchain -> unsigned candidate -> applicable tests and
 coverage -> protected Developer ID signing -> notarization/stapling and signature
