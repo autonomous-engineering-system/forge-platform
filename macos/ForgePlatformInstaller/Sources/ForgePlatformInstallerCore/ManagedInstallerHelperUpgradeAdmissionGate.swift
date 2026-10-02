@@ -9,7 +9,7 @@ struct ManagedInstallerHelperMutationLease: Hashable, Sendable {
     fileprivate let epoch: UInt64
 }
 
-enum ManagedInstallerHelperUpgradeAdmissionState: Equatable, Sendable {
+public enum ManagedInstallerHelperUpgradeAdmissionState: Equatable, Sendable {
     case blocked
     case draining(activeMutations: Int)
     case quiescent
@@ -23,6 +23,10 @@ public final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendab
 
     public init(epoch: UInt64) {
         self.epoch = epoch
+    }
+
+    func matchesEpoch(_ candidate: UInt64) -> Bool {
+        epoch > 0 && epoch == candidate
     }
 
     /// Retains a mutation lease until the XPC method delivers its terminal
