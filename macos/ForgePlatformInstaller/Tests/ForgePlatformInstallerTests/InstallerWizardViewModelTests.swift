@@ -538,7 +538,10 @@ final class InstallerWizardViewModelTests: XCTestCase {
         let coordinator = WizardCoordinatorSpy(sessionResult: .prepared(plan))
         let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
 
-        model.prepareVerifiedCompositionSession()
+        model.prepareVerifiedCompositionSession(
+            componentIdentities: ManagedInstallerCompositionChoice
+                .forgeAndEngineeringPlatform.componentIdentities
+        )
         await waitForPreparation(on: model)
 
         XCTAssertEqual(model.state.sessionPreparation, .prepared(plan))
@@ -567,6 +570,24 @@ final class InstallerWizardViewModelTests: XCTestCase {
         XCTAssertFalse(model.state.canAdvance)
         let preparationCalls = await coordinator.preparationCallCount()
         XCTAssertEqual(preparationCalls, 1)
+    }
+
+    func testViewModelDoesNotBroadenForgeOnlyChoiceThroughLegacyCoordinator() async throws {
+        let state = try compositionSelectionState()
+        let plan = try makeSessionPlan(sessionID: "ui-pair-only")
+        let coordinator = WizardCoordinatorSpy(sessionResult: .prepared(plan))
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+
+        model.prepareVerifiedCompositionSession(
+            componentIdentities: ManagedInstallerCompositionChoice.forge.componentIdentities
+        )
+        await waitForPreparation(on: model)
+
+        XCTAssertEqual(model.state.sessionPreparation, .unavailable(.selectionUnavailable))
+        XCTAssertNil(model.state.acceptedSessionPlan)
+        XCTAssertFalse(model.state.canAdvance)
+        let preparationCalls = await coordinator.preparationCallCount()
+        XCTAssertEqual(preparationCalls, 0)
     }
 
     func testGUIStagesExactReviewedProvidersWithoutClaimingExecution() async throws {

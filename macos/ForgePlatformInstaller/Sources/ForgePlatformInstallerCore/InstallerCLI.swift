@@ -22,6 +22,21 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentLifecycleRecoverPurge(String, operationID: String)
 }
 
+public enum ManagedInstallerCompositionChoice: String, CaseIterable, Hashable, Sendable {
+    case forge = "forge"
+    case engineeringPlatform = "ep"
+    case forgeAndEngineeringPlatform = "forge-ep"
+
+    public var componentIdentities: [String] {
+        switch self {
+        case .forge: ["forge-runtime"]
+        case .engineeringPlatform: ["engineering-platform-server"]
+        case .forgeAndEngineeringPlatform:
+            ["engineering-platform-server", "forge-runtime"]
+        }
+    }
+}
+
 public struct InstallerCLIOptions: Equatable, Sendable {
     public let json: Bool
     public let nonInteractive: Bool
@@ -30,6 +45,7 @@ public struct InstallerCLIOptions: Equatable, Sendable {
     public let reviewFingerprint: String?
     public let confirmedInstanceID: String?
     public let pairingTarget: ManagedInstallerReviewedPairingTarget?
+    public let compositionChoice: ManagedInstallerCompositionChoice
 
     public init(
         json: Bool = false,
@@ -38,7 +54,8 @@ public struct InstallerCLIOptions: Equatable, Sendable {
         acceptInstallerUpdate: Bool = false,
         reviewFingerprint: String? = nil,
         confirmedInstanceID: String? = nil,
-        pairingTarget: ManagedInstallerReviewedPairingTarget? = nil
+        pairingTarget: ManagedInstallerReviewedPairingTarget? = nil,
+        compositionChoice: ManagedInstallerCompositionChoice = .forgeAndEngineeringPlatform
     ) {
         self.json = json
         self.nonInteractive = nonInteractive
@@ -47,6 +64,7 @@ public struct InstallerCLIOptions: Equatable, Sendable {
         self.reviewFingerprint = reviewFingerprint
         self.confirmedInstanceID = confirmedInstanceID
         self.pairingTarget = pairingTarget
+        self.compositionChoice = compositionChoice
     }
 }
 
@@ -120,8 +138,8 @@ public enum InstallerCLIParser {
       forge-platform-installer self-update check [--json]
       forge-platform-installer self-update apply [--yes] [--json]
       forge-platform-installer deployment list [--json]
-      forge-platform-installer deployment plan --deployment <id|new> [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--non-interactive] [--json]
-      forge-platform-installer deployment apply --deployment <id|new> [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--yes] [--non-interactive] [--accept-installer-update] [--json]
+      forge-platform-installer deployment plan --deployment <id|new> [--composition <forge|ep|forge-ep>] [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--non-interactive] [--json]
+      forge-platform-installer deployment apply --deployment <id|new> [--composition <forge|ep|forge-ep>] [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--yes] [--non-interactive] [--accept-installer-update] [--json]
       forge-platform-installer deployment remove --deployment <id> --operation-id <id> [--component forge-runtime] [--review-fingerprint <sha256> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment remove plan --deployment <id> --operation-id <id> [--component forge-runtime] [--json]
       forge-platform-installer deployment pairing repair plan --deployment <id> --operation-id <id> [--json]
@@ -149,6 +167,7 @@ public enum InstallerCLIParser {
         var pairingProject: String?
         var pairingRepository: String?
         var pairingRepositoryIdentity: String?
+        var compositionChoice: ManagedInstallerCompositionChoice?
         var positional: [String] = []
 
         var index = 0
@@ -222,6 +241,18 @@ public enum InstallerCLIParser {
                 if argument == "--pairing-project" { pairingProject = value }
                 else if argument == "--pairing-repository" { pairingRepository = value }
                 else { pairingRepositoryIdentity = value }
+            case "--composition":
+                guard compositionChoice == nil else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                index += 1
+                guard index < arguments.count,
+                      let value = ManagedInstallerCompositionChoice(
+                          rawValue: arguments[index]
+                      ) else {
+                    throw InstallerCLIParseError.invalidArguments
+                }
+                compositionChoice = value
             default:
                 guard !argument.hasPrefix("-") else {
                     throw InstallerCLIParseError.invalidArguments
@@ -409,6 +440,12 @@ public enum InstallerCLIParser {
         } else {
             pairingTarget = nil
         }
+        if compositionChoice != nil {
+            switch command {
+            case .deploymentPlan, .deploymentApply: break
+            default: throw InstallerCLIParseError.invalidArguments
+            }
+        }
 
         return InstallerCLIInvocation(
             command: command,
@@ -419,7 +456,8 @@ public enum InstallerCLIParser {
                 acceptInstallerUpdate: acceptInstallerUpdate,
                 reviewFingerprint: reviewFingerprint,
                 confirmedInstanceID: confirmedInstanceID,
-                pairingTarget: pairingTarget
+                pairingTarget: pairingTarget,
+                compositionChoice: compositionChoice ?? .forgeAndEngineeringPlatform
             )
         )
     }
@@ -1014,7 +1052,10 @@ public struct InstallerCLIWorkflow: Sendable {
             return Self.blocked("De gevraagde deployment bestaat niet in de actuele inventaris.")
         }
 
-        let sessionResult = await coordinator.prepareVerifiedCompositionSession(for: deployment)
+        let sessionResult = await coordinator.prepareVerifiedCompositionSession(
+            for: deployment,
+            componentIdentities: options.compositionChoice.componentIdentities
+        )
         guard state.recordSessionPreparation(sessionResult),
               let session = state.acceptedSessionPlan,
               state.advance() else {
@@ -1093,7 +1134,10 @@ public struct InstallerCLIWorkflow: Sendable {
             return Self.blocked("De gevraagde deployment bestaat niet in de actuele inventaris.")
         }
 
-        let sessionResult = await coordinator.prepareVerifiedCompositionSession(for: deployment)
+        let sessionResult = await coordinator.prepareVerifiedCompositionSession(
+            for: deployment,
+            componentIdentities: options.compositionChoice.componentIdentities
+        )
         guard state.recordSessionPreparation(sessionResult),
               let session = state.acceptedSessionPlan,
               state.advance() else {

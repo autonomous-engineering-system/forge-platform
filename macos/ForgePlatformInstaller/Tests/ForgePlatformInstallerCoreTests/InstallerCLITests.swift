@@ -16,6 +16,40 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertTrue(invocation.options.acceptInstallerUpdate)
     }
 
+    func testParserBindsOnlyExactCompositionChoiceToPlanAndApply() throws {
+        let expectations: [(String, ManagedInstallerCompositionChoice, [String])] = [
+            ("forge", .forge, ["forge-runtime"]),
+            ("ep", .engineeringPlatform, ["engineering-platform-server"]),
+            ("forge-ep", .forgeAndEngineeringPlatform,
+             ["engineering-platform-server", "forge-runtime"]),
+        ]
+        for (raw, choice, components) in expectations {
+            for verb in ["plan", "apply"] {
+                let invocation = try InstallerCLIParser.parse([
+                    "deployment", verb, "--deployment", "new", "--composition", raw,
+                ])
+                XCTAssertEqual(invocation.options.compositionChoice, choice)
+                XCTAssertEqual(invocation.options.compositionChoice.componentIdentities, components)
+            }
+        }
+        XCTAssertEqual(
+            try InstallerCLIParser.parse([
+                "deployment", "plan", "--deployment", "new",
+            ]).options.compositionChoice, .forgeAndEngineeringPlatform
+        )
+        for arguments in [
+            ["deployment", "plan", "--deployment", "new", "--composition", "Forge"],
+            ["deployment", "plan", "--deployment", "new", "--composition"],
+            ["deployment", "plan", "--deployment", "new", "--composition", "forge",
+             "--composition", "ep"],
+            ["status", "--composition", "forge"],
+            ["deployment", "remove", "--deployment", "existing", "--operation-id", "one",
+             "--composition", "forge"],
+        ] {
+            XCTAssertThrowsError(try InstallerCLIParser.parse(arguments))
+        }
+    }
+
     func testParserAcceptsOnlyCompleteCanonicalNonSecretPairingScope() throws {
         let invocation = try InstallerCLIParser.parse([
             "deployment", "apply", "--deployment", "new",
@@ -641,6 +675,27 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertEqual(result.exitCode, .blocked)
         let executionCalls = await coordinator.executionCallCount()
         XCTAssertEqual(executionCalls, 0)
+    }
+
+    func testSingleProductCLIChoiceFailsClosedWhenCoordinatorHasOnlyPairSession() async throws {
+        for choice in [ManagedInstallerCompositionChoice.forge, .engineeringPlatform] {
+            let coordinator = CLIWizardCoordinator(session: try session())
+            let workflow = InstallerCLIWorkflow(
+                currentRelease: try release("1.2.3"), coordinator: coordinator
+            )
+            let options = InstallerCLIOptions(
+                nonInteractive: true, assumeYes: true, compositionChoice: choice
+            )
+            let plan = await workflow.planDeployment("new", options: options)
+            XCTAssertEqual(plan.exitCode, .blocked)
+            let apply = await workflow.applyDeployment(
+                "new", options: options,
+                confirm: { _ in XCTFail("No review may be confirmed"); return true }
+            )
+            XCTAssertEqual(apply.exitCode, .blocked)
+            let executions = await coordinator.executionCallCount()
+            XCTAssertEqual(executions, 0)
+        }
     }
 
     func testProviderBoundDeploymentPlanDoesNotInstallOrAuthenticateBeforeReview() async throws {
