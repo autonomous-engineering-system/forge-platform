@@ -40,11 +40,13 @@ public struct FileManagedInstallerHelperUpgradeJournalStore: Sendable {
         -> Result<ManagedInstallerHelperUpgradeJournalRecord,
                   ManagedInstallerHelperUpgradeJournalFailure> {
         transact { root in
-            let proposed = ManagedInstallerHelperUpgradeJournalRecord(operation: operation)
             if let existing = try readRecord(root) {
-                guard existing == proposed else { throw Failure.conflict }
+                // A retry after a crash resumes the same durable phase.
+                // Replacing it with PREPARED would regress completed evidence.
+                guard existing.operation.matches(operation) else { throw Failure.conflict }
                 return existing
             }
+            let proposed = ManagedInstallerHelperUpgradeJournalRecord(operation: operation)
             try write(try encode(proposed), in: root, replace: false)
             return proposed
         }
