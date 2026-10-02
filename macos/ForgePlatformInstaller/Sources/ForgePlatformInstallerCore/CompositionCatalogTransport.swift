@@ -69,7 +69,7 @@ final class HTTPSCompositionCatalogTransport: NSObject, CompositionCatalogFetchi
         at endpoint: URL,
         for feed: VerifiedCompositionCatalogFeedLocator
     ) async throws -> Data {
-        let delegate = CompositionCatalogRedirectDelegate()
+        let delegate = CompositionCatalogRedirectDelegate(origin: endpoint, timeout: timeout)
         let session = URLSession(
             configuration: makeEphemeralConfiguration(),
             delegate: delegate,
@@ -83,7 +83,7 @@ final class HTTPSCompositionCatalogTransport: NSObject, CompositionCatalogFetchi
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200,
               let finalURL = httpResponse.url,
-              finalURL.absoluteString == feed.url,
+              delegate.acceptsFinalURL(finalURL),
               CompositionCatalogTransportEndpoint.contentLength(
                 from: httpResponse,
                 isAtMost: CompositionCatalogFeedReadback.maximumCatalogBytes
@@ -248,7 +248,7 @@ final class HTTPSCompositionDocumentTransport: NSObject, CompositionDocumentFetc
             return .failure(.unavailable)
         }
         do {
-            let delegate = CompositionCatalogRedirectDelegate()
+            let delegate = CompositionCatalogRedirectDelegate(origin: endpoint, timeout: timeout)
             let session = URLSession(
                 configuration: makeEphemeralConfiguration(),
                 delegate: delegate,
@@ -260,7 +260,7 @@ final class HTTPSCompositionDocumentTransport: NSObject, CompositionDocumentFetc
             )
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200,
-                  httpResponse.url?.absoluteString == locator.url,
+                  httpResponse.url.map(delegate.acceptsFinalURL) == true,
                   CompositionCatalogTransportEndpoint.contentLength(
                     from: httpResponse,
                     isAtMost: CompositionCatalogFeedReadback.maximumCatalogBytes
@@ -316,10 +316,35 @@ final class HTTPSCompositionDocumentTransport: NSObject, CompositionDocumentFetc
 }
 
 
-/// Any redirect is a different network authority/URL from the exact sealed
-/// locator. System TLS handling remains enabled, but every credential-bearing
-/// authentication challenge is cancelled.
+/// A GitHub release-asset locator is signed or digest-pinned before reaching
+/// this transport. GitHub serves those locators through a bounded CDN redirect.
+/// All other locators retain exact-URL/no-redirect semantics. No prior request
+/// header or credential is forwarded to the CDN, and the returned bytes cross
+/// the existing signature or digest verifier before gaining authority.
 private final class CompositionCatalogRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private static let assetHosts: Set<String> = [
+        "release-assets.githubusercontent.com",
+        "github-releases.githubusercontent.com",
+        "objects.githubusercontent.com",
+    ]
+    private let origin: URL
+    private let timeout: TimeInterval
+    private let lock = NSLock()
+    private var redirectCount = 0
+    private var finalURL: String?
+
+    init(origin: URL, timeout: TimeInterval) {
+        self.origin = origin
+        self.timeout = timeout
+    }
+
+    func acceptsFinalURL(_ url: URL) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if redirectCount == 0 { return url.absoluteString == origin.absoluteString }
+        return finalURL == url.absoluteString && Self.isAllowedCDN(url)
+    }
+
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -327,7 +352,27 @@ private final class CompositionCatalogRedirectDelegate: NSObject, URLSessionTask
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        completionHandler(nil)
+        lock.lock()
+        let expectedHop = finalURL ?? origin.absoluteString
+        lock.unlock()
+        guard response.url?.absoluteString == expectedHop,
+              response.statusCode == 302 || response.statusCode == 307,
+              Self.isGitHubReleaseAsset(origin),
+              let destination = request.url,
+              Self.isAllowedCDN(destination) else {
+            completionHandler(nil)
+            return
+        }
+        lock.lock()
+        guard redirectCount < 3 else {
+            lock.unlock()
+            completionHandler(nil)
+            return
+        }
+        redirectCount += 1
+        finalURL = destination.absoluteString
+        lock.unlock()
+        completionHandler(CompositionCatalogTransportEndpoint.request(for: destination, timeout: timeout))
     }
 
     func urlSession(
@@ -341,6 +386,19 @@ private final class CompositionCatalogRedirectDelegate: NSObject, URLSessionTask
         } else {
             completionHandler(.cancelAuthenticationChallenge, nil)
         }
+    }
+
+    private static func isGitHubReleaseAsset(_ url: URL) -> Bool {
+        url.scheme == "https" && url.host == "github.com"
+            && url.user == nil && url.password == nil
+            && url.port == nil && url.query == nil && url.fragment == nil
+            && url.path.hasPrefix("/autonomous-engineering-system/forge-platform/releases/download/")
+    }
+
+    private static func isAllowedCDN(_ url: URL) -> Bool {
+        url.scheme == "https" && assetHosts.contains(url.host?.lowercased() ?? "")
+            && url.user == nil && url.password == nil
+            && (url.port == nil || url.port == 443)
     }
 }
 

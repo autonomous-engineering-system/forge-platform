@@ -32,6 +32,7 @@ final class CompositionCatalogTransportTests: XCTestCase {
         let feed = try makeFeed()
         let cases: [CatalogTransportURLProtocolScript] = [
             .redirect(statusCode: 302, destination: "https://catalog.example.test/other.json"),
+            .redirect(statusCode: 302, destination: "https://release-assets.githubusercontent.com/asset"),
             .response(
                 statusCode: 200,
                 headers: [:],
@@ -62,6 +63,43 @@ final class CompositionCatalogTransportTests: XCTestCase {
         }
     }
 
+    func testGitHubReleaseCatalogFollowsOnlyBoundedCDNRedirectWithoutCredentials() async throws {
+        let source = "https://github.com/autonomous-engineering-system/forge-platform/releases/download/forge-platform-composition-catalog-stable/ForgePlatformInstallerCompositionCatalog.json"
+        let cdn = "https://release-assets.githubusercontent.com/asset?token=opaque"
+        let body = Data("{\"catalog\":true}".utf8)
+        let feed = try VerifiedCompositionCatalogFeedLocator(url: source)
+        CatalogTransportURLProtocol.configure([
+            source: .redirect(statusCode: 302, destination: cdn),
+            cdn: .response(statusCode: 200, headers: [:], body: body),
+        ])
+        let transport = HTTPSCompositionCatalogTransport(
+            timeout: 5,
+            protocolClassesForTesting: [CatalogTransportURLProtocol.self]
+        )
+        guard case .success(let readback) = await transport.fetchCatalog(at: feed) else {
+            return XCTFail("GitHub's exact release asset must be readable through its bounded CDN")
+        }
+        XCTAssertEqual(readback.feed, feed)
+        XCTAssertEqual(readback.bytes, body)
+        let observations = CatalogTransportURLProtocol.observations()
+        XCTAssertEqual(observations.map(\.url), [source, cdn])
+        XCTAssertTrue(observations.allSatisfy { $0.authorization == nil && $0.cookie == nil })
+    }
+
+    func testGitHubReleaseCatalogRejectsRedirectToUntrustedHost() async throws {
+        let source = "https://github.com/autonomous-engineering-system/forge-platform/releases/download/forge-platform-composition-catalog-stable/ForgePlatformInstallerCompositionCatalog.json"
+        let feed = try VerifiedCompositionCatalogFeedLocator(url: source)
+        CatalogTransportURLProtocol.configure([
+            source: .redirect(statusCode: 302, destination: "https://attacker.example.test/catalog.json"),
+        ])
+        let transport = HTTPSCompositionCatalogTransport(
+            timeout: 5,
+            protocolClassesForTesting: [CatalogTransportURLProtocol.self]
+        )
+        let result = await transport.fetchCatalog(at: feed)
+        XCTAssertEqual(result, .failure(.unavailable))
+    }
+
 
     func testDocumentTransportReadsOnlyExactDigestPinnedLocatorWithoutCredentials() async throws {
         let body = Data("{\"manifest\":true}".utf8)
@@ -88,6 +126,31 @@ final class CompositionCatalogTransportTests: XCTestCase {
         XCTAssertNil(observation.authorization)
         XCTAssertNil(observation.cookie)
         XCTAssertEqual(observation.cacheControl, "no-cache")
+    }
+
+    func testGitHubReleaseDocumentFollowsCDNRedirectAndPreservesSignedLocator() async throws {
+        let source = "https://github.com/autonomous-engineering-system/forge-platform/releases/download/forge-platform-composition-catalog-v1/ForgePlatformComposition-1-2.json"
+        let cdn = "https://release-assets.githubusercontent.com/manifest?token=opaque"
+        let body = Data("{\"manifest\":true}".utf8)
+        let locator = VerifiedCompositionCatalogDocumentLocator(
+            url: source,
+            sha256: "sha256:" + String(repeating: "a", count: 64)
+        )
+        CatalogTransportURLProtocol.configure([
+            source: .redirect(statusCode: 302, destination: cdn),
+            cdn: .response(statusCode: 200, headers: [:], body: body),
+        ])
+        let transport = HTTPSCompositionDocumentTransport(
+            timeout: 5,
+            protocolClassesForTesting: [CatalogTransportURLProtocol.self]
+        )
+        guard case .success(let result) = await transport.fetchDocument(at: locator) else {
+            return XCTFail("Digest-pinned GitHub document should reach the bounded CDN")
+        }
+        XCTAssertEqual(result, body)
+        let observations = CatalogTransportURLProtocol.observations()
+        XCTAssertEqual(observations.map(\.url), [source, cdn])
+        XCTAssertTrue(observations.allSatisfy { $0.authorization == nil && $0.cookie == nil })
     }
 
     func testDocumentTransportRejectsRedirectMismatchFailureAndOversize() async throws {
