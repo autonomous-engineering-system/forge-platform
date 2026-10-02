@@ -576,14 +576,19 @@ final class InstallerWizardViewModel: ObservableObject {
 
     /// The coordinator must return one typed, immutable composition session
     /// after an exact managed deployment has been selected.
-    func prepareVerifiedCompositionSession() {
+    func prepareVerifiedCompositionSession(
+        componentIdentities: [String] = ManagedInstallerCompositionChoice
+            .forgeAndEngineeringPlatform.componentIdentities
+    ) {
         guard case .selected(let deployment, _) = state.deploymentSelection,
               state.beginSessionPreparation() else {
             return
         }
         let coordinator = coordinator
         Task { @MainActor [weak self] in
-            let result = await coordinator.prepareVerifiedCompositionSession(for: deployment)
+            let result = await coordinator.prepareVerifiedCompositionSession(
+                for: deployment, componentIdentities: componentIdentities
+            )
             _ = self?.state.recordSessionPreparation(result)
         }
     }
@@ -1456,6 +1461,20 @@ private struct ManagedDeploymentSelectionScreen: View {
 
 private struct CompositionSelectionScreen: View {
     @ObservedObject var viewModel: InstallerWizardViewModel
+    @State private var compositionChoice: ManagedInstallerCompositionChoice =
+        .forgeAndEngineeringPlatform
+
+    private var choicePicker: some View {
+        Picker("Producten", selection: $compositionChoice) {
+            Text("Forge + EP").tag(
+                ManagedInstallerCompositionChoice.forgeAndEngineeringPlatform
+            )
+            Text("Alleen Forge").tag(ManagedInstallerCompositionChoice.forge)
+            Text("Alleen EP").tag(
+                ManagedInstallerCompositionChoice.engineeringPlatform
+            )
+        }
+    }
 
     var body: some View {
         ScreenHeader(
@@ -1466,12 +1485,15 @@ private struct CompositionSelectionScreen: View {
         VStack(alignment: .leading, spacing: 18) {
             switch viewModel.state.sessionPreparation {
             case .pending:
+                choicePicker
                 Label(
                     "Nog geen geverifieerde compositiesessie geselecteerd.",
                     systemImage: "square.stack.3d.up.slash"
                 )
                 Button("Laad geverifieerde compositie") {
-                    viewModel.prepareVerifiedCompositionSession()
+                    viewModel.prepareVerifiedCompositionSession(
+                        componentIdentities: compositionChoice.componentIdentities
+                    )
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -1498,9 +1520,12 @@ private struct CompositionSelectionScreen: View {
                 .foregroundStyle(.green)
 
             case .unavailable(let failure):
+                choicePicker
                 FailureCallout(reason: failure.userFacingMessage)
                 Button("Opnieuw proberen") {
-                    viewModel.prepareVerifiedCompositionSession()
+                    viewModel.prepareVerifiedCompositionSession(
+                        componentIdentities: compositionChoice.componentIdentities
+                    )
                 }
             }
         }
