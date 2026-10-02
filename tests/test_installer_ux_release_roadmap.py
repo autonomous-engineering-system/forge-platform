@@ -113,7 +113,7 @@ class InstallerUXReleaseRoadmapTests(unittest.TestCase):
 
     def test_complete_scenario_inventory_and_roadmap_link(self):
         scenarios = self.graph["required_scenarios"]
-        self.assertEqual([s["id"] for s in scenarios], [f"IUR-T{i:02d}" for i in range(1, 21)])
+        self.assertEqual([s["id"] for s in scenarios], [f"IUR-T{i:02d}" for i in range(1, 22)])
         self.assertTrue(all(s["status"] == "PLANNED" and s["requirement"] for s in scenarios))
         self.assertTrue((ROOT / self.graph["roadmap"]).is_file())
         parent = (ROOT / "docs/roadmap/README.md").read_text()
