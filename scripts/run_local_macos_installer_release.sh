@@ -88,13 +88,6 @@ read_forge_239_update_resources(worker)
 PY
 test -x "$APP/Contents/MacOS/ForgePlatformInstaller" || fail unsigned-binary-missing
 test -x "$APP/Contents/MacOS/forge-platform-installer" || fail unsigned-binary-missing
-codesign --force --options runtime --timestamp \
-  --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP/Contents/MacOS/ForgePlatformInstaller"
-# The helper's exact Developer ID caller requirement admits the sealed bundle
-# identifier. Give the separately signed CLI that same identifier before the
-# app is sealed; codesign otherwise defaults to the CLI executable's basename.
-codesign --force --options runtime --timestamp --identifier "$BUNDLE_IDENTIFIER" \
-  --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP/Contents/MacOS/forge-platform-installer"
 HELPER="$APP/Contents/Resources/forge-platform-installer-helper"
 test -x "$HELPER" || fail unsigned-helper-missing
 test -f "$APP/Contents/Resources/forge-platform-product-worker.pyz" ||
@@ -104,12 +97,20 @@ test -f "$APP/Contents/Library/LaunchDaemons/com.autonomous-engineering-system.f
 codesign --force --options runtime --timestamp \
   --identifier "com.autonomous-engineering-system.forge-platform-installer.helper" \
   --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$HELPER"
+# Sign nested code before sealing its containing app. Signing a sibling after
+# the GUI can invalidate the GUI's nested-code verification on macOS.
+# The helper admits the exact sealed app identifier, so bind the CLI to it.
+codesign --force --options runtime --timestamp --identifier "$BUNDLE_IDENTIFIER" \
+  --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP/Contents/MacOS/forge-platform-installer"
+codesign --force --options runtime --timestamp \
+  --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP/Contents/MacOS/ForgePlatformInstaller"
+codesign --force --options runtime --timestamp \
+  --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP"
 HELPER_REQUIREMENT="anchor apple generic and certificate leaf[subject.OU] = \"$TEAM_IDENTIFIER\" and identifier \"com.autonomous-engineering-system.forge-platform-installer.helper\""
 codesign --verify --strict "-R=$HELPER_REQUIREMENT" "$HELPER" || fail signed-helper-identity-invalid
 CALLER_REQUIREMENT="anchor apple generic and identifier \"$BUNDLE_IDENTIFIER\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$TEAM_IDENTIFIER\""
 codesign --verify --strict "-R=$CALLER_REQUIREMENT" "$APP/Contents/MacOS/ForgePlatformInstaller" || fail signed-gui-caller-identity-invalid
 codesign --verify --strict "-R=$CALLER_REQUIREMENT" "$APP/Contents/MacOS/forge-platform-installer" || fail signed-cli-caller-identity-invalid
-codesign --force --options runtime --timestamp   --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP"
 # codesign inherits the offline signer's restrictive umask for CodeResources.
 # The published app may later be installed root-owned; both sealed signature
 # manifests must remain readable to an ordinary user in that layout.

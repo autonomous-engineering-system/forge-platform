@@ -233,6 +233,20 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
                 signer.index('final-archive-cli-caller-identity-'),
             )
 
+    def test_local_signer_seals_app_after_all_nested_code(self) -> None:
+        signer = self.local_release
+        helper = signer.index('"$FORGE_PLATFORM_CODESIGN_IDENTITY" "$HELPER"')
+        cli = signer.index('"$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP/Contents/MacOS/forge-platform-installer"')
+        gui = signer.index('"$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP/Contents/MacOS/ForgePlatformInstaller"')
+        app = signer.index('"$FORGE_PLATFORM_CODESIGN_IDENTITY" "$APP"')
+        verified_gui = signer.index('signed-gui-caller-identity-invalid')
+        verified_cli = signer.index('signed-cli-caller-identity-invalid')
+        self.assertLess(helper, cli)
+        self.assertLess(cli, gui)
+        self.assertLess(gui, app)
+        self.assertLess(app, verified_gui)
+        self.assertLess(app, verified_cli)
+
 
 if __name__ == "__main__":
     unittest.main()
