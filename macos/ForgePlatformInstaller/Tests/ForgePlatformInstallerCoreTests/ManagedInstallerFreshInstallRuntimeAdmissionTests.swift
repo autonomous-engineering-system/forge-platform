@@ -392,6 +392,54 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         XCTAssertNil(ManagedInstallerReviewedProviderStageAdmission.whenReady(
             loader: nil, stager: ProviderStageReceiptStager(receipt: receipt)
         ))
+        XCTAssertNil(ManagedInstallerReviewedProviderStageAdmission.whenReady(
+            loader: ProviderStagePlanLoader(plan: fixture.plan), stager: nil
+        ))
+    }
+
+    func testReviewedProviderStageDiagnosticsDoNotAdvanceRejectedGates() async throws {
+        let requirement = try stagedProviderRequirement()
+        let fixture = try FreshRuntimeFixture(providers: [requirement])
+        let admitted = ManagedInstallerHelperExecutionMaterial(
+            material: fixture.material,
+            currentRelease: fixture.plan.reviewedOperation.currentInstallerRelease
+        )
+        let unavailableMaterial = ManagedInstallerHelperFreshProviderStager(
+            material: FreshSingleRouteMaterial(
+                admitted: admitted, failSecondRead: false, failFirstRead: true
+            ),
+            currency: FreshSingleRouteCurrency(release: admitted.currentRelease, fail: false),
+            runtimeFactory: { _, _ in XCTFail("Initial material must precede assembly"); return nil }
+        )
+        let materialResult = await unavailableMaterial.stage(stablePlan: fixture.plan)
+        XCTAssertNil(materialResult)
+
+        let unavailableAssembly = ManagedInstallerHelperFreshProviderStager(
+            material: FreshSingleRouteMaterial(admitted: admitted, failSecondRead: false),
+            currency: FreshSingleRouteCurrency(release: admitted.currentRelease, fail: false),
+            runtimeFactory: { _, _ in nil }
+        )
+        let assemblyResult = await unavailableAssembly.stage(stablePlan: fixture.plan)
+        XCTAssertNil(assemblyResult)
+
+        let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: fixture.plan)
+        let receipt = try ManagedInstallerReviewedProviderStageReceipt(
+            operationID: fixture.plan.activationPlan.operationID,
+            stablePlanFingerprint: fixture.plan.fingerprint,
+            providerTargetIDs: [requirement.id]
+        )
+        let rejectedLoad = ManagedInstallerReviewedProviderStageAdmission(
+            loader: ProviderStageRejectingLoader(),
+            stager: ProviderStageReceiptStager(receipt: receipt)
+        )
+        let loadResult = await rejectedLoad.stage(canonicalIntent: intent.canonicalJSONData())
+        XCTAssertNil(loadResult)
+        let rejectedStage = ManagedInstallerReviewedProviderStageAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.plan),
+            stager: ProviderStageUnavailableStager()
+        )
+        let stageResult = await rejectedStage.stage(canonicalIntent: intent.canonicalJSONData())
+        XCTAssertNil(stageResult)
     }
 
     func testReviewedProviderReadbackRechecksExactAccountContextAndReceipt() async throws {
@@ -1532,17 +1580,21 @@ private struct FreshPriorSingleRouteFixture: Sendable {
 private actor FreshSingleRouteMaterial: ManagedInstallerHelperExecutionMaterialAdmitting {
     let admitted: ManagedInstallerHelperExecutionMaterial
     let failSecondRead: Bool
+    let failFirstRead: Bool
     var reads = 0
 
-    init(admitted: ManagedInstallerHelperExecutionMaterial, failSecondRead: Bool) {
+    init(admitted: ManagedInstallerHelperExecutionMaterial, failSecondRead: Bool,
+         failFirstRead: Bool = false) {
         self.admitted = admitted
         self.failSecondRead = failSecondRead
+        self.failFirstRead = failFirstRead
     }
 
     func admit(deployment: ManagedDeploymentTarget, componentIdentities: [String]) async
         -> ManagedInstallerHelperExecutionMaterial? {
         reads += 1
-        return failSecondRead && reads > 1 ? nil : admitted
+        return (failFirstRead && reads == 1) || (failSecondRead && reads > 1)
+            ? nil : admitted
     }
 }
 
@@ -1905,6 +1957,22 @@ private struct ProviderStagePlanLoader: ManagedInstallerHelperOwnedStablePlanLoa
         -> ManagedInstallerStablePlan {
         _ = intent
         return plan
+    }
+}
+
+private struct ProviderStageRejectingLoader: ManagedInstallerHelperOwnedStablePlanLoading {
+    func loadStablePlan(for intent: ManagedInstallerReviewedExecutionIntent) async throws
+        -> ManagedInstallerStablePlan {
+        _ = intent
+        throw ManagedInstallerReleasedRouteXPCFailure.rejected
+    }
+}
+
+private struct ProviderStageUnavailableStager: ManagedInstallerStablePlanProviderStaging {
+    func stage(stablePlan: ManagedInstallerStablePlan) async
+        -> ManagedInstallerReviewedProviderStageReceipt? {
+        _ = stablePlan
+        return nil
     }
 }
 
