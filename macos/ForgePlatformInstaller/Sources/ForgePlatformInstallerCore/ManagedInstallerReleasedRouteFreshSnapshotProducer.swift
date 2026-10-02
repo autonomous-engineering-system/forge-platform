@@ -181,7 +181,7 @@ struct ManagedInstallerReleasedRouteFreshSnapshotProducer:
             ])
         }
         let value: StrictJSONResourceValue = .object([
-            "schema": .string("forge-platform.released-route-fresh-snapshot-evidence/v1"),
+            "schema": .string("forge-platform.released-route-fresh-snapshot-evidence/v2"),
             "inventory": .string(inventory.evidenceReference),
             "session": .string(material.session.sessionID),
             "manifest": .string(material.session.manifestSHA256),
@@ -195,7 +195,11 @@ struct ManagedInstallerReleasedRouteFreshSnapshotProducer:
             "products": .array(products),
             "macos": .string(facts.macOSVersion.description),
             "architecture": .string(facts.hardwareArchitecture),
-            "disk": .integer(String(facts.availableDiskBytes)),
+            // The signed requirement is checked against fresh disk bytes on
+            // every publication. Exact free bytes fluctuate even during a
+            // read-only review, so bind the passed gate instead of treating
+            // harmless capacity changes as product or inventory drift.
+            "disk_gate": .boolean(true),
             "memory": .integer(String(facts.memoryBytes)),
         ])
         let digest = SHA256.hash(data: StrictSignedJSON.canonicalPayload(from: value))
