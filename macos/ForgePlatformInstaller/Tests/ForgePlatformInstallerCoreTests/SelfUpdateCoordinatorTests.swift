@@ -1248,6 +1248,97 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(preparerCalls, 1)
     }
 
+    func testSelectedSingleProductSessionCachesOnlyExactComponentSet() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0", sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256
+        )
+        let selected = ["engineering-platform-server"]
+        let plan = try makeSessionPlan(for: release, componentIdentities: selected)
+        let preparer = SessionPreparerSpy(result: .prepared(plan))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
+        )
+
+        _ = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let first = await coordinator.prepareVerifiedCompositionSession(
+            for: sessionDeployment(), componentIdentities: selected
+        )
+        let repeated = await coordinator.prepareVerifiedCompositionSession(
+            for: sessionDeployment(), componentIdentities: selected
+        )
+        let broadened = await coordinator.prepareVerifiedCompositionSession(
+            for: sessionDeployment(),
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+        XCTAssertEqual(first, .prepared(plan))
+        XCTAssertEqual(repeated, .prepared(plan))
+        XCTAssertEqual(broadened, .unavailable(.selectionUnavailable))
+        let callCount = await preparer.callCount()
+        let selections = await preparer.selections()
+        XCTAssertEqual(callCount, 1)
+        XCTAssertEqual(selections, [selected])
+    }
+
+    func testLegacyWizardCoordinatorCannotBroadenSingleProductSelection() async throws {
+        let legacy: any InstallerWizardCoordinator = UnavailableInstallerWizardCoordinator()
+        let result = await legacy.prepareVerifiedCompositionSession(
+            for: sessionDeployment(),
+            componentIdentities: ["forge-runtime"]
+        )
+        XCTAssertEqual(result, .unavailable(.selectionUnavailable))
+    }
+
+    func testSelectedSessionRejectsWrongOrMalformedComponentSetBeforeCaching() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0", sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256
+        )
+        let plan = try makeSessionPlan(for: release)
+        let preparer = SessionPreparerSpy(result: .prepared(plan))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
+        )
+
+        _ = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        for malformed in [
+            [], ["workspace"], ["forge-runtime", "forge-runtime"],
+            ["forge-runtime", "engineering-platform-server"],
+        ] {
+            let result = await coordinator.prepareVerifiedCompositionSession(
+                for: sessionDeployment(), componentIdentities: malformed
+            )
+            XCTAssertEqual(result, .unavailable(.selectionUnavailable))
+        }
+        let callsBeforeValidChoice = await preparer.callCount()
+        XCTAssertEqual(callsBeforeValidChoice, 0)
+        let wrong = await coordinator.prepareVerifiedCompositionSession(
+            for: sessionDeployment(), componentIdentities: ["forge-runtime"]
+        )
+        XCTAssertEqual(wrong, .unavailable(.selectionUnavailable))
+        let corrected = await coordinator.prepareVerifiedCompositionSession(
+            for: sessionDeployment(),
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+        XCTAssertEqual(corrected, .prepared(plan))
+        let selections = await preparer.selections()
+        XCTAssertEqual(selections, [
+            ["forge-runtime"], ["engineering-platform-server", "forge-runtime"],
+        ])
+    }
+
     func testSessionPlanWithMismatchedCurrentInstallerEvidenceFailsClosed() async throws {
         let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
         let current = try makeCurrentIdentity(
@@ -2226,7 +2317,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         for release: VerifiedInstallerReleaseRecord,
         installerProvenanceSHA256: String? = nil,
         installerReleaseTrustConfigurationSHA256: String? = nil,
-        compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator? = nil
+        compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator? = nil,
+        componentIdentities: [String] = ["engineering-platform-server", "forge-runtime"]
     ) throws -> VerifiedCompositionSessionPlan {
         try VerifiedCompositionSessionPlan(
             sessionID: "session-1",
@@ -2247,7 +2339,9 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             ),
             componentSelectionSequence: 40,
             managedPythonRuntime: managedPythonTestRuntime,
-            productVirtualEnvironments: managedPythonTestVenvs,
+            productVirtualEnvironments: managedPythonTestVenvs.filter {
+                componentIdentities.contains($0.componentIdentity)
+            },
             providerRequirements: [
                 ProviderRequirement(
                     provider: .codex,
@@ -2496,6 +2590,7 @@ private actor FeedSpy: SignedInstallerReleaseFeedVerifying {
 private actor SessionPreparerSpy: VerifiedCompositionSessionPreparing {
     private let result: InstallerSessionPreparationResult
     private var receivedContexts: [CurrentVerifiedInstallerCompositionContext] = []
+    private var receivedSelections: [[String]] = []
 
     init(result: InstallerSessionPreparationResult) {
         self.result = result
@@ -2505,8 +2600,20 @@ private actor SessionPreparerSpy: VerifiedCompositionSessionPreparing {
         for currentInstaller: CurrentVerifiedInstallerCompositionContext,
         deployment: ManagedDeploymentTarget
     ) async -> InstallerSessionPreparationResult {
+        await prepareVerifiedCompositionSession(
+            for: currentInstaller, deployment: deployment,
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+    }
+
+    func prepareVerifiedCompositionSession(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget,
+        componentIdentities: [String]
+    ) async -> InstallerSessionPreparationResult {
         _ = deployment
         receivedContexts.append(currentInstaller)
+        receivedSelections.append(componentIdentities)
         return result
     }
 
@@ -2516,6 +2623,10 @@ private actor SessionPreparerSpy: VerifiedCompositionSessionPreparing {
 
     func contexts() -> [CurrentVerifiedInstallerCompositionContext] {
         receivedContexts
+    }
+
+    func selections() -> [[String]] {
+        receivedSelections
     }
 }
 

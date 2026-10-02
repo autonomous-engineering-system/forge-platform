@@ -37,9 +37,22 @@ struct ManagedVerifiedCompositionSessionPreparer: VerifiedCompositionSessionPrep
         for currentInstaller: CurrentVerifiedInstallerCompositionContext,
         deployment: ManagedDeploymentTarget
     ) async -> InstallerSessionPreparationResult {
+        await prepareVerifiedCompositionSession(
+            for: currentInstaller,
+            deployment: deployment,
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+    }
+
+    func prepareVerifiedCompositionSession(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget,
+        componentIdentities: [String]
+    ) async -> InstallerSessionPreparationResult {
         switch await prepareVerifiedCompositionMaterial(
             for: currentInstaller,
-            deployment: deployment
+            deployment: deployment,
+            componentIdentities: componentIdentities
         ) {
         case .prepared(let material): return .prepared(material.session)
         case .unavailable(let failure): return .unavailable(failure)

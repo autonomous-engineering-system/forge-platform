@@ -1749,6 +1749,10 @@ public protocol InstallerWizardCoordinator: Sendable {
     func prepareVerifiedCompositionSession(
         for deployment: ManagedDeploymentTarget
     ) async -> InstallerSessionPreparationResult
+    func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget,
+        componentIdentities: [String]
+    ) async -> InstallerSessionPreparationResult
     /// Read-only host/tool preflight for the exact accepted session/deployment.
     func prepareHostPreflight(
         session: VerifiedCompositionSessionPlan,
@@ -1797,6 +1801,18 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    /// A legacy coordinator may serve only its original two-product route.
+    /// It cannot treat a narrower caller choice as permission to install both.
+    func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget,
+        componentIdentities: [String]
+    ) async -> InstallerSessionPreparationResult {
+        guard componentIdentities == ["engineering-platform-server", "forge-runtime"] else {
+            return .unavailable(.selectionUnavailable)
+        }
+        return await prepareVerifiedCompositionSession(for: deployment)
+    }
+
     func registerReviewedEPProvider(
         _ operation: ReviewedManagedDeploymentOperation,
         providerTargetID: ProviderTargetID

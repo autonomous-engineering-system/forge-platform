@@ -71,6 +71,28 @@ public protocol VerifiedCompositionSessionPreparing: Sendable {
         for currentInstaller: CurrentVerifiedInstallerCompositionContext,
         deployment: ManagedDeploymentTarget
     ) async -> InstallerSessionPreparationResult
+    func prepareVerifiedCompositionSession(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget,
+        componentIdentities: [String]
+    ) async -> InstallerSessionPreparationResult
+}
+
+public extension VerifiedCompositionSessionPreparing {
+    /// Older collaborators may serve only the original two-product route.
+    /// A requested single-product selection must never silently become both.
+    func prepareVerifiedCompositionSession(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext,
+        deployment: ManagedDeploymentTarget,
+        componentIdentities: [String]
+    ) async -> InstallerSessionPreparationResult {
+        guard componentIdentities == ["engineering-platform-server", "forge-runtime"] else {
+            return .unavailable(.selectionUnavailable)
+        }
+        return await prepareVerifiedCompositionSession(
+            for: currentInstaller, deployment: deployment
+        )
+    }
 }
 
 /// Default until a later increment adds a reviewed sealed catalog trust policy

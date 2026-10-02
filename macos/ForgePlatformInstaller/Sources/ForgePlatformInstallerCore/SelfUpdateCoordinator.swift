@@ -571,6 +571,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     private var currentVerifiedReleaseRecord: VerifiedInstallerReleaseRecord?
     private var preparedCompositionSession: VerifiedCompositionSessionPlan?
     private var preparedCompositionSessionTarget: ManagedDeploymentTarget?
+    private var preparedCompositionSessionComponents: [String]?
     /// A selector may perform independent verification asynchronously.  Admit
     /// only one request for a current release generation; a second request
     /// cannot create a competing catalog/index/manifest decision while the
@@ -1338,11 +1339,30 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     public func prepareVerifiedCompositionSession(
         for deployment: ManagedDeploymentTarget
     ) async -> InstallerSessionPreparationResult {
+        await prepareVerifiedCompositionSession(
+            for: deployment,
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+    }
+
+    public func prepareVerifiedCompositionSession(
+        for deployment: ManagedDeploymentTarget,
+        componentIdentities: [String]
+    ) async -> InstallerSessionPreparationResult {
+        guard !componentIdentities.isEmpty,
+              componentIdentities == componentIdentities.sorted(),
+              Set(componentIdentities).count == componentIdentities.count,
+              Set(componentIdentities).isSubset(of: Set([
+                  "engineering-platform-server", "forge-runtime",
+              ])) else {
+            return .unavailable(.selectionUnavailable)
+        }
         guard let currentVerifiedReleaseRecord else {
             return .unavailable(.selectionUnavailable)
         }
         if let preparedCompositionSession {
-            guard preparedCompositionSessionTarget == deployment else {
+            guard preparedCompositionSessionTarget == deployment,
+                  preparedCompositionSessionComponents == componentIdentities else {
                 return .unavailable(.selectionUnavailable)
             }
             return .prepared(preparedCompositionSession)
@@ -1356,7 +1376,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         inFlightCompositionSessionGeneration = generation
         let result = await compositionSessionPreparer.prepareVerifiedCompositionSession(
             for: context,
-            deployment: deployment
+            deployment: deployment,
+            componentIdentities: componentIdentities
         )
 
         // Actor reentrancy permits a concurrent update check or a second
@@ -1375,7 +1396,9 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         case .unavailable:
             return result
         case .prepared(let plan):
-            guard context.accepts(plan) else {
+            guard context.accepts(plan),
+                  plan.productVirtualEnvironments.map(\.componentIdentity).sorted()
+                    == componentIdentities else {
                 return .unavailable(.selectionUnavailable)
             }
             if let preparedCompositionSession {
@@ -1386,6 +1409,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             }
             self.preparedCompositionSession = plan
             self.preparedCompositionSessionTarget = deployment
+            self.preparedCompositionSessionComponents = componentIdentities
             return .prepared(plan)
         }
     }
@@ -1767,6 +1791,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         currentVerifiedReleaseRecord = nil
         preparedCompositionSession = nil
         preparedCompositionSessionTarget = nil
+        preparedCompositionSessionComponents = nil
         inFlightCompositionSessionGeneration = nil
         compositionSessionGeneration &+= 1
     }
