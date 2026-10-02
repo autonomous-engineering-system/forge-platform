@@ -141,11 +141,19 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
         // Terminal completion captures physical state inside its already-held
         // host lease. A separate XPC request cannot reconstruct that lease or
         // activation context and must not replay the stored host-state file.
+        // One gate covers both active Mach services. The process epoch is only
+        // an admission identity; durable upgrade authority is separate.
+        let mutationGate = ManagedInstallerHelperUpgradeAdmissionGate(
+            epoch: UInt64.random(in: 1...UInt64.max)
+        )
         let postToolBackend = UnavailableManagedInstallerPrivilegedHelperBackend()
         let productBackend = ManagedInstallerProductOperationXPCServiceHandler(
-            executor: ManagedInstallerPythonProductOperationExecutor()
+            executor: ManagedInstallerPythonProductOperationExecutor(),
+            mutationGate: mutationGate
         )
-        let releasedRouteBackend = FileManagedInstallerReleasedRouteXPCService()
+        let releasedRouteBackend = FileManagedInstallerReleasedRouteXPCService(
+            mutationGate: mutationGate
+        )
         let postToolListener = MacOSManagedInstallerPostToolObservationXPCListener(
             callerIdentity: postToolIdentity,
             serviceHandler: postToolBackend

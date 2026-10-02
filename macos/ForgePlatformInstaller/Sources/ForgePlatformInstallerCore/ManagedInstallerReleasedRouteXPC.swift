@@ -584,8 +584,13 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     private let epProviderRegistration: ManagedInstallerReviewedEPProviderRegistration?
     private let freshSnapshotProducer: (any ManagedInstallerReleasedRouteFreshSnapshotProducing)?
     private let requiresFreshSnapshotPublication: Bool
+    private let mutationGate: ManagedInstallerHelperUpgradeAdmissionGate
 
     public convenience override init() {
+        self.init(mutationGate: ManagedInstallerHelperUpgradeAdmissionGate(epoch: 1))
+    }
+
+    public convenience init(mutationGate: ManagedInstallerHelperUpgradeAdmissionGate) {
         let registration = ManagedInstallerHelperReviewedSelectionRegistration.production()
         self.init(
             rootDirectory: Self.productionRoot,
@@ -615,7 +620,8 @@ public final class FileManagedInstallerReleasedRouteXPCService:
                 ManagedInstallerReviewedProviderAuthenticationStart.production(loader: $0)
             },
             epProviderRegistration: ManagedInstallerReviewedEPProviderRegistration
-                .production(loader: registration)
+                .production(loader: registration),
+            mutationGate: mutationGate
         )
     }
 
@@ -632,7 +638,9 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         providerReadback: (any ManagedInstallerHelperReviewedProviderReading)? = nil,
         providerAuthentication:
             (any ManagedInstallerReviewedProviderAuthenticationStarting)? = nil,
-        epProviderRegistration: ManagedInstallerReviewedEPProviderRegistration? = nil
+        epProviderRegistration: ManagedInstallerReviewedEPProviderRegistration? = nil,
+        mutationGate: ManagedInstallerHelperUpgradeAdmissionGate =
+            ManagedInstallerHelperUpgradeAdmissionGate(epoch: 1)
     ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
@@ -646,10 +654,12 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         self.providerReadback = providerReadback
         self.providerAuthentication = providerAuthentication
         self.epProviderRegistration = epProviderRegistration
+        self.mutationGate = mutationGate
         super.init()
     }
 
     public func loadManagedDeploymentInventory(withReply reply: @escaping (Data?) -> Void) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         reply(loadInventory()?.data)
     }
 
@@ -657,6 +667,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         _ deploymentID: String,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         guard ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID),
               let registryReader,
               let snapshot = try? registryReader.read().get(),
@@ -669,6 +680,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         guard let request = try? ManagedInstallerReleasedRouteRequest.decodeJSON(canonicalRequest),
               request.canonicalJSONData() == canonicalRequest else { reply(nil); return }
         guard requiresFreshSnapshotPublication else {
@@ -703,6 +715,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
         guard let execution,
               let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
@@ -724,6 +737,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
         guard let providerStaging,
               let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
@@ -747,6 +761,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
         guard let providerReadback,
               let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
@@ -769,6 +784,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         _ canonicalIntent: Data, providerTargetID: String,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
         guard let providerAuthentication,
               let targetID = ProviderTargetID(rawValue: providerTargetID),
@@ -792,6 +808,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         _ canonicalIntent: Data, providerTargetID: String,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
         guard let providerAuthentication,
               let targetID = ProviderTargetID(rawValue: providerTargetID),
@@ -818,6 +835,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         _ canonicalIntent: Data, providerTargetID: String,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
         guard let epProviderRegistration,
               let targetID = ProviderTargetID(rawValue: providerTargetID),
@@ -838,6 +856,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         _ canonicalSelection: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
         guard let registration,
               let selection = try? ManagedInstallerReviewedSelection.decodeJSON(
