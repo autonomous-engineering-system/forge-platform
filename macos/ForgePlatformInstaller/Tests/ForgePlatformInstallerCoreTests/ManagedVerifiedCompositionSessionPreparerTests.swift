@@ -5,6 +5,24 @@ import XCTest
 final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
     private let verifiedAt = ISO8601DateFormatter().date(from: "2026-09-10T12:00:00Z")!
 
+    func testLegacyPreparerCannotBroadenSingleProductSelection() async throws {
+        let fixture = try Fixture(verifiedAt: verifiedAt)
+        let legacy: any VerifiedCompositionSessionPreparing =
+            UnavailableVerifiedCompositionSessionPreparer()
+        let single = await legacy.prepareVerifiedCompositionSession(
+            for: fixture.currentInstaller,
+            deployment: fixture.freshDeployment,
+            componentIdentities: ["engineering-platform-server"]
+        )
+        XCTAssertEqual(single, .unavailable(.selectionUnavailable))
+        let original = await legacy.prepareVerifiedCompositionSession(
+            for: fixture.currentInstaller,
+            deployment: fixture.freshDeployment,
+            componentIdentities: ["engineering-platform-server", "forge-runtime"]
+        )
+        XCTAssertEqual(original, .unavailable(.coordinatorUnavailable))
+    }
+
     func testPreparesDigestBoundForgeEPSessionEndToEnd() async throws {
         let fixture = try Fixture(verifiedAt: verifiedAt)
         let preparer = fixture.preparer()
@@ -88,6 +106,13 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
                            "sha256:" + GitHubInstallerReleaseDescriptor.sha256(
                                of: material.manifestBytes
                            ))
+            let selectedSession = await fixture.preparer()
+                .prepareVerifiedCompositionSession(
+                    for: fixture.currentInstaller,
+                    deployment: fixture.freshDeployment,
+                    componentIdentities: identities
+                )
+            XCTAssertEqual(selectedSession, .prepared(material.session))
             let wrongSet = await fixture.preparer().prepareVerifiedCompositionMaterial(
                 for: fixture.currentInstaller,
                 deployment: fixture.freshDeployment,
@@ -111,6 +136,12 @@ final class ManagedVerifiedCompositionSessionPreparerTests: XCTestCase {
                 componentIdentities: identities
             )
             XCTAssertEqual(result, .unavailable(.selectionUnavailable))
+            let session = await fixture.preparer().prepareVerifiedCompositionSession(
+                for: fixture.currentInstaller,
+                deployment: fixture.freshDeployment,
+                componentIdentities: identities
+            )
+            XCTAssertEqual(session, .unavailable(.selectionUnavailable))
         }
         let requested = await fixture.documents.requestedURLs()
         XCTAssertTrue(requested.isEmpty)
