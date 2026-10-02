@@ -104,7 +104,7 @@ struct ManagedInstallerHelperCurrentReleaseAdmission: Sendable {
         ))
     }
 
-    private static func matchesExactly(
+    static func matchesExactly(
         _ release: VerifiedInstallerReleaseRecord,
         _ sealed: ManagedInstallerHelperSealedTrustContext
     ) -> Bool {
