@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import ForgePlatformInstallerCore
 
@@ -69,5 +70,56 @@ final class ManagedInstallerHelperUpgradeAdmissionGateTests: XCTestCase {
                        .blocked)
         XCTAssertEqual(gate.readDrain(operationID: "upgrade-a", expectedEpoch: 0),
                        .blocked)
+    }
+
+    func testTerminalReplyHoldsLeaseUntilCallback() {
+        let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 11)
+        var received: Data?
+        let reply = gate.admittedReply { received = $0 }
+        XCTAssertNotNil(reply)
+        XCTAssertEqual(gate.beginDrain(operationID: "upgrade-a", expectedEpoch: 11),
+                       .draining(activeMutations: 1))
+        reply?(Data("done".utf8))
+        XCTAssertEqual(received, Data("done".utf8))
+        XCTAssertEqual(gate.readDrain(operationID: "upgrade-a", expectedEpoch: 11),
+                       .quiescent)
+        XCTAssertNil(gate.admittedReply { _ in XCTFail("draining gate admitted work") })
+    }
+
+    func testSharedDrainRejectsBothReleasedRouteAndProductXPCEntrances() {
+        let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 12)
+        let route = FileManagedInstallerReleasedRouteXPCService(
+            rootDirectory: FileManager.default.temporaryDirectory,
+            expectedOwner: getuid(),
+            mutationGate: gate
+        )
+        let product = ManagedInstallerProductOperationXPCServiceHandler(
+            executor: RejectingProductExecutor(), mutationGate: gate
+        )
+        XCTAssertEqual(gate.beginDrain(operationID: "upgrade-a", expectedEpoch: 12),
+                       .quiescent)
+        let routeReply = expectation(description: "route rejected")
+        route.loadManagedDeploymentInventory { bytes in
+            XCTAssertNil(bytes)
+            routeReply.fulfill()
+        }
+        let productReply = expectation(description: "product rejected")
+        product.executeProductOperation(Data("{}".utf8)) { bytes in
+            XCTAssertNil(bytes)
+            productReply.fulfill()
+        }
+        wait(for: [routeReply, productReply], timeout: 1)
+        XCTAssertEqual(gate.readDrain(operationID: "upgrade-a", expectedEpoch: 12),
+                       .quiescent)
+    }
+}
+
+private struct RejectingProductExecutor: ManagedInstallerProductOperationHelperExecuting {
+    func executeProductOperation(
+        _ request: ManagedInstallerProductOperationRequest
+    ) async -> Result<ManagedInstallerProductOperationReceipt,
+        ManagedInstallerProductOperationBridgeFailure> {
+        _ = request
+        return .failure(.rejected)
     }
 }

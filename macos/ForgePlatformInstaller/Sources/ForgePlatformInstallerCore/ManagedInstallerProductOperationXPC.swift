@@ -610,9 +610,15 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
 public final class ManagedInstallerProductOperationXPCServiceHandler:
     NSObject, ManagedInstallerProductOperationXPCService, @unchecked Sendable {
     private let executor: any ManagedInstallerProductOperationHelperExecuting
+    private let mutationGate: ManagedInstallerHelperUpgradeAdmissionGate
 
-    public init(executor: any ManagedInstallerProductOperationHelperExecuting) {
+    public init(
+        executor: any ManagedInstallerProductOperationHelperExecuting,
+        mutationGate: ManagedInstallerHelperUpgradeAdmissionGate =
+            ManagedInstallerHelperUpgradeAdmissionGate(epoch: 1)
+    ) {
         self.executor = executor
+        self.mutationGate = mutationGate
         super.init()
     }
 
@@ -620,6 +626,7 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let replyGate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
         let executor = executor
         Task {
@@ -661,6 +668,7 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let replyGate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
         let executor = executor
         Task {
@@ -693,6 +701,7 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let replyGate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
         let executor = executor
         Task {
@@ -725,6 +734,7 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
         let executor = executor
         Task {
@@ -757,6 +767,7 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
         _ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
         let executor = executor
         Task {
@@ -789,6 +800,7 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
         let executor = executor
         Task {
@@ -821,6 +833,7 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
         let executor = executor
         Task {
@@ -853,6 +866,7 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
         let executor = executor
         Task {
@@ -885,6 +899,7 @@ public final class ManagedInstallerProductOperationXPCServiceHandler:
         _ canonicalRequest: Data,
         withReply reply: @escaping (Data?) -> Void
     ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
         let gate = ManagedInstallerProductOperationXPCServiceReplyGate(reply: reply)
         let executor = executor
         Task {
