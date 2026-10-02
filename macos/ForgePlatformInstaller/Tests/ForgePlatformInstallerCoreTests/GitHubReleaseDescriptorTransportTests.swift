@@ -6,14 +6,18 @@ final class GitHubReleaseDescriptorTransportTests: XCTestCase {
     private let dateHeader = "Thu, 24 Sep 2026 18:00:00 GMT"
 
     func testFetchesExactLatestTagAndDescriptorWithoutCredentials() async throws {
-        let latest = "https://api.github.com/repos/example-owner/forge-platform/releases/latest"
+        let latest = "https://github.com/example-owner/forge-platform/releases/latest"
         DescriptorURLProtocol.configure([
-            latest: .response(200, ["Date": dateHeader], Data(#"{"tag_name":"installer-v1.2.3"}"#.utf8)),
+            latest: .response(302, [
+                "Date": dateHeader,
+                "Location": "https://github.com/example-owner/forge-platform/releases/tag/installer-v1.2.3",
+            ], Data()),
         ])
         let transport = makeTransport()
         let tagResult = await transport.latestReleaseTag(for: "example-owner/forge-platform")
         guard case .success(let tag) = tagResult else { return XCTFail("expected tag") }
         XCTAssertEqual(tag.tag, "installer-v1.2.3")
+        XCTAssertEqual(DescriptorURLProtocol.observations().first?.method, "HEAD")
 
         let descriptorURL = "https://github.com/example-owner/forge-platform/releases/download/installer-v1.2.3/installer-release.json"
         let descriptor = Data(#"{"schema":"test"}"#.utf8)
@@ -51,14 +55,17 @@ final class GitHubReleaseDescriptorTransportTests: XCTestCase {
         XCTAssertTrue(DescriptorURLProtocol.observations().isEmpty)
     }
 
-    func testRejectsMalformedHTTPAndLatestReleaseBodies() async {
-        let endpoint = "https://api.github.com/repos/example-owner/forge-platform/releases/latest"
+    func testRejectsMalformedLatestRedirects() async {
+        let endpoint = "https://github.com/example-owner/forge-platform/releases/latest"
         let cases: [DescriptorURLProtocol.Script] = [
             .response(503, ["Date": dateHeader], Data("unavailable".utf8)),
-            .response(200, [:], Data(#"{"tag_name":"installer-v1.2.3"}"#.utf8)),
-            .response(200, ["Date": dateHeader], Data()),
-            .response(200, ["Date": dateHeader], Data(#"{"other":"value"}"#.utf8)),
-            .response(200, ["Date": dateHeader, "Content-Length": "2048"], Data("x".utf8)),
+            .response(200, ["Date": dateHeader], Data("not a redirect".utf8)),
+            .response(302, ["Date": dateHeader], Data()),
+            .response(302, ["Location": "https://github.com/example-owner/forge-platform/releases/tag/installer-v1.2.3"], Data()),
+            .response(302, ["Date": dateHeader, "Location": "https://evil.example/releases/tag/installer-v1.2.3"], Data()),
+            .response(302, ["Date": dateHeader, "Location": "https://github.com/other/repo/releases/tag/installer-v1.2.3"], Data()),
+            .response(302, ["Date": dateHeader, "Location": "https://github.com/example-owner/forge-platform/releases/tag/bad%2Ftag"], Data()),
+            .response(302, ["Date": dateHeader, "Location": "https://github.com/example-owner/forge-platform/releases/tag/" + String(repeating: "x", count: 1024)], Data()),
         ]
         for script in cases {
             DescriptorURLProtocol.configure([endpoint: script])
@@ -106,6 +113,7 @@ final class GitHubReleaseDescriptorTransportTests: XCTestCase {
 private struct DescriptorObservation: Sendable {
     let authorization: String?
     let cacheControl: String?
+    let method: String?
 }
 
 private final class DescriptorURLProtocol: URLProtocol, @unchecked Sendable {
@@ -146,7 +154,8 @@ private final class DescriptorURLProtocol: URLProtocol, @unchecked Sendable {
         let script = Self.scripts[key]
         Self.recorded.append(DescriptorObservation(
             authorization: request.value(forHTTPHeaderField: "Authorization"),
-            cacheControl: request.value(forHTTPHeaderField: "Cache-Control")
+            cacheControl: request.value(forHTTPHeaderField: "Cache-Control"),
+            method: request.httpMethod
         ))
         Self.lock.unlock()
         guard let script, let url = request.url,
