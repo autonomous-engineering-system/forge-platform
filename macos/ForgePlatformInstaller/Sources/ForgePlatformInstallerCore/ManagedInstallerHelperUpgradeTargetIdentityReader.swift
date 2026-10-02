@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 
 public struct ManagedInstallerHelperUpgradeTargetIdentity: Equatable, Sendable {
+    public let appName: String
     public let installerVersion: InstallerVersion
     public let helperSHA256: String
     public let codeDirectorySHA256: String
@@ -72,13 +73,14 @@ public struct ManagedInstallerHelperUpgradeTargetIdentityReader: Sendable {
             return .failure(.unavailable)
         }
         return .success(ManagedInstallerHelperUpgradeTargetIdentity(
+            appName: appName,
             installerVersion: first.installerVersion,
             helperSHA256: digest,
             codeDirectorySHA256: first.codeDirectorySHA256
         ))
     }
 
-    private static func validAppName(_ name: String) -> Bool {
+    static func validAppName(_ name: String) -> Bool {
         let bytes = Array(name.utf8)
         guard bytes.count > 4, bytes.count <= 128, name.hasSuffix(".app") else { return false }
         return bytes.allSatisfy {

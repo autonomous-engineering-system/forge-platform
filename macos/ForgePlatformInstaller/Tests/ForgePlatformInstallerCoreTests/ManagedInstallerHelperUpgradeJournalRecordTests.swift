@@ -8,8 +8,11 @@ final class ManagedInstallerHelperUpgradeJournalRecordTests: XCTestCase {
             operationID: "upgrade-1", bootTimeSeconds: boot,
             sourceVersion: InstallerVersion("0.3.13"),
             sourceHelperSHA256: String(repeating: "a", count: 64),
+            sourceCodeDirectorySHA256: String(repeating: "c", count: 64),
             targetVersion: InstallerVersion("0.3.14"),
-            targetHelperSHA256: digest
+            targetAppName: "ForgePlatformInstallerRelease044.app",
+            targetHelperSHA256: digest,
+            targetCodeDirectorySHA256: String(repeating: "d", count: 64)
         )
     }
 

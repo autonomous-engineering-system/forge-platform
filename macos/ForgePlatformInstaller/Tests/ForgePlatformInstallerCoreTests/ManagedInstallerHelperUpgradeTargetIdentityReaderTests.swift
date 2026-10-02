@@ -78,6 +78,7 @@ final class ManagedInstallerHelperUpgradeTargetIdentityReaderTests: XCTestCase {
         let result = await subject.read(appName: appName, after: try source())
         XCTAssertEqual(result, .success(
             ManagedInstallerHelperUpgradeTargetIdentity(
+                appName: appName,
                 installerVersion: signed.installerVersion,
                 helperSHA256: String(repeating: "d", count: 64),
                 codeDirectorySHA256: signed.codeDirectorySHA256

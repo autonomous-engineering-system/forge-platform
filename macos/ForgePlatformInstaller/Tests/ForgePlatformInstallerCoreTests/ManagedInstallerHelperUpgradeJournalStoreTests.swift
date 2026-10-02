@@ -14,14 +14,18 @@ final class ManagedInstallerHelperUpgradeJournalStoreTests: XCTestCase {
     }
 
     private func operation(
-        boot: UInt64 = 100, digest: String = String(repeating: "b", count: 64)
+        boot: UInt64 = 100, digest: String = String(repeating: "b", count: 64),
+        app: String = "ForgePlatformInstallerRelease044.app"
     ) throws -> ManagedInstallerHelperUpgradeOperation {
         try ManagedInstallerHelperUpgradeOperation(
             operationID: "upgrade-1", bootTimeSeconds: boot,
             sourceVersion: InstallerVersion("0.3.13"),
             sourceHelperSHA256: String(repeating: "a", count: 64),
+            sourceCodeDirectorySHA256: String(repeating: "c", count: 64),
             targetVersion: InstallerVersion("0.3.14"),
-            targetHelperSHA256: digest
+            targetAppName: app,
+            targetHelperSHA256: digest,
+            targetCodeDirectorySHA256: String(repeating: "d", count: 64)
         )
     }
 
@@ -61,7 +65,56 @@ final class ManagedInstallerHelperUpgradeJournalStoreTests: XCTestCase {
                        .failure(.conflict))
         XCTAssertEqual(store.prepare(try operation(digest: String(repeating: "c", count: 64))),
                        .failure(.conflict))
+        XCTAssertEqual(store.prepare(try operation(app: "ForgePlatformInstallerRelease045.app")),
+                       .failure(.conflict))
         XCTAssertEqual(try store.load().get()?.phase, .prepared)
+    }
+
+    func testStoredIdentityIncludesExactTargetAppAndSigningBoundary() throws {
+        let directory = try root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FileManagedInstallerHelperUpgradeJournalStore(
+            stateRoot: directory, expectedOwner: geteuid()
+        )
+        let identity = try operation()
+        _ = try store.prepare(identity).get()
+        let record = directory.appendingPathComponent("helper-upgrade-operation.json")
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: record))
+            as? [String: String])
+        XCTAssertEqual(fields["schema"], "forge-platform.helper-upgrade-operation/v2")
+        XCTAssertEqual(fields["targetAppName"], identity.targetAppName)
+        XCTAssertEqual(fields["sourceCodeDirectorySHA256"], identity.sourceCodeDirectorySHA256)
+        XCTAssertEqual(fields["targetCodeDirectorySHA256"], identity.targetCodeDirectorySHA256)
+        XCTAssertEqual(fields["bundleIdentifier"], identity.bundleIdentifier)
+        XCTAssertEqual(fields["teamIdentifier"], identity.teamIdentifier)
+    }
+
+    func testChangedTeamAndOldJournalSchemaFailClosed() throws {
+        let directory = try root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FileManagedInstallerHelperUpgradeJournalStore(
+            stateRoot: directory, expectedOwner: geteuid()
+        )
+        let identity = try operation()
+        _ = try store.prepare(identity).get()
+        let record = directory.appendingPathComponent("helper-upgrade-operation.json")
+        let original = try XCTUnwrap(String(data: Data(contentsOf: record), encoding: .utf8))
+        let wrongTeam = original.replacingOccurrences(
+            of: "\"teamIdentifier\":\"\(identity.teamIdentifier)\"",
+            with: "\"teamIdentifier\":\"WRONG\""
+        )
+        XCTAssertNotEqual(wrongTeam, original)
+        try Data(wrongTeam.utf8).write(to: record)
+        XCTAssertEqual(chmod(record.path, 0o600), 0)
+        XCTAssertEqual(store.load(), .failure(.corrupt))
+        let oldSchema = original.replacingOccurrences(
+            of: "v2",
+            with: "v1"
+        )
+        XCTAssertNotEqual(oldSchema, original)
+        try Data(oldSchema.utf8).write(to: record)
+        XCTAssertEqual(chmod(record.path, 0o600), 0)
+        XCTAssertEqual(store.load(), .failure(.corrupt))
     }
 
     func testCorruptAndSymlinkedRecordFailClosed() throws {

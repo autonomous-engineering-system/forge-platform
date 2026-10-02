@@ -196,23 +196,34 @@ public struct FileManagedInstallerHelperUpgradeJournalStore: Sendable {
         let bootTimeSeconds: String
         let sourceVersion: String
         let sourceHelperSHA256: String
+        let sourceCodeDirectorySHA256: String
         let targetVersion: String
+        let targetAppName: String
         let targetHelperSHA256: String
+        let targetCodeDirectorySHA256: String
         let label: String
+        let bundleIdentifier: String
+        let teamIdentifier: String
         let phase: String
     }
 
     private func encode(_ record: ManagedInstallerHelperUpgradeJournalRecord) throws -> Data {
         let operation = record.operation
         let stored = Stored(
-            schema: "forge-platform.helper-upgrade-operation/v1",
+            schema: "forge-platform.helper-upgrade-operation/v2",
             operationID: operation.operationID,
             bootTimeSeconds: String(operation.bootTimeSeconds),
             sourceVersion: operation.sourceVersion.description,
             sourceHelperSHA256: operation.sourceHelperSHA256,
+            sourceCodeDirectorySHA256: operation.sourceCodeDirectorySHA256,
             targetVersion: operation.targetVersion.description,
+            targetAppName: operation.targetAppName,
             targetHelperSHA256: operation.targetHelperSHA256,
-            label: operation.label, phase: record.phase.rawValue
+            targetCodeDirectorySHA256: operation.targetCodeDirectorySHA256,
+            label: operation.label,
+            bundleIdentifier: operation.bundleIdentifier,
+            teamIdentifier: operation.teamIdentifier,
+            phase: record.phase.rawValue
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -221,8 +232,10 @@ public struct FileManagedInstallerHelperUpgradeJournalStore: Sendable {
 
     private func decode(_ data: Data) throws -> ManagedInstallerHelperUpgradeJournalRecord {
         guard let stored = try? JSONDecoder().decode(Stored.self, from: data),
-              stored.schema == "forge-platform.helper-upgrade-operation/v1",
+              stored.schema == "forge-platform.helper-upgrade-operation/v2",
               stored.label == ManagedInstallerPrivilegedHelperContract.label,
+              stored.bundleIdentifier == ManagedInstallerHelperSignedParentBundleLocator.bundleIdentifier,
+              stored.teamIdentifier == ManagedInstallerHelperSignedParentBundleLocator.teamIdentifier,
               let boot = UInt64(stored.bootTimeSeconds),
               String(boot) == stored.bootTimeSeconds,
               let source = try? InstallerVersion(stored.sourceVersion),
@@ -230,8 +243,13 @@ public struct FileManagedInstallerHelperUpgradeJournalStore: Sendable {
               let phase = ManagedInstallerHelperUpgradePhase(rawValue: stored.phase),
               let operation = try? ManagedInstallerHelperUpgradeOperation(
                 operationID: stored.operationID, bootTimeSeconds: boot,
-                sourceVersion: source, sourceHelperSHA256: stored.sourceHelperSHA256,
-                targetVersion: target, targetHelperSHA256: stored.targetHelperSHA256
+                sourceVersion: source,
+                sourceHelperSHA256: stored.sourceHelperSHA256,
+                sourceCodeDirectorySHA256: stored.sourceCodeDirectorySHA256,
+                targetVersion: target,
+                targetAppName: stored.targetAppName,
+                targetHelperSHA256: stored.targetHelperSHA256,
+                targetCodeDirectorySHA256: stored.targetCodeDirectorySHA256
               ) else { throw Failure.corrupt }
         let record = ManagedInstallerHelperUpgradeJournalRecord.recovered(
             operation: operation, phase: phase
