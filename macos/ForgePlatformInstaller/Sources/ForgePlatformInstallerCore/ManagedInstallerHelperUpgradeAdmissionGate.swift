@@ -15,14 +15,24 @@ enum ManagedInstallerHelperUpgradeAdmissionState: Equatable, Sendable {
     case quiescent
 }
 
-final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendable {
+public final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendable {
     private let lock = NSLock()
     private let epoch: UInt64
     private var activeMutations = Set<UUID>()
     private var drainingOperationID: String?
 
-    init(epoch: UInt64) {
+    public init(epoch: UInt64) {
         self.epoch = epoch
+    }
+
+    /// Retains a mutation lease until the XPC method delivers its terminal
+    /// reply. A missing reply leaves the lease active and blocks replacement.
+    func admittedReply(_ reply: @escaping (Data?) -> Void) -> ((Data?) -> Void)? {
+        guard let lease = beginMutation() else { return nil }
+        return { [self] value in
+            defer { finishMutation(lease) }
+            reply(value)
+        }
     }
 
     /// Every mutating XPC entrypoint must acquire a lease before starting its
