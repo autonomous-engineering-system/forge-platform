@@ -43,6 +43,7 @@ final class ManagedInstallerHelperUpgradeJournalStoreTests: XCTestCase {
             XCTAssertEqual(result.phase, phase)
             XCTAssertEqual(try store.advance(identity, to: phase).get(), result)
             XCTAssertEqual(try store.load().get(), result)
+            XCTAssertEqual(try store.prepare(identity).get(), result)
         }
         XCTAssertEqual(store.advance(identity, to: .prepared), .failure(.conflict))
     }
