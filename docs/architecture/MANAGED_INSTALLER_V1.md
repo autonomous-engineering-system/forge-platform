@@ -401,10 +401,12 @@ checkpoint. A request racing the close either owns a counted permit or gets
 `BUSY`; unknown state and timeout get `BLOCKED` without stopping the helper.
 
 `ManagedInstallerHelperUpgradeAdmissionGate` landed on `main` in PR #575 as
-an in-process lease and drain primitive. Its exact operation/epoch checks do
-not yet cover the mutating XPC routes, asynchronous worker effects or a durable
-root-owned transition. It therefore supplies no live quiescence or replacement
-authority by itself.
+an in-process lease and drain primitive. PR #577 then shared it across the two
+active privileged XPC backends, with leases retained through terminal replies;
+the post-tool endpoint remains denial-only. This source boundary has no
+durable root-owned transition, released drain coordinator or proof that product
+workers and credentials have reached a terminal state. It supplies no live
+replacement authority by itself.
 
 The gate must durably bind one operation ID and generation to the exact source
 and target signed artifacts, fixed SMAppService label, bundle/Team/signing
@@ -434,7 +436,10 @@ separately signed and staged does not alter the 0.3.13 registered parent.
 After an externally observed host boot change, the fixed-label job still
 reports parent 0.3.13 but now `not running`, `runs = 0`; this is not evidence
 that root-private operations completed or that a used helper was upgraded
-within one boot. Until a reviewed, supported legacy adapter proves both
+within one boot. The owner separately authorized the existing idle replacement
+route only after exact root-private state checks; that inventory still requires
+the owner's macOS administrator confirmation and does not qualify the original
+same-boot used-helper case. Until a reviewed, supported legacy adapter proves both
 admission closure and no active effects, this exact first
 transition is `BLOCKED_LEGACY_TRANSITION`; no unregister, process signal,
 reboot or product mutation follows from this document. This is a bound on the
