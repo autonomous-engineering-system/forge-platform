@@ -439,6 +439,11 @@
       "id": "IUR-T20",
       "requirement": "Partial service, provider or pairing failure remains recoverable and cannot prematurely commit installed/ready state",
       "status": "PLANNED"
+    },
+    {
+      "id": "IUR-T21",
+      "requirement": "A signed fixed-label helper upgrade drains all mutation entrances and product workers, binds a durable exact-version transition to native service state, resumes safely after interruption, and proves same-boot GUI/CLI operation without a routine reboot",
+      "status": "PLANNED"
     }
   ]
 }

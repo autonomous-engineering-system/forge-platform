@@ -420,6 +420,13 @@ UX, coverage, runner and lifecycle production composition join at the signed
 release; release precedes both general install qualification and lifecycle live
 acceptance.
 
+IUR-T21 tracks the owner-authorized same-boot fixed-label helper upgrade. The
+new mutation-admission gate is only its first prerequisite: it must be wired to
+every mutating helper route, followed by durable exact-version drain and native
+ServiceManagement transition evidence. The installed 0.3.13 helper and staged
+0.3.14 app are not evidence of a completed same-boot upgrade. No routine reboot
+is authorized to bridge this gap.
+
 These refine existing FP-EP-CI-6/7/Q for its selected scope and MVP-INST-001 for
 the broader horizon; they are not reverse dependencies on completed umbrella
 programmes. Keep existing product, clock/trust, signing and clean-host authority
