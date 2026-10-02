@@ -27,6 +27,49 @@ final class ManagedInstallerReleasedRouteFreshSnapshotProducerTests: XCTestCase 
         _ = ManagedInstallerReleasedRouteFreshSnapshotProducer.production()
     }
 
+    func testFreshDiskCapacityChangesKeepQualifiedRouteIdentity() async throws {
+        let fixture = try FreshSnapshotFixture()
+        let firstPublisher = FreshSnapshotPublisher()
+        let secondPublisher = FreshSnapshotPublisher()
+        let reducedButQualified = ManagedInstallerPostToolPhysicalHostFacts(
+            macOSVersion: fixture.facts.macOSVersion,
+            hardwareArchitecture: fixture.facts.hardwareArchitecture,
+            nativeArm64Process: true,
+            rosettaTranslated: false,
+            availableDiskBytes: 5_000,
+            memoryBytes: fixture.facts.memoryBytes,
+            administratorAuthorized: true
+        )
+        guard case .success = await fixture.producer(
+            publisher: firstPublisher
+        ).produceAndPublish(request: fixture.request),
+        case .success = await fixture.producer(
+            publisher: secondPublisher, facts: reducedButQualified
+        ).produceAndPublish(request: fixture.request) else {
+            return XCTFail("Both fresh disk observations must qualify")
+        }
+        XCTAssertEqual(firstPublisher.snapshot, secondPublisher.snapshot)
+    }
+
+    func testFreshDiskBelowSignedRequirementStillFailsClosed() async throws {
+        let fixture = try FreshSnapshotFixture()
+        let belowRequirement = ManagedInstallerPostToolPhysicalHostFacts(
+            macOSVersion: fixture.facts.macOSVersion,
+            hardwareArchitecture: fixture.facts.hardwareArchitecture,
+            nativeArm64Process: true,
+            rosettaTranslated: false,
+            availableDiskBytes: 124,
+            memoryBytes: fixture.facts.memoryBytes,
+            administratorAuthorized: true
+        )
+        let publisher = FreshSnapshotPublisher()
+        let result = await fixture.producer(
+            publisher: publisher, facts: belowRequirement
+        ).produceAndPublish(request: fixture.request)
+        XCTAssertEqual(result, .failure(.unavailable))
+        XCTAssertNil(publisher.snapshot)
+    }
+
     func testInventoryMaterialFactsAndInitialStateDriftFailBeforePublication()
         async throws {
         let fixture = try FreshSnapshotFixture()
