@@ -12,7 +12,8 @@ struct ManagedInstallerHelperUpgradeTargetReleaseBinding: Sendable {
     ) -> Bool {
         let trust = resources.releaseTrust
         let provenance = resources.provenance
-        guard InstallerSelfUpdateValidation.isSHA256(target.helperSHA256),
+        guard ManagedInstallerHelperUpgradeTargetIdentityReader.validAppName(target.appName),
+              InstallerSelfUpdateValidation.isSHA256(target.helperSHA256),
               trust.expectedBundleIdentifier
                 == ManagedInstallerHelperSignedParentBundleLocator.bundleIdentifier,
               trust.expectedTeamIdentifier

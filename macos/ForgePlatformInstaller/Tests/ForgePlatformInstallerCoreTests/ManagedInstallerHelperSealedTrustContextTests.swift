@@ -196,6 +196,7 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
         )
         let release = try makeReleaseRecord(for: sealed)
         let target = ManagedInstallerHelperUpgradeTargetIdentity(
+            appName: "ForgePlatformInstallerRelease044.app",
             installerVersion: sealed.codeSigning.installerVersion,
             helperSHA256: String(repeating: "e", count: 64),
             codeDirectorySHA256: sealed.codeSigning.codeDirectorySHA256
@@ -203,21 +204,31 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
         let binding = ManagedInstallerHelperUpgradeTargetReleaseBinding()
         XCTAssertTrue(binding.matches(target: target, release: release, resources: resources))
         XCTAssertFalse(binding.matches(target: .init(
+            appName: "../Other.app",
+            installerVersion: target.installerVersion,
+            helperSHA256: target.helperSHA256,
+            codeDirectorySHA256: target.codeDirectorySHA256
+        ), release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: .init(
+            appName: target.appName,
             installerVersion: try InstallerVersion("1.2.4"),
             helperSHA256: target.helperSHA256,
             codeDirectorySHA256: target.codeDirectorySHA256
         ), release: release, resources: resources))
         XCTAssertFalse(binding.matches(target: .init(
+            appName: target.appName,
             installerVersion: target.installerVersion,
             helperSHA256: target.helperSHA256,
             codeDirectorySHA256: String(repeating: "f", count: 64)
         ), release: release, resources: resources))
         XCTAssertFalse(binding.matches(target: .init(
+            appName: target.appName,
             installerVersion: target.installerVersion,
             helperSHA256: target.helperSHA256,
             codeDirectorySHA256: "bad"
         ), release: release, resources: resources))
         XCTAssertFalse(binding.matches(target: .init(
+            appName: target.appName,
             installerVersion: target.installerVersion,
             helperSHA256: "bad",
             codeDirectorySHA256: target.codeDirectorySHA256
@@ -239,6 +250,7 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
         )
         let release = try makeReleaseRecord(for: sealed)
         let target = ManagedInstallerHelperUpgradeTargetIdentity(
+            appName: "ForgePlatformInstallerRelease044.app",
             installerVersion: sealed.codeSigning.installerVersion,
             helperSHA256: String(repeating: "e", count: 64),
             codeDirectorySHA256: sealed.codeSigning.codeDirectorySHA256
