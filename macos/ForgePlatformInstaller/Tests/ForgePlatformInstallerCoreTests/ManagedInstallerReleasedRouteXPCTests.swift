@@ -330,6 +330,35 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             service, intent.canonicalJSONData(), target.rawValue
         )
         XCTAssertEqual(exactCompletion, completed.canonicalJSONData())
+        let drainGate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 31)
+        let drainingService = FileManagedInstallerReleasedRouteXPCService(
+            rootDirectory: URL(fileURLWithPath: "/private/tmp", isDirectory: true),
+            expectedOwner: geteuid(),
+            providerAuthentication: XPCProviderAuthenticationStarter(
+                intent: intent, target: target, response: response, completion: completed
+            ),
+            mutationGate: drainGate
+        )
+        let admittedBeforeDrain = await callProviderAuthentication(
+            drainingService, intent.canonicalJSONData(), target.rawValue
+        )
+        XCTAssertEqual(admittedBeforeDrain, response.canonicalJSONData())
+        XCTAssertEqual(drainGate.beginDrain(operationID: "upgrade-a", expectedEpoch: 31),
+                       .quiescent)
+        let deniedNewCeremony = await callProviderAuthentication(
+            drainingService, intent.canonicalJSONData(), target.rawValue
+        )
+        XCTAssertNil(deniedNewCeremony)
+        let deniedMalformedCompletion = await callProviderAuthenticationCompletion(
+            drainingService, Data("{}".utf8), target.rawValue
+        )
+        XCTAssertNil(deniedMalformedCompletion)
+        let admittedCompletion = await callProviderAuthenticationCompletion(
+            drainingService, intent.canonicalJSONData(), target.rawValue
+        )
+        XCTAssertEqual(admittedCompletion, completed.canonicalJSONData())
+        XCTAssertEqual(drainGate.readDrain(operationID: "upgrade-a", expectedEpoch: 31),
+                       .quiescent)
         let listener = MacOSManagedInstallerReleasedRouteXPCListener(
             listener: .anonymous(),
             callerIdentity: try ManagedInstallerProductOperationXPCCallerIdentity(

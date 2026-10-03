@@ -39,6 +39,30 @@ public final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendab
         }
     }
 
+    /// An already-admitted provider ceremony must be able to deliver its
+    /// verified terminal readback after drain closes new work. The XPC route
+    /// using this lease must require an existing exact ceremony; it may not
+    /// start a child or issue a new credential. The lease still counts until
+    /// its terminal reply, so quiescence cannot race the completion.
+    func admittedExistingCeremonyCompletionReply(
+        _ reply: @escaping (Data?) -> Void
+    ) -> ((Data?) -> Void)? {
+        guard let lease = beginExistingCeremonyCompletion() else { return nil }
+        return { [self] value in
+            defer { finishMutation(lease) }
+            reply(value)
+        }
+    }
+
+    private func beginExistingCeremonyCompletion() -> ManagedInstallerHelperMutationLease? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard epoch > 0 else { return nil }
+        let id = UUID()
+        activeMutations.insert(id)
+        return ManagedInstallerHelperMutationLease(id: id, epoch: epoch)
+    }
+
     /// Every mutating XPC entrypoint must acquire a lease before starting its
     /// asynchronous work and release it only after the terminal callback.
     func beginMutation() -> ManagedInstallerHelperMutationLease? {
