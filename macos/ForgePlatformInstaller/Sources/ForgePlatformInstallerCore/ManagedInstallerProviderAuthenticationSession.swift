@@ -22,6 +22,7 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
     private var errors = Data()
     private var challenge: ManagedInstallerProviderDeviceChallenge?
     private var terminal: Terminal = .running
+    private var effectToken: UUID?
     private var started = false
     private var stdout: Pipe?
     private var stderr: Pipe?
@@ -100,13 +101,16 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
                 && process.terminationStatus == 0
                 && !exitRegistry.hasUncertainChildEffects()
             if !normalExit { exitRegistry.markChildEffectsUncertain() }
-            let durableExit: Bool
-            if case .failure = effectJournal.finish(token, normalExit: normalExit) {
-                exitRegistry.markChildEffectsUncertain()
-                durableExit = false
-            } else {
-                durableExit = true
+            var durableExit = true
+            if !normalExit {
+                if case .failure = effectJournal.finish(token, normalExit: false) {
+                    exitRegistry.markChildEffectsUncertain()
+                    durableExit = false
+                }
+                self?.effectToken = nil
             }
+            // A successful child exit ends the process, but not the credential
+            // ceremony. Keep its durable ID until physical readback is verified.
             _ = exitRegistry.finish(token)
             if let self, self.terminal == .running {
                 self.terminal = durableExit && process.terminationReason == .exit
@@ -131,6 +135,7 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
             reject()
             return nil
         }
+        effectToken = token
         do {
             try process.run()
             lock.unlock()
@@ -140,6 +145,9 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
             if case .failure = effectJournal.cancelBeforeLaunch(token) {
                 exitRegistry.markChildEffectsUncertain()
             }
+            lock.lock()
+            effectToken = nil
+            lock.unlock()
             _ = exitRegistry.finish(token)
             reject()
             return nil
@@ -160,6 +168,22 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return terminal
+    }
+
+    /// Only the reviewed fresh physical credential readback may close the
+    /// durable ceremony. A helper crash before this call leaves it unresolved.
+    func completeVerifiedReadback() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard terminal == .exited(0), let token = effectToken,
+              !exitRegistry.hasUncertainChildEffects() else { return false }
+        guard case .success = effectJournal.finish(token, normalExit: true) else {
+            exitRegistry.markChildEffectsUncertain()
+            terminal = .rejected
+            return false
+        }
+        effectToken = nil
+        return true
     }
 
     func cancel() {

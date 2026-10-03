@@ -34,8 +34,10 @@ protocol ManagedInstallerProductWorkerEffectJournaling: Sendable {
 }
 
 /// A root-owned fixed-location write-ahead record survives helper crashes.
-/// Each child is recorded before Process.run(), and only a proven normal exit
-/// or a failed launch removes its ID. Abnormal exit leaves sticky uncertainty.
+/// Each child is recorded before Process.run(). Product workers clear on proven
+/// normal exit; provider-authentication children clear only after both normal
+/// exit and verified physical credential readback. A failed launch removes its
+/// ID, while abnormal exit leaves sticky uncertainty.
 struct FileManagedInstallerProductWorkerEffectJournal:
     ManagedInstallerProductWorkerEffectJournaling,
     ManagedInstallerProductWorkerEffectReading, Sendable {

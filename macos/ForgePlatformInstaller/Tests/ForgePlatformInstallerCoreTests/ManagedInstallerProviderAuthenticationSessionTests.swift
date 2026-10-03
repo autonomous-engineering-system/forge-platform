@@ -41,7 +41,7 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         XCTAssertTrue(effects.snapshot().hasUnresolvedEffects)
     }
 
-    func testAuthenticationChildBlocksUpgradeUntilActualExitAfterSessionRelease() async {
+    func testAuthenticationChildBlocksUpgradeUntilVerifiedCredentialReadback() async {
         let registry = ManagedInstallerHelperChildExitRegistry()
         let effects = TestManagedInstallerProductWorkerEffectJournal()
         let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
@@ -63,12 +63,18 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         guard case .failure(.childActive) = await reader.read(operationID: "upgrade-1") else {
             return XCTFail("An authentication child must block upgrade")
         }
+        let retainedSession = session
         session = nil
         XCTAssertEqual(registry.activeCount(), 1)
         XCTAssertTrue(waitForExit(registry))
+        XCTAssertTrue(effects.snapshot().hasUnresolvedEffects)
+        guard case .failure(.childEffectsUncertain) = await reader.read(operationID: "upgrade-1") else {
+            return XCTFail("Child exit without verified credential readback must block upgrade")
+        }
+        XCTAssertTrue(retainedSession?.completeVerifiedReadback() == true)
         XCTAssertFalse(effects.snapshot().hasUnresolvedEffects)
         guard case .success = await reader.read(operationID: "upgrade-1") else {
-            return XCTFail("Only actual child exit may release this gate")
+            return XCTFail("Verified readback after actual exit may release this gate")
         }
     }
 
@@ -146,6 +152,8 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         )
         XCTAssertEqual(try reopened.readRequired().get().activeIDs.count, 1)
         XCTAssertTrue(waitForExit(registry))
+        XCTAssertTrue(try reopened.readRequired().get().hasUnresolvedEffects)
+        XCTAssertTrue(session.completeVerifiedReadback())
         XCTAssertFalse(try reopened.readRequired().get().hasUnresolvedEffects)
     }
 
@@ -183,6 +191,8 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         XCTAssertNotNil(session.begin(challengeTimeout: 2, sessionTimeout: 3))
         XCTAssertEqual(chmod(root.path, 0o755), 0)
         XCTAssertTrue(waitForExit(registry))
+        XCTAssertEqual(session.status(), .exited(0))
+        XCTAssertFalse(session.completeVerifiedReadback())
         XCTAssertEqual(session.status(), .rejected)
         XCTAssertEqual(chmod(root.path, 0o700), 0)
         XCTAssertTrue(try effects.readRequired().get().hasUnresolvedEffects)

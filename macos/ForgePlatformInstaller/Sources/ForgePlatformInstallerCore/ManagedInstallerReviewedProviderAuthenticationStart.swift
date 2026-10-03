@@ -123,7 +123,10 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
         ), readback.operationID == intent.operationID,
            readback.stablePlanFingerprint == intent.stablePlanFingerprint
         else { return nil }
-        sessions.removeValue(forKey: intent.operationID + "/" + providerTargetID.rawValue)
+        let key = intent.operationID + "/" + providerTargetID.rawValue
+        guard sessions[key]?.session === entry.session,
+              entry.session.completeVerifiedReadback() else { return nil }
+        sessions.removeValue(forKey: key)
         return readback.canonicalJSONData()
     }
 }
