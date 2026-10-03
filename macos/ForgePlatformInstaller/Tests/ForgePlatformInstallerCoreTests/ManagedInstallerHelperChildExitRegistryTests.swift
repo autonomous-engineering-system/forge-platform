@@ -70,6 +70,18 @@ final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
         XCTAssertEqual(registry.activeCount(), 0)
     }
 
+    func testFailedWorkerExitLeavesChildEffectsUncertain() async throws {
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/false")
+        let holder = ManagedInstallerProductWorkerProcess(process, registry: registry)
+        try process.run()
+        let exited = await holder.wait(timeoutNanoseconds: 2_000_000_000)
+        XCTAssertTrue(exited)
+        XCTAssertEqual(registry.activeCount(), 0)
+        XCTAssertTrue(registry.hasUncertainChildEffects())
+    }
+
     func testTimeoutReplyCannotStandInForProcessExit() async throws {
         let registry = ManagedInstallerHelperChildExitRegistry()
         let process = Process()

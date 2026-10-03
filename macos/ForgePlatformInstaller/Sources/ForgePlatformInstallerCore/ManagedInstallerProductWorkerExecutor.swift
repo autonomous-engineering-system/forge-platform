@@ -592,7 +592,12 @@ final class ManagedInstallerProductWorkerProcess: @unchecked Sendable {
         token = registry.reserve(process)
         // Register before run(): a short-lived worker must not exit between
         // launch and installation of the completion observer.
-        process.terminationHandler = { [exit, registry, token] _ in
+        process.terminationHandler = { [exit, registry, token] terminated in
+            // A crash or failed worker could leave a separately launched
+            // Keychain child behind even without our timeout signal.
+            if terminated.terminationReason != .exit || terminated.terminationStatus != 0 {
+                registry.markChildEffectsUncertain()
+            }
             _ = registry.finish(token)
             _ = exit.complete(true)
         }
