@@ -52,7 +52,9 @@ struct MacOSManagedInstallerProviderHomeProvisioner:
                 ManagedInstallerProviderRuntimeMutationFailure> {
         guard matches(request, account: account) else { return .failure(.invalidRequest) }
         do {
-            let parent = try openTargetDirectory()
+            guard let parent = try openTargetDirectory(allowMissing: true) else {
+                return .success(nil)
+            }
             defer { _ = Darwin.close(parent) }
             let descriptor = homeName.withCString {
                 Darwin.openat(parent, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
@@ -75,7 +77,9 @@ struct MacOSManagedInstallerProviderHomeProvisioner:
                 ManagedInstallerProviderRuntimeMutationFailure> {
         guard matches(request, account: account) else { return .failure(.invalidRequest) }
         do {
-            let parent = try openTargetDirectory()
+            guard let parent = try openTargetDirectory(allowMissing: false) else {
+                return .failure(.rejected)
+            }
             defer { _ = Darwin.close(parent) }
             let created = homeName.withCString { Darwin.mkdirat(parent, $0, 0o700) }
             guard created == 0 || errno == EEXIST else { return .failure(.rejected) }
@@ -141,7 +145,10 @@ struct MacOSManagedInstallerProviderHomeProvisioner:
             ))
     }
 
-    private func openTargetDirectory() throws -> Int32 {
+    /// A missing exact ancestor means there is no home yet during a fresh
+    /// install. Only readback may treat ENOENT as absence; mutation still
+    /// requires slot publication to have created the private topology first.
+    private func openTargetDirectory(allowMissing: Bool) throws -> Int32? {
         let descriptor = root.path.withCString {
             Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
         }
@@ -164,10 +171,14 @@ struct MacOSManagedInstallerProviderHomeProvisioner:
             let next = segment.withCString {
                 Darwin.openat(current, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
             }
+            let openError = errno
             _ = Darwin.close(current)
-            guard next >= 0,
-                  isPrivateDirectory(next, owner: expectedOwner, group: nil) else {
-                if next >= 0 { _ = Darwin.close(next) }
+            if next < 0 {
+                if allowMissing && openError == ENOENT { return nil }
+                throw ManagedInstallerProviderRuntimeMutationFailure.rejected
+            }
+            guard isPrivateDirectory(next, owner: expectedOwner, group: nil) else {
+                _ = Darwin.close(next)
                 throw ManagedInstallerProviderRuntimeMutationFailure.rejected
             }
             current = next
