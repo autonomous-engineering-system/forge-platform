@@ -581,7 +581,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                         + "Enter this one-time code ABCD-EF12\\n'; exec /bin/sleep 2",
                 ]
                 return ManagedInstallerProviderAuthenticationSession(
-                    provider: .codex, process: process
+                    provider: .codex, process: process,
+                    effectJournal: TestManagedInstallerProductWorkerEffectJournal()
                 )
             }
         )
@@ -707,7 +708,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                 process.arguments = ["-c", "printf 'https://auth.openai.com/codex/device\\n"
                     + "Enter this one-time code ABCD-EF12\\n'; /bin/sleep 0.1; exit 0"]
                 return ManagedInstallerProviderAuthenticationSession(
-                    provider: .codex, process: process
+                    provider: .codex, process: process,
+                    effectJournal: TestManagedInstallerProductWorkerEffectJournal()
                 )
             }
         )
@@ -752,7 +754,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                 process.arguments = ["-c", "printf 'https://auth.openai.com/codex/device\\n"
                     + "Enter this one-time code ABCD-EF12\\n'; /bin/sleep 0.1; exit 1"]
                 return ManagedInstallerProviderAuthenticationSession(
-                    provider: .codex, process: process
+                    provider: .codex, process: process,
+                    effectJournal: TestManagedInstallerProductWorkerEffectJournal()
                 )
             }
         )

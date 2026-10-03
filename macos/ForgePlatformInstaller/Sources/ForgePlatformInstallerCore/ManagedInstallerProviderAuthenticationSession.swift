@@ -2,8 +2,9 @@ import Darwin
 import Foundation
 
 /// One in-memory human device ceremony. The helper owns the child, both output
-/// pipes and its deadline. Only the bounded device challenge leaves this type;
-/// process output, account material and credentials are never journaled.
+/// pipes and its deadline. Its opaque child ID shares the durable effect
+/// journal with product workers; no output, account material or credential is
+/// journaled. An empty child journal does not establish Keychain quiescence.
 final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
     enum Terminal: Equatable {
         case running
@@ -14,6 +15,7 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
     private let provider: ProviderID
     private let process: Process
     private let exitRegistry: ManagedInstallerHelperChildExitRegistry
+    private let effectJournal: any ManagedInstallerProductWorkerEffectJournaling
     private let lock = NSLock()
     private let challengeReady = DispatchSemaphore(value: 0)
     private var output = Data()
@@ -25,10 +27,12 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
     private var stderr: Pipe?
 
     init(provider: ProviderID, process: Process,
-         exitRegistry: ManagedInstallerHelperChildExitRegistry = .processWide) {
+         exitRegistry: ManagedInstallerHelperChildExitRegistry = .processWide,
+         effectJournal: any ManagedInstallerProductWorkerEffectJournaling) {
         self.provider = provider
         self.process = process
         self.exitRegistry = exitRegistry
+        self.effectJournal = effectJournal
     }
 
     static func production(
@@ -59,7 +63,12 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
             "LANG": "C", "LC_ALL": "C",
         ]
         process.standardInput = FileHandle.nullDevice
-        return Self(provider: target.provider, process: process)
+        return Self(
+            provider: target.provider, process: process,
+            effectJournal: FileManagedInstallerProductWorkerEffectJournal(
+                helperRoot: FileManagedInstallerReleasedRouteXPCService.productionRoot
+            )
+        )
     }
 
     func begin(challengeTimeout: TimeInterval = 30,
@@ -84,9 +93,29 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
             self?.receive(handle.availableData, errorStream: true)
         }
         let token = exitRegistry.reserve(process)
-        process.terminationHandler = { [weak self, exitRegistry, token] process in
+        process.terminationHandler = {
+            [weak self, lock, exitRegistry, effectJournal, token] process in
+            lock.lock()
+            let normalExit = process.terminationReason == .exit
+                && process.terminationStatus == 0
+                && !exitRegistry.hasUncertainChildEffects()
+            if !normalExit { exitRegistry.markChildEffectsUncertain() }
+            let durableExit: Bool
+            if case .failure = effectJournal.finish(token, normalExit: normalExit) {
+                exitRegistry.markChildEffectsUncertain()
+                durableExit = false
+            } else {
+                durableExit = true
+            }
             _ = exitRegistry.finish(token)
-            self?.didTerminate(process)
+            if let self, self.terminal == .running {
+                self.terminal = durableExit && process.terminationReason == .exit
+                    ? .exited(process.terminationStatus) : .rejected
+            }
+            lock.unlock()
+            self?.stdout?.fileHandleForReading.readabilityHandler = nil
+            self?.stderr?.fileHandleForReading.readabilityHandler = nil
+            self?.challengeReady.signal()
         }
         // Serialize launch with cancellation. A cancelled ceremony must not
         // start a child after stopProcess observed that no PID existed.
@@ -96,12 +125,21 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
             _ = exitRegistry.finish(token)
             return nil
         }
+        guard case .success = effectJournal.begin(token) else {
+            lock.unlock()
+            _ = exitRegistry.finish(token)
+            reject()
+            return nil
+        }
         do {
             try process.run()
             lock.unlock()
         }
         catch {
             lock.unlock()
+            if case .failure = effectJournal.cancelBeforeLaunch(token) {
+                exitRegistry.markChildEffectsUncertain()
+            }
             _ = exitRegistry.finish(token)
             reject()
             return nil
@@ -127,7 +165,13 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
     func cancel() {
         lock.lock()
         let shouldStop = started && terminal == .running
-        if shouldStop { terminal = .rejected }
+        if shouldStop {
+            terminal = .rejected
+            if process.processIdentifier > 0 {
+                exitRegistry.markChildEffectsUncertain()
+                _ = effectJournal.markUncertain()
+            }
+        }
         lock.unlock()
         guard shouldStop else { return }
         stopProcess()
@@ -145,6 +189,8 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
         }
         guard output.count <= 4 * 1_024, errors.count <= 4 * 1_024 else {
             terminal = .rejected
+            exitRegistry.markChildEffectsUncertain()
+            _ = effectJournal.markUncertain()
             lock.unlock()
             stopProcess()
             challengeReady.signal()
@@ -159,18 +205,6 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
             if challenge != nil { challengeReady.signal() }
         }
         lock.unlock()
-    }
-
-    private func didTerminate(_ child: Process) {
-        lock.lock()
-        if terminal == .running {
-            terminal = child.terminationReason == .exit
-                ? .exited(child.terminationStatus) : .rejected
-        }
-        lock.unlock()
-        stdout?.fileHandleForReading.readabilityHandler = nil
-        stderr?.fileHandleForReading.readabilityHandler = nil
-        challengeReady.signal()
     }
 
     private func reject() {
