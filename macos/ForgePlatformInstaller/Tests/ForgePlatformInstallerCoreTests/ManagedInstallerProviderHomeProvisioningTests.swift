@@ -4,6 +4,55 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProviderHomeProvisioningTests: XCTestCase {
+    func testFreshForgeReadTreatsMissingProviderAncestryAsAbsent() throws {
+        let fixture = try HomeFixture(provider: .codex, owner: .forgeRuntime)
+        defer { fixture.remove() }
+        let deployments = fixture.root.appendingPathComponent("deployments", isDirectory: true)
+        try FileManager.default.removeItem(at: deployments)
+
+        XCTAssertNil(try fixture.provisioner().read(
+            fixture.request, account: fixture.account
+        ).get())
+        XCTAssertEqual(fixture.provisioner().ensure(
+            fixture.request, account: fixture.account
+        ).failure, .rejected)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: deployments.path))
+    }
+
+    func testFreshEPReadTreatsMissingIntermediateAncestryAsAbsent() throws {
+        let fixture = try HomeFixture(
+            provider: .githubCLI, owner: .engineeringPlatformServer,
+            epProduct: true, freshEPProduct: true
+        )
+        defer { fixture.remove() }
+        let providers = fixture.target.deletingLastPathComponent()
+        try FileManager.default.removeItem(at: providers)
+
+        XCTAssertNil(try fixture.provisioner().read(
+            fixture.request, account: fixture.account
+        ).get())
+        XCTAssertEqual(fixture.provisioner().ensure(
+            fixture.request, account: fixture.account
+        ).failure, .rejected)
+    }
+
+    func testFreshReadRejectsSymlinkedAncestry() throws {
+        let fixture = try HomeFixture(provider: .codex, owner: .forgeRuntime)
+        defer { fixture.remove() }
+        let providerParent = fixture.root.appendingPathComponent(
+            "deployments/deployment-a/providers/forge-runtime", isDirectory: true
+        )
+        let outside = fixture.root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.removeItem(at: providerParent)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+        XCTAssertEqual(chmod(outside.path, 0o700), 0)
+        XCTAssertEqual(symlink(outside.path, providerParent.path), 0)
+
+        XCTAssertEqual(fixture.provisioner().read(
+            fixture.request, account: fixture.account
+        ).failure, .rejected)
+    }
+
     func testCreatesExactForgeHomeAndReadsItIdempotently() throws {
         let fixture = try HomeFixture(provider: .codex, owner: .forgeRuntime)
         defer { fixture.remove() }
