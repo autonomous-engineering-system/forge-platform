@@ -5,25 +5,36 @@ import ForgePlatformInstallerCore
 enum InstallerCLIHelperRegistration {
     typealias Registrar = @Sendable (InstallerVersion) async -> ManagedInstallerPrivilegedHelperRegistrationResult
 
-    static let liveRegistrar: Registrar = { expectedVersion in
-        guard let coordinator = liveCoordinator() else { return .failed(.transitionBusy) }
-        return await coordinator.ensureRegistered(expectedVersion: expectedVersion)
+    enum Action: Sendable {
+        case register, qualification, idle, mvp0314, mvp0316
     }
 
-    static let liveQualificationReplacer: Registrar = { expectedVersion in
-        guard let coordinator = liveCoordinator() else { return .failed(.transitionBusy) }
-        return await coordinator.replaceLegacyQualification(expectedVersion: expectedVersion)
+    static func makeRegistrar(
+        for action: Action,
+        coordinator: @escaping @Sendable () -> ManagedInstallerPrivilegedHelperRegistrationCoordinator?
+    ) -> Registrar {
+        { expectedVersion in
+            guard let instance = coordinator() else { return .failed(.transitionBusy) }
+            switch action {
+            case .register:
+                return await instance.ensureRegistered(expectedVersion: expectedVersion)
+            case .qualification:
+                return await instance.replaceLegacyQualification(expectedVersion: expectedVersion)
+            case .idle:
+                return await instance.replaceIdleOlderRegistration(expectedVersion: expectedVersion)
+            case .mvp0314:
+                return await instance.replaceMVP0314ForCleanInstall(expectedVersion: expectedVersion)
+            case .mvp0316:
+                return await instance.replaceMVP0316ForCleanInstall(expectedVersion: expectedVersion)
+            }
+        }
     }
 
-    static let liveIdleReplacer: Registrar = { expectedVersion in
-        guard let coordinator = liveCoordinator() else { return .failed(.transitionBusy) }
-        return await coordinator.replaceIdleOlderRegistration(expectedVersion: expectedVersion)
-    }
-
-    static let liveMVP0314Replacer: Registrar = { expectedVersion in
-        guard let coordinator = liveCoordinator() else { return .failed(.transitionBusy) }
-        return await coordinator.replaceMVP0314ForCleanInstall(expectedVersion: expectedVersion)
-    }
+    static let liveRegistrar = makeRegistrar(for: .register, coordinator: liveCoordinator)
+    static let liveQualificationReplacer = makeRegistrar(for: .qualification, coordinator: liveCoordinator)
+    static let liveIdleReplacer = makeRegistrar(for: .idle, coordinator: liveCoordinator)
+    static let liveMVP0314Replacer = makeRegistrar(for: .mvp0314, coordinator: liveCoordinator)
+    static let liveMVP0316Replacer = makeRegistrar(for: .mvp0316, coordinator: liveCoordinator)
 
     private static func liveCoordinator() -> ManagedInstallerPrivilegedHelperRegistrationCoordinator? {
         let service = MacOSManagedInstallerPrivilegedHelperServiceController()
@@ -39,7 +50,8 @@ enum InstallerCLIHelperRegistration {
         register: Registrar,
         replacingQualification: Bool = false,
         replacingOlder: Bool = false,
-        replacingMVP0314: Bool = false
+        replacingMVP0314: Bool = false,
+        replacingMVP0316: Bool = false
     ) async -> InstallerCLIResult {
         if !options.assumeYes {
             let accepted = options.nonInteractive ? false : await confirm(
@@ -47,6 +59,8 @@ enum InstallerCLIHelperRegistration {
                     ? "Vervang de exacte inactieve 0.2.4-kwalificatiehelper door de geverifieerde systeemhelper?"
                     : replacingMVP0314
                         ? "Beëindig de actieve 0.3.14-helper na schone-hostcontrole en registreer de geverifieerde 0.3.16-helper?"
+                    : replacingMVP0316
+                        ? "Beëindig de actieve 0.3.16-helper na schone-hostcontrole en registreer de geverifieerde 0.3.18-helper?"
                     : replacingOlder
                         ? "Vervang de exacte inactieve oudere installer-helper door de geverifieerde actuele systeemhelper?"
                         : "Registreer de geverifieerde installer-helper als systeemdaemon?"
