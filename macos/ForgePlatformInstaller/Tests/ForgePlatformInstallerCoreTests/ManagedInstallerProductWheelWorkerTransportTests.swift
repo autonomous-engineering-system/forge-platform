@@ -127,7 +127,9 @@ final class ManagedInstallerProductWheelWorkerTransportTests: XCTestCase {
             expectedInterpreterOwner: 0, requireSingleInterpreterLink: false,
             timeoutNanoseconds: 5_000_000_000
         )
-        let runner = MacOSManagedInstallerProductWorkerRunner()
+        let runner = MacOSManagedInstallerProductWorkerRunner(
+            effectJournal: TestManagedInstallerProductWorkerEffectJournal()
+        )
         XCTAssertTrue(runner.secureInterpreter(invocation))
         XCTAssertTrue(runner.secureWorker(invocation))
         let observed = try await runner.runWheelWorker(

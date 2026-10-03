@@ -1403,7 +1403,8 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
             timeoutNanoseconds: 5_000_000_000
         )
         let runner = MacOSManagedInstallerProductWorkerRunner(
-            forgeUpdateResources: FixedForgeUpdateResourcesChecker(ready: true)
+            forgeUpdateResources: FixedForgeUpdateResourcesChecker(ready: true),
+            effectJournal: TestManagedInstallerProductWorkerEffectJournal()
         )
         XCTAssertNil(invocation.interpreterURL.baseURL)
         XCTAssertNil(invocation.workerURL.baseURL)

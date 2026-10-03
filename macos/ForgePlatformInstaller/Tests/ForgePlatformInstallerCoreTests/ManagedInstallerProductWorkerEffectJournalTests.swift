@@ -37,6 +37,37 @@ final class ManagedInstallerProductWorkerEffectJournalTests: XCTestCase {
         XCTAssertTrue(state.hasUnresolvedEffects)
     }
 
+    func testUncertaintyAfterNormalExitRemainsStickyAcrossCallbackRace() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let worker = UUID()
+        try fixture.store.begin(worker).get()
+        try fixture.store.finish(worker, normalExit: true).get()
+        try fixture.store.markUncertain().get()
+        let reopened = FileManagedInstallerProductWorkerEffectJournal(
+            stateRoot: fixture.root, expectedOwner: geteuid()
+        )
+        XCTAssertTrue(try reopened.read().get().hasUnresolvedEffects)
+    }
+
+    func testProcessHolderRecordsRealLaunchBeforeExitCallback() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let holder = ManagedInstallerProductWorkerProcess(
+            process, registry: registry, effectJournal: fixture.store
+        )
+        XCTAssertTrue(holder.recordBeforeLaunch())
+        XCTAssertEqual(try fixture.store.read().get().activeIDs.count, 1)
+        try process.run()
+        let exited = await holder.wait(timeoutNanoseconds: 2_000_000_000)
+        XCTAssertTrue(exited)
+        XCTAssertFalse(try fixture.store.read().get().hasUnresolvedEffects)
+        XCTAssertEqual(registry.activeCount(), 0)
+    }
+
     func testCrashAfterBeginKeepsActiveIDAndRejectsDuplicateOrUnknownFinish() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -97,6 +128,54 @@ final class ManagedInstallerProductWorkerEffectJournalTests: XCTestCase {
         }
 
         func remove() { try? FileManager.default.removeItem(at: root) }
+    }
+}
+
+final class TestManagedInstallerProductWorkerEffectJournal:
+    ManagedInstallerProductWorkerEffectJournaling, @unchecked Sendable {
+    private let lock = NSLock()
+    private let acceptsBegin: Bool
+    private var active: Set<UUID> = []
+    private var uncertain = false
+
+    init(acceptsBegin: Bool = true) { self.acceptsBegin = acceptsBegin }
+
+    func begin(_ id: UUID) -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {
+        lock.lock()
+        defer { lock.unlock() }
+        guard acceptsBegin else { return .failure(.unavailable) }
+        guard active.insert(id).inserted else { return .failure(.conflict) }
+        return .success(())
+    }
+
+    func cancelBeforeLaunch(_ id: UUID)
+        -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {
+        finish(id, normalExit: true)
+    }
+
+    func finish(_ id: UUID, normalExit: Bool)
+        -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {
+        lock.lock()
+        defer { lock.unlock() }
+        guard active.remove(id) != nil else { return .failure(.conflict) }
+        if !normalExit { uncertain = true }
+        return .success(())
+    }
+
+    func markUncertain() -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {
+        lock.lock()
+        uncertain = true
+        lock.unlock()
+        return .success(())
+    }
+
+    func snapshot() -> ManagedInstallerProductWorkerEffectSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return ManagedInstallerProductWorkerEffectSnapshot(
+            activeIDs: active.sorted { $0.uuidString < $1.uuidString },
+            uncertain: uncertain
+        )
     }
 }
 

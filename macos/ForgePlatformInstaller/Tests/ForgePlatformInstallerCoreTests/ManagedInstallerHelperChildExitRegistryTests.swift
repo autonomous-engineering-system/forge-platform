@@ -51,35 +51,64 @@ final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
         let registry = ManagedInstallerHelperChildExitRegistry()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
-        let holder = ManagedInstallerProductWorkerProcess(process, registry: registry)
+        let journal = TestManagedInstallerProductWorkerEffectJournal()
+        let holder = ManagedInstallerProductWorkerProcess(
+            process, registry: registry, effectJournal: journal
+        )
         XCTAssertEqual(registry.activeCount(), 1)
+        XCTAssertTrue(holder.recordBeforeLaunch())
         try process.run()
         let exited = await holder.wait(timeoutNanoseconds: 2_000_000_000)
         XCTAssertTrue(exited)
         XCTAssertEqual(registry.activeCount(), 0)
+        XCTAssertFalse(journal.snapshot().hasUnresolvedEffects)
+    }
+
+    func testDurableBeginFailurePreventsLaunchAndReleasesRegistryReservation() {
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        let holder = ManagedInstallerProductWorkerProcess(
+            process,
+            registry: registry,
+            effectJournal: TestManagedInstallerProductWorkerEffectJournal(acceptsBegin: false)
+        )
+        XCTAssertFalse(holder.recordBeforeLaunch())
+        XCTAssertEqual(registry.activeCount(), 0)
+        XCTAssertFalse(process.isRunning)
     }
 
     func testLaunchFailureReleasesReservedWorker() {
         let registry = ManagedInstallerHelperChildExitRegistry()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/private/tmp/absent-worker")
-        let holder = ManagedInstallerProductWorkerProcess(process, registry: registry)
+        let journal = TestManagedInstallerProductWorkerEffectJournal()
+        let holder = ManagedInstallerProductWorkerProcess(
+            process, registry: registry, effectJournal: journal
+        )
         XCTAssertEqual(registry.activeCount(), 1)
+        XCTAssertTrue(holder.recordBeforeLaunch())
         XCTAssertThrowsError(try process.run())
         holder.cancelBeforeLaunch()
         XCTAssertEqual(registry.activeCount(), 0)
+        XCTAssertFalse(journal.snapshot().hasUnresolvedEffects)
     }
 
     func testFailedWorkerExitLeavesChildEffectsUncertain() async throws {
         let registry = ManagedInstallerHelperChildExitRegistry()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/false")
-        let holder = ManagedInstallerProductWorkerProcess(process, registry: registry)
+        let journal = TestManagedInstallerProductWorkerEffectJournal()
+        let holder = ManagedInstallerProductWorkerProcess(
+            process, registry: registry, effectJournal: journal
+        )
+        XCTAssertTrue(holder.recordBeforeLaunch())
         try process.run()
         let exited = await holder.wait(timeoutNanoseconds: 2_000_000_000)
         XCTAssertTrue(exited)
         XCTAssertEqual(registry.activeCount(), 0)
         XCTAssertTrue(registry.hasUncertainChildEffects())
+        XCTAssertTrue(journal.snapshot().hasUnresolvedEffects)
     }
 
     func testTimeoutReplyCannotStandInForProcessExit() async throws {
@@ -87,8 +116,12 @@ final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sleep")
         process.arguments = ["5"]
-        let holder = ManagedInstallerProductWorkerProcess(process, registry: registry)
+        let journal = TestManagedInstallerProductWorkerEffectJournal()
+        let holder = ManagedInstallerProductWorkerProcess(
+            process, registry: registry, effectJournal: journal
+        )
         XCTAssertEqual(registry.activeCount(), 1)
+        XCTAssertTrue(holder.recordBeforeLaunch())
         try process.run()
         let timedOut = await holder.wait(timeoutNanoseconds: 10_000_000)
         XCTAssertFalse(timedOut)
@@ -99,6 +132,7 @@ final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
         }
         XCTAssertEqual(registry.activeCount(), 0)
         XCTAssertTrue(registry.hasUncertainChildEffects())
+        XCTAssertTrue(journal.snapshot().hasUnresolvedEffects)
 
         let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
         XCTAssertEqual(admission.beginDrain(operationID: "upgrade-1", expectedEpoch: 7),
