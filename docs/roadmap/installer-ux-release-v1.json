@@ -218,7 +218,9 @@
         "directive_id": "L1-HELPER-UPGRADE-WITHOUT-REBOOT-V1-20261002",
         "assignment_id": "L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923",
         "design_status": "IN_PROGRESS",
-        "admission_gate_source": "PR_575_GATE_PR_577_ACTIVE_XPC_WIRING",
+        "admission_gate_source": "PR_575_TO_600_SOURCE_ONLY",
+        "idle_legacy_bootstrap": "SIGNED_0_3_13_TO_0_3_14_RECOVERED_SAME_BOOT",
+        "live_helper": "SIGNED_0_3_14_RUNNING_RUNS_1",
         "first_legacy_transition": "BLOCKED_LEGACY_TRANSITION",
         "native_same_boot_qualification": "NOT_RUN",
         "required_evidence": [
@@ -229,7 +231,8 @@
           "DUPLICATE_NEXT_UPGRADE_RACE_CRASH_LOST_RESPONSE_PARTIAL_REGISTRATION",
           "UNCHANGED_PRODUCT_PROVIDER_PAIRING_AND_SIBLING_STATE"
         ],
-        "legacy_evidence": "https://github.com/pcvantol/forge/issues/141#issuecomment-5956469919"
+        "legacy_evidence": "https://github.com/pcvantol/forge/issues/141#issuecomment-5962954936",
+        "idle_bootstrap_evidence": "https://github.com/pcvantol/forge/issues/141#issuecomment-5962943308"
       }
     },
     {

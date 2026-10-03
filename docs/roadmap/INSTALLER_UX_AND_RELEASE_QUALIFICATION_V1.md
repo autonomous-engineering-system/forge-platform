@@ -369,30 +369,24 @@ active work, concurrent updaters, admission races, crash/response loss and
 partial registration must be qualified. Native PASS requires real signed
 macOS candidates and unchanged boot identity; source fixtures remain separate.
 
-PR #575 added the source-level `ManagedInstallerHelperUpgradeAdmissionGate`
-lease/drain primitive; PR #577 connected it to the two active privileged XPC
-backends. It is not a durable service-transition coordinator or proof of
-product-worker and credential quiescence. Source coverage and green CI do not
-satisfy native qualification.
+Merged source increments from PR #575 through PR #600 supply admission,
+durable identity/journal, worker/ceremony tracking and a sealed negative
+child-exit barrier. Complete
+product/credential/System Keychain/host quiescence, the production upgrade
+coordinator, supported service handoff and native same-boot qualification are
+still open. Source coverage and green CI do not satisfy native qualification.
 
-The currently registered 0.3.13 helper has no drain/close protocol and its
-direct product XPC worker path is not covered by an external admission latch.
-The existing idle replacement requires `runs = 0`; it previously showed
-`RUNNING`, `runs = 1`. After a separately observed host boot change it shows
-`not running`, `runs = 0`, still bound to parent 0.3.13. That state does not
-prove old operation quiescence or a same-boot used-helper transition. The first
-live transition is therefore
-`BLOCKED_LEGACY_TRANSITION` pending an actually reviewed and proven migration
-route. The owner has separately authorized the existing idle replacement route
-only after exact root-private state readback, which still awaits their macOS
-administrator confirmation. That conditional idle route does not prove the
-same-boot used-helper requirement. This state is not a general macOS reboot
-requirement. The owner directive
-does not authorize a reboot, kill, global launchd/BTM reset, credential replay
-or weakened product/signing admission. The root-private active-operation state
-and any agreed one-time migration authority require separate exact readback;
-unknown state stays blocked. The target 0.3.14 artifact is only staged/public,
-not live-qualified.
+After the externally observed host boot change, the owner-authorized idle
+0.3.13 → 0.3.14 bootstrap completed, including ordinary registration recovery
+from a proven absent-job state. The fixed helper now runs signed 0.3.14 with
+`runs = 1`, current CLI status and readable empty deployment inventory on the
+same boot. That bootstrap does not prove an upgrade after a helper had run on
+that boot. The live 0.3.14 provenance predates the new admission/drain source,
+and its own idle replacement requires `runs = 0`. The next used-helper
+transition remains `BLOCKED_LEGACY_TRANSITION` until a reviewed route closes
+that released helper's mutation ingress and proves effect quiescence. No reboot,
+kill, global launchd/BTM reset, credential replay or weaker product/signing
+admission is authorized. This state is not a general macOS reboot requirement.
 
 Preserve the original installer DoD: independent Quality/Security on exact
 head, strict >80.2% executable-line coverage per changed production file,
