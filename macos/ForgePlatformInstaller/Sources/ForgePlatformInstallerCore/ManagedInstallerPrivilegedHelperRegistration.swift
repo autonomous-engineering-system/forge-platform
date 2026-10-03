@@ -421,6 +421,26 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         }
     }
 
+    /// One bounded transition from the published 0.3.20 helper after its
+    /// provider preparation failed before product installation. The operator
+    /// must independently prove a quiescent, recoverable journal and the
+    /// absence of product, credential and worker effects before invoking it.
+    /// Only the exact signed 0.3.22 successor is admitted.
+    public func replaceMVP0320ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.22"),
+                  let prior = try? InstallerVersion("0.3.20"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
     private func replaceBoundedRunningParentWhileLocked(
         expectedVersion: InstallerVersion,
         priorVersion: InstallerVersion
