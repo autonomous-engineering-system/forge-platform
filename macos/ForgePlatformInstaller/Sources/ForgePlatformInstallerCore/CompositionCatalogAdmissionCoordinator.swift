@@ -55,11 +55,13 @@ protocol IndependentTrustedTimeReading: Sendable {
 }
 
 /// Independent HTTPS time source used only to bound catalog freshness. It uses
-/// GitHub's fixed public API endpoint and its TLS-authenticated HTTP Date header;
+/// GitHub's fixed public rate-limit endpoint and its TLS-authenticated HTTP Date
+/// header. GitHub excludes this endpoint from the primary REST API quota, so
+/// clock attestations remain available when the anonymous quota is exhausted;
 /// no catalog host, local wall clock, environment variable or credential can
 /// supply the trusted instant.
 final class GitHubHTTPSDateTrustedTimeSource: NSObject, IndependentTrustedTimeReading, @unchecked Sendable {
-    static let endpoint = URL(string: "https://api.github.com/meta")!
+    static let endpoint = URL(string: "https://api.github.com/rate_limit")!
     private static let maximumBodyBytes = 256 * 1024
 
     private let timeout: TimeInterval
