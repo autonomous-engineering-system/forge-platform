@@ -102,6 +102,98 @@ final class ManagedInstallerProductWheelTransportTests: XCTestCase {
         XCTAssertNil(request?.value(forHTTPHeaderField: "Cookie"))
     }
 
+    func testExactFrozenPyPIWheelUsesCredentialFreeDirectResponse() async {
+        let bytes = Data("qualified-wheel-bytes".utf8)
+        let source = "https://files.pythonhosted.org/packages/8b/dc/"
+            + "0d9fdd5409973fc915245b2117535a11ec6676146e1906b7e6cb4e3f9c45/"
+            + "forge_autonomy-2.7.39-py3-none-any.whl"
+        let original = wheelBinding(bytes: bytes)
+        let binding = ManagedInstallerPrepublicationProductWheelBinding(
+            deploymentID: original.deploymentID,
+            compositionIdentity: "forge-ep-2.7.39-2.3.106",
+            manifestSHA256: "sha256:" + String(repeating: "d", count: 64),
+            componentIdentity: original.componentIdentity,
+            venvIdentity: "forge-test-v1", version: "2.7.39",
+            sourceRevision: original.sourceRevision, sourceURL: source,
+            qualificationURL: original.qualificationURL,
+            artifactSHA256: original.artifactSHA256
+        )
+        ProductWheelURLProtocol.configure(.init(
+            statusCode: 200, headers: ["Content-Length": String(bytes.count)], bytes: bytes
+        ))
+        guard case .success(let readback) = await transport().fetch(binding) else {
+            return XCTFail("expected exact PyPI wheel transport")
+        }
+        XCTAssertEqual(readback.bytes, bytes)
+        XCTAssertEqual(ProductWheelURLProtocol.lastRequest()?.url?.absoluteString, source)
+        XCTAssertNil(ProductWheelURLProtocol.lastRequest()?
+            .value(forHTTPHeaderField: "Authorization"))
+        XCTAssertNil(ProductWheelURLProtocol.lastRequest()?
+            .value(forHTTPHeaderField: "Cookie"))
+
+        ProductWheelURLProtocol.configure(.init(statusCode: 200, headers: [:],
+                                                bytes: Data("changed".utf8)))
+        guard case .failure(.rejected) = await transport().fetch(binding)
+        else { return XCTFail("PyPI digest drift was accepted") }
+
+        ProductWheelURLProtocol.configure(.init(
+            statusCode: 200, headers: [:], bytes: bytes,
+            responseURL: "https://untrusted.example.invalid/forge.whl"
+        ))
+        guard case .failure(.rejected) = await transport().fetch(binding)
+        else { return XCTFail("PyPI response origin drift was accepted") }
+    }
+
+    func testPyPIWheelSourceRejectsURLVariantsBeforeNetwork() async {
+        let source = "https://files.pythonhosted.org/packages/8b/dc/"
+            + "0d9fdd5409973fc915245b2117535a11ec6676146e1906b7e6cb4e3f9c45/"
+            + "forge_autonomy-2.7.39-py3-none-any.whl"
+        let invalid = [
+            source.replacingOccurrences(of: "files.pythonhosted.org",
+                                        with: "evil.pythonhosted.org"),
+            source.replacingOccurrences(of: "/packages/8b/dc/",
+                                        with: "/packages/8b/zz/"),
+            source + "?x=1", source + "#fragment",
+            source.replacingOccurrences(of: "https:", with: "http:"),
+            source.replacingOccurrences(of: ".whl", with: ".zip"),
+            source.replacingOccurrences(of: ".whl", with: ".wh%6c"),
+        ]
+        let original = wheelBinding(bytes: Data("qualified-wheel-bytes".utf8))
+        for candidate in invalid {
+            XCTAssertFalse(HTTPSManagedInstallerProductWheelTransport
+                .isAllowedSourceWheelURL(candidate))
+            let binding = ManagedInstallerPrepublicationProductWheelBinding(
+                deploymentID: original.deploymentID,
+                compositionIdentity: "forge-ep-2.7.39-2.3.106",
+                manifestSHA256: "sha256:" + String(repeating: "d", count: 64),
+                componentIdentity: original.componentIdentity,
+                venvIdentity: "forge-test-v1", version: "2.7.39",
+                sourceRevision: original.sourceRevision, sourceURL: candidate,
+                qualificationURL: original.qualificationURL,
+                artifactSHA256: original.artifactSHA256
+            )
+            ProductWheelURLProtocol.configure(.init(
+                statusCode: 200, headers: [:], bytes: Data("qualified-wheel-bytes".utf8)
+            ))
+            guard case .failure(.invalidRequest) = await transport().fetch(binding)
+            else { return XCTFail("untrusted PyPI URL was accepted") }
+            XCTAssertNil(ProductWheelURLProtocol.lastRequest())
+        }
+    }
+
+    func testBothFrozenPublishedWheelURLsMatchStrictPyPILayout() {
+        let ep = "https://files.pythonhosted.org/packages/eb/e0/"
+            + "90b2671146ca4b8b1ab73640bf3c20069748f40eb29cd9168379f037a196/"
+            + "engineering_platform-2.3.106-py3-none-any.whl"
+        let forge = "https://files.pythonhosted.org/packages/8b/dc/"
+            + "0d9fdd5409973fc915245b2117535a11ec6676146e1906b7e6cb4e3f9c45/"
+            + "forge_autonomy-2.7.39-py3-none-any.whl"
+        XCTAssertTrue(HTTPSManagedInstallerProductWheelTransport
+            .isAllowedSourceWheelURL(ep))
+        XCTAssertTrue(HTTPSManagedInstallerProductWheelTransport
+            .isAllowedSourceWheelURL(forge))
+    }
+
     func testPrepublicationTransportRejectsDigestDrift() async {
         let bytes = Data("qualified-wheel-bytes".utf8)
         let existing = wheelBinding(bytes: bytes)

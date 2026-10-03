@@ -58,6 +58,33 @@ final class ManagedInstallerPrepublicationProductWheelAuthorityTests: XCTestCase
         ))
     }
 
+    func testFrozenPyPIWheelSourceIsAdmittedOnlyAtExactImmutableURL() throws {
+        let source = "https://files.pythonhosted.org/packages/8b/dc/"
+            + "0d9fdd5409973fc915245b2117535a11ec6676146e1906b7e6cb4e3f9c45/"
+            + "forge_autonomy-2.7.39-py3-none-any.whl"
+        let fixture = try PrepublicationWheelFixture(forgeSourceURL: source)
+        let result = ManagedInstallerPrepublicationProductWheelAuthority().resolve(
+            material: fixture.material, deployment: fixture.deployment,
+            componentIdentity: "forge-runtime"
+        )
+        XCTAssertEqual(try result.get().sourceURL, source)
+
+        for untrusted in [
+            source.replacingOccurrences(of: "files.pythonhosted.org",
+                                        with: "evil.pythonhosted.org"),
+            source + "?download=1",
+            source.replacingOccurrences(of: "/packages/8b/dc/",
+                                        with: "/packages/8b/zz/"),
+            source.replacingOccurrences(of: ".whl", with: ".zip"),
+        ] {
+            let altered = try PrepublicationWheelFixture(forgeSourceURL: untrusted)
+            assertRejected(ManagedInstallerPrepublicationProductWheelAuthority().resolve(
+                material: altered.material, deployment: altered.deployment,
+                componentIdentity: "forge-runtime"
+            ))
+        }
+    }
+
     private func assertRejected(
         _ result: Result<ManagedInstallerPrepublicationProductWheelBinding,
                         ManagedInstallerPrepublicationProductWheelFailure>
@@ -76,6 +103,7 @@ struct PrepublicationWheelFixture {
 
     init(
         duplicateForge: Bool = false, sourceSuffix: String = "forge.whl",
+        forgeSourceURL: String? = nil,
         wheelBytes: Data = Data("qualified-wheel-test-bytes".utf8),
         providerRequirements: [ProviderRequirement] = [],
         includeProductVenvs: Bool = false,
@@ -93,10 +121,9 @@ struct PrepublicationWheelFixture {
                 "digest": .string(artifactDigest),
                 "version": .string("2.7.38"),
                 "source_revision": .string(String(repeating: "b", count: 40)),
-                "source": .string(
-                    "https://github.com/pcvantol/forge/releases/download/forge-v2.7.38/"
-                        + sourceSuffix
-                ),
+                "source": .string(forgeSourceURL
+                    ?? "https://github.com/pcvantol/forge/releases/download/forge-v2.7.38/"
+                        + sourceSuffix),
                 "qualification": .string(
                     "https://github.com/pcvantol/forge/releases/tag/forge-v2.7.38"
                 ),
