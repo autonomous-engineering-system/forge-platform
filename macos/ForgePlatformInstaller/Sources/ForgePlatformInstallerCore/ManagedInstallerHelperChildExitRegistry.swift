@@ -98,6 +98,23 @@ struct ManagedInstallerHelperUpgradeChildExitReader: Sendable {
         else { return .failure(.childEffectsUncertain) }
         return .success(())
     }
+
+    /// Close the last in-process completion entrance only after the required
+    /// child and durable effect reads are quiet, then repeat those reads while
+    /// the entrance is sealed. A failed post-seal read leaves admission closed
+    /// and requires recovery; this is not product or Keychain authority.
+    func readChildExitAndSealAdmission(operationID: String) async -> Result<
+        Void, ManagedInstallerHelperUpgradeChildExitFailure
+    > {
+        switch await read(operationID: operationID) {
+        case .failure(let failure): return .failure(failure)
+        case .success: break
+        }
+        guard admission.sealDrainAfterIndependentQuiescence(
+            operationID: operationID, expectedEpoch: epoch
+        ) else { return .failure(.admissionBusy) }
+        return await read(operationID: operationID)
+    }
 }
 
 enum ManagedInstallerHelperUpgradeChildExitFailure: Error, Equatable, Sendable {

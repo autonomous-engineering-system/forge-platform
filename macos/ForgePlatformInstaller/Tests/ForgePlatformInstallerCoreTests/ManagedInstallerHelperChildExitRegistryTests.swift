@@ -91,6 +91,62 @@ final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
         XCTAssertEqual(effects.readCount, 2)
     }
 
+    func testChildExitBarrierSealsOnlyAfterNegativeReadback() async {
+        let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        XCTAssertEqual(admission.beginDrain(operationID: "upgrade-1", expectedEpoch: 7),
+                       .quiescent)
+        let effects = SequencedWorkerEffectReader(activeAt: [])
+        let reader = ManagedInstallerHelperUpgradeChildExitReader(
+            admission: admission,
+            children: ManagedInstallerHelperChildExitRegistry(),
+            ceremonies: TestCeremonyReader(), workerEffects: effects, epoch: 7
+        )
+        guard case .success = await reader.readChildExitAndSealAdmission(
+            operationID: "upgrade-1"
+        ) else { return XCTFail("exact quiet child evidence should seal admission") }
+        XCTAssertEqual(effects.readCount, 4)
+        XCTAssertNil(admission.admittedExistingCeremonyCompletionReply { _ in
+            XCTFail("sealed admission accepted another completion")
+        })
+    }
+
+    func testCompletionEnteringAfterReadBeforeSealBlocksBarrier() async {
+        let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        XCTAssertEqual(admission.beginDrain(operationID: "upgrade-1", expectedEpoch: 7),
+                       .quiescent)
+        let effects = CompletionInjectingWorkerEffectReader(admission: admission)
+        let reader = ManagedInstallerHelperUpgradeChildExitReader(
+            admission: admission,
+            children: ManagedInstallerHelperChildExitRegistry(),
+            ceremonies: TestCeremonyReader(), workerEffects: effects, epoch: 7
+        )
+        let result = await reader.readChildExitAndSealAdmission(operationID: "upgrade-1")
+        XCTAssertEqual(result.failure, .admissionBusy)
+        XCTAssertEqual(admission.readDrain(operationID: "upgrade-1", expectedEpoch: 7),
+                       .draining(activeMutations: 1))
+        effects.finishInjectedCompletion()
+        XCTAssertEqual(admission.readDrain(operationID: "upgrade-1", expectedEpoch: 7),
+                       .quiescent)
+    }
+
+    func testPostSealReadbackFailureLeavesAdmissionClosed() async {
+        let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        XCTAssertEqual(admission.beginDrain(operationID: "upgrade-1", expectedEpoch: 7),
+                       .quiescent)
+        let effects = SequencedWorkerEffectReader(activeAt: [4])
+        let reader = ManagedInstallerHelperUpgradeChildExitReader(
+            admission: admission,
+            children: ManagedInstallerHelperChildExitRegistry(),
+            ceremonies: TestCeremonyReader(), workerEffects: effects, epoch: 7
+        )
+        let result = await reader.readChildExitAndSealAdmission(operationID: "upgrade-1")
+        XCTAssertEqual(result.failure, .childEffectsUncertain)
+        XCTAssertEqual(effects.readCount, 4)
+        XCTAssertNil(admission.admittedExistingCeremonyCompletionReply { _ in
+            XCTFail("failed post-seal readback reopened admission")
+        })
+    }
+
     func testProcessHolderCountsBeforeLaunchAndClearsOnlyOnExit() async throws {
         let registry = ManagedInstallerHelperChildExitRegistry()
         let process = Process()
@@ -203,7 +259,10 @@ private actor TestCeremonyReader: ManagedInstallerProviderAuthenticationCeremony
 private final class SequencedWorkerEffectReader:
     ManagedInstallerProductWorkerEffectReading, @unchecked Sendable {
     private let lock = NSLock()
+    private let activeAt: Set<Int>
     private var count = 0
+
+    init(activeAt: Set<Int> = [2]) { self.activeAt = activeAt }
 
     var readCount: Int {
         lock.lock()
@@ -218,8 +277,39 @@ private final class SequencedWorkerEffectReader:
         let current = count
         lock.unlock()
         return .success(.init(
-            activeIDs: current == 1 ? [] : [UUID()], uncertain: false
+            activeIDs: activeAt.contains(current) ? [UUID()] : [], uncertain: false
         ))
+    }
+}
+
+private final class CompletionInjectingWorkerEffectReader:
+    ManagedInstallerProductWorkerEffectReading, @unchecked Sendable {
+    private let admission: ManagedInstallerHelperUpgradeAdmissionGate
+    private let lock = NSLock()
+    private var count = 0
+    private var completion: ((Data?) -> Void)?
+
+    init(admission: ManagedInstallerHelperUpgradeAdmissionGate) {
+        self.admission = admission
+    }
+
+    func readRequired() -> Result<ManagedInstallerProductWorkerEffectSnapshot,
+                                  ManagedInstallerProductWorkerEffectJournalFailure> {
+        lock.lock()
+        count += 1
+        if count == 2 {
+            completion = admission.admittedExistingCeremonyCompletionReply { _ in }
+        }
+        lock.unlock()
+        return .success(.init(activeIDs: [], uncertain: false))
+    }
+
+    func finishInjectedCompletion() {
+        lock.lock()
+        let reply = completion
+        completion = nil
+        lock.unlock()
+        reply?(nil)
     }
 }
 
