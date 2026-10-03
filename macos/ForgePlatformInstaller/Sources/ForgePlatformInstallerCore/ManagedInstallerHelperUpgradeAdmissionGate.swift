@@ -20,6 +20,7 @@ public final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendab
     private let epoch: UInt64
     private var activeMutations = Set<UUID>()
     private var drainingOperationID: String?
+    private var sealedOperationID: String?
 
     public init(epoch: UInt64) {
         self.epoch = epoch
@@ -57,7 +58,7 @@ public final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendab
     private func beginExistingCeremonyCompletion() -> ManagedInstallerHelperMutationLease? {
         lock.lock()
         defer { lock.unlock() }
-        guard epoch > 0 else { return nil }
+        guard epoch > 0, sealedOperationID == nil else { return nil }
         let id = UUID()
         activeMutations.insert(id)
         return ManagedInstallerHelperMutationLease(id: id, epoch: epoch)
@@ -110,5 +111,22 @@ public final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendab
               drainingOperationID == operationID else { return .blocked }
         return activeMutations.isEmpty
             ? .quiescent : .draining(activeMutations: activeMutations.count)
+    }
+
+    /// Atomically prevents any further existing-ceremony completion from
+    /// acquiring a lease after the exact drain has no outstanding replies.
+    /// A caller must independently prove durable worker, product, credential
+    /// and host state before treating this admission barrier as replacement
+    /// authority. Sealing is irreversible for this helper process and epoch.
+    func sealDrainAfterIndependentQuiescence(
+        operationID: String, expectedEpoch: UInt64
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard epoch > 0, expectedEpoch == epoch,
+              drainingOperationID == operationID,
+              activeMutations.isEmpty else { return false }
+        sealedOperationID = operationID
+        return true
     }
 }
