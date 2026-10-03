@@ -15,27 +15,34 @@ final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
         XCTAssertEqual(registry.activeCount(), 0)
     }
 
-    func testUpgradeReaderRequiresClosedAdmissionAndNoOutstandingChild() throws {
+    func testUpgradeReaderRequiresClosedAdmissionAndNoOutstandingCeremonyOrChild()
+        async throws {
         let registry = ManagedInstallerHelperChildExitRegistry()
         let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        let ceremonies = TestCeremonyReader()
         let reader = ManagedInstallerHelperUpgradeChildExitReader(
-            admission: admission, children: registry, epoch: 7
+            admission: admission, children: registry,
+            ceremonies: ceremonies, epoch: 7
         )
-        XCTAssertEqual(reader.read(operationID: "upgrade-1").failure,
-                       .admissionBusy)
+        var result = await reader.read(operationID: "upgrade-1")
+        XCTAssertEqual(result.failure, .admissionBusy)
         let mutation = try XCTUnwrap(admission.beginMutation())
         XCTAssertEqual(admission.beginDrain(operationID: "upgrade-1", expectedEpoch: 7),
                        .draining(activeMutations: 1))
-        XCTAssertEqual(reader.read(operationID: "upgrade-1").failure,
-                       .admissionBusy)
+        result = await reader.read(operationID: "upgrade-1")
+        XCTAssertEqual(result.failure, .admissionBusy)
         XCTAssertTrue(admission.finishMutation(mutation))
+        await ceremonies.setPending(1)
+        result = await reader.read(operationID: "upgrade-1")
+        XCTAssertEqual(result.failure, .ceremonyPending)
+        await ceremonies.setPending(0)
         let worker = registry.reserve(Process())
-        XCTAssertEqual(reader.read(operationID: "upgrade-1").failure,
-                       .childActive)
-        XCTAssertEqual(reader.read(operationID: "other").failure,
-                       .admissionBusy)
+        result = await reader.read(operationID: "upgrade-1")
+        XCTAssertEqual(result.failure, .childActive)
+        result = await reader.read(operationID: "other")
+        XCTAssertEqual(result.failure, .admissionBusy)
         XCTAssertTrue(registry.finish(worker))
-        guard case .success = reader.read(operationID: "upgrade-1") else {
+        guard case .success = await reader.read(operationID: "upgrade-1") else {
             return XCTFail("Expected exact closed admission and observed child exit")
         }
     }
@@ -80,6 +87,14 @@ final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
         }
         XCTAssertEqual(registry.activeCount(), 0)
     }
+}
+
+private actor TestCeremonyReader: ManagedInstallerProviderAuthenticationCeremonyReading {
+    private var pending = 0
+
+    func setPending(_ count: Int) { pending = count }
+
+    func pendingCeremonyCount() -> Int { pending }
 }
 
 private extension Result where Success == Void,

@@ -589,6 +589,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             canonicalIntent: canonical, providerTargetID: requirement.id
         )
         XCTAssertNotNil(startedBytes)
+        let pendingAfterStart = await starter.pendingCeremonyCount()
+        XCTAssertEqual(pendingAfterStart, 1)
         XCTAssertEqual(ManagedInstallerProviderAuthenticationChallengeResponse.decodeJSON(
             try XCTUnwrap(startedBytes), intent: intent,
             targetID: requirement.id
@@ -601,6 +603,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             canonicalIntent: canonical, providerTargetID: requirement.id
         )
         XCTAssertTrue(cancelled)
+        let pendingAfterCancel = await starter.pendingCeremonyCount()
+        XCTAssertEqual(pendingAfterCancel, 0)
         let drifted = ManagedInstallerReviewedProviderAuthenticationAdmission(
             loader: ProviderStagePlanLoader(plan: fixture.plan), reader: reader,
             prepareTarget: { _, _ in
@@ -712,6 +716,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             canonicalIntent: bytes, providerTargetID: requirement.id
         )
         XCTAssertNotNil(challenge)
+        let pendingBeforeVerification = await starter.pendingCeremonyCount()
+        XCTAssertEqual(pendingBeforeVerification, 1)
         let before = await starter.finish(
             canonicalIntent: bytes, providerTargetID: requirement.id
         )
@@ -731,6 +737,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(completed, verified.canonicalJSONData())
+        let pendingAfterVerification = await starter.pendingCeremonyCount()
+        XCTAssertEqual(pendingAfterVerification, 0)
         let repeatCompletion = await starter.finish(
             canonicalIntent: bytes, providerTargetID: requirement.id
         )

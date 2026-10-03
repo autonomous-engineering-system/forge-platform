@@ -33,27 +33,37 @@ final class ManagedInstallerHelperChildExitRegistry: @unchecked Sendable {
     }
 }
 
-/// This is one necessary child-exit input, not complete product or credential
-/// quiescence. Admission must already be durably closed for this operation.
+/// This is one necessary child/ceremony input, not complete product or
+/// credential quiescence. The ceremony actor must share the production XPC
+/// admission gate, already durably closed for this exact operation.
 struct ManagedInstallerHelperUpgradeChildExitReader: Sendable {
     private let admission: ManagedInstallerHelperUpgradeAdmissionGate
     private let children: ManagedInstallerHelperChildExitRegistry
+    private let ceremonies: any ManagedInstallerProviderAuthenticationCeremonyReading
     private let epoch: UInt64
 
     init(admission: ManagedInstallerHelperUpgradeAdmissionGate,
-         children: ManagedInstallerHelperChildExitRegistry, epoch: UInt64) {
+         children: ManagedInstallerHelperChildExitRegistry,
+         ceremonies: any ManagedInstallerProviderAuthenticationCeremonyReading,
+         epoch: UInt64) {
         self.admission = admission
         self.children = children
+        self.ceremonies = ceremonies
         self.epoch = epoch
     }
 
-    func read(operationID: String) -> Result<Void,
-                                            ManagedInstallerHelperUpgradeChildExitFailure> {
+    func read(operationID: String) async -> Result<
+        Void, ManagedInstallerHelperUpgradeChildExitFailure
+    > {
         guard admission.readDrain(operationID: operationID, expectedEpoch: epoch) == .quiescent
         else { return .failure(.admissionBusy) }
+        guard await ceremonies.pendingCeremonyCount() == 0
+        else { return .failure(.ceremonyPending) }
         guard children.activeCount() == 0 else { return .failure(.childActive) }
         guard admission.readDrain(operationID: operationID, expectedEpoch: epoch) == .quiescent
         else { return .failure(.admissionBusy) }
+        guard await ceremonies.pendingCeremonyCount() == 0
+        else { return .failure(.ceremonyPending) }
         guard children.activeCount() == 0 else { return .failure(.childActive) }
         return .success(())
     }
@@ -61,5 +71,6 @@ struct ManagedInstallerHelperUpgradeChildExitReader: Sendable {
 
 enum ManagedInstallerHelperUpgradeChildExitFailure: Error, Equatable, Sendable {
     case admissionBusy
+    case ceremonyPending
     case childActive
 }
