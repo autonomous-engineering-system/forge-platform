@@ -7,6 +7,22 @@ public enum ManagedInstallerProviderRuntimeMutationFailure: Error, Equatable, Se
     case rejected
 }
 
+/// A Mach-O deployment target is the oldest OS the binary supports. Provider
+/// binaries may target an older macOS release than the installer host.
+enum ManagedInstallerProviderRuntimeOSCompatibility {
+    static func supports(_ minimum: InstallerVersion) -> Bool {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        guard let host = try? InstallerVersion(
+            "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+        ) else { return false }
+        return supports(minimum, on: host)
+    }
+
+    static func supports(_ minimum: InstallerVersion, on host: InstallerVersion) -> Bool {
+        host.major >= 26 && minimum.major >= 11 && minimum <= host
+    }
+}
+
 /// Closed request for one exact component-provider runtime installation. Every
 /// mutable location is derived inside the privileged adapter from fixed root
 /// policy plus these immutable identities. No path, command, environment value
@@ -43,7 +59,9 @@ public struct ManagedInstallerProviderRuntimeMutationRequest: Equatable, Sendabl
               inspection.provider == requirement.provider,
               inspection.runtime == runtime,
               inspection.executableArchitectures == ["arm64"],
-              inspection.minimumMacOSVersion.major >= 26 else {
+              ManagedInstallerProviderRuntimeOSCompatibility.supports(
+                  inspection.minimumMacOSVersion
+              ) else {
             throw ManagedInstallerProviderRuntimeMutationFailure.invalidRequest
         }
         operationID = stagedArchive.operationID
@@ -156,7 +174,9 @@ public struct ManagedInstallerProviderRuntimeMutationReceipt: Equatable, Sendabl
               InstallerSelfUpdateValidation.isOpaqueReference(runtimeSlotIdentity),
               InstallerSelfUpdateValidation.isOpaqueReference(providerHomeIdentity),
               executableArchitectures == ["arm64"],
-              minimumMacOSVersion.major >= 26,
+              ManagedInstallerProviderRuntimeOSCompatibility.supports(
+                  minimumMacOSVersion
+              ),
               ManagedPythonRuntimeInstalledReadback.isEvidenceReference(
                   evidenceReference
               ) else {
