@@ -16,10 +16,20 @@ enum ManagedInstallerProductWorkerEffectJournalFailure: Error, Equatable, Sendab
     case conflict
 }
 
+protocol ManagedInstallerProductWorkerEffectJournaling: Sendable {
+    func begin(_ id: UUID) -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
+    func cancelBeforeLaunch(_ id: UUID)
+        -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
+    func finish(_ id: UUID, normalExit: Bool)
+        -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
+    func markUncertain() -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
+}
+
 /// A root-owned fixed-location write-ahead record survives helper crashes.
 /// Each worker is recorded before Process.run(), and only a proven normal exit
 /// or a failed launch removes its ID. Abnormal exit leaves a sticky uncertainty.
-struct FileManagedInstallerProductWorkerEffectJournal: Sendable {
+struct FileManagedInstallerProductWorkerEffectJournal:
+    ManagedInstallerProductWorkerEffectJournaling, Sendable {
     private static let lockName = "product-worker-effects.lock"
     private static let recordName = "product-worker-effects.json"
     private static let temporaryName = "product-worker-effects.tmp"
@@ -66,6 +76,18 @@ struct FileManagedInstallerProductWorkerEffectJournal: Sendable {
     func finish(_ id: UUID, normalExit: Bool)
         -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {
         finish(id, uncertain: !normalExit)
+    }
+
+    /// A timeout or failed pipe can race the Process callback. Preserve the
+    /// negative evidence even if that callback already removed the worker ID.
+    func markUncertain() -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {
+        transact { root in
+            let previous = try readRecord(root)
+            let next = ManagedInstallerProductWorkerEffectSnapshot(
+                activeIDs: previous.activeIDs, uncertain: true
+            )
+            try write(try encode(next), in: root, replace: try recordExists(root))
+        }
     }
 
     private func finish(_ id: UUID, uncertain: Bool)

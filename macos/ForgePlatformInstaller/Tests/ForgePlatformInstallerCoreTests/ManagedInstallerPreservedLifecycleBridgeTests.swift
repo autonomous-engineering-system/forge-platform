@@ -880,7 +880,8 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
             timeoutNanoseconds: 5_000_000_000
         )
         let runner = MacOSManagedInstallerProductWorkerRunner(
-            forgeUpdateResources: AllowedForgeUpdateResources()
+            forgeUpdateResources: AllowedForgeUpdateResources(),
+            effectJournal: TestManagedInstallerProductWorkerEffectJournal()
         )
         let reviewOutput = try await runner.runProductWorker(
             invocation, canonicalRequest: selected.canonicalJSONData()
