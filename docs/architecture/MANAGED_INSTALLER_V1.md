@@ -387,6 +387,69 @@ read immediately before the ServiceManagement mutation and returns
 status drift remains blocked. This call path is source-qualified; a live
 registration and reboot still require their own independent evidence.
 
+### Used-helper upgrade within one boot
+
+`L1-HELPER-UPGRADE-WITHOUT-REBOOT-V1-20261002` refines this existing helper,
+self-update and recovery contract. A running or previously run daemon is not
+an active product operation. Conversely, an empty process list or an absent
+product journal does not close admission. Every mutating GUI, CLI and helper
+XPC route must enter one helper-owned admission gate before it can begin any
+effect, including worker launch, provider authentication, credential access,
+selection publication and lifecycle recovery. The gate must retain an active
+permit through each operation's terminal product-owned receipt or resumable
+checkpoint. A request racing the close either owns a counted permit or gets
+`BUSY`; unknown state and timeout get `BLOCKED` without stopping the helper.
+
+`ManagedInstallerHelperUpgradeAdmissionGate` landed on `main` in PR #575 as
+an in-process lease and drain primitive. PR #577 shared it across the two
+active privileged XPC backends. Through PR #600, source work also includes an
+exact signed-source/target identity, private durable transition journal,
+startup fence, counted one-shot replies, a sealed admission barrier, and
+negative readbacks for tracked product workers and provider-authentication
+children. The post-tool endpoint remains denial-only. These are necessary
+inputs; complete product/credential/System Keychain/host quiescence, the
+production upgrade XPC coordinator, supported service transition and native
+same-boot qualification remain open. Merged source does not change the older
+signed helper already running on this host.
+
+The gate must durably bind one operation ID and generation to the exact source
+and target signed artifacts, fixed SMAppService label, bundle/Team/signing
+identities and caller audit/process identity. Closing admission and proving
+quiescence are separate facts. The external, authorized coordinator holds an
+exclusive root-owned transition journal, selects the supported service route
+for the observed parent, and retains uncertain states for exact same-operation
+resume. It must use new signed bundle inodes and may not edit a running signed
+executable in place. `unregister`/`register` return, ENABLED status, on-disk
+version and elapsed time are insufficient: completion needs observed old-job
+departure, actual new process/signing/parent identity, fresh XPC inventory and
+protocol readback, unchanged boot identity and unchanged product/provider/
+pairing/sibling state. Duplicate invocation, changed candidate, stale epoch,
+lost response and partial registration fail closed or resume the same operation;
+normal exact-version product admission stays intact.
+
+The first transition has a distinct legacy gate. After an externally observed
+boot change, the previously used signed 0.3.13 helper was `not running` with
+`runs = 0`. Root-private readback identified its only state file as the valid
+durable create-candidate reservation and found empty product, operation and
+runtime-slot trees. The owner-authorized idle route unregistered 0.3.13; an
+initial registration failure left the fixed job absent, then the reviewed
+ordinary register recovery installed signed 0.3.14. Fresh XPC inventory and
+CLI status succeeded without another boot. This was an idle bootstrap, not an
+upgrade after the old helper had run on that same boot.
+
+The now-running signed 0.3.14 helper has `runs = 1` and provenance source
+`40176eb`, before the admission/drain code above. Its own replacement path
+still requires both `state = not running` and `runs = 0`; its active XPC paths
+have no close/drain protocol. A new-only command, client-side lock, empty
+journal or process list cannot atomically close the old ingress. [Apple's
+SMAppService unregister contract](https://developer.apple.com/documentation/servicemanagement/smappservice/unregister%28%29?language=objc)
+states that unregister terminates a running LaunchDaemon, so unregister before
+quiescence cannot itself serve as a graceful drain. The current used-helper
+same-boot transition is `BLOCKED_LEGACY_TRANSITION` until a bounded, reviewed
+route proves admission closure and no active effects on those exact released
+bytes. This is not a general macOS reboot requirement. Cold-boot/no-login
+acceptance remains a separate gate with separate owner authorization.
+
 The native core now also defines a canonical product-operation bridge for the
 exact Forge+EP pair. Its request is rebuilt from that stable plan and terminal
 runtime receipt and contains only reviewed identities, actions and evidence
