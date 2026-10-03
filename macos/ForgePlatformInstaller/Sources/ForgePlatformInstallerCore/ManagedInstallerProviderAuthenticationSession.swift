@@ -13,6 +13,7 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
 
     private let provider: ProviderID
     private let process: Process
+    private let exitRegistry: ManagedInstallerHelperChildExitRegistry
     private let lock = NSLock()
     private let challengeReady = DispatchSemaphore(value: 0)
     private var output = Data()
@@ -23,9 +24,11 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
     private var stdout: Pipe?
     private var stderr: Pipe?
 
-    init(provider: ProviderID, process: Process) {
+    init(provider: ProviderID, process: Process,
+         exitRegistry: ManagedInstallerHelperChildExitRegistry = .processWide) {
         self.provider = provider
         self.process = process
+        self.exitRegistry = exitRegistry
     }
 
     static func production(
@@ -80,11 +83,29 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
         err.fileHandleForReading.readabilityHandler = { [weak self] handle in
             self?.receive(handle.availableData, errorStream: true)
         }
-        process.terminationHandler = { [weak self] process in
+        let token = exitRegistry.reserve(process)
+        process.terminationHandler = { [weak self, exitRegistry, token] process in
+            _ = exitRegistry.finish(token)
             self?.didTerminate(process)
         }
-        do { try process.run() }
-        catch { reject(); return nil }
+        // Serialize launch with cancellation. A cancelled ceremony must not
+        // start a child after stopProcess observed that no PID existed.
+        lock.lock()
+        guard terminal == .running else {
+            lock.unlock()
+            _ = exitRegistry.finish(token)
+            return nil
+        }
+        do {
+            try process.run()
+            lock.unlock()
+        }
+        catch {
+            lock.unlock()
+            _ = exitRegistry.finish(token)
+            reject()
+            return nil
+        }
         DispatchQueue.global(qos: .utility).asyncAfter(
             deadline: .now() + sessionTimeout
         ) { [weak self] in self?.cancel() }

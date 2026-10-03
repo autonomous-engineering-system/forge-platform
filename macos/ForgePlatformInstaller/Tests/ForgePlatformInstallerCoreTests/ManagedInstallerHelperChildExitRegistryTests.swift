@@ -2,9 +2,9 @@ import Foundation
 import XCTest
 @testable import ForgePlatformInstallerCore
 
-final class ManagedInstallerProductWorkerExitRegistryTests: XCTestCase {
-    func testRegistryRetainsEachWorkerUntilExactExitAndRejectsDuplicateCompletion() {
-        let registry = ManagedInstallerProductWorkerExitRegistry()
+final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
+    func testRegistryRetainsEachChildUntilExactExitAndRejectsDuplicateCompletion() {
+        let registry = ManagedInstallerHelperChildExitRegistry()
         let first = registry.reserve(Process())
         let second = registry.reserve(Process())
         XCTAssertEqual(registry.activeCount(), 2)
@@ -15,11 +15,11 @@ final class ManagedInstallerProductWorkerExitRegistryTests: XCTestCase {
         XCTAssertEqual(registry.activeCount(), 0)
     }
 
-    func testUpgradeReaderRequiresClosedAdmissionAndNoOutstandingWorker() throws {
-        let registry = ManagedInstallerProductWorkerExitRegistry()
+    func testUpgradeReaderRequiresClosedAdmissionAndNoOutstandingChild() throws {
+        let registry = ManagedInstallerHelperChildExitRegistry()
         let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
-        let reader = ManagedInstallerHelperUpgradeWorkerExitReader(
-            admission: admission, workers: registry, epoch: 7
+        let reader = ManagedInstallerHelperUpgradeChildExitReader(
+            admission: admission, children: registry, epoch: 7
         )
         XCTAssertEqual(reader.read(operationID: "upgrade-1").failure,
                        .admissionBusy)
@@ -31,17 +31,17 @@ final class ManagedInstallerProductWorkerExitRegistryTests: XCTestCase {
         XCTAssertTrue(admission.finishMutation(mutation))
         let worker = registry.reserve(Process())
         XCTAssertEqual(reader.read(operationID: "upgrade-1").failure,
-                       .workerActive)
+                       .childActive)
         XCTAssertEqual(reader.read(operationID: "other").failure,
                        .admissionBusy)
         XCTAssertTrue(registry.finish(worker))
         guard case .success = reader.read(operationID: "upgrade-1") else {
-            return XCTFail("Expected exact closed admission and observed worker exit")
+            return XCTFail("Expected exact closed admission and observed child exit")
         }
     }
 
     func testProcessHolderCountsBeforeLaunchAndClearsOnlyOnExit() async throws {
-        let registry = ManagedInstallerProductWorkerExitRegistry()
+        let registry = ManagedInstallerHelperChildExitRegistry()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
         let holder = ManagedInstallerProductWorkerProcess(process, registry: registry)
@@ -53,7 +53,7 @@ final class ManagedInstallerProductWorkerExitRegistryTests: XCTestCase {
     }
 
     func testLaunchFailureReleasesReservedWorker() {
-        let registry = ManagedInstallerProductWorkerExitRegistry()
+        let registry = ManagedInstallerHelperChildExitRegistry()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/private/tmp/absent-worker")
         let holder = ManagedInstallerProductWorkerProcess(process, registry: registry)
@@ -64,7 +64,7 @@ final class ManagedInstallerProductWorkerExitRegistryTests: XCTestCase {
     }
 
     func testTimeoutReplyCannotStandInForProcessExit() async throws {
-        let registry = ManagedInstallerProductWorkerExitRegistry()
+        let registry = ManagedInstallerHelperChildExitRegistry()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sleep")
         process.arguments = ["5"]
@@ -83,7 +83,7 @@ final class ManagedInstallerProductWorkerExitRegistryTests: XCTestCase {
 }
 
 private extension Result where Success == Void,
-                               Failure == ManagedInstallerHelperUpgradeWorkerExitFailure {
+                               Failure == ManagedInstallerHelperUpgradeChildExitFailure {
     var failure: Failure? {
         guard case .failure(let reason) = self else { return nil }
         return reason

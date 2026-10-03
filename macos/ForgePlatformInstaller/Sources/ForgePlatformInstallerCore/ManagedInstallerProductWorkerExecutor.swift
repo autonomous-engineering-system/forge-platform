@@ -174,11 +174,11 @@ struct MacOSManagedInstallerProductWorkerRunner:
     private static let maximumErrorBytes = 8 * 1_024
     private static let maximumWorkerBytes = 16 * 1_024 * 1_024
     private let forgeUpdateResources: any ManagedInstallerForgeUpdateResourcesChecking
-    private let processRegistry: ManagedInstallerProductWorkerExitRegistry
+    private let processRegistry: ManagedInstallerHelperChildExitRegistry
 
     init(forgeUpdateResources: any ManagedInstallerForgeUpdateResourcesChecking =
         SignedManagedInstallerForgeUpdateResourcesChecker(),
-         processRegistry: ManagedInstallerProductWorkerExitRegistry = .processWide) {
+         processRegistry: ManagedInstallerHelperChildExitRegistry = .processWide) {
         self.forgeUpdateResources = forgeUpdateResources
         self.processRegistry = processRegistry
     }
@@ -580,10 +580,10 @@ struct MacOSManagedInstallerProductWorkerRunner:
 final class ManagedInstallerProductWorkerProcess: @unchecked Sendable {
     private let process: Process
     private let exit = ManagedInstallerProductWorkerExitGate()
-    private let registry: ManagedInstallerProductWorkerExitRegistry
+    private let registry: ManagedInstallerHelperChildExitRegistry
     private let token: UUID
 
-    init(_ process: Process, registry: ManagedInstallerProductWorkerExitRegistry) {
+    init(_ process: Process, registry: ManagedInstallerHelperChildExitRegistry) {
         self.process = process
         self.registry = registry
         token = registry.reserve(process)

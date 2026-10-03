@@ -23,14 +23,43 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
     }
 
     func testStderrChallengeAndExplicitCancellation() {
+        let registry = ManagedInstallerHelperChildExitRegistry()
         let session = makeSession(
-            .githubCLI, shell: "printf '\(githubPrompt)' >&2; exec /bin/sleep 10"
+            .githubCLI, shell: "printf '\(githubPrompt)' >&2; exec /bin/sleep 10",
+            exitRegistry: registry
         )
         let challenge = session.begin(challengeTimeout: 2, sessionTimeout: 5)
         XCTAssertEqual(challenge?.userCode, "9XYZ-1234")
+        XCTAssertEqual(registry.activeCount(), 1)
         session.cancel()
         XCTAssertEqual(session.status(), .rejected)
         session.cancel()
+        XCTAssertTrue(waitForExit(registry))
+    }
+
+    func testAuthenticationChildBlocksUpgradeUntilActualExitAfterSessionRelease() {
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        let reader = ManagedInstallerHelperUpgradeChildExitReader(
+            admission: admission, children: registry, epoch: 7
+        )
+        var session: ManagedInstallerProviderAuthenticationSession? = makeSession(
+            .codex, shell: "printf '\(codexPrompt)'; exec /bin/sleep 1",
+            exitRegistry: registry
+        )
+        XCTAssertNotNil(session?.begin(challengeTimeout: 2, sessionTimeout: 3))
+        XCTAssertEqual(registry.activeCount(), 1)
+        XCTAssertEqual(admission.beginDrain(operationID: "upgrade-1", expectedEpoch: 7),
+                       .quiescent)
+        guard case .failure(.childActive) = reader.read(operationID: "upgrade-1") else {
+            return XCTFail("An authentication child must block upgrade")
+        }
+        session = nil
+        XCTAssertEqual(registry.activeCount(), 1)
+        XCTAssertTrue(waitForExit(registry))
+        guard case .success = reader.read(operationID: "upgrade-1") else {
+            return XCTFail("Only actual child exit may release this gate")
+        }
     }
 
     func testOversizedMissingAndTimedOutChallengesFailClosed() {
@@ -52,13 +81,15 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
     }
 
     func testAbsentExecutableAndNonPrivilegedProductionFactoryFailClosed() {
+        let registry = ManagedInstallerHelperChildExitRegistry()
         let absent = Process()
         absent.executableURL = URL(fileURLWithPath: "/private/tmp/fpi-auth-absent")
         let session = ManagedInstallerProviderAuthenticationSession(
-            provider: .codex, process: absent
+            provider: .codex, process: absent, exitRegistry: registry
         )
         XCTAssertNil(session.begin(challengeTimeout: 1, sessionTimeout: 2))
         XCTAssertEqual(session.status(), .rejected)
+        XCTAssertEqual(registry.activeCount(), 0)
         let target = ManagedInstallerProviderAuthenticationTarget(
             provider: .codex,
             account: .init(name: "_fpi_" + String(repeating: "a", count: 20),
@@ -72,14 +103,23 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         ))
     }
 
-    private func makeSession(_ provider: ProviderID, shell: String)
+    private func makeSession(_ provider: ProviderID, shell: String,
+                             exitRegistry: ManagedInstallerHelperChildExitRegistry = .processWide)
         -> ManagedInstallerProviderAuthenticationSession {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", shell]
         process.environment = ["PATH": "/usr/bin:/bin", "LANG": "C"]
         return ManagedInstallerProviderAuthenticationSession(
-            provider: provider, process: process
+            provider: provider, process: process, exitRegistry: exitRegistry
         )
+    }
+
+    private func waitForExit(_ registry: ManagedInstallerHelperChildExitRegistry) -> Bool {
+        for _ in 0..<200 {
+            if registry.activeCount() == 0 { return true }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return registry.activeCount() == 0
     }
 }
