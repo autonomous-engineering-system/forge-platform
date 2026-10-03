@@ -3,6 +3,52 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
+    func testReleasedProviderDeploymentTargetsBelowHostVersionRemainInstallable() throws {
+        let fixture = try ProviderRuntimeMutationFixture()
+        for minimum in ["11.0.0", "13.0.0"] {
+            let inspection = try ManagedInstallerProviderRuntimeArchiveInspection(
+                providerTargetID: fixture.requirement.id,
+                provider: fixture.requirement.provider,
+                runtime: fixture.runtime,
+                archiveEntryCount: fixture.inspection.archiveEntryCount,
+                expandedByteCount: fixture.inspection.expandedByteCount,
+                executableArchitectures: ["arm64"],
+                minimumMacOSVersion: InstallerVersion(minimum),
+                evidenceReference: fixture.inspection.evidenceReference
+            )
+            let request = try ManagedInstallerProviderRuntimeMutationRequest(
+                deploymentID: "deployment-a",
+                stagedArchive: fixture.staged,
+                requirement: fixture.requirement,
+                inspection: inspection
+            )
+            let receipt = try ManagedInstallerProviderRuntimeMutationReceipt(
+                request: request, evidenceReference: "receipt:compatible-provider-runtime"
+            )
+            XCTAssertTrue(receipt.matches(request))
+        }
+    }
+
+    func testProviderDeploymentTargetMustBeSupportedByTheHost() throws {
+        let host = try InstallerVersion("26.0.0")
+        XCTAssertTrue(ManagedInstallerProviderRuntimeOSCompatibility.supports(
+            try InstallerVersion("11.0.0"), on: host
+        ))
+        XCTAssertTrue(ManagedInstallerProviderRuntimeOSCompatibility.supports(
+            try InstallerVersion("13.0.0"), on: host
+        ))
+        XCTAssertTrue(ManagedInstallerProviderRuntimeOSCompatibility.supports(host, on: host))
+        XCTAssertFalse(ManagedInstallerProviderRuntimeOSCompatibility.supports(
+            try InstallerVersion("10.15.7"), on: host
+        ))
+        XCTAssertFalse(ManagedInstallerProviderRuntimeOSCompatibility.supports(
+            try InstallerVersion("27.0.0"), on: host
+        ))
+        XCTAssertFalse(ManagedInstallerProviderRuntimeOSCompatibility.supports(
+            try InstallerVersion("11.0.0"), on: try InstallerVersion("25.9.9")
+        ))
+    }
+
     func testInstallsOnlyExactClosedRequestAndRequiresFreshReadback() async throws {
         let fixture = try ProviderRuntimeMutationFixture()
         let staging = ProviderRuntimeMutationStaging(fixture: fixture)
@@ -371,7 +417,12 @@ final class ManagedInstallerProviderRuntimeMutationTests: XCTestCase {
             ),
             (
                 valid.operationID, valid.managedRootIdentity, valid.runtimeSlotIdentity,
-                valid.providerHomeIdentity, valid.architectures, try InstallerVersion("25.9.9"),
+                valid.providerHomeIdentity, valid.architectures, try InstallerVersion("10.15.7"),
+                valid.evidence
+            ),
+            (
+                valid.operationID, valid.managedRootIdentity, valid.runtimeSlotIdentity,
+                valid.providerHomeIdentity, valid.architectures, try InstallerVersion("99.0.0"),
                 valid.evidence
             ),
             (
