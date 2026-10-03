@@ -701,6 +701,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             loader: ProviderStagePlanLoader(plan: fixture.plan), reader: reader,
             prepareTarget: { _, _ in physical }
         )
+        let effects = TestManagedInstallerProductWorkerEffectJournal()
+        let childRegistry = ManagedInstallerHelperChildExitRegistry()
         let starter = ManagedInstallerReviewedProviderAuthenticationStart(
             admission: admission, makeSession: { _ in
                 let process = Process()
@@ -709,7 +711,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                     + "Enter this one-time code ABCD-EF12\\n'; /bin/sleep 0.1; exit 0"]
                 return ManagedInstallerProviderAuthenticationSession(
                     provider: .codex, process: process,
-                    effectJournal: TestManagedInstallerProductWorkerEffectJournal()
+                    exitRegistry: childRegistry,
+                    effectJournal: effects
                 )
             }
         )
@@ -720,6 +723,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         XCTAssertNotNil(challenge)
         let pendingBeforeVerification = await starter.pendingCeremonyCount()
         XCTAssertEqual(pendingBeforeVerification, 1)
+        XCTAssertTrue(effects.snapshot().hasUnresolvedEffects)
         let before = await starter.finish(
             canonicalIntent: bytes, providerTargetID: requirement.id
         )
@@ -729,6 +733,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             canonicalIntent: bytes, providerTargetID: requirement.id
         )
         XCTAssertNil(sameEvidence)
+        XCTAssertTrue(effects.snapshot().hasUnresolvedEffects)
         await reader.set(verified)
         var completed: Data?
         for _ in 0..<20 {
@@ -739,6 +744,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(completed, verified.canonicalJSONData())
+        XCTAssertFalse(effects.snapshot().hasUnresolvedEffects)
         let pendingAfterVerification = await starter.pendingCeremonyCount()
         XCTAssertEqual(pendingAfterVerification, 0)
         let repeatCompletion = await starter.finish(
