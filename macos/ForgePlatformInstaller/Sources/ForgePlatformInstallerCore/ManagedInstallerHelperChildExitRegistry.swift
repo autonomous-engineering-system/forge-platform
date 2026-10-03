@@ -56,15 +56,18 @@ struct ManagedInstallerHelperUpgradeChildExitReader: Sendable {
     private let admission: ManagedInstallerHelperUpgradeAdmissionGate
     private let children: ManagedInstallerHelperChildExitRegistry
     private let ceremonies: any ManagedInstallerProviderAuthenticationCeremonyReading
+    private let workerEffects: any ManagedInstallerProductWorkerEffectReading
     private let epoch: UInt64
 
     init(admission: ManagedInstallerHelperUpgradeAdmissionGate,
          children: ManagedInstallerHelperChildExitRegistry,
          ceremonies: any ManagedInstallerProviderAuthenticationCeremonyReading,
+         workerEffects: any ManagedInstallerProductWorkerEffectReading,
          epoch: UInt64) {
         self.admission = admission
         self.children = children
         self.ceremonies = ceremonies
+        self.workerEffects = workerEffects
         self.epoch = epoch
     }
 
@@ -78,6 +81,10 @@ struct ManagedInstallerHelperUpgradeChildExitReader: Sendable {
         guard !children.hasUncertainChildEffects()
         else { return .failure(.childEffectsUncertain) }
         guard children.activeCount() == 0 else { return .failure(.childActive) }
+        guard case .success(let firstEffects) = workerEffects.readRequired()
+        else { return .failure(.workerEffectsUnavailable) }
+        guard !firstEffects.hasUnresolvedEffects
+        else { return .failure(.childEffectsUncertain) }
         guard admission.readDrain(operationID: operationID, expectedEpoch: epoch) == .quiescent
         else { return .failure(.admissionBusy) }
         guard await ceremonies.pendingCeremonyCount() == 0
@@ -85,6 +92,10 @@ struct ManagedInstallerHelperUpgradeChildExitReader: Sendable {
         guard !children.hasUncertainChildEffects()
         else { return .failure(.childEffectsUncertain) }
         guard children.activeCount() == 0 else { return .failure(.childActive) }
+        guard case .success(let finalEffects) = workerEffects.readRequired()
+        else { return .failure(.workerEffectsUnavailable) }
+        guard !finalEffects.hasUnresolvedEffects
+        else { return .failure(.childEffectsUncertain) }
         return .success(())
     }
 }
@@ -94,4 +105,5 @@ enum ManagedInstallerHelperUpgradeChildExitFailure: Error, Equatable, Sendable {
     case ceremonyPending
     case childEffectsUncertain
     case childActive
+    case workerEffectsUnavailable
 }

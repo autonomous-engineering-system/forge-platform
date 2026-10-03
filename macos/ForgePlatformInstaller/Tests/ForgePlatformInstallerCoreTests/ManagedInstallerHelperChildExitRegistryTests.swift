@@ -22,7 +22,9 @@ final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
         let ceremonies = TestCeremonyReader()
         let reader = ManagedInstallerHelperUpgradeChildExitReader(
             admission: admission, children: registry,
-            ceremonies: ceremonies, epoch: 7
+            ceremonies: ceremonies,
+            workerEffects: TestManagedInstallerProductWorkerEffectReader.empty,
+            epoch: 7
         )
         var result = await reader.read(operationID: "upgrade-1")
         XCTAssertEqual(result.failure, .admissionBusy)
@@ -45,6 +47,48 @@ final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
         guard case .success = await reader.read(operationID: "upgrade-1") else {
             return XCTFail("Expected exact closed admission and observed child exit")
         }
+    }
+
+    func testUpgradeReaderRejectsMissingAndUnresolvedDurableWorkerEvidence() async {
+        let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        XCTAssertEqual(admission.beginDrain(operationID: "upgrade-1", expectedEpoch: 7),
+                       .quiescent)
+        let cases: [(TestManagedInstallerProductWorkerEffectReader,
+                     ManagedInstallerHelperUpgradeChildExitFailure)] = [
+            (.init(result: .failure(.unavailable)), .workerEffectsUnavailable),
+            (.init(result: .success(.init(activeIDs: [UUID()], uncertain: false))),
+             .childEffectsUncertain),
+            (.init(result: .success(.init(activeIDs: [], uncertain: true))),
+             .childEffectsUncertain),
+        ]
+        for (effects, expected) in cases {
+            let reader = ManagedInstallerHelperUpgradeChildExitReader(
+                admission: admission,
+                children: ManagedInstallerHelperChildExitRegistry(),
+                ceremonies: TestCeremonyReader(),
+                workerEffects: effects,
+                epoch: 7
+            )
+            let result = await reader.read(operationID: "upgrade-1")
+            XCTAssertEqual(result.failure, expected)
+        }
+    }
+
+    func testUpgradeReaderRepeatsDurableReadBeforeReturningQuiet() async {
+        let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        XCTAssertEqual(admission.beginDrain(operationID: "upgrade-1", expectedEpoch: 7),
+                       .quiescent)
+        let effects = SequencedWorkerEffectReader()
+        let reader = ManagedInstallerHelperUpgradeChildExitReader(
+            admission: admission,
+            children: ManagedInstallerHelperChildExitRegistry(),
+            ceremonies: TestCeremonyReader(),
+            workerEffects: effects,
+            epoch: 7
+        )
+        let result = await reader.read(operationID: "upgrade-1")
+        XCTAssertEqual(result.failure, .childEffectsUncertain)
+        XCTAssertEqual(effects.readCount, 2)
     }
 
     func testProcessHolderCountsBeforeLaunchAndClearsOnlyOnExit() async throws {
@@ -139,7 +183,9 @@ final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
                        .quiescent)
         let reader = ManagedInstallerHelperUpgradeChildExitReader(
             admission: admission, children: registry,
-            ceremonies: TestCeremonyReader(), epoch: 7
+            ceremonies: TestCeremonyReader(),
+            workerEffects: TestManagedInstallerProductWorkerEffectReader.empty,
+            epoch: 7
         )
         let result = await reader.read(operationID: "upgrade-1")
         XCTAssertEqual(result.failure, .childEffectsUncertain)
@@ -152,6 +198,29 @@ private actor TestCeremonyReader: ManagedInstallerProviderAuthenticationCeremony
     func setPending(_ count: Int) { pending = count }
 
     func pendingCeremonyCount() -> Int { pending }
+}
+
+private final class SequencedWorkerEffectReader:
+    ManagedInstallerProductWorkerEffectReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var readCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func readRequired() -> Result<ManagedInstallerProductWorkerEffectSnapshot,
+                                  ManagedInstallerProductWorkerEffectJournalFailure> {
+        lock.lock()
+        count += 1
+        let current = count
+        lock.unlock()
+        return .success(.init(
+            activeIDs: current == 1 ? [] : [UUID()], uncertain: false
+        ))
+    }
 }
 
 private extension Result where Success == Void,

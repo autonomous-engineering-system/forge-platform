@@ -16,6 +16,13 @@ enum ManagedInstallerProductWorkerEffectJournalFailure: Error, Equatable, Sendab
     case conflict
 }
 
+/// Upgrade readers require an existing durable record. A missing record can
+/// belong to a legacy helper that never wrote worker-effect evidence.
+protocol ManagedInstallerProductWorkerEffectReading: Sendable {
+    func readRequired() -> Result<ManagedInstallerProductWorkerEffectSnapshot,
+                                  ManagedInstallerProductWorkerEffectJournalFailure>
+}
+
 protocol ManagedInstallerProductWorkerEffectJournaling: Sendable {
     func begin(_ id: UUID) -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
     func cancelBeforeLaunch(_ id: UUID)
@@ -29,7 +36,8 @@ protocol ManagedInstallerProductWorkerEffectJournaling: Sendable {
 /// Each worker is recorded before Process.run(), and only a proven normal exit
 /// or a failed launch removes its ID. Abnormal exit leaves a sticky uncertainty.
 struct FileManagedInstallerProductWorkerEffectJournal:
-    ManagedInstallerProductWorkerEffectJournaling, Sendable {
+    ManagedInstallerProductWorkerEffectJournaling,
+    ManagedInstallerProductWorkerEffectReading, Sendable {
     private static let lockName = "product-worker-effects.lock"
     private static let recordName = "product-worker-effects.json"
     private static let temporaryName = "product-worker-effects.tmp"
@@ -52,6 +60,14 @@ struct FileManagedInstallerProductWorkerEffectJournal:
     func read() -> Result<ManagedInstallerProductWorkerEffectSnapshot,
                           ManagedInstallerProductWorkerEffectJournalFailure> {
         transact { root in try readRecord(root) }
+    }
+
+    func readRequired() -> Result<ManagedInstallerProductWorkerEffectSnapshot,
+                                  ManagedInstallerProductWorkerEffectJournalFailure> {
+        transact { root in
+            guard try recordExists(root) else { throw Failure.unavailable }
+            return try readRecord(root)
+        }
     }
 
     func begin(_ id: UUID) -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {

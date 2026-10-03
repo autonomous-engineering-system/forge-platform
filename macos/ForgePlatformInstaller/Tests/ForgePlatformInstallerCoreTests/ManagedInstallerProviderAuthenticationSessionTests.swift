@@ -42,7 +42,9 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
         let reader = ManagedInstallerHelperUpgradeChildExitReader(
             admission: admission, children: registry,
-            ceremonies: EmptyCeremonyReader(), epoch: 7
+            ceremonies: EmptyCeremonyReader(),
+            workerEffects: TestManagedInstallerProductWorkerEffectReader.empty,
+            epoch: 7
         )
         var session: ManagedInstallerProviderAuthenticationSession? = makeSession(
             .codex, shell: "printf '\(codexPrompt)'; exec /bin/sleep 1",
