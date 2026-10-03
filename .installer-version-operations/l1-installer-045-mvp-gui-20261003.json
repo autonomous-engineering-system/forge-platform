@@ -1,0 +1,25 @@
+{
+  "allowed_projection_paths": [
+    "installer-version.json"
+  ],
+  "baseline_version": "0.3.14",
+  "event_lineage": "L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923",
+  "expected_source_revision": "440c4132d19c9ef739ef171856623e74f99b7999",
+  "manifest_sha256_after": "8762e9439a5c90089e77171dfcad11d620340cb884a21a3058e16c6679a30f04",
+  "manifest_sha256_before": "9be9219355493e683027e0523fae75d4d51d73865cfd314127e6a104f3f2bc70",
+  "operation_id": "l1-installer-045-mvp-gui-20261003",
+  "packager_sha256_after": "eafbc3c08ff2ff46911886765c9957a786ee8f594c0b229b1d1b9ee6e2d73b20",
+  "packager_sha256_before": "eafbc3c08ff2ff46911886765c9957a786ee8f594c0b229b1d1b9ee6e2d73b20",
+  "policy_revision": "forge-platform-installer-version-v2",
+  "product": "forge-platform-installer",
+  "release_class": "PATCH",
+  "requested_bump": "patch",
+  "requested_exact_version": null,
+  "runtime_info_plist_path": "Contents/Info.plist",
+  "runtime_projection_schema": "forge-platform-installer-info-plist-version-projection/v1",
+  "runtime_projection_sha256_after": "8b6d4428db1cad77796a76902cfe7f19c3587bc595c777021d0aafb0aac0f393",
+  "runtime_projection_sha256_before": "e902c1071dbdb0f5725cf8a7d38ab05d668112598fc48040e5483e089383153d",
+  "schema": "forge-platform.installer-version-operation/v2",
+  "state": "APPLIED",
+  "target_version": "0.3.15"
+}
