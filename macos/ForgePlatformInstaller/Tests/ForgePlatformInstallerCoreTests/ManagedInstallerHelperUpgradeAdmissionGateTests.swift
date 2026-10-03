@@ -86,6 +86,24 @@ final class ManagedInstallerHelperUpgradeAdmissionGateTests: XCTestCase {
         XCTAssertNil(gate.admittedReply { _ in XCTFail("draining gate admitted work") })
     }
 
+    func testExistingCeremonyCompletionCanFinishWhileNewWorkRemainsClosed() {
+        let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 13)
+        XCTAssertEqual(gate.beginDrain(operationID: "upgrade-a", expectedEpoch: 13),
+                       .quiescent)
+        var received: Data?
+        let completion = gate.admittedExistingCeremonyCompletionReply { received = $0 }
+        XCTAssertNotNil(completion)
+        XCTAssertEqual(gate.readDrain(operationID: "upgrade-a", expectedEpoch: 13),
+                       .draining(activeMutations: 1))
+        XCTAssertNil(gate.beginMutation())
+        completion?(Data("verified".utf8))
+        XCTAssertEqual(received, Data("verified".utf8))
+        XCTAssertEqual(gate.readDrain(operationID: "upgrade-a", expectedEpoch: 13),
+                       .quiescent)
+        XCTAssertNil(ManagedInstallerHelperUpgradeAdmissionGate(epoch: 0)
+            .admittedExistingCeremonyCompletionReply { _ in })
+    }
+
     func testSharedDrainRejectsBothReleasedRouteAndProductXPCEntrances() {
         let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 12)
         let route = FileManagedInstallerReleasedRouteXPCService(

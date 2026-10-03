@@ -808,7 +808,11 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         _ canonicalIntent: Data, providerTargetID: String,
         withReply reply: @escaping (Data?) -> Void
     ) {
-        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
+        // The actor admits only an existing exact session and verifies fresh
+        // physical readback. Its terminal completion must remain reachable
+        // while upgrade drain blocks every new ceremony and product mutation.
+        guard let reply = mutationGate.admittedExistingCeremonyCompletionReply(reply)
+        else { reply(nil); return }
         let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
         guard let providerAuthentication,
               let targetID = ProviderTargetID(rawValue: providerTargetID),
