@@ -325,7 +325,10 @@ struct MacOSManagedInstallerProductWorkerRunner:
             to: standardInput.fileHandleForWriting,
             timeoutNanoseconds: invocation.timeoutNanoseconds
         )
-        if !written && process.isRunning { process.terminate() }
+        if !written && process.isRunning {
+            holder.markChildEffectsUncertain()
+            process.terminate()
+        }
         let completed = await holder.wait(timeoutNanoseconds: invocation.timeoutNanoseconds)
         let capturedOutput = await output
         let capturedError = await error
@@ -589,7 +592,12 @@ final class ManagedInstallerProductWorkerProcess: @unchecked Sendable {
         token = registry.reserve(process)
         // Register before run(): a short-lived worker must not exit between
         // launch and installation of the completion observer.
-        process.terminationHandler = { [exit, registry, token] _ in
+        process.terminationHandler = { [exit, registry, token] terminated in
+            // A crash or failed worker could leave a separately launched
+            // Keychain child behind even without our timeout signal.
+            if terminated.terminationReason != .exit || terminated.terminationStatus != 0 {
+                registry.markChildEffectsUncertain()
+            }
             _ = registry.finish(token)
             _ = exit.complete(true)
         }
@@ -600,14 +608,21 @@ final class ManagedInstallerProductWorkerProcess: @unchecked Sendable {
         _ = exit.complete(false)
     }
 
+    func markChildEffectsUncertain() {
+        registry.markChildEffectsUncertain()
+    }
+
     func wait(timeoutNanoseconds: UInt64) async -> Bool {
-        let timeout = Task.detached { [exit, process] in
+        let timeout = Task.detached { [exit, process, registry] in
             do { try await Task.sleep(nanoseconds: timeoutNanoseconds) }
             catch { return }
             guard exit.complete(false) else { return }
             // The caller may release its XPC lease after this timeout, but
             // the process-wide registry stays occupied until termination is
             // independently observed by the Process callback.
+            // A Python worker may have spawned the signed Keychain child;
+            // parent exit after SIGKILL cannot prove that child's exit.
+            registry.markChildEffectsUncertain()
             if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
         }
         let completed = await exit.wait()

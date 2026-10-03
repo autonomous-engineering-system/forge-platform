@@ -10,6 +10,10 @@ final class ManagedInstallerHelperChildExitRegistry: @unchecked Sendable {
     // Keep Process alive through its termination callback even if the
     // timed-out XPC request and its local holder have already returned.
     private var outstanding = [UUID: Process]()
+    // A forcibly stopped Python parent may leave its signed Keychain child
+    // running. This process-local negative evidence must never be reset on
+    // parent exit; durable credential/Keychain readback is still required.
+    private var uncertainChildEffects = false
 
     func reserve(_ process: Process) -> UUID {
         lock.lock()
@@ -30,6 +34,18 @@ final class ManagedInstallerHelperChildExitRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return outstanding.count
+    }
+
+    func markChildEffectsUncertain() {
+        lock.lock()
+        defer { lock.unlock() }
+        uncertainChildEffects = true
+    }
+
+    func hasUncertainChildEffects() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return uncertainChildEffects
     }
 }
 
@@ -59,11 +75,15 @@ struct ManagedInstallerHelperUpgradeChildExitReader: Sendable {
         else { return .failure(.admissionBusy) }
         guard await ceremonies.pendingCeremonyCount() == 0
         else { return .failure(.ceremonyPending) }
+        guard !children.hasUncertainChildEffects()
+        else { return .failure(.childEffectsUncertain) }
         guard children.activeCount() == 0 else { return .failure(.childActive) }
         guard admission.readDrain(operationID: operationID, expectedEpoch: epoch) == .quiescent
         else { return .failure(.admissionBusy) }
         guard await ceremonies.pendingCeremonyCount() == 0
         else { return .failure(.ceremonyPending) }
+        guard !children.hasUncertainChildEffects()
+        else { return .failure(.childEffectsUncertain) }
         guard children.activeCount() == 0 else { return .failure(.childActive) }
         return .success(())
     }
@@ -72,5 +92,6 @@ struct ManagedInstallerHelperUpgradeChildExitReader: Sendable {
 enum ManagedInstallerHelperUpgradeChildExitFailure: Error, Equatable, Sendable {
     case admissionBusy
     case ceremonyPending
+    case childEffectsUncertain
     case childActive
 }
