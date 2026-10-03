@@ -4,6 +4,17 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProductWorkerEffectJournalTests: XCTestCase {
+    func testUpgradeReadbackRejectsAbsentLegacyRecord() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        XCTAssertEqual(fixture.store.readRequired().failure, .unavailable)
+        let worker = UUID()
+        try fixture.store.begin(worker).get()
+        XCTAssertTrue(try fixture.store.readRequired().get().hasUnresolvedEffects)
+        try fixture.store.finish(worker, normalExit: true).get()
+        XCTAssertFalse(try fixture.store.readRequired().get().hasUnresolvedEffects)
+    }
+
     func testNormalExitAndFailedLaunchRemoveOnlyTheirOwnWriteAheadIDs() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -176,6 +187,21 @@ final class TestManagedInstallerProductWorkerEffectJournal:
             activeIDs: active.sorted { $0.uuidString < $1.uuidString },
             uncertain: uncertain
         )
+    }
+}
+
+struct TestManagedInstallerProductWorkerEffectReader:
+    ManagedInstallerProductWorkerEffectReading, Sendable {
+    let result: Result<ManagedInstallerProductWorkerEffectSnapshot,
+                       ManagedInstallerProductWorkerEffectJournalFailure>
+
+    static let empty = Self(result: .success(
+        ManagedInstallerProductWorkerEffectSnapshot(activeIDs: [], uncertain: false)
+    ))
+
+    func readRequired() -> Result<ManagedInstallerProductWorkerEffectSnapshot,
+                                  ManagedInstallerProductWorkerEffectJournalFailure> {
+        result
     }
 }
 
