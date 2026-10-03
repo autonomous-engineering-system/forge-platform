@@ -120,6 +120,13 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertThrowsError(try InstallerCLIParser.parse([
             "helper", "replace-mvp-0318", "--deployment", "new",
         ]))
+        XCTAssertEqual(
+            try InstallerCLIParser.parse(["helper", "replace-mvp-0319", "--yes"]).command,
+            .helperReplaceMVP0319
+        )
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "helper", "replace-mvp-0319", "--deployment", "new",
+        ]))
         XCTAssertThrowsError(try InstallerCLIParser.parse([
             "helper", "replace-idle", "--deployment", "another-target",
         ]))

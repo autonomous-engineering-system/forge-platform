@@ -401,6 +401,26 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         }
     }
 
+    /// One bounded clean-install transition after 0.3.19 recorded an
+    /// immutable reviewed selection with an incorrect pairing. A new signed
+    /// release gives the corrected GUI review a distinct operation identity;
+    /// the old selection remains intact for audit. The operator must prove
+    /// absence of product, credential and worker effects before invocation.
+    public func replaceMVP0319ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.20"),
+                  let prior = try? InstallerVersion("0.3.19"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
     private func replaceBoundedRunningParentWhileLocked(
         expectedVersion: InstallerVersion,
         priorVersion: InstallerVersion
