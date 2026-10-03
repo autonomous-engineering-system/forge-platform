@@ -6,7 +6,7 @@ enum InstallerCLIHelperRegistration {
     typealias Registrar = @Sendable (InstallerVersion) async -> ManagedInstallerPrivilegedHelperRegistrationResult
 
     enum Action: Sendable {
-        case register, qualification, idle, mvp0314, mvp0316, mvp0318
+        case register, qualification, idle, mvp0314, mvp0316, mvp0318, mvp0319
     }
 
     static func makeRegistrar(
@@ -28,6 +28,8 @@ enum InstallerCLIHelperRegistration {
                 return await instance.replaceMVP0316ForCleanInstall(expectedVersion: expectedVersion)
             case .mvp0318:
                 return await instance.replaceMVP0318ForCleanInstall(expectedVersion: expectedVersion)
+            case .mvp0319:
+                return await instance.replaceMVP0319ForCleanInstall(expectedVersion: expectedVersion)
             }
         }
     }
@@ -38,6 +40,7 @@ enum InstallerCLIHelperRegistration {
     static let liveMVP0314Replacer = makeRegistrar(for: .mvp0314, coordinator: liveCoordinator)
     static let liveMVP0316Replacer = makeRegistrar(for: .mvp0316, coordinator: liveCoordinator)
     static let liveMVP0318Replacer = makeRegistrar(for: .mvp0318, coordinator: liveCoordinator)
+    static let liveMVP0319Replacer = makeRegistrar(for: .mvp0319, coordinator: liveCoordinator)
 
     private static func liveCoordinator() -> ManagedInstallerPrivilegedHelperRegistrationCoordinator? {
         let service = MacOSManagedInstallerPrivilegedHelperServiceController()
@@ -55,7 +58,8 @@ enum InstallerCLIHelperRegistration {
         replacingOlder: Bool = false,
         replacingMVP0314: Bool = false,
         replacingMVP0316: Bool = false,
-        replacingMVP0318: Bool = false
+        replacingMVP0318: Bool = false,
+        replacingMVP0319: Bool = false
     ) async -> InstallerCLIResult {
         if !options.assumeYes {
             let accepted = options.nonInteractive ? false : await confirm(
@@ -65,6 +69,8 @@ enum InstallerCLIHelperRegistration {
                         ? "Beëindig de actieve 0.3.14-helper na schone-hostcontrole en registreer de geverifieerde 0.3.16-helper?"
                     : replacingMVP0316
                         ? "Beëindig de actieve 0.3.16-helper na schone-hostcontrole en registreer de geverifieerde 0.3.18-helper?"
+                    : replacingMVP0319
+                        ? "Beëindig de actieve 0.3.19-helper na bewezen effectvrije herstelstatus en registreer de geverifieerde 0.3.20-helper?"
                     : replacingMVP0318
                         ? "Beëindig de actieve 0.3.18-helper na gecontroleerde schone-herstelstatus en registreer de geverifieerde 0.3.19-helper?"
                     : replacingOlder
