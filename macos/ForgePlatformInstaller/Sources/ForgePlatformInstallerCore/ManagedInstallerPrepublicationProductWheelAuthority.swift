@@ -68,11 +68,8 @@ struct ManagedInstallerPrepublicationProductWheelAuthority {
               revision == revision.lowercased(),
               revision.allSatisfy({ $0.isHexDigit }),
               let source = artifact["source"]?.stringValue,
-              let url = URL(string: source),
-              CompositionCatalogValidation.isCanonicalHTTPSURL(source),
-              url.host == "github.com", url.user == nil, url.password == nil,
-              url.query == nil, url.fragment == nil,
-              url.lastPathComponent.hasSuffix(".whl"),
+              HTTPSManagedInstallerProductWheelTransport
+                .isAllowedSourceWheelURL(source),
               let qualification = artifact["qualification"]?.stringValue,
               GitHubInstallerReleaseDescriptorValidation.isHTTPSURL(qualification)
         else { return .failure(.rejected) }
