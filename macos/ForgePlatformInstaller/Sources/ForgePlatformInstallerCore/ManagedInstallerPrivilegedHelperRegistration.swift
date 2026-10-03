@@ -382,6 +382,25 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         }
     }
 
+    /// One bounded recovery transition for the published 0.3.18 GUI's failed
+    /// provider-preparation attempt. The operator must first prove that the
+    /// old helper has no product, credential or worker effect in flight; this
+    /// method still binds the exact fixed-label source and signed successor.
+    public func replaceMVP0318ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.19"),
+                  let prior = try? InstallerVersion("0.3.18"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
     private func replaceBoundedRunningParentWhileLocked(
         expectedVersion: InstallerVersion,
         priorVersion: InstallerVersion
