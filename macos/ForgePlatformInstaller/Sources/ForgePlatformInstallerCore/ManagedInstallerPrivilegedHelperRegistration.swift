@@ -354,27 +354,57 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         withRegistrationLock {
             guard let target = try? InstallerVersion("0.3.16"),
                   let prior = try? InstallerVersion("0.3.14"),
-                  expectedVersion == target,
-                  service.readStatus() == .enabled,
-                  service.readRegisteredParentVersion() == prior,
-                  service.readStatus() == .enabled,
-                  service.readRegisteredParentVersion() == prior else {
+                  expectedVersion == target else {
                 return .failed(.registeredParentMismatch)
             }
-            do {
-                try service.unregister()
-            } catch {
-                return .failed(.unregistrationFailed)
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
+    /// One owner-authorized clean-install transition from the exact running
+    /// 0.3.16 parent to the next signed MVP release. The caller proves empty
+    /// product/operation state and sealed source/target bytes before invoking
+    /// this command. No caller can select a different prior version or label.
+    public func replaceMVP0316ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.18"),
+                  let prior = try? InstallerVersion("0.3.16"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
             }
-            guard service.readSystemJobAbsent() else {
-                return .failed(.statusDrift)
-            }
-            switch service.readStatus() {
-            case .notRegistered, .notFound:
-                return ensureRegisteredWhileLocked(expectedVersion: expectedVersion)
-            case .enabled, .requiresApproval:
-                return .failed(.statusDrift)
-            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
+    private func replaceBoundedRunningParentWhileLocked(
+        expectedVersion: InstallerVersion,
+        priorVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        guard service.readStatus() == .enabled,
+              service.readRegisteredParentVersion() == priorVersion,
+              service.readStatus() == .enabled,
+              service.readRegisteredParentVersion() == priorVersion else {
+            return .failed(.registeredParentMismatch)
+        }
+        do {
+            try service.unregister()
+        } catch {
+            return .failed(.unregistrationFailed)
+        }
+        guard service.readSystemJobAbsent() else {
+            return .failed(.statusDrift)
+        }
+        switch service.readStatus() {
+        case .notRegistered, .notFound:
+            return ensureRegisteredWhileLocked(expectedVersion: expectedVersion)
+        case .enabled, .requiresApproval:
+            return .failed(.statusDrift)
         }
     }
 
