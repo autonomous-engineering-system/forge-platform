@@ -104,6 +104,39 @@ final class ManagedInstallerHelperUpgradeAdmissionGateTests: XCTestCase {
             .admittedExistingCeremonyCompletionReply { _ in })
     }
 
+    func testSealRequiresExactQuiescentDrainAndClosesCompletionRace() {
+        let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 17)
+        XCTAssertFalse(gate.sealDrainAfterIndependentQuiescence(
+            operationID: "upgrade-a", expectedEpoch: 17
+        ))
+        XCTAssertEqual(gate.beginDrain(operationID: "upgrade-a", expectedEpoch: 17),
+                       .quiescent)
+        let completion = gate.admittedExistingCeremonyCompletionReply { _ in }
+        XCTAssertNotNil(completion)
+        XCTAssertFalse(gate.sealDrainAfterIndependentQuiescence(
+            operationID: "upgrade-a", expectedEpoch: 17
+        ))
+        XCTAssertFalse(gate.sealDrainAfterIndependentQuiescence(
+            operationID: "upgrade-b", expectedEpoch: 17
+        ))
+        XCTAssertFalse(gate.sealDrainAfterIndependentQuiescence(
+            operationID: "upgrade-a", expectedEpoch: 18
+        ))
+        completion?(Data("verified".utf8))
+        XCTAssertTrue(gate.sealDrainAfterIndependentQuiescence(
+            operationID: "upgrade-a", expectedEpoch: 17
+        ))
+        XCTAssertTrue(gate.sealDrainAfterIndependentQuiescence(
+            operationID: "upgrade-a", expectedEpoch: 17
+        ))
+        XCTAssertNil(gate.admittedExistingCeremonyCompletionReply { _ in
+            XCTFail("sealed gate admitted a completion")
+        })
+        XCTAssertNil(gate.beginMutation())
+        XCTAssertEqual(gate.readDrain(operationID: "upgrade-a", expectedEpoch: 17),
+                       .quiescent)
+    }
+
     func testSharedDrainRejectsBothReleasedRouteAndProductXPCEntrances() {
         let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 12)
         let route = FileManagedInstallerReleasedRouteXPCService(
