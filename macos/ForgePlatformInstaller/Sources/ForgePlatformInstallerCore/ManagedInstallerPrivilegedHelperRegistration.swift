@@ -342,6 +342,42 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         }
     }
 
+    /// One bounded, owner-authorized clean-install recovery from the released
+    /// 0.3.14 parent. The caller separately proves that this disposable host
+    /// has no product or in-flight operation before using this command.
+    /// ServiceManagement terminates a running daemon when unregister succeeds.
+    /// A failed subsequent registration leaves the ordinary register route as
+    /// recovery after independent fixed-job absence readback.
+    public func replaceMVP0314ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.16"),
+                  let prior = try? InstallerVersion("0.3.14"),
+                  expectedVersion == target,
+                  service.readStatus() == .enabled,
+                  service.readRegisteredParentVersion() == prior,
+                  service.readStatus() == .enabled,
+                  service.readRegisteredParentVersion() == prior else {
+                return .failed(.registeredParentMismatch)
+            }
+            do {
+                try service.unregister()
+            } catch {
+                return .failed(.unregistrationFailed)
+            }
+            guard service.readSystemJobAbsent() else {
+                return .failed(.statusDrift)
+            }
+            switch service.readStatus() {
+            case .notRegistered, .notFound:
+                return ensureRegisteredWhileLocked(expectedVersion: expectedVersion)
+            case .enabled, .requiresApproval:
+                return .failed(.statusDrift)
+            }
+        }
+    }
+
     private func replaceIdleParentWhileLocked(
         expectedVersion: InstallerVersion,
         minimumPriorVersion: InstallerVersion,
