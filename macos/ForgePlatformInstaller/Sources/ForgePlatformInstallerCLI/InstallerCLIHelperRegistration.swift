@@ -20,6 +20,11 @@ enum InstallerCLIHelperRegistration {
         return await coordinator.replaceIdleOlderRegistration(expectedVersion: expectedVersion)
     }
 
+    static let liveMVP0314Replacer: Registrar = { expectedVersion in
+        guard let coordinator = liveCoordinator() else { return .failed(.transitionBusy) }
+        return await coordinator.replaceMVP0314ForCleanInstall(expectedVersion: expectedVersion)
+    }
+
     private static func liveCoordinator() -> ManagedInstallerPrivilegedHelperRegistrationCoordinator? {
         let service = MacOSManagedInstallerPrivilegedHelperServiceController()
         return ManagedInstallerPrivilegedHelperRegistrationCoordinator.production(service: service)
@@ -33,12 +38,15 @@ enum InstallerCLIHelperRegistration {
         confirm: ForgePlatformInstallerCLIApplication.Confirmation,
         register: Registrar,
         replacingQualification: Bool = false,
-        replacingOlder: Bool = false
+        replacingOlder: Bool = false,
+        replacingMVP0314: Bool = false
     ) async -> InstallerCLIResult {
         if !options.assumeYes {
             let accepted = options.nonInteractive ? false : await confirm(
                 replacingQualification
                     ? "Vervang de exacte inactieve 0.2.4-kwalificatiehelper door de geverifieerde systeemhelper?"
+                    : replacingMVP0314
+                        ? "Beëindig de actieve 0.3.14-helper na schone-hostcontrole en registreer de geverifieerde 0.3.16-helper?"
                     : replacingOlder
                         ? "Vervang de exacte inactieve oudere installer-helper door de geverifieerde actuele systeemhelper?"
                         : "Registreer de geverifieerde installer-helper als systeemdaemon?"

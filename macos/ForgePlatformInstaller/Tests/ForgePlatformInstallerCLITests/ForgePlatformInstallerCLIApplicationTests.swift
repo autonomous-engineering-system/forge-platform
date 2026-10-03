@@ -685,6 +685,69 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertTrue(mismatch.stdout.joined().contains("registered-parent-mismatch"))
     }
 
+    func testBoundedMVP0314ReplacementRequiresConsentAndFreshRelease() async throws {
+        let current = try release("0.3.16")
+        let registrar = CLIHelperRegistrarSpy(result: .ready(
+            try ManagedInstallerPrivilegedHelperRegistrationReceipt(status: .enabled)
+        ))
+        let startup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator())
+        )
+        let denied = await run(
+            ["helper", "replace-mvp-0314", "--non-interactive"],
+            startup: startup, version: "0.3.16",
+            mvpReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(denied.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let callsAfterDenial = await registrar.calls()
+        XCTAssertEqual(callsAfterDenial, 0)
+
+        let declined = await run(
+            ["helper", "replace-mvp-0314", "--json"],
+            startup: startup, version: "0.3.16", confirmation: false,
+            mvpReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(declined.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let callsAfterDecline = await registrar.calls()
+        XCTAssertEqual(callsAfterDecline, 0)
+
+        let replaced = await run(
+            ["helper", "replace-mvp-0314", "--yes", "--non-interactive", "--json"],
+            startup: startup, version: "0.3.16",
+            mvpReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(replaced.code, InstallerCLIExitCode.success.rawValue)
+        XCTAssertTrue(replaced.stdout.joined().contains("helper-enabled"))
+        let callsAfterReplacement = await registrar.calls()
+        XCTAssertEqual(callsAfterReplacement, 1)
+
+        let stale = await run(
+            ["helper", "replace-mvp-0314", "--yes", "--json"],
+            startup: CLIStartupSpy(
+                outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+                recheckOutcome: .updateRequired(try release("0.3.17"))
+            ),
+            version: "0.3.16",
+            mvpReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(stale.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        let callsAfterStale = await registrar.calls()
+        XCTAssertEqual(callsAfterStale, 1)
+
+        let blocked = await run(
+            ["helper", "replace-mvp-0314", "--yes", "--json"],
+            startup: CLIStartupSpy(
+                outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+                recheckOutcome: .blocked("sealed trust unavailable")
+            ),
+            version: "0.3.16",
+            mvpReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(blocked.code, InstallerCLIExitCode.blocked.rawValue)
+        let callsAfterBlock = await registrar.calls()
+        XCTAssertEqual(callsAfterBlock, 1)
+    }
+
     func testHelperRegistrationPreservesApprovalFailureAndReleaseDrift() async throws {
         let current = try release("1.2.3")
         let next = try release("1.2.4")
@@ -765,6 +828,9 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         },
         idleReplacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
             .failed(.serviceUnavailable)
+        },
+        mvpReplacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
+            .failed(.serviceUnavailable)
         }
     ) async -> (code: Int32, stdout: [String], stderr: [String]) {
         let output = LockedStrings()
@@ -780,6 +846,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             registerHelper: registration,
             replaceQualificationHelper: replacement,
             replaceIdleHelper: idleReplacement,
+            replaceMVP0314Helper: mvpReplacement,
             stdout: { output.append($0) },
             stderr: { errors.append($0) }
         )
