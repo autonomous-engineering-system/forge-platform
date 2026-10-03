@@ -150,7 +150,7 @@ struct InstallerApplicationRootView: View {
                     symbol: "arrow.down.circle.fill"
                 )
             case .ready(let viewModel):
-                InstallerWizardView(viewModel: viewModel)
+                InstallerMVPFlowView(viewModel: viewModel)
             case .relaunching(let release):
                 InstallerStartupStatusView(
                     title: "Installer wordt herstart",
