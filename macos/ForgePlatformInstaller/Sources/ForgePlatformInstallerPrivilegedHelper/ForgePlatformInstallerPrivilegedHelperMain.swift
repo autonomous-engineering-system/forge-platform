@@ -119,12 +119,25 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
     private let invalidateListeners: [() -> Void]
 
     convenience init() throws {
-        try self.init(prepareStateRoot: {
-            try ManagedInstallerHelperStateRootBootstrap().prepare()
-        })
+        let root = try ManagedInstallerHelperStateRootBootstrap().prepare()
+        try self.init(
+            prepareStateRoot: {},
+            loadUpgradeJournal: {
+                FileManagedInstallerHelperUpgradeJournalStore(helperRoot: root).load()
+            }
+        )
     }
 
     convenience init(prepareStateRoot: () throws -> Void) throws {
+        try self.init(prepareStateRoot: prepareStateRoot,
+                      loadUpgradeJournal: { .success(nil) })
+    }
+
+    convenience init(
+        prepareStateRoot: () throws -> Void,
+        loadUpgradeJournal: () -> Result<ManagedInstallerHelperUpgradeJournalRecord?,
+                                         ManagedInstallerHelperUpgradeJournalFailure>
+    ) throws {
         try prepareStateRoot()
         let postToolIdentity = try ManagedInstallerPostToolXPCCallerIdentity(
             bundleIdentifier: ManagedInstallerPrivilegedHelperProcessContract
@@ -143,8 +156,10 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
         // activation context and must not replay the stored host-state file.
         // One gate covers both active Mach services. The process epoch is only
         // an admission identity; durable upgrade authority is separate.
-        let mutationGate = ManagedInstallerHelperUpgradeAdmissionGate(
-            epoch: UInt64.random(in: 1...UInt64.max)
+        let epoch = UInt64.random(in: 1...UInt64.max)
+        let mutationGate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: epoch)
+        try ManagedInstallerHelperUpgradeStartupFence.restore(
+            journal: loadUpgradeJournal(), gate: mutationGate, epoch: epoch
         )
         let postToolBackend = UnavailableManagedInstallerPrivilegedHelperBackend()
         let productBackend = ManagedInstallerProductOperationXPCServiceHandler(

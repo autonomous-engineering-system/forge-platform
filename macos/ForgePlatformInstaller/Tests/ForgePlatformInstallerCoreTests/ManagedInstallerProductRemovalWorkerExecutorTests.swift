@@ -87,7 +87,9 @@ final class ManagedInstallerProductRemovalWorkerExecutorTests: XCTestCase {
             requireSingleInterpreterLink: false,
             timeoutNanoseconds: 5_000_000_000
         )
-        let runner = MacOSManagedInstallerProductWorkerRunner()
+        let runner = MacOSManagedInstallerProductWorkerRunner(
+            effectJournal: TestManagedInstallerProductWorkerEffectJournal()
+        )
 
         let echoed = try await runner.runProductWorker(
             invocation, canonicalRequest: request.canonicalJSONData()
@@ -179,7 +181,9 @@ final class ManagedInstallerProductRemovalWorkerExecutorTests: XCTestCase {
             requireSingleInterpreterLink: false,
             timeoutNanoseconds: 5_000_000_000
         )
-        let runner = MacOSManagedInstallerProductWorkerRunner()
+        let runner = MacOSManagedInstallerProductWorkerRunner(
+            effectJournal: TestManagedInstallerProductWorkerEffectJournal()
+        )
 
         let echoed = try await runner.runProductWorker(
             invocation, canonicalRequest: intent.canonicalJSONData()

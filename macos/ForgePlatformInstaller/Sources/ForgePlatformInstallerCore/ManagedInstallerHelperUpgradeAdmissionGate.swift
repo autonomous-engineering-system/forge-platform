@@ -9,7 +9,31 @@ struct ManagedInstallerHelperMutationLease: Hashable, Sendable {
     fileprivate let epoch: UInt64
 }
 
-enum ManagedInstallerHelperUpgradeAdmissionState: Equatable, Sendable {
+/// A transport callback may be invoked twice or from competing queues. Only
+/// the first terminal reply is delivered, and its lease remains counted until
+/// that reply returns. A later duplicate cannot cross a sealed drain.
+private final class ManagedInstallerHelperMutationTerminalReply {
+    private let lock = NSLock()
+    private var delivered = false
+    private let reply: (Data?) -> Void
+    private let release: () -> Void
+
+    init(reply: @escaping (Data?) -> Void, release: @escaping () -> Void) {
+        self.reply = reply
+        self.release = release
+    }
+
+    func deliver(_ value: Data?) {
+        lock.lock()
+        guard !delivered else { lock.unlock(); return }
+        delivered = true
+        lock.unlock()
+        defer { release() }
+        reply(value)
+    }
+}
+
+public enum ManagedInstallerHelperUpgradeAdmissionState: Equatable, Sendable {
     case blocked
     case draining(activeMutations: Int)
     case quiescent
@@ -20,19 +44,52 @@ public final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendab
     private let epoch: UInt64
     private var activeMutations = Set<UUID>()
     private var drainingOperationID: String?
+    private var sealedOperationID: String?
 
     public init(epoch: UInt64) {
         self.epoch = epoch
+    }
+
+    func matchesEpoch(_ candidate: UInt64) -> Bool {
+        epoch > 0 && epoch == candidate
     }
 
     /// Retains a mutation lease until the XPC method delivers its terminal
     /// reply. A missing reply leaves the lease active and blocks replacement.
     func admittedReply(_ reply: @escaping (Data?) -> Void) -> ((Data?) -> Void)? {
         guard let lease = beginMutation() else { return nil }
-        return { [self] value in
-            defer { finishMutation(lease) }
-            reply(value)
+        return terminalReply(for: lease, reply: reply)
+    }
+
+    /// An already-admitted provider ceremony must be able to deliver its
+    /// verified terminal readback after drain closes new work. The XPC route
+    /// using this lease must require an existing exact ceremony; it may not
+    /// start a child or issue a new credential. The lease still counts until
+    /// its terminal reply, so quiescence cannot race the completion.
+    func admittedExistingCeremonyCompletionReply(
+        _ reply: @escaping (Data?) -> Void
+    ) -> ((Data?) -> Void)? {
+        guard let lease = beginExistingCeremonyCompletion() else { return nil }
+        return terminalReply(for: lease, reply: reply)
+    }
+
+    private func terminalReply(
+        for lease: ManagedInstallerHelperMutationLease,
+        reply: @escaping (Data?) -> Void
+    ) -> (Data?) -> Void {
+        let terminal = ManagedInstallerHelperMutationTerminalReply(reply: reply) { [self] in
+            _ = finishMutation(lease)
         }
+        return { value in terminal.deliver(value) }
+    }
+
+    private func beginExistingCeremonyCompletion() -> ManagedInstallerHelperMutationLease? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard epoch > 0, sealedOperationID == nil else { return nil }
+        let id = UUID()
+        activeMutations.insert(id)
+        return ManagedInstallerHelperMutationLease(id: id, epoch: epoch)
     }
 
     /// Every mutating XPC entrypoint must acquire a lease before starting its
@@ -82,5 +139,22 @@ public final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendab
               drainingOperationID == operationID else { return .blocked }
         return activeMutations.isEmpty
             ? .quiescent : .draining(activeMutations: activeMutations.count)
+    }
+
+    /// Atomically prevents any further existing-ceremony completion from
+    /// acquiring a lease after the exact drain has no outstanding replies.
+    /// A caller must independently prove durable worker, product, credential
+    /// and host state before treating this admission barrier as replacement
+    /// authority. Sealing is irreversible for this helper process and epoch.
+    func sealDrainAfterIndependentQuiescence(
+        operationID: String, expectedEpoch: UInt64
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard epoch > 0, expectedEpoch == epoch,
+              drainingOperationID == operationID,
+              activeMutations.isEmpty else { return false }
+        sealedOperationID = operationID
+        return true
     }
 }

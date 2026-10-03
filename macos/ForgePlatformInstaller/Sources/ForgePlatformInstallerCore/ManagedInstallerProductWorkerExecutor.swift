@@ -174,10 +174,19 @@ struct MacOSManagedInstallerProductWorkerRunner:
     private static let maximumErrorBytes = 8 * 1_024
     private static let maximumWorkerBytes = 16 * 1_024 * 1_024
     private let forgeUpdateResources: any ManagedInstallerForgeUpdateResourcesChecking
+    private let processRegistry: ManagedInstallerHelperChildExitRegistry
+    private let effectJournal: any ManagedInstallerProductWorkerEffectJournaling
 
     init(forgeUpdateResources: any ManagedInstallerForgeUpdateResourcesChecking =
-        SignedManagedInstallerForgeUpdateResourcesChecker()) {
+        SignedManagedInstallerForgeUpdateResourcesChecker(),
+         processRegistry: ManagedInstallerHelperChildExitRegistry = .processWide,
+         effectJournal: any ManagedInstallerProductWorkerEffectJournaling =
+            FileManagedInstallerProductWorkerEffectJournal(
+                helperRoot: FileManagedInstallerReleasedRouteXPCService.productionRoot
+            )) {
         self.forgeUpdateResources = forgeUpdateResources
+        self.processRegistry = processRegistry
+        self.effectJournal = effectJournal
     }
 
     func runProductWorker(
@@ -298,11 +307,15 @@ struct MacOSManagedInstallerProductWorkerRunner:
         process.standardInput = standardInput
         process.standardOutput = standardOutput
         process.standardError = standardError
-        let holder = ManagedInstallerProductWorkerProcess(process)
+        let holder = ManagedInstallerProductWorkerProcess(
+            process, registry: processRegistry, effectJournal: effectJournal
+        )
+        guard holder.recordBeforeLaunch() else { return .failure(.unavailable) }
 
         do {
             try process.run()
         } catch {
+            holder.cancelBeforeLaunch()
             return .failure(.unavailable)
         }
 
@@ -321,7 +334,10 @@ struct MacOSManagedInstallerProductWorkerRunner:
             to: standardInput.fileHandleForWriting,
             timeoutNanoseconds: invocation.timeoutNanoseconds
         )
-        if !written && process.isRunning { process.terminate() }
+        if !written && process.isRunning {
+            holder.markChildEffectsUncertain()
+            process.terminate()
+        }
         let completed = await holder.wait(timeoutNanoseconds: invocation.timeoutNanoseconds)
         let capturedOutput = await output
         let capturedError = await error
@@ -573,26 +589,81 @@ struct MacOSManagedInstallerProductWorkerRunner:
     }
 }
 
-private final class ManagedInstallerProductWorkerProcess: @unchecked Sendable {
+final class ManagedInstallerProductWorkerProcess: @unchecked Sendable {
     private let process: Process
     private let exit = ManagedInstallerProductWorkerExitGate()
+    private let registry: ManagedInstallerHelperChildExitRegistry
+    private let effectJournal: any ManagedInstallerProductWorkerEffectJournaling
+    private let token: UUID
 
-    init(_ process: Process) {
+    init(
+        _ process: Process,
+        registry: ManagedInstallerHelperChildExitRegistry,
+        effectJournal: any ManagedInstallerProductWorkerEffectJournaling
+    ) {
         self.process = process
+        self.registry = registry
+        self.effectJournal = effectJournal
+        token = registry.reserve(process)
         // Register before run(): a short-lived worker must not exit between
         // launch and installation of the completion observer.
-        process.terminationHandler = { [exit] _ in
-            _ = exit.complete(true)
+        process.terminationHandler = { [exit, registry, effectJournal, token] terminated in
+            // A crash or failed worker could leave a separately launched
+            // Keychain child behind even without our timeout signal.
+            let normalExit = terminated.terminationReason == .exit
+                && terminated.terminationStatus == 0
+            if !normalExit {
+                registry.markChildEffectsUncertain()
+            }
+            let recorded = effectJournal.finish(token, normalExit: normalExit)
+            let journalSucceeded: Bool
+            if case .success = recorded {
+                journalSucceeded = true
+            } else {
+                registry.markChildEffectsUncertain()
+                journalSucceeded = false
+            }
+            _ = registry.finish(token)
+            _ = exit.complete(journalSucceeded)
         }
     }
 
+    func recordBeforeLaunch() -> Bool {
+        guard case .success = effectJournal.begin(token) else {
+            _ = registry.finish(token)
+            _ = exit.complete(false)
+            return false
+        }
+        return true
+    }
+
+    func cancelBeforeLaunch() {
+        if case .failure = effectJournal.cancelBeforeLaunch(token) {
+            registry.markChildEffectsUncertain()
+        }
+        _ = registry.finish(token)
+        _ = exit.complete(false)
+    }
+
+    func markChildEffectsUncertain() {
+        registry.markChildEffectsUncertain()
+        _ = effectJournal.markUncertain()
+    }
+
     func wait(timeoutNanoseconds: UInt64) async -> Bool {
-        let timeout = Task.detached { [exit, process] in
+        let timeout = Task.detached { [exit, process, registry, effectJournal] in
             do { try await Task.sleep(nanoseconds: timeoutNanoseconds) }
             catch { return }
+            // The caller may release its XPC lease after this timeout, but
+            // the process-wide registry stays occupied until termination is
+            // independently observed by the Process callback.
+            // A Python worker may have spawned the signed Keychain child;
+            // parent exit after SIGKILL cannot prove that child's exit.
+            registry.markChildEffectsUncertain()
+            _ = effectJournal.markUncertain()
+            // Persist the uncertainty before a timeout reply can be observed.
+            // A concurrent successful callback may cause a conservative mark.
             guard exit.complete(false) else { return }
-            // A worker that ignores SIGTERM must not hold the privileged
-            // helper's operation lease or its pipe readers indefinitely.
             if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
         }
         let completed = await exit.wait()

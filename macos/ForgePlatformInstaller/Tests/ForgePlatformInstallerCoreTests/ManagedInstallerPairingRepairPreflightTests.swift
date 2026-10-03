@@ -103,7 +103,9 @@ final class ManagedInstallerPairingRepairPreflightTests: XCTestCase {
             expectedInterpreterOwner: 0, requireSingleInterpreterLink: false,
             timeoutNanoseconds: 5_000_000_000
         )
-        let runner = MacOSManagedInstallerProductWorkerRunner()
+        let runner = MacOSManagedInstallerProductWorkerRunner(
+            effectJournal: TestManagedInstallerProductWorkerEffectJournal()
+        )
         for canonical in [request.intent.canonicalJSONData(), request.canonicalJSONData()] {
             let echoed = try await runner.runProductWorker(
                 invocation, canonicalRequest: canonical

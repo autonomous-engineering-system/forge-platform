@@ -1,5 +1,6 @@
 import Darwin
 import XCTest
+import ForgePlatformInstallerCore
 @testable import ForgePlatformInstallerPrivilegedHelper
 
 final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
@@ -322,6 +323,32 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
             prepareStateRoot: {
                 throw ManagedInstallerPrivilegedHelperBootstrapError.backendUnavailable
             }
+        ))
+    }
+
+    func testProductionRuntimeFailsClosedBeforeListenersOnCorruptUpgradeJournal() {
+        XCTAssertThrowsError(try MacOSManagedInstallerPrivilegedHelperRuntime(
+            prepareStateRoot: {}, loadUpgradeJournal: { .failure(.corrupt) }
+        )) {
+            XCTAssertEqual($0 as? ManagedInstallerHelperUpgradeStartupFenceFailure,
+                           .journalUnavailable)
+        }
+    }
+
+    func testProductionRuntimeRestoresPendingUpgradeBeforeListeners() throws {
+        let operation = try ManagedInstallerHelperUpgradeOperation(
+            operationID: "resume-1", bootTimeSeconds: 100,
+            sourceVersion: InstallerVersion("0.3.13"),
+            sourceHelperSHA256: String(repeating: "a", count: 64),
+            sourceCodeDirectorySHA256: String(repeating: "c", count: 64),
+            targetVersion: InstallerVersion("0.3.14"),
+            targetAppName: "ForgePlatformInstallerRelease044.app",
+            targetHelperSHA256: String(repeating: "b", count: 64),
+            targetCodeDirectorySHA256: String(repeating: "d", count: 64)
+        )
+        let record = ManagedInstallerHelperUpgradeJournalRecord(operation: operation)
+        XCTAssertNoThrow(try MacOSManagedInstallerPrivilegedHelperRuntime(
+            prepareStateRoot: {}, loadUpgradeJournal: { .success(record) }
         ))
     }
 

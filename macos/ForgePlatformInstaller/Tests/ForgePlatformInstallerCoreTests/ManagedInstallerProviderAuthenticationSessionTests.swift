@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import ForgePlatformInstallerCore
@@ -23,14 +24,58 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
     }
 
     func testStderrChallengeAndExplicitCancellation() {
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let effects = TestManagedInstallerProductWorkerEffectJournal()
         let session = makeSession(
-            .githubCLI, shell: "printf '\(githubPrompt)' >&2; exec /bin/sleep 10"
+            .githubCLI, shell: "printf '\(githubPrompt)' >&2; exec /bin/sleep 10",
+            exitRegistry: registry, effectJournal: effects
         )
         let challenge = session.begin(challengeTimeout: 2, sessionTimeout: 5)
         XCTAssertEqual(challenge?.userCode, "9XYZ-1234")
+        XCTAssertEqual(registry.activeCount(), 1)
         session.cancel()
         XCTAssertEqual(session.status(), .rejected)
+        XCTAssertTrue(effects.snapshot().uncertain)
         session.cancel()
+        XCTAssertTrue(waitForExit(registry))
+        XCTAssertTrue(effects.snapshot().hasUnresolvedEffects)
+    }
+
+    func testAuthenticationChildBlocksUpgradeUntilVerifiedCredentialReadback() async {
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let effects = TestManagedInstallerProductWorkerEffectJournal()
+        let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        let reader = ManagedInstallerHelperUpgradeChildExitReader(
+            admission: admission, children: registry,
+            ceremonies: EmptyCeremonyReader(),
+            workerEffects: effects,
+            epoch: 7
+        )
+        var session: ManagedInstallerProviderAuthenticationSession? = makeSession(
+            .codex, shell: "printf '\(codexPrompt)'; exec /bin/sleep 1",
+            exitRegistry: registry, effectJournal: effects
+        )
+        XCTAssertNotNil(session?.begin(challengeTimeout: 2, sessionTimeout: 3))
+        XCTAssertEqual(registry.activeCount(), 1)
+        XCTAssertTrue(effects.snapshot().hasUnresolvedEffects)
+        XCTAssertEqual(admission.beginDrain(operationID: "upgrade-1", expectedEpoch: 7),
+                       .quiescent)
+        guard case .failure(.childActive) = await reader.read(operationID: "upgrade-1") else {
+            return XCTFail("An authentication child must block upgrade")
+        }
+        let retainedSession = session
+        session = nil
+        XCTAssertEqual(registry.activeCount(), 1)
+        XCTAssertTrue(waitForExit(registry))
+        XCTAssertTrue(effects.snapshot().hasUnresolvedEffects)
+        guard case .failure(.childEffectsUncertain) = await reader.read(operationID: "upgrade-1") else {
+            return XCTFail("Child exit without verified credential readback must block upgrade")
+        }
+        XCTAssertTrue(retainedSession?.completeVerifiedReadback() == true)
+        XCTAssertFalse(effects.snapshot().hasUnresolvedEffects)
+        guard case .success = await reader.read(operationID: "upgrade-1") else {
+            return XCTFail("Verified readback after actual exit may release this gate")
+        }
     }
 
     func testOversizedMissingAndTimedOutChallengesFailClosed() {
@@ -52,13 +97,18 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
     }
 
     func testAbsentExecutableAndNonPrivilegedProductionFactoryFailClosed() {
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let effects = TestManagedInstallerProductWorkerEffectJournal()
         let absent = Process()
         absent.executableURL = URL(fileURLWithPath: "/private/tmp/fpi-auth-absent")
         let session = ManagedInstallerProviderAuthenticationSession(
-            provider: .codex, process: absent
+            provider: .codex, process: absent, exitRegistry: registry,
+            effectJournal: effects
         )
         XCTAssertNil(session.begin(challengeTimeout: 1, sessionTimeout: 2))
         XCTAssertEqual(session.status(), .rejected)
+        XCTAssertEqual(registry.activeCount(), 0)
+        XCTAssertFalse(effects.snapshot().hasUnresolvedEffects)
         let target = ManagedInstallerProviderAuthenticationTarget(
             provider: .codex,
             account: .init(name: "_fpi_" + String(repeating: "a", count: 20),
@@ -72,14 +122,117 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         ))
     }
 
-    private func makeSession(_ provider: ProviderID, shell: String)
+    func testUnavailableDurableEvidencePreventsAuthenticationChildLaunch() {
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let effects = TestManagedInstallerProductWorkerEffectJournal(acceptsBegin: false)
+        let session = makeSession(
+            .codex, shell: "printf '\(codexPrompt)'; exec /bin/sleep 1",
+            exitRegistry: registry, effectJournal: effects
+        )
+        XCTAssertNil(session.begin(challengeTimeout: 1, sessionTimeout: 2))
+        XCTAssertEqual(session.status(), .rejected)
+        XCTAssertEqual(registry.activeCount(), 0)
+        XCTAssertFalse(effects.snapshot().hasUnresolvedEffects)
+    }
+
+    func testAuthenticationChildJournalSurvivesReopenAndRequiresActualExit() throws {
+        let root = try makePrivateEffectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let effects = FileManagedInstallerProductWorkerEffectJournal(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let session = makeSession(
+            .codex, shell: "printf '\(codexPrompt)'; exec /bin/sleep 1",
+            exitRegistry: registry, effectJournal: effects
+        )
+        XCTAssertNotNil(session.begin(challengeTimeout: 2, sessionTimeout: 3))
+        let reopened = FileManagedInstallerProductWorkerEffectJournal(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        XCTAssertEqual(try reopened.readRequired().get().activeIDs.count, 1)
+        XCTAssertTrue(waitForExit(registry))
+        XCTAssertTrue(try reopened.readRequired().get().hasUnresolvedEffects)
+        XCTAssertTrue(session.completeVerifiedReadback())
+        XCTAssertFalse(try reopened.readRequired().get().hasUnresolvedEffects)
+    }
+
+    func testCancelledAuthenticationLeavesDurableUncertainty() throws {
+        let root = try makePrivateEffectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let effects = FileManagedInstallerProductWorkerEffectJournal(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let session = makeSession(
+            .codex, shell: "printf '\(codexPrompt)'; exec /bin/sleep 10",
+            exitRegistry: registry, effectJournal: effects
+        )
+        XCTAssertNotNil(session.begin(challengeTimeout: 2, sessionTimeout: 5))
+        session.cancel()
+        XCTAssertTrue(waitForExit(registry))
+        let reopened = FileManagedInstallerProductWorkerEffectJournal(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        XCTAssertTrue(try reopened.readRequired().get().uncertain)
+    }
+
+    func testDurableExitFailureRejectsAuthenticationCompletion() throws {
+        let root = try makePrivateEffectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let effects = FileManagedInstallerProductWorkerEffectJournal(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let session = makeSession(
+            .codex, shell: "printf '\(codexPrompt)'; exec /bin/sleep 1",
+            exitRegistry: registry, effectJournal: effects
+        )
+        XCTAssertNotNil(session.begin(challengeTimeout: 2, sessionTimeout: 3))
+        XCTAssertEqual(chmod(root.path, 0o755), 0)
+        XCTAssertTrue(waitForExit(registry))
+        XCTAssertEqual(session.status(), .exited(0))
+        XCTAssertFalse(session.completeVerifiedReadback())
+        XCTAssertEqual(session.status(), .rejected)
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        XCTAssertTrue(try effects.readRequired().get().hasUnresolvedEffects)
+    }
+
+    private func makeSession(_ provider: ProviderID, shell: String,
+                             exitRegistry: ManagedInstallerHelperChildExitRegistry = .processWide,
+                             effectJournal: any ManagedInstallerProductWorkerEffectJournaling =
+                                TestManagedInstallerProductWorkerEffectJournal())
         -> ManagedInstallerProviderAuthenticationSession {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", shell]
         process.environment = ["PATH": "/usr/bin:/bin", "LANG": "C"]
         return ManagedInstallerProviderAuthenticationSession(
-            provider: provider, process: process
+            provider: provider, process: process, exitRegistry: exitRegistry,
+            effectJournal: effectJournal
         )
     }
+
+    private func waitForExit(_ registry: ManagedInstallerHelperChildExitRegistry) -> Bool {
+        for _ in 0..<200 {
+            if registry.activeCount() == 0 { return true }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return registry.activeCount() == 0
+    }
+
+    private func makePrivateEffectRoot() throws -> URL {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("provider-child-effects-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        guard chmod(root.path, 0o700) == 0 else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        return root
+    }
+}
+
+private actor EmptyCeremonyReader: ManagedInstallerProviderAuthenticationCeremonyReading {
+    func pendingCeremonyCount() -> Int { 0 }
 }

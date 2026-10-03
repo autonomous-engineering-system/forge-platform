@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import XCTest
 @testable import ForgePlatformInstallerCore
@@ -186,6 +187,97 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
         XCTAssertEqual(result.sealed, sealed)
         XCTAssertEqual(result.compositionContext,
                        CurrentVerifiedInstallerCompositionContext(release: record))
+    }
+
+    func testUpgradeTargetIdentityBindsExactVerifiedReleaseAndSealedResources() throws {
+        let resources = try makeResources()
+        let sealed = ManagedInstallerHelperSealedTrustContext(
+            codeSigning: try signingEvidence(version: resources.provenance.installerVersion),
+            resources: resources
+        )
+        let release = try makeReleaseRecord(for: sealed)
+        let target = ManagedInstallerHelperUpgradeTargetIdentity(
+            appName: "ForgePlatformInstallerRelease044.app",
+            installerVersion: sealed.codeSigning.installerVersion,
+            helperSHA256: String(repeating: "e", count: 64),
+            codeDirectorySHA256: sealed.codeSigning.codeDirectorySHA256
+        )
+        let binding = ManagedInstallerHelperUpgradeTargetReleaseBinding()
+        XCTAssertTrue(binding.matches(target: target, release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: .init(
+            appName: "../Other.app",
+            installerVersion: target.installerVersion,
+            helperSHA256: target.helperSHA256,
+            codeDirectorySHA256: target.codeDirectorySHA256
+        ), release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: .init(
+            appName: target.appName,
+            installerVersion: try InstallerVersion("1.2.4"),
+            helperSHA256: target.helperSHA256,
+            codeDirectorySHA256: target.codeDirectorySHA256
+        ), release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: .init(
+            appName: target.appName,
+            installerVersion: target.installerVersion,
+            helperSHA256: target.helperSHA256,
+            codeDirectorySHA256: String(repeating: "f", count: 64)
+        ), release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: .init(
+            appName: target.appName,
+            installerVersion: target.installerVersion,
+            helperSHA256: target.helperSHA256,
+            codeDirectorySHA256: "bad"
+        ), release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: .init(
+            appName: target.appName,
+            installerVersion: target.installerVersion,
+            helperSHA256: "bad",
+            codeDirectorySHA256: target.codeDirectorySHA256
+        ), release: release, resources: resources))
+        XCTAssertFalse(binding.matches(target: target,
+                                      release: try makeReleaseRecord(for: sealed, sequence: 2),
+                                      resources: resources))
+        XCTAssertFalse(binding.matches(target: target,
+                                      release: try makeReleaseRecord(for: sealed,
+                                                                 sourceRevision: String(repeating: "f", count: 40)),
+                                      resources: resources))
+    }
+
+    func testUpgradeTargetRejectsCrossBoundSealedPolicies() throws {
+        let resources = try makeResources()
+        let sealed = ManagedInstallerHelperSealedTrustContext(
+            codeSigning: try signingEvidence(version: resources.provenance.installerVersion),
+            resources: resources
+        )
+        let release = try makeReleaseRecord(for: sealed)
+        let target = ManagedInstallerHelperUpgradeTargetIdentity(
+            appName: "ForgePlatformInstallerRelease044.app",
+            installerVersion: sealed.codeSigning.installerVersion,
+            helperSHA256: String(repeating: "e", count: 64),
+            codeDirectorySHA256: sealed.codeSigning.codeDirectorySHA256
+        )
+        let binding = ManagedInstallerHelperUpgradeTargetReleaseBinding()
+        let otherTrust = String(repeating: "f", count: 64)
+        let badProvenance = ManagedInstallerHelperSealedResources(
+            releaseTrust: resources.releaseTrust,
+            provenance: try makeProvenance(
+                trustDigest: otherTrust, version: target.installerVersion
+            ),
+            compositionTrust: resources.compositionTrust
+        )
+        XCTAssertFalse(binding.matches(target: target, release: release,
+                                       resources: badProvenance))
+        let badComposition = ManagedInstallerHelperSealedResources(
+            releaseTrust: resources.releaseTrust,
+            provenance: resources.provenance,
+            compositionTrust: try makeCompositionTrust(trustDigest: otherTrust)
+        )
+        XCTAssertFalse(binding.matches(target: target, release: release,
+                                       resources: badComposition))
+        XCTAssertFalse(binding.matches(target: target,
+                                      release: try makeReleaseRecord(for: sealed,
+                                                                 trustDigest: otherTrust),
+                                      resources: resources))
     }
 
     func testProductionCurrentReleaseAssemblyUsesFixedHelperInputsWithoutAdmission() {
@@ -438,6 +530,224 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
             let result = await admission.admit()
             XCTAssertEqual(result, .failure(.unavailable))
         }
+    }
+
+    private actor UpgradeReadCounter {
+        private var count = 0
+        func next() -> Int {
+            count += 1
+            return count
+        }
+    }
+
+    private func upgradePreparationRoot() throws -> URL {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("upgrade-preparation-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        return root
+    }
+
+    private func upgradeEvidence() throws -> (
+        ManagedInstallerHelperSealedResources,
+        VerifiedInstallerReleaseRecord,
+        ManagedInstallerHelperUpgradeSourceIdentity,
+        ManagedInstallerHelperUpgradeTargetIdentity
+    ) {
+        let resources = try makeResources()
+        let sealed = ManagedInstallerHelperSealedTrustContext(
+            codeSigning: try signingEvidence(version: resources.provenance.installerVersion),
+            resources: resources
+        )
+        let release = try makeReleaseRecord(for: sealed)
+        let source = ManagedInstallerHelperUpgradeSourceIdentity(
+            bootTimeSeconds: 100,
+            installerVersion: try InstallerVersion("1.2.2"),
+            helperSHA256: String(repeating: "a", count: 64),
+            codeDirectorySHA256: String(repeating: "c", count: 64)
+        )
+        let target = ManagedInstallerHelperUpgradeTargetIdentity(
+            appName: "ForgePlatformInstallerRelease044.app",
+            installerVersion: sealed.codeSigning.installerVersion,
+            helperSHA256: String(repeating: "e", count: 64),
+            codeDirectorySHA256: sealed.codeSigning.codeDirectorySHA256
+        )
+        return (resources, release, source, target)
+    }
+
+    func testUpgradePreparationBindsReleaseThenPersistsAndDrains() async throws {
+        let (resources, release, source, target) = try upgradeEvidence()
+        let root = try upgradePreparationRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerHelperUpgradeJournalStore(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        let lease = try XCTUnwrap(gate.beginMutation())
+        let coordinator = ManagedInstallerHelperUpgradePreparationCoordinator(
+            readSource: { .success(source) },
+            readTarget: { name, _ in
+                name == target.appName ? .success(target) : .failure(.unavailable)
+            },
+            readResources: { _ in .success(resources) },
+            drain: ManagedInstallerHelperUpgradeDrainCoordinator(
+                journal: store, gate: gate, epoch: 7
+            )
+        )
+        let result = await coordinator.prepare(
+            operationID: "upgrade-1", targetAppName: target.appName,
+            verifiedRelease: release
+        )
+        let prepared = try result.get()
+        XCTAssertEqual(prepared.admission, .draining(activeMutations: 1))
+        XCTAssertTrue(prepared.operation.matches(source: source, target: target))
+        XCTAssertEqual(try store.load().get()?.phase, .admissionClosed)
+        XCTAssertNil(gate.beginMutation())
+        XCTAssertTrue(gate.finishMutation(lease))
+        XCTAssertEqual(gate.readDrain(operationID: "upgrade-1", expectedEpoch: 7),
+                       .quiescent)
+    }
+
+    func testUpgradePreparationRejectsUnboundReleaseBeforeJournalOrDrain() async throws {
+        let (resources, release, source, target) = try upgradeEvidence()
+        let root = try upgradePreparationRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerHelperUpgradeJournalStore(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 8)
+        let coordinator = ManagedInstallerHelperUpgradePreparationCoordinator(
+            readSource: { .success(source) },
+            readTarget: { _, _ in .success(target) },
+            readResources: { _ in .success(resources) },
+            drain: ManagedInstallerHelperUpgradeDrainCoordinator(
+                journal: store, gate: gate, epoch: 8
+            )
+        )
+        let result = await coordinator.prepare(
+            operationID: "upgrade-1", targetAppName: "../Unsafe.app",
+            verifiedRelease: release
+        )
+        XCTAssertEqual(result, .failure(.unavailable))
+        let wrong = try makeReleaseRecord(
+            for: ManagedInstallerHelperSealedTrustContext(
+                codeSigning: try signingEvidence(version: target.installerVersion),
+                resources: resources
+            ), sequence: 2
+        )
+        let wrongResult = await coordinator.prepare(
+            operationID: "upgrade-1", targetAppName: target.appName,
+            verifiedRelease: wrong
+        )
+        XCTAssertEqual(wrongResult, .failure(.unavailable))
+        XCTAssertNil(try store.load().get())
+        XCTAssertNotNil(gate.beginMutation())
+    }
+
+    func testUpgradePreparationDriftAfterDrainLeavesRecoveryClosed() async throws {
+        let (resources, release, source, target) = try upgradeEvidence()
+        let root = try upgradePreparationRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerHelperUpgradeJournalStore(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 9)
+        let counter = UpgradeReadCounter()
+        let coordinator = ManagedInstallerHelperUpgradePreparationCoordinator(
+            readSource: {
+                let read = await counter.next()
+                return .success(.init(
+                    bootTimeSeconds: read == 1 ? source.bootTimeSeconds : 101,
+                    installerVersion: source.installerVersion,
+                    helperSHA256: source.helperSHA256,
+                    codeDirectorySHA256: source.codeDirectorySHA256
+                ))
+            },
+            readTarget: { _, _ in .success(target) },
+            readResources: { _ in .success(resources) },
+            drain: ManagedInstallerHelperUpgradeDrainCoordinator(
+                journal: store, gate: gate, epoch: 9
+            )
+        )
+        let result = await coordinator.prepare(
+            operationID: "upgrade-1", targetAppName: target.appName,
+            verifiedRelease: release
+        )
+        XCTAssertEqual(result, .failure(.unavailable))
+        XCTAssertEqual(try store.load().get()?.phase, .admissionClosed)
+        XCTAssertNil(gate.beginMutation())
+    }
+
+    func testUpgradePreparationRejectsTargetDriftAndDrainFailure() async throws {
+        let (resources, release, source, target) = try upgradeEvidence()
+        let root = try upgradePreparationRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerHelperUpgradeJournalStore(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 10)
+        let stale = ManagedInstallerHelperUpgradePreparationCoordinator(
+            readSource: { .success(source) },
+            readTarget: { _, _ in .success(target) },
+            readResources: { _ in .success(resources) },
+            drain: ManagedInstallerHelperUpgradeDrainCoordinator(
+                journal: store, gate: gate, epoch: 9
+            )
+        )
+        let staleResult = await stale.prepare(
+            operationID: "upgrade-1", targetAppName: target.appName,
+            verifiedRelease: release
+        )
+        XCTAssertEqual(staleResult, .failure(.drain(.admissionUnavailable)))
+        XCTAssertNil(try store.load().get())
+        let counter = UpgradeReadCounter()
+        let changed = ManagedInstallerHelperUpgradePreparationCoordinator(
+            readSource: { .success(source) },
+            readTarget: { _, _ in
+                let read = await counter.next()
+                return .success(.init(
+                    appName: target.appName,
+                    installerVersion: target.installerVersion,
+                    helperSHA256: read == 1 ? target.helperSHA256 :
+                        String(repeating: "f", count: 64),
+                    codeDirectorySHA256: target.codeDirectorySHA256
+                ))
+            },
+            readResources: { _ in .success(resources) },
+            drain: ManagedInstallerHelperUpgradeDrainCoordinator(
+                journal: store, gate: gate, epoch: 10
+            )
+        )
+        let changedResult = await changed.prepare(
+            operationID: "upgrade-1", targetAppName: target.appName,
+            verifiedRelease: release
+        )
+        XCTAssertEqual(changedResult, .failure(.unavailable))
+        XCTAssertEqual(try store.load().get()?.phase, .admissionClosed)
+        XCTAssertNil(gate.beginMutation())
+    }
+
+    func testProductionUpgradePreparationStartsWithNoMutation() async throws {
+        let (_, release, _, _) = try upgradeEvidence()
+        let root = try upgradePreparationRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = FileManagedInstallerHelperUpgradeJournalStore(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 11)
+        let production = ManagedInstallerHelperUpgradePreparationCoordinator(
+            journal: store, gate: gate, epoch: 11
+        )
+        let result = await production.prepare(
+            operationID: "upgrade-1", targetAppName: "../Unsafe.app",
+            verifiedRelease: release
+        )
+        XCTAssertEqual(result, .failure(.unavailable))
+        XCTAssertNil(try store.load().get())
+        XCTAssertNotNil(gate.beginMutation())
     }
 
     private func makeReleaseRecord(

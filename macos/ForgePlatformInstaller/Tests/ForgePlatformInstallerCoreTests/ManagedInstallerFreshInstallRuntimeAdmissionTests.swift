@@ -581,7 +581,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                         + "Enter this one-time code ABCD-EF12\\n'; exec /bin/sleep 2",
                 ]
                 return ManagedInstallerProviderAuthenticationSession(
-                    provider: .codex, process: process
+                    provider: .codex, process: process,
+                    effectJournal: TestManagedInstallerProductWorkerEffectJournal()
                 )
             }
         )
@@ -589,6 +590,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             canonicalIntent: canonical, providerTargetID: requirement.id
         )
         XCTAssertNotNil(startedBytes)
+        let pendingAfterStart = await starter.pendingCeremonyCount()
+        XCTAssertEqual(pendingAfterStart, 1)
         XCTAssertEqual(ManagedInstallerProviderAuthenticationChallengeResponse.decodeJSON(
             try XCTUnwrap(startedBytes), intent: intent,
             targetID: requirement.id
@@ -601,6 +604,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             canonicalIntent: canonical, providerTargetID: requirement.id
         )
         XCTAssertTrue(cancelled)
+        let pendingAfterCancel = await starter.pendingCeremonyCount()
+        XCTAssertEqual(pendingAfterCancel, 0)
         let drifted = ManagedInstallerReviewedProviderAuthenticationAdmission(
             loader: ProviderStagePlanLoader(plan: fixture.plan), reader: reader,
             prepareTarget: { _, _ in
@@ -696,6 +701,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             loader: ProviderStagePlanLoader(plan: fixture.plan), reader: reader,
             prepareTarget: { _, _ in physical }
         )
+        let effects = TestManagedInstallerProductWorkerEffectJournal()
+        let childRegistry = ManagedInstallerHelperChildExitRegistry()
         let starter = ManagedInstallerReviewedProviderAuthenticationStart(
             admission: admission, makeSession: { _ in
                 let process = Process()
@@ -703,7 +710,9 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                 process.arguments = ["-c", "printf 'https://auth.openai.com/codex/device\\n"
                     + "Enter this one-time code ABCD-EF12\\n'; /bin/sleep 0.1; exit 0"]
                 return ManagedInstallerProviderAuthenticationSession(
-                    provider: .codex, process: process
+                    provider: .codex, process: process,
+                    exitRegistry: childRegistry,
+                    effectJournal: effects
                 )
             }
         )
@@ -712,6 +721,9 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             canonicalIntent: bytes, providerTargetID: requirement.id
         )
         XCTAssertNotNil(challenge)
+        let pendingBeforeVerification = await starter.pendingCeremonyCount()
+        XCTAssertEqual(pendingBeforeVerification, 1)
+        XCTAssertTrue(effects.snapshot().hasUnresolvedEffects)
         let before = await starter.finish(
             canonicalIntent: bytes, providerTargetID: requirement.id
         )
@@ -721,6 +733,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             canonicalIntent: bytes, providerTargetID: requirement.id
         )
         XCTAssertNil(sameEvidence)
+        XCTAssertTrue(effects.snapshot().hasUnresolvedEffects)
         await reader.set(verified)
         var completed: Data?
         for _ in 0..<20 {
@@ -731,6 +744,9 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(completed, verified.canonicalJSONData())
+        XCTAssertFalse(effects.snapshot().hasUnresolvedEffects)
+        let pendingAfterVerification = await starter.pendingCeremonyCount()
+        XCTAssertEqual(pendingAfterVerification, 0)
         let repeatCompletion = await starter.finish(
             canonicalIntent: bytes, providerTargetID: requirement.id
         )
@@ -744,7 +760,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                 process.arguments = ["-c", "printf 'https://auth.openai.com/codex/device\\n"
                     + "Enter this one-time code ABCD-EF12\\n'; /bin/sleep 0.1; exit 1"]
                 return ManagedInstallerProviderAuthenticationSession(
-                    provider: .codex, process: process
+                    provider: .codex, process: process,
+                    effectJournal: TestManagedInstallerProductWorkerEffectJournal()
                 )
             }
         )
@@ -809,7 +826,9 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             expectedInterpreterOwner: 0, requireSingleInterpreterLink: false,
             timeoutNanoseconds: 5_000_000_000
         )
-        let runner = MacOSManagedInstallerProductWorkerRunner()
+        let runner = MacOSManagedInstallerProductWorkerRunner(
+            effectJournal: TestManagedInstallerProductWorkerEffectJournal()
+        )
         let echoed = try await runner.runProductWorker(
             invocation, canonicalRequest: canonical
         ).get()

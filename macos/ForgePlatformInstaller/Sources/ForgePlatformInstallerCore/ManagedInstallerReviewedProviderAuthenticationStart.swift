@@ -5,11 +5,16 @@ protocol ManagedInstallerReviewedProviderAuthenticationStarting: Sendable {
     func finish(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data?
 }
 
+protocol ManagedInstallerProviderAuthenticationCeremonyReading: Sendable {
+    func pendingCeremonyCount() async -> Int
+}
+
 /// The released helper admits and starts one exact in-memory device ceremony.
 /// An actor reservation closes duplicate-start races across XPC connections;
 /// a fresh plan and physical AUTHENTICATION_REQUIRED read precede every launch.
 actor ManagedInstallerReviewedProviderAuthenticationStart:
-    ManagedInstallerReviewedProviderAuthenticationStarting {
+    ManagedInstallerReviewedProviderAuthenticationStarting,
+    ManagedInstallerProviderAuthenticationCeremonyReading {
     typealias SessionFactory = @Sendable (
         ManagedInstallerProviderAuthenticationTarget
     ) -> ManagedInstallerProviderAuthenticationSession?
@@ -22,6 +27,12 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
         let reviewed: ManagedInstallerReviewedProviderAuthenticationContext
     }
     private var sessions: [String: RunningCeremony] = [:]
+
+    /// Includes launches awaiting physical admission and successful children
+    /// whose credential readback has not yet been verified by finish().
+    func pendingCeremonyCount() -> Int {
+        reserved.union(sessions.keys).count
+    }
 
     init(admission: ManagedInstallerReviewedProviderAuthenticationAdmission,
          makeSession: @escaping SessionFactory) {
@@ -112,7 +123,10 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
         ), readback.operationID == intent.operationID,
            readback.stablePlanFingerprint == intent.stablePlanFingerprint
         else { return nil }
-        sessions.removeValue(forKey: intent.operationID + "/" + providerTargetID.rawValue)
+        let key = intent.operationID + "/" + providerTargetID.rawValue
+        guard sessions[key]?.session === entry.session,
+              entry.session.completeVerifiedReadback() else { return nil }
+        sessions.removeValue(forKey: key)
         return readback.canonicalJSONData()
     }
 }
