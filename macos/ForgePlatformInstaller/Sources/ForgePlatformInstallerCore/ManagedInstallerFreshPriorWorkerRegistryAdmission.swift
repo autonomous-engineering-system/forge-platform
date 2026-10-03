@@ -11,13 +11,33 @@ enum ManagedInstallerFreshPriorWorkerRegistryAdmission {
         adding deploymentID: String
     ) -> Bool {
         guard ManagedInstallerProductWorkerRouteAuthority.isSafeIdentity(deploymentID),
-              registry.evidenceReference.hasPrefix("registry:sha256:"),
+              !registry.records.contains(where: { $0.target.id == deploymentID })
+        else { return false }
+        return acceptsBindings(prior: prior, registry: registry, excluding: deploymentID)
+    }
+
+    /// Upgrade evidence must account for every installed route. A missing
+    /// authority, including on an apparently empty root, cannot establish a
+    /// fresh-host absence claim by itself.
+    static func acceptsAllExisting(
+        authority: ManagedInstallerProductWorkerAuthoritySnapshot?,
+        registry: ManagedInstallerManagedDeploymentRegistrySnapshot
+    ) -> Bool {
+        guard let authority else { return false }
+        return acceptsBindings(prior: authority, registry: registry, excluding: nil)
+    }
+
+    private static func acceptsBindings(
+        prior: ManagedInstallerProductWorkerAuthoritySnapshot?,
+        registry: ManagedInstallerManagedDeploymentRegistrySnapshot,
+        excluding deploymentID: String?
+    ) -> Bool {
+        guard registry.evidenceReference.hasPrefix("registry:sha256:"),
               registry.evidenceReference.utf8.count == "registry:sha256:".utf8.count + 64,
               registry.evidenceReference.dropFirst("registry:sha256:".count)
                 .unicodeScalars.allSatisfy({
                     (48...57).contains($0.value) || (97...102).contains($0.value)
-                }),
-              !registry.records.contains(where: { $0.target.id == deploymentID })
+                })
         else { return false }
         let paired = (prior?.routes ?? []).filter { $0.deploymentID != deploymentID }
         let single = (prior?.singleRoutes ?? []).filter {

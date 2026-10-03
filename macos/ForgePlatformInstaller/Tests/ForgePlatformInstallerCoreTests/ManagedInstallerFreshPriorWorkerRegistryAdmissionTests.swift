@@ -108,6 +108,140 @@ final class ManagedInstallerFreshPriorWorkerRegistryAdmissionTests: XCTestCase {
         ))
     }
 
+    func testUpgradeRequiresAllExactExistingRoutes() throws {
+        let (authority, route, manifest) = try singleAuthority()
+        let exact = try registryRecord(
+            deploymentID: route.deploymentID,
+            components: [("forge-runtime", route.instanceID)],
+            compositionID: manifest.compositionIdentity,
+            manifestDigest: manifest.digest
+        )
+        XCTAssertTrue(ManagedInstallerFreshPriorWorkerRegistryAdmission
+            .acceptsAllExisting(authority: authority, registry: snapshot([exact])))
+        XCTAssertFalse(ManagedInstallerFreshPriorWorkerRegistryAdmission
+            .acceptsAllExisting(authority: nil, registry: snapshot([])))
+        XCTAssertFalse(ManagedInstallerFreshPriorWorkerRegistryAdmission
+            .acceptsAllExisting(authority: authority, registry: snapshot([])))
+        let wrong = try registryRecord(
+            deploymentID: route.deploymentID,
+            components: [("forge-runtime", "wrong-instance")],
+            compositionID: manifest.compositionIdentity,
+            manifestDigest: manifest.digest
+        )
+        XCTAssertFalse(ManagedInstallerFreshPriorWorkerRegistryAdmission
+            .acceptsAllExisting(authority: authority, registry: snapshot([wrong])))
+    }
+
+    func testUpgradeProductBindingRequiresSealAndStableReadbacks() throws {
+        let (authority, route, manifest) = try singleAuthority()
+        let exact = try registryRecord(
+            deploymentID: route.deploymentID,
+            components: [("forge-runtime", route.instanceID)],
+            compositionID: manifest.compositionIdentity,
+            manifestDigest: manifest.digest
+        )
+        let registry = snapshot([exact])
+        let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        let reader = ManagedInstallerHelperUpgradeProductBindingReader(
+            admission: gate, epoch: 7,
+            readAuthority: { .success(authority) },
+            readRegistry: { .success(registry) }
+        )
+        XCTAssertEqual(reader.read(operationID: "upgrade"),
+                       .failure(.admissionUnavailable))
+        XCTAssertEqual(gate.beginDrain(operationID: "upgrade", expectedEpoch: 7),
+                       .quiescent)
+        XCTAssertEqual(reader.read(operationID: "upgrade"),
+                       .failure(.admissionUnavailable))
+        XCTAssertTrue(gate.sealDrainAfterIndependentQuiescence(
+            operationID: "upgrade", expectedEpoch: 7
+        ))
+        XCTAssertEqual(reader.read(operationID: "other"),
+                       .failure(.admissionUnavailable))
+        guard case .success(let evidence) = reader.read(operationID: "upgrade") else {
+            return XCTFail("exact sealed product binding was unavailable")
+        }
+        XCTAssertEqual(evidence.deploymentCount, 1)
+        XCTAssertEqual(evidence.registryReference, registry.evidenceReference)
+        XCTAssertTrue(evidence.authorityReference.hasPrefix("authority:sha256:"))
+    }
+
+    func testUpgradeProductBindingRejectsMissingMismatchAndDrift() throws {
+        let (authority, route, manifest) = try singleAuthority()
+        let exact = try registryRecord(
+            deploymentID: route.deploymentID,
+            components: [("forge-runtime", route.instanceID)],
+            compositionID: manifest.compositionIdentity,
+            manifestDigest: manifest.digest
+        )
+        let registry = snapshot([exact])
+        let gate = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        XCTAssertEqual(gate.beginDrain(operationID: "upgrade", expectedEpoch: 7),
+                       .quiescent)
+        XCTAssertTrue(gate.sealDrainAfterIndependentQuiescence(
+            operationID: "upgrade", expectedEpoch: 7
+        ))
+        let missing = ManagedInstallerHelperUpgradeProductBindingReader(
+            admission: gate, epoch: 7,
+            readAuthority: { .success(nil) },
+            readRegistry: { .success(registry) }
+        )
+        XCTAssertEqual(missing.read(operationID: "upgrade"),
+                       .failure(.stateUnavailable))
+        let empty = snapshot([])
+        let mismatched = ManagedInstallerHelperUpgradeProductBindingReader(
+            admission: gate, epoch: 7,
+            readAuthority: { .success(authority) },
+            readRegistry: { .success(empty) }
+        )
+        XCTAssertEqual(mismatched.read(operationID: "upgrade"),
+                       .failure(.bindingMismatch))
+        let changed = ManagedInstallerManagedDeploymentRegistrySnapshot(
+            records: [exact],
+            evidenceReference: "registry:sha256:" + String(repeating: "a", count: 64)
+        )
+        let sequence = TestProductRegistrySequence([
+            .success(registry), .success(changed),
+        ])
+        let drifting = ManagedInstallerHelperUpgradeProductBindingReader(
+            admission: gate, epoch: 7,
+            readAuthority: { .success(authority) },
+            readRegistry: { sequence.next() }
+        )
+        XCTAssertEqual(drifting.read(operationID: "upgrade"),
+                       .failure(.stateDrift))
+
+        let unavailableReads = TestProductRegistrySequence([
+            .success(registry), .failure(.unavailable),
+        ])
+        let unavailable = ManagedInstallerHelperUpgradeProductBindingReader(
+            admission: gate, epoch: 7,
+            readAuthority: { .success(authority) },
+            readRegistry: { unavailableReads.next() }
+        )
+        XCTAssertEqual(unavailable.read(operationID: "upgrade"),
+                       .failure(.stateUnavailable))
+
+        let mismatchedReads = TestProductRegistrySequence([
+            .success(registry), .success(empty),
+        ])
+        let finalMismatch = ManagedInstallerHelperUpgradeProductBindingReader(
+            admission: gate, epoch: 7,
+            readAuthority: { .success(authority) },
+            readRegistry: { mismatchedReads.next() }
+        )
+        XCTAssertEqual(finalMismatch.read(operationID: "upgrade"),
+                       .failure(.bindingMismatch))
+
+        // Constructing the fixed-root readers must not inspect the host until
+        // the exact sealed admission has been established.
+        let production = ManagedInstallerHelperUpgradeProductBindingReader(
+            admission: gate, epoch: 7
+        )
+        XCTAssertEqual(production.read(operationID: "other"),
+                       .failure(.admissionUnavailable))
+    }
+
     private func singleAuthority() throws -> (
         ManagedInstallerProductWorkerAuthoritySnapshot,
         ManagedInstallerProductWorkerSingleRouteAuthority,
@@ -240,5 +374,26 @@ final class ManagedInstallerFreshPriorWorkerRegistryAdmissionTests: XCTestCase {
             sha256: "sha256:" + String(repeating: "f", count: 64),
             signingKeyID: "forge-platform-installer-release-v1"
         )
+    }
+}
+
+private final class TestProductRegistrySequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private let values: [Result<ManagedInstallerManagedDeploymentRegistrySnapshot,
+                                ManagedInstallerManagedDeploymentRegistryReadFailure>]
+    private var index = 0
+
+    init(_ values: [Result<ManagedInstallerManagedDeploymentRegistrySnapshot,
+                           ManagedInstallerManagedDeploymentRegistryReadFailure>]) {
+        self.values = values
+    }
+
+    func next() -> Result<ManagedInstallerManagedDeploymentRegistrySnapshot,
+                           ManagedInstallerManagedDeploymentRegistryReadFailure> {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = values[min(index, values.count - 1)]
+        index += 1
+        return value
     }
 }
