@@ -37,11 +37,12 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         XCTAssertTrue(waitForExit(registry))
     }
 
-    func testAuthenticationChildBlocksUpgradeUntilActualExitAfterSessionRelease() {
+    func testAuthenticationChildBlocksUpgradeUntilActualExitAfterSessionRelease() async {
         let registry = ManagedInstallerHelperChildExitRegistry()
         let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
         let reader = ManagedInstallerHelperUpgradeChildExitReader(
-            admission: admission, children: registry, epoch: 7
+            admission: admission, children: registry,
+            ceremonies: EmptyCeremonyReader(), epoch: 7
         )
         var session: ManagedInstallerProviderAuthenticationSession? = makeSession(
             .codex, shell: "printf '\(codexPrompt)'; exec /bin/sleep 1",
@@ -51,13 +52,13 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         XCTAssertEqual(registry.activeCount(), 1)
         XCTAssertEqual(admission.beginDrain(operationID: "upgrade-1", expectedEpoch: 7),
                        .quiescent)
-        guard case .failure(.childActive) = reader.read(operationID: "upgrade-1") else {
+        guard case .failure(.childActive) = await reader.read(operationID: "upgrade-1") else {
             return XCTFail("An authentication child must block upgrade")
         }
         session = nil
         XCTAssertEqual(registry.activeCount(), 1)
         XCTAssertTrue(waitForExit(registry))
-        guard case .success = reader.read(operationID: "upgrade-1") else {
+        guard case .success = await reader.read(operationID: "upgrade-1") else {
             return XCTFail("Only actual child exit may release this gate")
         }
     }
@@ -122,4 +123,8 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         }
         return registry.activeCount() == 0
     }
+}
+
+private actor EmptyCeremonyReader: ManagedInstallerProviderAuthenticationCeremonyReading {
+    func pendingCeremonyCount() -> Int { 0 }
 }
