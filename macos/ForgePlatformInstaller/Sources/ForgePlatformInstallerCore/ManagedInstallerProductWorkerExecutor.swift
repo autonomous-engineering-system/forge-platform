@@ -174,10 +174,13 @@ struct MacOSManagedInstallerProductWorkerRunner:
     private static let maximumErrorBytes = 8 * 1_024
     private static let maximumWorkerBytes = 16 * 1_024 * 1_024
     private let forgeUpdateResources: any ManagedInstallerForgeUpdateResourcesChecking
+    private let processRegistry: ManagedInstallerProductWorkerExitRegistry
 
     init(forgeUpdateResources: any ManagedInstallerForgeUpdateResourcesChecking =
-        SignedManagedInstallerForgeUpdateResourcesChecker()) {
+        SignedManagedInstallerForgeUpdateResourcesChecker(),
+         processRegistry: ManagedInstallerProductWorkerExitRegistry = .processWide) {
         self.forgeUpdateResources = forgeUpdateResources
+        self.processRegistry = processRegistry
     }
 
     func runProductWorker(
@@ -298,11 +301,12 @@ struct MacOSManagedInstallerProductWorkerRunner:
         process.standardInput = standardInput
         process.standardOutput = standardOutput
         process.standardError = standardError
-        let holder = ManagedInstallerProductWorkerProcess(process)
+        let holder = ManagedInstallerProductWorkerProcess(process, registry: processRegistry)
 
         do {
             try process.run()
         } catch {
+            holder.cancelBeforeLaunch()
             return .failure(.unavailable)
         }
 
@@ -573,17 +577,27 @@ struct MacOSManagedInstallerProductWorkerRunner:
     }
 }
 
-private final class ManagedInstallerProductWorkerProcess: @unchecked Sendable {
+final class ManagedInstallerProductWorkerProcess: @unchecked Sendable {
     private let process: Process
     private let exit = ManagedInstallerProductWorkerExitGate()
+    private let registry: ManagedInstallerProductWorkerExitRegistry
+    private let token: UUID
 
-    init(_ process: Process) {
+    init(_ process: Process, registry: ManagedInstallerProductWorkerExitRegistry) {
         self.process = process
+        self.registry = registry
+        token = registry.reserve(process)
         // Register before run(): a short-lived worker must not exit between
         // launch and installation of the completion observer.
-        process.terminationHandler = { [exit] _ in
+        process.terminationHandler = { [exit, registry, token] _ in
+            _ = registry.finish(token)
             _ = exit.complete(true)
         }
+    }
+
+    func cancelBeforeLaunch() {
+        _ = registry.finish(token)
+        _ = exit.complete(false)
     }
 
     func wait(timeoutNanoseconds: UInt64) async -> Bool {
@@ -591,8 +605,9 @@ private final class ManagedInstallerProductWorkerProcess: @unchecked Sendable {
             do { try await Task.sleep(nanoseconds: timeoutNanoseconds) }
             catch { return }
             guard exit.complete(false) else { return }
-            // A worker that ignores SIGTERM must not hold the privileged
-            // helper's operation lease or its pipe readers indefinitely.
+            // The caller may release its XPC lease after this timeout, but
+            // the process-wide registry stays occupied until termination is
+            // independently observed by the Process callback.
             if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
         }
         let completed = await exit.wait()
