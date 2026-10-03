@@ -143,7 +143,8 @@ final class ManagedInstallerProductWorkerEffectJournalTests: XCTestCase {
 }
 
 final class TestManagedInstallerProductWorkerEffectJournal:
-    ManagedInstallerProductWorkerEffectJournaling, @unchecked Sendable {
+    ManagedInstallerProductWorkerEffectJournaling,
+    ManagedInstallerProductWorkerEffectReading, @unchecked Sendable {
     private let lock = NSLock()
     private let acceptsBegin: Bool
     private var active: Set<UUID> = []
@@ -187,6 +188,11 @@ final class TestManagedInstallerProductWorkerEffectJournal:
             activeIDs: active.sorted { $0.uuidString < $1.uuidString },
             uncertain: uncertain
         )
+    }
+
+    func readRequired() -> Result<ManagedInstallerProductWorkerEffectSnapshot,
+                                  ManagedInstallerProductWorkerEffectJournalFailure> {
+        .success(snapshot())
     }
 }
 

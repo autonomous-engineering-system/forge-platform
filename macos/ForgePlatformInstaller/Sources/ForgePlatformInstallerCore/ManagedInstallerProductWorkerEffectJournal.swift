@@ -1,8 +1,9 @@
 import Darwin
 import Foundation
 
-/// This record is negative evidence only. An empty record is one necessary
-/// input to a future upgrade gate, never proof of product or Keychain state.
+/// Product workers and provider-authentication children share this record.
+/// It is negative child-exit evidence only: an empty record never proves
+/// product state or credential and System Keychain quiescence.
 struct ManagedInstallerProductWorkerEffectSnapshot: Equatable, Sendable {
     let activeIDs: [UUID]
     let uncertain: Bool
@@ -33,8 +34,8 @@ protocol ManagedInstallerProductWorkerEffectJournaling: Sendable {
 }
 
 /// A root-owned fixed-location write-ahead record survives helper crashes.
-/// Each worker is recorded before Process.run(), and only a proven normal exit
-/// or a failed launch removes its ID. Abnormal exit leaves a sticky uncertainty.
+/// Each child is recorded before Process.run(), and only a proven normal exit
+/// or a failed launch removes its ID. Abnormal exit leaves sticky uncertainty.
 struct FileManagedInstallerProductWorkerEffectJournal:
     ManagedInstallerProductWorkerEffectJournaling,
     ManagedInstallerProductWorkerEffectReading, Sendable {
