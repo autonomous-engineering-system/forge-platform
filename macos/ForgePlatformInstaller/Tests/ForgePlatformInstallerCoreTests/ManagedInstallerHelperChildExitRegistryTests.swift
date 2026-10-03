@@ -86,6 +86,17 @@ final class ManagedInstallerHelperChildExitRegistryTests: XCTestCase {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTAssertEqual(registry.activeCount(), 0)
+        XCTAssertTrue(registry.hasUncertainChildEffects())
+
+        let admission = ManagedInstallerHelperUpgradeAdmissionGate(epoch: 7)
+        XCTAssertEqual(admission.beginDrain(operationID: "upgrade-1", expectedEpoch: 7),
+                       .quiescent)
+        let reader = ManagedInstallerHelperUpgradeChildExitReader(
+            admission: admission, children: registry,
+            ceremonies: TestCeremonyReader(), epoch: 7
+        )
+        let result = await reader.read(operationID: "upgrade-1")
+        XCTAssertEqual(result.failure, .childEffectsUncertain)
     }
 }
 
