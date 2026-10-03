@@ -9,6 +9,30 @@ struct ManagedInstallerHelperMutationLease: Hashable, Sendable {
     fileprivate let epoch: UInt64
 }
 
+/// A transport callback may be invoked twice or from competing queues. Only
+/// the first terminal reply is delivered, and its lease remains counted until
+/// that reply returns. A later duplicate cannot cross a sealed drain.
+private final class ManagedInstallerHelperMutationTerminalReply {
+    private let lock = NSLock()
+    private var delivered = false
+    private let reply: (Data?) -> Void
+    private let release: () -> Void
+
+    init(reply: @escaping (Data?) -> Void, release: @escaping () -> Void) {
+        self.reply = reply
+        self.release = release
+    }
+
+    func deliver(_ value: Data?) {
+        lock.lock()
+        guard !delivered else { lock.unlock(); return }
+        delivered = true
+        lock.unlock()
+        defer { release() }
+        reply(value)
+    }
+}
+
 public enum ManagedInstallerHelperUpgradeAdmissionState: Equatable, Sendable {
     case blocked
     case draining(activeMutations: Int)
@@ -34,10 +58,7 @@ public final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendab
     /// reply. A missing reply leaves the lease active and blocks replacement.
     func admittedReply(_ reply: @escaping (Data?) -> Void) -> ((Data?) -> Void)? {
         guard let lease = beginMutation() else { return nil }
-        return { [self] value in
-            defer { finishMutation(lease) }
-            reply(value)
-        }
+        return terminalReply(for: lease, reply: reply)
     }
 
     /// An already-admitted provider ceremony must be able to deliver its
@@ -49,10 +70,17 @@ public final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendab
         _ reply: @escaping (Data?) -> Void
     ) -> ((Data?) -> Void)? {
         guard let lease = beginExistingCeremonyCompletion() else { return nil }
-        return { [self] value in
-            defer { finishMutation(lease) }
-            reply(value)
+        return terminalReply(for: lease, reply: reply)
+    }
+
+    private func terminalReply(
+        for lease: ManagedInstallerHelperMutationLease,
+        reply: @escaping (Data?) -> Void
+    ) -> (Data?) -> Void {
+        let terminal = ManagedInstallerHelperMutationTerminalReply(reply: reply) { [self] in
+            _ = finishMutation(lease)
         }
+        return { value in terminal.deliver(value) }
     }
 
     private func beginExistingCeremonyCompletion() -> ManagedInstallerHelperMutationLease? {
