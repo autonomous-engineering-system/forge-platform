@@ -86,6 +86,8 @@ enum ForgePlatformInstallerCLIApplication {
             InstallerCLIHelperRegistration.liveMVP0323Replacer,
         replaceMVP0324Helper: @escaping InstallerCLIHelperRegistration.Registrar =
             InstallerCLIHelperRegistration.liveMVP0324Replacer,
+        replaceMVP0325Helper: @escaping InstallerCLIHelperRegistration.Registrar =
+            InstallerCLIHelperRegistration.liveMVP0325Replacer,
         challengeWriter: ChallengeWriter = writeChallengeToTTY,
         stdout: Writer,
         stderr: Writer
@@ -315,6 +317,16 @@ enum ForgePlatformInstallerCLIApplication {
                     confirm: confirm,
                     register: replaceMVP0324Helper,
                     replacingMVP0324: true
+                )
+            case .helperReplaceMVP0325:
+                result = await InstallerCLIHelperRegistration.run(
+                    startup: startup,
+                    currentVersion: currentVersion,
+                    currentRelease: currentRelease,
+                    options: invocation.options,
+                    confirm: confirm,
+                    register: replaceMVP0325Helper,
+                    replacingMVP0325: true
                 )
             case .deploymentList:
                 result = await workflow.listDeployments()

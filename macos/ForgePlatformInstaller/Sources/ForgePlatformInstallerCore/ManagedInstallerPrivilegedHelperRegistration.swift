@@ -501,6 +501,26 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         }
     }
 
+    /// One bounded transition from the published 0.3.25 helper after its
+    /// reviewed Git host evidence differed from the execution state root.
+    /// The operator must independently recover the exact journal and provider
+    /// effects, preserve historical child evidence, and prove no live worker
+    /// or product effect before invocation. Only signed 0.3.26 is admitted.
+    public func replaceMVP0325ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.26"),
+                  let prior = try? InstallerVersion("0.3.25"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
     private func replaceBoundedRunningParentWhileLocked(
         expectedVersion: InstallerVersion,
         priorVersion: InstallerVersion
