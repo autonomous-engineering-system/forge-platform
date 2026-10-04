@@ -295,7 +295,7 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         ))
         let device = try XCTUnwrap(ManagedInstallerProviderDeviceChallenge.parse(
             provider: .codex,
-            output: Data("https://auth.openai.com/codex/device\nEnter this one-time code ABCD-EF12".utf8)
+            output: Data("https://auth.openai.com/codex/device\nEnter this one-time code ABCD-EF123".utf8)
         ))
         let response = ManagedInstallerProviderAuthenticationChallengeResponse(
             intent: intent, targetID: target, challenge: device

@@ -87,6 +87,16 @@ final class ManagedInstallerProviderDeviceAuthenticationTests: XCTestCase {
         XCTAssertEqual(ManagedInstallerProviderDeviceChallenge.parse(
             provider: .codex, output: colored
         )?.userCode, "ABCD-EF12")
+
+        let currentCodex = Data("Welcome to Codex\nhttps://auth.openai.com/codex/device\nEnter this one-time code (expires in 15 minutes)\nABCD-EF123\nContinue only if you started this login in Codex.\n".utf8)
+        XCTAssertEqual(ManagedInstallerProviderDeviceChallenge.parse(
+            provider: .codex, output: currentCodex
+        )?.userCode, "ABCD-EF123")
+
+        let currentGitHub = Data("! One-time code (9XYZ-1234) copied to clipboard\nOpen this URL to continue in your web browser: https://github.com/login/device\n".utf8)
+        XCTAssertEqual(ManagedInstallerProviderDeviceChallenge.parse(
+            provider: .githubCLI, output: currentGitHub
+        )?.userCode, "9XYZ-1234")
     }
 
     func testUnexpectedOutputFailsClosedWithoutPromotingArbitraryLinksOrCodes() {
@@ -98,6 +108,7 @@ final class ManagedInstallerProviderDeviceAuthenticationTests: XCTestCase {
             "https://auth.openai.com/codex/device\nEnter this one-time code ABCD-EF12\nEnter this one-time code",
             "https://auth.openai.com/codex/device\nEnter this one-time code ABCD-EF12\u{1B}[2J",
             "https://auth.openai.com/codex/device\nEnter this one-time code abcd-ef12",
+            "https://auth.openai.com/codex/device\nEnter this one-time code ABCD-EF1234",
         ]
         for output in examples {
             XCTAssertNil(ManagedInstallerProviderDeviceChallenge.parse(
@@ -107,6 +118,14 @@ final class ManagedInstallerProviderDeviceAuthenticationTests: XCTestCase {
         XCTAssertNil(ManagedInstallerProviderDeviceChallenge.parse(
             provider: .githubCLI,
             output: Data("https://auth.openai.com/codex/device\nEnter this one-time code ABCD-EF12".utf8)
+        ))
+        XCTAssertNil(ManagedInstallerProviderDeviceChallenge.parse(
+            provider: .githubCLI,
+            output: Data("https://github.com/login/device\nOne-time code ABCD-EF123".utf8)
+        ))
+        XCTAssertNil(ManagedInstallerProviderDeviceChallenge.parse(
+            provider: .githubCLI,
+            output: Data("https://github.com/login/device\nFirst copy your one-time code ABCD-EF12\nOne-time code WXYZ-1234".utf8)
         ))
         XCTAssertNil(ManagedInstallerProviderDeviceChallenge.parse(
             provider: .codex, output: Data(repeating: 65, count: 4_097)
