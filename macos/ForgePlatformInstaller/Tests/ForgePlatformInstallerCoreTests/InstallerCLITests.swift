@@ -99,6 +99,41 @@ final class InstallerCLITests: XCTestCase {
             try InstallerCLIParser.parse(["helper", "replace-idle", "--yes"]).command,
             .helperReplaceIdle
         )
+        XCTAssertEqual(
+            try InstallerCLIParser.parse(["helper", "replace-mvp-0314", "--yes"]).command,
+            .helperReplaceMVP0314
+        )
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "helper", "replace-mvp-0314", "--deployment", "new",
+        ]))
+        XCTAssertEqual(
+            try InstallerCLIParser.parse(["helper", "replace-mvp-0316", "--yes"]).command,
+            .helperReplaceMVP0316
+        )
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "helper", "replace-mvp-0316", "--deployment", "new",
+        ]))
+        XCTAssertEqual(
+            try InstallerCLIParser.parse(["helper", "replace-mvp-0318", "--yes"]).command,
+            .helperReplaceMVP0318
+        )
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "helper", "replace-mvp-0318", "--deployment", "new",
+        ]))
+        XCTAssertEqual(
+            try InstallerCLIParser.parse(["helper", "replace-mvp-0319", "--yes"]).command,
+            .helperReplaceMVP0319
+        )
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "helper", "replace-mvp-0319", "--deployment", "new",
+        ]))
+        XCTAssertEqual(
+            try InstallerCLIParser.parse(["helper", "replace-mvp-0320", "--yes"]).command,
+            .helperReplaceMVP0320
+        )
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "helper", "replace-mvp-0320", "--deployment", "new",
+        ]))
         XCTAssertThrowsError(try InstallerCLIParser.parse([
             "helper", "replace-idle", "--deployment", "another-target",
         ]))

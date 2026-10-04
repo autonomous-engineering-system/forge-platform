@@ -7,6 +7,11 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case helperRegister
     case helperReplaceQualification
     case helperReplaceIdle
+    case helperReplaceMVP0314
+    case helperReplaceMVP0316
+    case helperReplaceMVP0318
+    case helperReplaceMVP0319
+    case helperReplaceMVP0320
     case selfUpdateCheck
     case selfUpdateApply
     case deploymentList
@@ -135,6 +140,11 @@ public enum InstallerCLIParser {
       forge-platform-installer helper register [--yes] [--non-interactive] [--json]
       forge-platform-installer helper replace-qualification [--yes] [--non-interactive] [--json]
       forge-platform-installer helper replace-idle [--yes] [--non-interactive] [--json]
+      forge-platform-installer helper replace-mvp-0314 [--yes] [--non-interactive] [--json]
+      forge-platform-installer helper replace-mvp-0316 [--yes] [--non-interactive] [--json]
+      forge-platform-installer helper replace-mvp-0318 [--yes] [--non-interactive] [--json]
+      forge-platform-installer helper replace-mvp-0319 [--yes] [--non-interactive] [--json]
+      forge-platform-installer helper replace-mvp-0320 [--yes] [--non-interactive] [--json]
       forge-platform-installer self-update check [--json]
       forge-platform-installer self-update apply [--yes] [--json]
       forge-platform-installer deployment list [--json]
@@ -276,6 +286,16 @@ public enum InstallerCLIParser {
             command = .helperReplaceQualification
         case ["helper", "replace-idle"]:
             command = .helperReplaceIdle
+        case ["helper", "replace-mvp-0314"]:
+            command = .helperReplaceMVP0314
+        case ["helper", "replace-mvp-0316"]:
+            command = .helperReplaceMVP0316
+        case ["helper", "replace-mvp-0318"]:
+            command = .helperReplaceMVP0318
+        case ["helper", "replace-mvp-0319"]:
+            command = .helperReplaceMVP0319
+        case ["helper", "replace-mvp-0320"]:
+            command = .helperReplaceMVP0320
         case ["self-update", "check"]:
             command = .selfUpdateCheck
         case ["self-update", "apply"]:

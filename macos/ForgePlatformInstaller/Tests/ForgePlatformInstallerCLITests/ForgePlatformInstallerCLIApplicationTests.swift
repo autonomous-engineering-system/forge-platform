@@ -685,6 +685,264 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertTrue(mismatch.stdout.joined().contains("registered-parent-mismatch"))
     }
 
+    func testBoundedMVP0314ReplacementRequiresConsentAndFreshRelease() async throws {
+        let current = try release("0.3.16")
+        let registrar = CLIHelperRegistrarSpy(result: .ready(
+            try ManagedInstallerPrivilegedHelperRegistrationReceipt(status: .enabled)
+        ))
+        let startup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator())
+        )
+        let denied = await run(
+            ["helper", "replace-mvp-0314", "--non-interactive"],
+            startup: startup, version: "0.3.16",
+            mvpReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(denied.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let callsAfterDenial = await registrar.calls()
+        XCTAssertEqual(callsAfterDenial, 0)
+
+        let declined = await run(
+            ["helper", "replace-mvp-0314", "--json"],
+            startup: startup, version: "0.3.16", confirmation: false,
+            mvpReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(declined.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let callsAfterDecline = await registrar.calls()
+        XCTAssertEqual(callsAfterDecline, 0)
+
+        let replaced = await run(
+            ["helper", "replace-mvp-0314", "--yes", "--non-interactive", "--json"],
+            startup: startup, version: "0.3.16",
+            mvpReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(replaced.code, InstallerCLIExitCode.success.rawValue)
+        XCTAssertTrue(replaced.stdout.joined().contains("helper-enabled"))
+        let callsAfterReplacement = await registrar.calls()
+        XCTAssertEqual(callsAfterReplacement, 1)
+
+        let stale = await run(
+            ["helper", "replace-mvp-0314", "--yes", "--json"],
+            startup: CLIStartupSpy(
+                outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+                recheckOutcome: .updateRequired(try release("0.3.17"))
+            ),
+            version: "0.3.16",
+            mvpReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(stale.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        let callsAfterStale = await registrar.calls()
+        XCTAssertEqual(callsAfterStale, 1)
+
+        let blocked = await run(
+            ["helper", "replace-mvp-0314", "--yes", "--json"],
+            startup: CLIStartupSpy(
+                outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+                recheckOutcome: .blocked("sealed trust unavailable")
+            ),
+            version: "0.3.16",
+            mvpReplacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(blocked.code, InstallerCLIExitCode.blocked.rawValue)
+        let callsAfterBlock = await registrar.calls()
+        XCTAssertEqual(callsAfterBlock, 1)
+    }
+
+    func testBoundedMVP0316ReplacementRequiresConsentAndFreshRelease() async throws {
+        let current = try release("0.3.18")
+        let registrar = CLIHelperRegistrarSpy(result: .ready(
+            try ManagedInstallerPrivilegedHelperRegistrationReceipt(status: .enabled)
+        ))
+        let startup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator())
+        )
+        let denied = await run(
+            ["helper", "replace-mvp-0316", "--non-interactive"],
+            startup: startup, version: "0.3.18",
+            mvp0316Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(denied.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let callsAfterDenial = await registrar.calls()
+        XCTAssertEqual(callsAfterDenial, 0)
+
+        let replaced = await run(
+            ["helper", "replace-mvp-0316", "--yes", "--non-interactive", "--json"],
+            startup: startup, version: "0.3.18",
+            mvp0316Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(replaced.code, InstallerCLIExitCode.success.rawValue)
+        XCTAssertTrue(replaced.stdout.joined().contains("helper-enabled"))
+        let callsAfterReplacement = await registrar.calls()
+        XCTAssertEqual(callsAfterReplacement, 1)
+
+        let stale = await run(
+            ["helper", "replace-mvp-0316", "--yes", "--json"],
+            startup: CLIStartupSpy(
+                outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+                recheckOutcome: .updateRequired(try release("0.3.19"))
+            ),
+            version: "0.3.18",
+            mvp0316Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(stale.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        let callsAfterStale = await registrar.calls()
+        XCTAssertEqual(callsAfterStale, 1)
+    }
+
+    func testBoundedMVP0318ReplacementRequiresConsentAndFreshRelease() async throws {
+        let current = try release("0.3.19")
+        let registrar = CLIHelperRegistrarSpy(result: .ready(
+            try ManagedInstallerPrivilegedHelperRegistrationReceipt(status: .enabled)
+        ))
+        let startup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator())
+        )
+        let denied = await run(
+            ["helper", "replace-mvp-0318", "--non-interactive"],
+            startup: startup, version: "0.3.19",
+            mvp0318Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(denied.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let callsAfterDenial = await registrar.calls()
+        XCTAssertEqual(callsAfterDenial, 0)
+
+        let replaced = await run(
+            ["helper", "replace-mvp-0318", "--yes", "--non-interactive", "--json"],
+            startup: startup, version: "0.3.19",
+            mvp0318Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(replaced.code, InstallerCLIExitCode.success.rawValue)
+        XCTAssertTrue(replaced.stdout.joined().contains("helper-enabled"))
+        let callsAfterReplacement = await registrar.calls()
+        XCTAssertEqual(callsAfterReplacement, 1)
+
+        let stale = await run(
+            ["helper", "replace-mvp-0318", "--yes", "--json"],
+            startup: CLIStartupSpy(
+                outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+                recheckOutcome: .updateRequired(try release("0.3.20"))
+            ),
+            version: "0.3.19",
+            mvp0318Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(stale.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        let callsAfterStale = await registrar.calls()
+        XCTAssertEqual(callsAfterStale, 1)
+    }
+
+    func testBoundedMVP0319ReplacementRequiresConsentAndFreshRelease() async throws {
+        let current = try release("0.3.20")
+        let registrar = CLIHelperRegistrarSpy(result: .ready(
+            try ManagedInstallerPrivilegedHelperRegistrationReceipt(status: .enabled)
+        ))
+        let startup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator())
+        )
+        let denied = await run(
+            ["helper", "replace-mvp-0319", "--non-interactive"],
+            startup: startup, version: "0.3.20",
+            mvp0319Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(denied.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let callsAfterDenial = await registrar.calls()
+        XCTAssertEqual(callsAfterDenial, 0)
+
+        let replaced = await run(
+            ["helper", "replace-mvp-0319", "--yes", "--non-interactive", "--json"],
+            startup: startup, version: "0.3.20",
+            mvp0319Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(replaced.code, InstallerCLIExitCode.success.rawValue)
+        XCTAssertTrue(replaced.stdout.joined().contains("helper-enabled"))
+        let callsAfterReplacement = await registrar.calls()
+        XCTAssertEqual(callsAfterReplacement, 1)
+
+        let stale = await run(
+            ["helper", "replace-mvp-0319", "--yes", "--json"],
+            startup: CLIStartupSpy(
+                outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+                recheckOutcome: .updateRequired(try release("0.3.21"))
+            ),
+            version: "0.3.20",
+            mvp0319Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(stale.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        let callsAfterStale = await registrar.calls()
+        XCTAssertEqual(callsAfterStale, 1)
+    }
+
+    func testBoundedMVP0320ReplacementRequiresConsentAndFreshRelease() async throws {
+        let current = try release("0.3.22")
+        let registrar = CLIHelperRegistrarSpy(result: .ready(
+            try ManagedInstallerPrivilegedHelperRegistrationReceipt(status: .enabled)
+        ))
+        let startup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator())
+        )
+        let denied = await run(
+            ["helper", "replace-mvp-0320", "--non-interactive"],
+            startup: startup, version: "0.3.22",
+            mvp0320Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(denied.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let callsAfterDenial = await registrar.calls()
+        XCTAssertEqual(callsAfterDenial, 0)
+
+        let replaced = await run(
+            ["helper", "replace-mvp-0320", "--yes", "--non-interactive", "--json"],
+            startup: startup, version: "0.3.22",
+            mvp0320Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(replaced.code, InstallerCLIExitCode.success.rawValue)
+        XCTAssertTrue(replaced.stdout.joined().contains("helper-enabled"))
+        let callsAfterReplacement = await registrar.calls()
+        XCTAssertEqual(callsAfterReplacement, 1)
+
+        let stale = await run(
+            ["helper", "replace-mvp-0320", "--yes", "--json"],
+            startup: CLIStartupSpy(
+                outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+                recheckOutcome: .updateRequired(try release("0.3.23"))
+            ),
+            version: "0.3.22",
+            mvp0320Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(stale.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        let callsAfterStale = await registrar.calls()
+        XCTAssertEqual(callsAfterStale, 1)
+    }
+
+    func testHelperRegistrarFactoryRoutesOnlyThroughAnAvailableCoordinator() async throws {
+        let version = try InstallerVersion("0.3.18")
+        let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: UnavailableRegistrationService()
+        )
+        let actions: [(InstallerCLIHelperRegistration.Action,
+                       ManagedInstallerPrivilegedHelperRegistrationFailure)] = [
+            (.register, .registrationFailed),
+            (.qualification, .registeredParentMismatch),
+            (.idle, .registeredParentMismatch),
+            (.mvp0314, .registeredParentMismatch),
+            (.mvp0316, .registeredParentMismatch),
+            (.mvp0318, .registeredParentMismatch),
+            (.mvp0319, .registeredParentMismatch),
+            (.mvp0320, .registeredParentMismatch),
+        ]
+        for (action, failure) in actions {
+            let absent = InstallerCLIHelperRegistration.makeRegistrar(
+                for: action, coordinator: { nil }
+            )
+            let blocked = await absent(version)
+            XCTAssertEqual(blocked, .failed(.transitionBusy))
+
+            let available = InstallerCLIHelperRegistration.makeRegistrar(
+                for: action, coordinator: { coordinator }
+            )
+            let routed = await available(version)
+            XCTAssertEqual(routed, .failed(failure))
+        }
+    }
+
     func testHelperRegistrationPreservesApprovalFailureAndReleaseDrift() async throws {
         let current = try release("1.2.3")
         let next = try release("1.2.4")
@@ -765,6 +1023,21 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         },
         idleReplacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
             .failed(.serviceUnavailable)
+        },
+        mvpReplacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
+            .failed(.serviceUnavailable)
+        },
+        mvp0316Replacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
+            .failed(.serviceUnavailable)
+        },
+        mvp0318Replacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
+            .failed(.serviceUnavailable)
+        },
+        mvp0319Replacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
+            .failed(.serviceUnavailable)
+        },
+        mvp0320Replacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
+            .failed(.serviceUnavailable)
         }
     ) async -> (code: Int32, stdout: [String], stderr: [String]) {
         let output = LockedStrings()
@@ -780,6 +1053,11 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             registerHelper: registration,
             replaceQualificationHelper: replacement,
             replaceIdleHelper: idleReplacement,
+            replaceMVP0314Helper: mvpReplacement,
+            replaceMVP0316Helper: mvp0316Replacement,
+            replaceMVP0318Helper: mvp0318Replacement,
+            replaceMVP0319Helper: mvp0319Replacement,
+            replaceMVP0320Helper: mvp0320Replacement,
             stdout: { output.append($0) },
             stderr: { errors.append($0) }
         )
@@ -977,4 +1255,16 @@ private actor CLIReadyCoordinator: InstallerWizardCoordinator {
     }
 
     func inventoryCalls() -> Int { inventories }
+}
+
+private final class UnavailableRegistrationService:
+    ManagedInstallerPrivilegedHelperServiceControlling, @unchecked Sendable {
+    private enum Refusal: Error { case unavailable }
+
+    func readStatus() -> ManagedInstallerPrivilegedHelperStatus { .notRegistered }
+    func readRegisteredParentVersion() -> InstallerVersion? { nil }
+    func readIdleRegisteredParentVersion() -> InstallerVersion? { nil }
+    func readSystemJobAbsent() -> Bool { false }
+    func register() throws { throw Refusal.unavailable }
+    func unregister() throws { throw Refusal.unavailable }
 }

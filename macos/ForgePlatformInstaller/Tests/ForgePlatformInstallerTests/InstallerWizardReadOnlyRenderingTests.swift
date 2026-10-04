@@ -123,6 +123,143 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         XCTAssertTrue(state.executionStages.isEmpty)
     }
 
+    func testCustomerInstallFlowRendersEachStageAndBlockedState() throws {
+        let scenarios = try canonicalScenarios() + variantScenarios()
+        for scenario in scenarios {
+            XCTAssertFalse(try renderCustomerFlow(
+                state: scenario.state, started: true
+            ).isEmpty, scenario.name)
+        }
+        XCTAssertFalse(try renderCustomerFlow(
+            state: selfUpdateCurrent(), started: false
+        ).isEmpty)
+
+        let ready = try reviewState(acknowledged: false)
+        XCTAssertFalse(try renderCustomerFlow(state: ready, started: true).isEmpty)
+
+        var pairing = ready
+        pairing.composition = CompositionReview(
+            manifestIdentity: "forge-ep-managed-v2",
+            status: .compatible,
+            components: [
+                ComponentDiff(componentID: "engineering-platform-server",
+                              title: "Engineering Platform", change: .install,
+                              detail: "Nieuwe installatie"),
+                ComponentDiff(componentID: "forge-runtime", title: "Forge",
+                              change: .install, detail: "Nieuwe installatie"),
+            ]
+        )
+        XCTAssertTrue(pairing.requiresPairingTarget)
+        XCTAssertFalse(try renderCustomerFlow(state: pairing, started: true).isEmpty)
+        XCTAssertTrue(pairing.setReviewedPairingTarget(
+            try ManagedInstallerReviewedPairingTarget(
+                projectID: "forge",
+                repositoryID: "forge",
+                repositoryIdentity: "pcvantol:forge"
+            )
+        ))
+        XCTAssertFalse(try renderCustomerFlow(state: pairing, started: true).isEmpty)
+    }
+
+    func testCustomerProgressDoesNotExposeInternalStageNames() {
+        let stages = [
+            ("managed-deployment", "Engineering Platform en Forge installeren"),
+            ("product-operations", "Producten installeren"),
+            ("pairing", "Producten verbinden"),
+            ("readiness", "Werking controleren"),
+            ("unknown-internal-stage", "Installatie controleren"),
+        ]
+        for (id, expected) in stages {
+            XCTAssertEqual(
+                InstallerMVPStagePresentation.title(for: ExecutionStage(
+                    id: id, title: "Internal operation", detail: "Internal detail"
+                )),
+                expected
+            )
+        }
+    }
+
+    func testCustomerPreparationUsesExistingEvidenceGates() throws {
+        func model(_ state: InstallerWizardState) -> InstallerWizardViewModel {
+            InstallerWizardViewModel(
+                state: state,
+                coordinator: UnavailableInstallerWizardCoordinator()
+            )
+        }
+        func prepare(_ model: InstallerWizardViewModel) {
+            var progress = InstallerMVPPreparationProgress()
+            progress.continuePreparation(viewModel: model, started: true)
+        }
+        let current = model(try selfUpdateCurrent())
+        prepare(current)
+        XCTAssertEqual(current.state.step, .deployment)
+
+        let unopened = model(try selfUpdateCurrent())
+        var unopenedProgress = InstallerMVPPreparationProgress()
+        unopenedProgress.continuePreparation(viewModel: unopened, started: false)
+        XCTAssertEqual(unopened.state.step, .selfUpdate)
+
+        let pending = model(current.state)
+        prepare(pending)
+        if case .loading = pending.state.deploymentSelection {} else {
+            XCTFail("inventory must be read before a clean target is selected")
+        }
+
+        var clean = try selfUpdateCurrent()
+        XCTAssertTrue(clean.advance())
+        XCTAssertTrue(clean.beginManagedDeploymentInventory())
+        XCTAssertTrue(clean.recordManagedDeploymentInventory(.available(
+            try ManagedDeploymentInventory(
+                existing: [],
+                createCandidate: ManagedDeploymentTarget(
+                    id: "deployment-new", label: "Nieuwe installatie", exists: false
+                ),
+                evidenceReference: "inventory:clean"
+            )
+        )))
+        let cleanModel = model(clean)
+        prepare(cleanModel)
+        XCTAssertEqual(cleanModel.state.step, .composition)
+
+        let existingModel = model(try deploymentAvailable())
+        prepare(existingModel)
+        XCTAssertEqual(existingModel.state.step, .deployment)
+
+        let compositionPending = model(cleanModel.state)
+        prepare(compositionPending)
+        if case .preparing = compositionPending.state.sessionPreparation {} else {
+            XCTFail("signed composition must be requested")
+        }
+
+        let compositionReady = model(try compositionPrepared())
+        prepare(compositionReady)
+        XCTAssertEqual(compositionReady.state.step, .preflight)
+
+        var passed = try compositionPrepared()
+        XCTAssertTrue(passed.advance())
+        passed.preflight = passedPreflight()
+        let passedModel = model(passed)
+        prepare(passedModel)
+        XCTAssertEqual(passedModel.state.step, .providers)
+
+        var pendingPreflight = try compositionPrepared()
+        XCTAssertTrue(pendingPreflight.advance())
+        let pendingPreflightModel = model(pendingPreflight)
+        var preflightProgress = InstallerMVPPreparationProgress()
+        preflightProgress.continuePreparation(viewModel: pendingPreflightModel, started: true)
+        XCTAssertTrue(preflightProgress.preflightRequested)
+        preflightProgress.continuePreparation(viewModel: pendingPreflightModel, started: true)
+        XCTAssertTrue(pendingPreflightModel.isPreflightRequestInFlight)
+
+        let reviewing = model(try reviewState(acknowledged: false))
+        prepare(reviewing)
+        XCTAssertTrue(reviewing.isReviewRequestInFlight)
+
+        let completed = model(try executionState(failed: false))
+        prepare(completed)
+        XCTAssertEqual(completed.state.step, .summary)
+    }
+
     private func canonicalScenarios() throws -> [(name: String, state: InstallerWizardState)] {
         let selfUpdate = try selfUpdateCurrent()
         let deployment = try deploymentAvailable()
@@ -580,6 +717,29 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
             .environment(\.colorScheme, scheme)
         let renderer = ImageRenderer(content: view)
         renderer.scale = scale
+        guard let image = renderer.nsImage,
+              let tiff = image.tiffRepresentation,
+              let representation = NSBitmapImageRep(data: tiff),
+              let png = representation.representation(using: .png, properties: [:]) else {
+            throw ScreenshotError.renderFailed
+        }
+        return png
+    }
+
+    private func renderCustomerFlow(
+        state: InstallerWizardState,
+        started: Bool
+    ) throws -> Data {
+        let model = InstallerWizardViewModel(
+            state: state,
+            coordinator: UnavailableInstallerWizardCoordinator()
+        )
+        let view = InstallerMVPFlowView(
+            viewModel: model,
+            initiallyStarted: started
+        )
+        .frame(width: 960, height: 680)
+        let renderer = ImageRenderer(content: view)
         guard let image = renderer.nsImage,
               let tiff = image.tiffRepresentation,
               let representation = NSBitmapImageRep(data: tiff),

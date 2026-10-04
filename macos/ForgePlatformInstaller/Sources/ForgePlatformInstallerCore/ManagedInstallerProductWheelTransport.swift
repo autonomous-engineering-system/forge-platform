@@ -31,9 +31,10 @@ protocol ManagedInstallerPrepublicationProductWheelFetching: Sendable {
 }
 
 /// Credential-free, bounded HTTPS fetch of the exact wheel URL admitted by
-/// canonical helper authority. Only GitHub Release asset endpoints and their
-/// known asset-CDN redirects are accepted. Bytes are digest checked before
-/// they may enter the private staging boundary.
+/// canonical helper authority. Exact GitHub Release asset endpoints and
+/// immutable PyPI file URLs are accepted. GitHub may use its known asset-CDN
+/// redirects; PyPI must answer at the exact signed URL. Bytes are digest
+/// checked before they may enter the private staging boundary.
 final class HTTPSManagedInstallerProductWheelTransport: NSObject,
     ManagedInstallerProductWheelFetching,
     ManagedInstallerPrepublicationProductWheelFetching, @unchecked Sendable {
@@ -82,7 +83,7 @@ final class HTTPSManagedInstallerProductWheelTransport: NSObject,
         sourceURL: String, artifactSHA256: String
     ) async -> Result<Data, ManagedInstallerProductWheelTransportFailure> {
         guard let endpoint = URL(string: sourceURL),
-              Self.isExactReleaseWheelURL(endpoint, sourceURL: sourceURL),
+              Self.isAllowedSourceWheelURL(sourceURL),
               CompositionCatalogValidation.isTaggedSHA256(artifactSHA256)
         else { return .failure(.invalidRequest) }
         let configuration = URLSessionConfiguration.ephemeral
@@ -98,7 +99,9 @@ final class HTTPSManagedInstallerProductWheelTransport: NSObject,
         }
         let session = URLSession(
             configuration: configuration,
-            delegate: ProductWheelRedirectDelegate(timeout: timeout),
+            delegate: ProductWheelRedirectDelegate(
+                timeout: timeout, sourceURL: endpoint
+            ),
             delegateQueue: nil
         )
         defer { session.invalidateAndCancel() }
@@ -109,7 +112,7 @@ final class HTTPSManagedInstallerProductWheelTransport: NSObject,
             guard let http = response as? HTTPURLResponse,
                   http.statusCode == 200,
                   let finalURL = http.url,
-                  GitHubInstallerReleaseArchiveEndpoint.isAllowedArchiveURL(finalURL),
+                  Self.isAllowedResponseURL(finalURL, sourceURL: endpoint),
                   GitHubInstallerReleaseArchiveEndpoint.contentLength(
                     from: http, isAtMost: Self.maximumWheelBytes
                   ) else { return .failure(.rejected) }
@@ -127,7 +130,26 @@ final class HTTPSManagedInstallerProductWheelTransport: NSObject,
         } catch { return .failure(.unavailable) }
     }
 
-    private static func isExactReleaseWheelURL(
+    static func isAllowedSourceWheelURL(_ sourceURL: String) -> Bool {
+        guard let url = URL(string: sourceURL),
+              url.absoluteString == sourceURL,
+              CompositionCatalogValidation.isCanonicalHTTPSURL(sourceURL),
+              url.scheme == "https", url.user == nil, url.password == nil,
+              url.port == nil, url.query == nil, url.fragment == nil else {
+            return false
+        }
+        return isExactGitHubReleaseWheelURL(url, sourceURL: sourceURL)
+            || isExactPyPIWheelURL(url)
+    }
+
+    private static func isAllowedResponseURL(_ finalURL: URL, sourceURL: URL) -> Bool {
+        if isExactPyPIWheelURL(sourceURL) {
+            return finalURL == sourceURL
+        }
+        return GitHubInstallerReleaseArchiveEndpoint.isAllowedArchiveURL(finalURL)
+    }
+
+    private static func isExactGitHubReleaseWheelURL(
         _ url: URL, sourceURL: String
     ) -> Bool {
         let parts = url.pathComponents
@@ -153,6 +175,27 @@ final class HTTPSManagedInstallerProductWheelTransport: NSObject,
         return true
     }
 
+    private static func isExactPyPIWheelURL(_ url: URL) -> Bool {
+        let parts = url.pathComponents
+        guard url.host == "files.pythonhosted.org",
+              !url.absoluteString.contains("%"),
+              parts.count == 6, parts[1] == "packages",
+              parts[2].count == 2, parts[3].count == 2,
+              parts[4].count == 60,
+              (parts[2] + parts[3] + parts[4]).unicodeScalars.allSatisfy({
+                  (48...57).contains($0.value) || (97...102).contains($0.value)
+              }),
+              parts[5].utf8.count <= 255,
+              parts[5].hasSuffix(".whl"), !parts[5].contains(".."),
+              parts[5].unicodeScalars.allSatisfy({ scalar in
+                  (48...57).contains(scalar.value)
+                      || (65...90).contains(scalar.value)
+                      || (97...122).contains(scalar.value)
+                      || scalar == "_" || scalar == "-" || scalar == "."
+              }) else { return false }
+        return true
+    }
+
     private static func request(for url: URL, timeout: TimeInterval) -> URLRequest {
         var request = URLRequest(
             url: url, cachePolicy: .reloadIgnoringLocalCacheData,
@@ -170,10 +213,14 @@ final class HTTPSManagedInstallerProductWheelTransport: NSObject,
 private final class ProductWheelRedirectDelegate: NSObject,
     URLSessionTaskDelegate, @unchecked Sendable {
     private let timeout: TimeInterval
+    private let sourceURL: URL
     private let lock = NSLock()
     private var redirects = 0
 
-    init(timeout: TimeInterval) { self.timeout = timeout }
+    init(timeout: TimeInterval, sourceURL: URL) {
+        self.timeout = timeout
+        self.sourceURL = sourceURL
+    }
 
     func urlSession(
         _ session: URLSession, task: URLSessionTask,
@@ -181,7 +228,8 @@ private final class ProductWheelRedirectDelegate: NSObject,
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        guard let destination = request.url,
+        guard sourceURL.host == "github.com",
+              let destination = request.url,
               GitHubInstallerReleaseArchiveEndpoint.isAllowedArchiveURL(destination)
         else { completionHandler(nil); return }
         lock.lock()

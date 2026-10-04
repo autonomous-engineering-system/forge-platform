@@ -342,6 +342,131 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         }
     }
 
+    /// One bounded, owner-authorized clean-install recovery from the released
+    /// 0.3.14 parent. The caller separately proves that this disposable host
+    /// has no product or in-flight operation before using this command.
+    /// ServiceManagement terminates a running daemon when unregister succeeds.
+    /// A failed subsequent registration leaves the ordinary register route as
+    /// recovery after independent fixed-job absence readback.
+    public func replaceMVP0314ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.16"),
+                  let prior = try? InstallerVersion("0.3.14"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
+    /// One owner-authorized clean-install transition from the exact running
+    /// 0.3.16 parent to the next signed MVP release. The caller proves empty
+    /// product/operation state and sealed source/target bytes before invoking
+    /// this command. No caller can select a different prior version or label.
+    public func replaceMVP0316ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.18"),
+                  let prior = try? InstallerVersion("0.3.16"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
+    /// One bounded recovery transition for the published 0.3.18 GUI's failed
+    /// provider-preparation attempt. The operator must first prove that the
+    /// old helper has no product, credential or worker effect in flight; this
+    /// method still binds the exact fixed-label source and signed successor.
+    public func replaceMVP0318ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.19"),
+                  let prior = try? InstallerVersion("0.3.18"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
+    /// One bounded clean-install transition after 0.3.19 recorded an
+    /// immutable reviewed selection with an incorrect pairing. A new signed
+    /// release gives the corrected GUI review a distinct operation identity;
+    /// the old selection remains intact for audit. The operator must prove
+    /// absence of product, credential and worker effects before invocation.
+    public func replaceMVP0319ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.20"),
+                  let prior = try? InstallerVersion("0.3.19"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
+    /// One bounded transition from the published 0.3.20 helper after its
+    /// provider preparation failed before product installation. The operator
+    /// must independently prove a quiescent, recoverable journal and the
+    /// absence of product, credential and worker effects before invoking it.
+    /// Only the exact signed 0.3.22 successor is admitted.
+    public func replaceMVP0320ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.22"),
+                  let prior = try? InstallerVersion("0.3.20"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
+    private func replaceBoundedRunningParentWhileLocked(
+        expectedVersion: InstallerVersion,
+        priorVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        guard service.readStatus() == .enabled,
+              service.readRegisteredParentVersion() == priorVersion,
+              service.readStatus() == .enabled,
+              service.readRegisteredParentVersion() == priorVersion else {
+            return .failed(.registeredParentMismatch)
+        }
+        do {
+            try service.unregister()
+        } catch {
+            return .failed(.unregistrationFailed)
+        }
+        guard service.readSystemJobAbsent() else {
+            return .failed(.statusDrift)
+        }
+        switch service.readStatus() {
+        case .notRegistered, .notFound:
+            return ensureRegisteredWhileLocked(expectedVersion: expectedVersion)
+        case .enabled, .requiresApproval:
+            return .failed(.statusDrift)
+        }
+    }
+
     private func replaceIdleParentWhileLocked(
         expectedVersion: InstallerVersion,
         minimumPriorVersion: InstallerVersion,

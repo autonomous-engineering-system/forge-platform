@@ -242,7 +242,10 @@ final class CompositionCatalogAdmissionCoordinatorTests: XCTestCase {
         let rawReadback = try fixture.transportReadback(bytes)
         TrustedClockURLProtocol.configure(
             status: 200,
-            headers: ["Date": "Thu, 10 Sep 2026 12:00:00 GMT"],
+            headers: [
+                "Date": "Thu, 10 Sep 2026 12:00:00 GMT",
+                "X-RateLimit-Remaining": "0",
+            ],
             body: Data("{}".utf8)
         )
         let source = GitHubHTTPSDateTrustedTimeSource(
@@ -267,6 +270,8 @@ final class CompositionCatalogAdmissionCoordinatorTests: XCTestCase {
         )
         let observations = TrustedClockURLProtocol.observations()
         XCTAssertEqual(observations.count, 1)
+        XCTAssertEqual(GitHubHTTPSDateTrustedTimeSource.endpoint.absoluteString,
+                       "https://api.github.com/rate_limit")
         XCTAssertEqual(observations.first?.url, GitHubHTTPSDateTrustedTimeSource.endpoint.absoluteString)
         XCTAssertNil(observations.first?.authorization)
         XCTAssertNil(observations.first?.cookie)

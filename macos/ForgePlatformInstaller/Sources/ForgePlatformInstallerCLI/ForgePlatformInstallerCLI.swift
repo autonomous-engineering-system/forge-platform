@@ -70,6 +70,16 @@ enum ForgePlatformInstallerCLIApplication {
             InstallerCLIHelperRegistration.liveQualificationReplacer,
         replaceIdleHelper: @escaping InstallerCLIHelperRegistration.Registrar =
             InstallerCLIHelperRegistration.liveIdleReplacer,
+        replaceMVP0314Helper: @escaping InstallerCLIHelperRegistration.Registrar =
+            InstallerCLIHelperRegistration.liveMVP0314Replacer,
+        replaceMVP0316Helper: @escaping InstallerCLIHelperRegistration.Registrar =
+            InstallerCLIHelperRegistration.liveMVP0316Replacer,
+        replaceMVP0318Helper: @escaping InstallerCLIHelperRegistration.Registrar =
+            InstallerCLIHelperRegistration.liveMVP0318Replacer,
+        replaceMVP0319Helper: @escaping InstallerCLIHelperRegistration.Registrar =
+            InstallerCLIHelperRegistration.liveMVP0319Replacer,
+        replaceMVP0320Helper: @escaping InstallerCLIHelperRegistration.Registrar =
+            InstallerCLIHelperRegistration.liveMVP0320Replacer,
         challengeWriter: ChallengeWriter = writeChallengeToTTY,
         stdout: Writer,
         stderr: Writer
@@ -219,6 +229,56 @@ enum ForgePlatformInstallerCLIApplication {
                     confirm: confirm,
                     register: replaceIdleHelper,
                     replacingOlder: true
+                )
+            case .helperReplaceMVP0314:
+                result = await InstallerCLIHelperRegistration.run(
+                    startup: startup,
+                    currentVersion: currentVersion,
+                    currentRelease: currentRelease,
+                    options: invocation.options,
+                    confirm: confirm,
+                    register: replaceMVP0314Helper,
+                    replacingMVP0314: true
+                )
+            case .helperReplaceMVP0316:
+                result = await InstallerCLIHelperRegistration.run(
+                    startup: startup,
+                    currentVersion: currentVersion,
+                    currentRelease: currentRelease,
+                    options: invocation.options,
+                    confirm: confirm,
+                    register: replaceMVP0316Helper,
+                    replacingMVP0316: true
+                )
+            case .helperReplaceMVP0318:
+                result = await InstallerCLIHelperRegistration.run(
+                    startup: startup,
+                    currentVersion: currentVersion,
+                    currentRelease: currentRelease,
+                    options: invocation.options,
+                    confirm: confirm,
+                    register: replaceMVP0318Helper,
+                    replacingMVP0318: true
+                )
+            case .helperReplaceMVP0319:
+                result = await InstallerCLIHelperRegistration.run(
+                    startup: startup,
+                    currentVersion: currentVersion,
+                    currentRelease: currentRelease,
+                    options: invocation.options,
+                    confirm: confirm,
+                    register: replaceMVP0319Helper,
+                    replacingMVP0319: true
+                )
+            case .helperReplaceMVP0320:
+                result = await InstallerCLIHelperRegistration.run(
+                    startup: startup,
+                    currentVersion: currentVersion,
+                    currentRelease: currentRelease,
+                    options: invocation.options,
+                    confirm: confirm,
+                    register: replaceMVP0320Helper,
+                    replacingMVP0320: true
                 )
             case .deploymentList:
                 result = await workflow.listDeployments()

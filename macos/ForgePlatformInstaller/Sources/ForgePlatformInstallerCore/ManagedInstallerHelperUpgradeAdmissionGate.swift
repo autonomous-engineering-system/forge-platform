@@ -141,6 +141,18 @@ public final class ManagedInstallerHelperUpgradeAdmissionGate: @unchecked Sendab
             ? .quiescent : .draining(activeMutations: activeMutations.count)
     }
 
+    /// Later host-state readers require the final completion entrance to be
+    /// sealed as well as the ordinary mutation entrance. This is only an
+    /// in-process barrier, never product or System Keychain authority.
+    func readSealedDrain(operationID: String, expectedEpoch: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return epoch > 0 && expectedEpoch == epoch
+            && drainingOperationID == operationID
+            && sealedOperationID == operationID
+            && activeMutations.isEmpty
+    }
+
     /// Atomically prevents any further existing-ceremony completion from
     /// acquiring a lease after the exact drain has no outstanding replies.
     /// A caller must independently prove durable worker, product, credential
