@@ -82,6 +82,50 @@ class ProductionCompositionTests(unittest.TestCase):
             for path, asset in self.manifests():
                 self.assertEqual((Path(temporary) / "candidate" / asset).read_bytes(), path.read_bytes())
 
+    def test_sequence_two_scopes_github_to_ep_only(self) -> None:
+        paths = (
+            COMPOSITIONS / "ep-only-2.3.106.json",
+            COMPOSITIONS / "forge-ep-2.7.39-2.3.106-v2.json",
+            COMPOSITIONS / "forge-only-2.7.39-v2.json",
+        )
+        index = json.loads((COMPOSITIONS / "component-combination-catalog-v2.json").read_bytes())
+        self.assertEqual(index["sequence"], 2)
+        self.assertEqual([entry["composition_id"] for entry in index["compositions"]], list(IDENTITIES))
+        expected = (
+            {("codex", "engineering-platform-server"), ("github-cli", "engineering-platform-server")},
+            {("codex", "engineering-platform-server"), ("github-cli", "engineering-platform-server"),
+             ("codex", "forge-runtime")},
+            {("codex", "forge-runtime")},
+        )
+        manifests = []
+        for number, (path, entry, providers) in enumerate(zip(paths, index["compositions"], expected, strict=True), 1):
+            raw = path.read_bytes()
+            digest = "sha256:" + sha256(raw).hexdigest()
+            self.assertEqual(entry["manifest"]["digest"], digest)
+            self.assertTrue(entry["manifest"]["url"].endswith(
+                f"/forge-platform-composition-catalog-v2/ForgePlatformComposition-2-{number}.json"
+            ))
+            manifest = CompositionManifest.from_digest_bound_bytes(raw, manifest_digest=digest)
+            self.assertEqual(manifest.composition_id, entry["composition_id"])
+            self.assertEqual(
+                {(item["identity"], item["owner_component"]) for item in json.loads(raw)["providers"]},
+                providers,
+            )
+            self.assertEqual(entry["selection_sequence"], 2)
+            manifests.append((path, f"ForgePlatformComposition-2-{number}.json"))
+        with tempfile.TemporaryDirectory() as temporary:
+            result = prepare_many(
+                manifests=tuple(manifests),
+                index_path=COMPOSITIONS / "component-combination-catalog-v2.json",
+                output_directory=Path(temporary) / "candidate",
+                source_sha=SOURCE_SHA, sequence=2,
+                published_at="2026-10-04T19:40:00Z",
+                expires_at="2026-11-03T19:40:00Z",
+                index_asset_name="ForgePlatformComponentCombinationCatalog-2.json",
+                key_ids=("forge-platform-composition-catalog-2026-01",),
+            )
+            self.assertEqual(len(result["manifests"]), 3)
+
     def test_catalog_tools_run_directly_without_pythonpath(self) -> None:
         env = dict(os.environ)
         env.pop("PYTHONPATH", None)

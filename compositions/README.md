@@ -35,3 +35,21 @@ protected catalog release, offline Keychain signature, public byte readback,
 and stable locator advancement succeed. Product wheel tests, source receipts
 and this review are not live service, provider or fresh-Mac acceptance.
 Forge, EP, Workspace and forge#142 remain read-only producer dependencies.
+
+## Sequence 2: Forge GitHub scope correction
+
+The sequence-1 manifests and index remain untouched as immutable historical
+release inputs. Sequence 2 publishes the same EP 2.3.106 and Forge 2.7.39
+product artifacts with a corrected provider set: EP owns Codex and GitHub CLI;
+Forge owns Codex only. The Forge product contract has no direct GitHub provider
+consumer for this runtime, so a Forge-local GitHub login must not gate clean
+installation or readiness. This matches the instance-owned provider example in
+ADR-0007 and Forge's `FORGE_CONSOLE_EP_PARITY_AND_PAIRING_V1` contract.
+
+The new `*-v2.json` Forge manifests and
+`component-combination-catalog-v2.json` bind immutable sequence-2 asset URLs,
+byte digests and freshness. EP's unchanged manifest is republished under the
+sequence-2 asset name so the three topology choices remain an exact set.
+The active sequence-1 PLANNED host operation must be independently recovered
+under the existing fail-closed root guards before a new catalog selection; no
+provider credential may be copied or treated as readiness evidence.
