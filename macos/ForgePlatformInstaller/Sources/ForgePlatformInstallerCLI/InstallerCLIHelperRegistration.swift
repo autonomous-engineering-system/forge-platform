@@ -6,7 +6,7 @@ enum InstallerCLIHelperRegistration {
     typealias Registrar = @Sendable (InstallerVersion) async -> ManagedInstallerPrivilegedHelperRegistrationResult
 
     enum Action: Sendable {
-        case register, qualification, idle, mvp0314, mvp0316, mvp0318, mvp0319, mvp0320
+        case register, qualification, idle, mvp0314, mvp0316, mvp0318, mvp0319, mvp0320, mvp0322
     }
 
     static func makeRegistrar(
@@ -32,6 +32,8 @@ enum InstallerCLIHelperRegistration {
                 return await instance.replaceMVP0319ForCleanInstall(expectedVersion: expectedVersion)
             case .mvp0320:
                 return await instance.replaceMVP0320ForCleanInstall(expectedVersion: expectedVersion)
+            case .mvp0322:
+                return await instance.replaceMVP0322ForCleanInstall(expectedVersion: expectedVersion)
             }
         }
     }
@@ -44,6 +46,7 @@ enum InstallerCLIHelperRegistration {
     static let liveMVP0318Replacer = makeRegistrar(for: .mvp0318, coordinator: liveCoordinator)
     static let liveMVP0319Replacer = makeRegistrar(for: .mvp0319, coordinator: liveCoordinator)
     static let liveMVP0320Replacer = makeRegistrar(for: .mvp0320, coordinator: liveCoordinator)
+    static let liveMVP0322Replacer = makeRegistrar(for: .mvp0322, coordinator: liveCoordinator)
 
     private static func liveCoordinator() -> ManagedInstallerPrivilegedHelperRegistrationCoordinator? {
         let service = MacOSManagedInstallerPrivilegedHelperServiceController()
@@ -63,7 +66,8 @@ enum InstallerCLIHelperRegistration {
         replacingMVP0316: Bool = false,
         replacingMVP0318: Bool = false,
         replacingMVP0319: Bool = false,
-        replacingMVP0320: Bool = false
+        replacingMVP0320: Bool = false,
+        replacingMVP0322: Bool = false
     ) async -> InstallerCLIResult {
         if !options.assumeYes {
             let accepted = options.nonInteractive ? false : await confirm(
@@ -77,6 +81,8 @@ enum InstallerCLIHelperRegistration {
                         ? "Beëindig de actieve 0.3.19-helper na bewezen effectvrije herstelstatus en registreer de geverifieerde 0.3.20-helper?"
                     : replacingMVP0320
                         ? "Beëindig de actieve 0.3.20-helper na bewezen veilige herstelstatus en registreer de geverifieerde 0.3.22-helper?"
+                    : replacingMVP0322
+                        ? "Beëindig de actieve 0.3.22-helper na bewezen veilige herstelstatus en registreer de geverifieerde 0.3.23-helper?"
                     : replacingMVP0318
                         ? "Beëindig de actieve 0.3.18-helper na gecontroleerde schone-herstelstatus en registreer de geverifieerde 0.3.19-helper?"
                     : replacingOlder
