@@ -47,10 +47,15 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
               let admission = ManagedInstallerReviewedProviderAuthenticationAdmission
                 .whenReady(loader: loader, reader: reader) else { return nil }
         return Self(admission: admission, makeSession: { target in
-            guard let binary = CommandLine.arguments.first,
-                  binary.hasPrefix("/") else { return nil }
+            guard let binary = ManagedInstallerHelperSignedParentBundleLocator
+                    .forCurrentProcess()?.executableURL,
+                  binary.isFileURL, binary.baseURL == nil,
+                  binary.path.hasPrefix("/"),
+                  binary.lastPathComponent
+                    == ManagedInstallerHelperSignedParentBundleLocator.helperName
+            else { return nil }
             return ManagedInstallerProviderAuthenticationSession.production(
-                target: target, helperExecutable: URL(fileURLWithPath: binary)
+                target: target, helperExecutable: binary
             )
         })
     }
