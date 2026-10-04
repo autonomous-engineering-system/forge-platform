@@ -57,12 +57,15 @@ struct ManagedInstallerReleasedRouteInitialHostObserver: Sendable {
     }
 
     static func make(helperRoot: URL, expectedOwner: uid_t) -> Self {
-        Self(
+        let stateRoot = ManagedInstallerHelperStateRootBootstrap.operationStateRoot(
+            for: helperRoot
+        )
+        return Self(
             python: MacOSManagedPythonInitialHostState(
                 helperRoot: helperRoot, expectedOwner: expectedOwner
             ),
             git: MacOSManagedInstallerManagedGitVerifiedHostReader(
-                stateRoot: helperRoot,
+                stateRoot: stateRoot,
                 slotsRoot: helperRoot.appendingPathComponent(
                     ManagedInstallerHelperStateRootBootstrap.managedGitSlotsDirectoryName,
                     isDirectory: true

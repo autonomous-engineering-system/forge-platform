@@ -13,14 +13,25 @@ final class ManagedInstallerReleasedRouteInitialHostObservationTests: XCTestCase
         XCTAssertEqual(observation.managedToolActions.count, 1)
         XCTAssertEqual(observation.managedToolActions[0].action, .install)
         XCTAssertTrue(observation.managedToolActions[0].hasReviewedInitialState)
+        let requirement = try XCTUnwrap(session.managedTools.first)
+        let executorReadback = try await MacOSManagedInstallerManagedGitVerifiedHostReader(
+            stateRoot: fixture.root.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.stateDirectoryName
+            ),
+            slotsRoot: fixture.root.appendingPathComponent(
+                ManagedInstallerHelperStateRootBootstrap.managedGitSlotsDirectoryName
+            ),
+            expectedOwner: geteuid()
+        ).readManagedTool(requirement).get()
+        XCTAssertEqual(observation.managedToolActions[0].initialReadback, executorReadback)
         let repeated = try await fixture.observer.observe(session: session).get()
         XCTAssertEqual(repeated, observation)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent(
             FileManagedInstallerManagedPythonHostReader.fileName
         ).path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent(
-            FileManagedInstallerManagedGitHostReader.fileName
-        ).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root
+            .appendingPathComponent(ManagedInstallerHelperStateRootBootstrap.stateDirectoryName)
+            .appendingPathComponent(FileManagedInstallerManagedGitHostReader.fileName).path))
     }
 
     func testOrphanedPythonAndGitSlotsAreUnavailableWithoutMutation() async throws {
@@ -154,6 +165,7 @@ private struct InitialRouteHostFixture {
             FileManagedInstallerProductWorkerInvocationResolver.runtimeSlotsDirectoryName,
             ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
             ManagedInstallerHelperStateRootBootstrap.managedGitSlotsDirectoryName,
+            ManagedInstallerHelperStateRootBootstrap.stateDirectoryName,
         ] {
             let child = root.appendingPathComponent(name, isDirectory: true)
             try FileManager.default.createDirectory(at: child,
