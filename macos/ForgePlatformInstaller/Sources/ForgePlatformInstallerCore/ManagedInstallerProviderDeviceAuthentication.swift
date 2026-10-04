@@ -68,15 +68,20 @@ struct ManagedInstallerProviderDeviceChallenge: Equatable, Sendable,
     static func parse(provider: ProviderID, output: Data) -> Self? {
         guard !output.isEmpty, output.count <= 4 * 1_024,
               let raw = String(data: output, encoding: .utf8) else { return nil }
-        let prompt: String
+        let prompts: [String]
         let url: String
+        let codePattern: String
         switch provider {
         case .codex:
-            prompt = "Enter this one-time code"
+            prompts = ["Enter this one-time code"]
             url = "https://auth.openai.com/codex/device"
+            // Codex 0.157.1 receives four-plus-five codes; retain four-plus-four.
+            codePattern = "\\b[A-Z0-9]{4}-[A-Z0-9]{4,5}\\b"
         case .githubCLI:
-            prompt = "First copy your one-time code"
+            // GitHub CLI 2.101.0 prints "One-time code (...) copied to clipboard".
+            prompts = ["First copy your one-time code", "One-time code"]
             url = "https://github.com/login/device"
+            codePattern = "\\b[A-Z0-9]{4}-[A-Z0-9]{4}\\b"
         }
         // Only SGR coloring from the provider's own terminal output is
         // tolerated. Other terminal escapes and control bytes fail closed.
@@ -89,11 +94,9 @@ struct ManagedInstallerProviderDeviceChallenge: Equatable, Sendable,
                 || $0.value == 127
         }),
               plain.contains(url),
-              let marker = plain.range(of: prompt),
-              plain.range(of: prompt, range: marker.upperBound..<plain.endIndex) == nil,
-              let pattern = try? NSRegularExpression(
-                  pattern: "\\b[A-Z0-9]{4}-[A-Z0-9]{4}\\b"
-              ) else { return nil }
+              let marker = Self.singlePromptRange(prompts, in: plain),
+              let pattern = try? NSRegularExpression(pattern: codePattern)
+        else { return nil }
         let suffix = String(plain[marker.upperBound...].prefix(160))
         let matches = pattern.matches(
             in: suffix, range: NSRange(suffix.startIndex..., in: suffix)
@@ -103,6 +106,17 @@ struct ManagedInstallerProviderDeviceChallenge: Equatable, Sendable,
               let verificationURL = URL(string: url) else { return nil }
         return Self(provider: provider, verificationURL: verificationURL,
                     userCode: String(suffix[range]))
+    }
+
+    private static func singlePromptRange(
+        _ prompts: [String], in output: String
+    ) -> Range<String.Index>? {
+        let found = prompts.compactMap { output.range(of: $0) }
+        guard found.count == 1, let marker = found.first,
+              prompts.allSatisfy({
+                  output.range(of: $0, range: marker.upperBound..<output.endIndex) == nil
+              }) else { return nil }
+        return marker
     }
 }
 
@@ -148,7 +162,9 @@ public struct ManagedInstallerProviderAuthenticationChallengeResponse:
               value.operationID == intent.operationID,
               value.stablePlanFingerprint == intent.stablePlanFingerprint,
               value.providerTargetID == targetID.rawValue,
-              value.userCode.range(of: "^[A-Z0-9]{4}-[A-Z0-9]{4}$",
+              value.userCode.range(of: value.provider == .codex
+                                   ? "^[A-Z0-9]{4}-[A-Z0-9]{4,5}$"
+                                   : "^[A-Z0-9]{4}-[A-Z0-9]{4}$",
                                    options: .regularExpression) != nil,
               value.verificationURL.absoluteString == (
                   value.provider == .codex
