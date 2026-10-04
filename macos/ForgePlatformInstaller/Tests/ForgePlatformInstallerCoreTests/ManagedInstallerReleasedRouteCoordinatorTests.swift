@@ -119,6 +119,55 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
         let stale = await coordinator.readReviewedProviders(fixture.operation)
         XCTAssertEqual(stale, .unavailable(.staleSession))
     }
+
+    func testProviderReadbackFinishesVerifiedDeviceChildOnLaterCLIInvocation() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let fixture = try ReleasedRouteFixture(providerRequirements: [provider])
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        await loader.setVerifiedTargets([provider.id])
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        guard case .observed(let readback) = await coordinator.readReviewedProviders(
+            fixture.operation
+        ) else { return XCTFail("Verified provider readback unavailable") }
+        XCTAssertTrue(readback.allVerified)
+        let finished = await loader.finishedTargets()
+        XCTAssertEqual(finished, [provider.id])
+    }
+
+    func testProviderReadbackKeepsPreviouslyVerifiedCredentialWhenNoSessionExists() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let fixture = try ReleasedRouteFixture(providerRequirements: [provider])
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        await loader.setVerifiedTargets([provider.id])
+        await loader.setFinishFailure(true)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        guard case .observed(let readback) = await coordinator.readReviewedProviders(
+            fixture.operation
+        ) else { return XCTFail("Existing provider credential must remain readable") }
+        XCTAssertTrue(readback.allVerified)
+        let finished = await loader.finishedTargets()
+        XCTAssertEqual(finished, [provider.id])
+    }
+
+    func testProviderReadbackRejectsMismatchedCeremonyCompletion() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let fixture = try ReleasedRouteFixture(providerRequirements: [provider])
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        await loader.setVerifiedTargets([provider.id])
+        await loader.setForeignFinish(true)
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(
+            session: fixture.session, deployment: fixture.deployment
+        )
+        let result = await coordinator.readReviewedProviders(fixture.operation)
+        XCTAssertEqual(result, .unavailable(.staleSession))
+    }
     func testReviewedExecutionSendsOnlyExactIntentAfterFreshSnapshot() async throws {
         let fixture = try ReleasedRouteFixture()
         let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
@@ -442,11 +491,19 @@ private actor ExecutionRouteLoader:
     private var registered: [ManagedInstallerReviewedSelection] = []
     private var readbackRequests: [ManagedInstallerReviewedExecutionIntent] = []
     private var authenticationRequests: [ManagedInstallerReviewedExecutionIntent] = []
+    private var verifiedTargets = Set<ProviderTargetID>()
+    private var finishRequests: [ProviderTargetID] = []
+    private var finishFailure = false
+    private var foreignFinish = false
 
     init(snapshot: ManagedInstallerReleasedRouteSnapshot) { self.snapshot = snapshot }
     func setFailure(_ value: Bool) { failing = value }
     func setRegistrationFailure(_ value: Bool) { registrationFailure = value }
     func setEPRegistrationFailure(_ value: Bool) { epRegistrationFailure = value }
+    func setVerifiedTargets(_ values: Set<ProviderTargetID>) { verifiedTargets = values }
+    func setFinishFailure(_ value: Bool) { finishFailure = value }
+    func setForeignFinish(_ value: Bool) { foreignFinish = value }
+    func finishedTargets() -> [ProviderTargetID] { finishRequests }
     func sentIntents() -> [ManagedInstallerReviewedExecutionIntent] { sent }
     func registeredSelections() -> [ManagedInstallerReviewedSelection] { registered }
     func readbackIntents() -> [ManagedInstallerReviewedExecutionIntent] {
@@ -493,7 +550,9 @@ private actor ExecutionRouteLoader:
             operationID: intent.operationID,
             stablePlanFingerprint: intent.stablePlanFingerprint,
             targets: snapshot.session.providerRequirements.map {
-                try .init(id: $0.id, state: .authenticationRequired,
+                try .init(id: $0.id,
+                          state: verifiedTargets.contains($0.id)
+                            ? .verified : .authenticationRequired,
                           evidenceReference: "receipt:route-provider-readback")
             }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
         )
@@ -520,9 +579,18 @@ private actor ExecutionRouteLoader:
         _ intent: ManagedInstallerReviewedExecutionIntent,
         providerTargetID: ProviderTargetID
     ) async throws -> ManagedInstallerReviewedProviderReadback {
-        _ = intent
-        _ = providerTargetID
-        throw TestFailure.failed
+        finishRequests.append(providerTargetID)
+        if finishFailure { throw TestFailure.failed }
+        return try ManagedInstallerReviewedProviderReadback(
+            operationID: foreignFinish ? "foreign-operation" : intent.operationID,
+            stablePlanFingerprint: intent.stablePlanFingerprint,
+            targets: snapshot.session.providerRequirements.map {
+                try .init(id: $0.id,
+                          state: verifiedTargets.contains($0.id)
+                            ? .verified : .authenticationRequired,
+                          evidenceReference: "receipt:route-provider-finish")
+            }.sorted(by: { $0.id.rawValue < $1.id.rawValue })
+        )
     }
 
     func registerReviewedEPProvider(

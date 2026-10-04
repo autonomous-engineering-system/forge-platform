@@ -278,6 +278,21 @@ public actor ManagedInstallerReleasedRouteCoordinator:
                 let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
                 let receipt = try await sender.readReviewedProviders(intent)
                 guard receipt.matches(plan) else { return .unavailable(.staleSession) }
+                // A successful device child keeps its durable effect ID until
+                // exact credential readback completes the helper ceremony.
+                // A later CLI invocation or GUI refresh must request that
+                // completion; pre-existing credentials have no live session.
+                if let finisher = loader as?
+                    any ManagedInstallerReviewedProviderAuthenticationIntentSending {
+                    for target in receipt.targets where target.state == .verified {
+                        if let completed = try? await finisher
+                            .finishReviewedProviderAuthentication(
+                                intent, providerTargetID: target.id
+                            ), !completed.matches(plan) {
+                            return .unavailable(.staleSession)
+                        }
+                    }
+                }
                 return .observed(receipt)
             } catch {
                 return .unavailable(.coordinatorUnavailable)
