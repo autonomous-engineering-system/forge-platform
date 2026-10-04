@@ -650,6 +650,60 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
         }
     }
 
+    func testBoundedMVP0323ReplacementRequiresExactSourceTargetAndAbsentReadback() async throws {
+        let target = try InstallerVersion("0.3.24")
+        let running = LegacyTransitionService(
+            idle: false, oldVersion: "0.3.23", newVersion: "0.3.24"
+        )
+        let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator(service: running)
+        let first = await coordinator.replaceMVP0323ForCleanInstall(expectedVersion: target)
+        XCTAssertNotNil(first.readyReceipt)
+        XCTAssertEqual(running.counts(), [1, 1])
+        let duplicate = await coordinator.replaceMVP0323ForCleanInstall(expectedVersion: target)
+        XCTAssertEqual(duplicate.failure, .registeredParentMismatch)
+        XCTAssertEqual(running.counts(), [1, 1])
+
+        for source in ["0.3.22", "0.3.24", "0.3.25"] {
+            let service = LegacyTransitionService(
+                idle: false, oldVersion: source, newVersion: "0.3.24"
+            )
+            let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+                service: service
+            ).replaceMVP0323ForCleanInstall(expectedVersion: target)
+            XCTAssertEqual(result.failure, .registeredParentMismatch)
+            XCTAssertEqual(service.counts(), [0, 0])
+        }
+        let wrongTarget = LegacyTransitionService(
+            idle: false, oldVersion: "0.3.23", newVersion: "0.3.25"
+        )
+        let wrongResult = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+            service: wrongTarget
+        ).replaceMVP0323ForCleanInstall(expectedVersion: try InstallerVersion("0.3.25"))
+        XCTAssertEqual(wrongResult.failure, .registeredParentMismatch)
+        XCTAssertEqual(wrongTarget.counts(), [0, 0])
+
+        for service in [
+            LegacyTransitionService(
+                idle: false, oldVersion: "0.3.23", newVersion: "0.3.24",
+                unregisterFails: true
+            ),
+            LegacyTransitionService(
+                idle: false, oldVersion: "0.3.23", newVersion: "0.3.24",
+                jobAbsentReadbackFails: true
+            ),
+            LegacyTransitionService(
+                idle: false, oldVersion: "0.3.23", newVersion: "0.3.24",
+                reportedStatusInitiallyNotRegistered: true
+            ),
+        ] {
+            let result = await ManagedInstallerPrivilegedHelperRegistrationCoordinator(
+                service: service
+            ).replaceMVP0323ForCleanInstall(expectedVersion: target)
+            XCTAssertNil(result.readyReceipt)
+            XCTAssertEqual(service.counts()[1], 0)
+        }
+    }
+
     func testRegistrationAndTransitionShareCrossProcessLease() async throws {
         let version = try InstallerVersion("0.3.6")
         let busy = RegistrationLockStub(failsAcquisition: true)

@@ -461,6 +461,26 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         }
     }
 
+    /// One bounded transition from the published 0.3.23 helper after device
+    /// challenge parsing failed before provider authentication or product
+    /// installation. The operator must independently prove exact recovery of
+    /// the journal and child effects, with no live credential, worker or
+    /// product effect. Only the signed 0.3.24 successor is admitted.
+    public func replaceMVP0323ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.24"),
+                  let prior = try? InstallerVersion("0.3.23"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
     private func replaceBoundedRunningParentWhileLocked(
         expectedVersion: InstallerVersion,
         priorVersion: InstallerVersion
