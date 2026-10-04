@@ -152,13 +152,15 @@ struct MacOSSystemManagedInstallerProviderProbeRunner:
                     providerHomeURL: URL(fileURLWithPath: home, isDirectory: true),
                     account: account
                   ),
-                  let current = CommandLine.arguments.first,
-                  current.hasPrefix("/"),
-                  URL(fileURLWithPath: current).lastPathComponent
+                  let current = ManagedInstallerHelperSignedParentBundleLocator
+                    .forCurrentProcess()?.executableURL,
+                  current.isFileURL, current.baseURL == nil,
+                  current.path.hasPrefix("/"),
+                  current.lastPathComponent
                     == "forge-platform-installer-helper" else {
                 return .failure(.rejected)
             }
-            process.executableURL = URL(fileURLWithPath: current)
+            process.executableURL = current
             process.arguments = [
                 "--provider-account-probe", account.name,
                 String(account.uid), String(account.gid), provider.rawValue,

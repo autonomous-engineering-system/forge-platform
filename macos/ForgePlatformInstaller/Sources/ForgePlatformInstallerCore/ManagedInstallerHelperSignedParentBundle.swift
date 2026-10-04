@@ -21,7 +21,7 @@ struct ManagedInstallerHelperSignedParentBundleLocator: Sendable {
         "com.autonomous-engineering-system.forge-platform-installer"
     static let teamIdentifier = "ZEML4LPXH4"
 
-    private let executableURL: URL
+    let executableURL: URL
     private let inspector: any MacOSInstallerBundleCodeSigningInspecting
 
     init(
@@ -33,6 +33,8 @@ struct ManagedInstallerHelperSignedParentBundleLocator: Sendable {
         self.inspector = inspector
     }
 
+    /// ServiceManagement may launch with a relative argv[0]; dyld supplies the
+    /// executable path used for provider probes and authentication children.
     static func forCurrentProcess() -> Self? {
         var bytes = [CChar](repeating: 0, count: Int(PATH_MAX))
         var size = UInt32(bytes.count)

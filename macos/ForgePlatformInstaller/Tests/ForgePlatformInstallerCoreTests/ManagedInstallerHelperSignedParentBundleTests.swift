@@ -71,7 +71,11 @@ final class ManagedInstallerHelperSignedParentBundleTests: XCTestCase {
             ).locate()
             XCTAssertEqual(result, .failure(.unavailable))
         }
-        XCTAssertNotNil(ManagedInstallerHelperSignedParentBundleLocator.forCurrentProcess())
+        let current = try XCTUnwrap(
+            ManagedInstallerHelperSignedParentBundleLocator.forCurrentProcess()
+        )
+        XCTAssertTrue(current.executableURL.isFileURL)
+        XCTAssertTrue(current.executableURL.path.hasPrefix("/"))
     }
 
     private func fixture() throws -> (URL, URL, URL) {
