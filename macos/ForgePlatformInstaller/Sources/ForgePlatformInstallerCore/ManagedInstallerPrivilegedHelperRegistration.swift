@@ -521,6 +521,26 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         }
     }
 
+    /// One bounded transition from the published 0.3.26 helper after the
+    /// managed Git binary verifier rejected the signed archive's exact bin
+    /// mode. The operator must independently recover the pending Git and
+    /// parent journals, preserve historical child evidence, and prove no live
+    /// worker or product effect before invocation. Only signed 0.3.27 is admitted.
+    public func replaceMVP0326ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.27"),
+                  let prior = try? InstallerVersion("0.3.26"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
     private func replaceBoundedRunningParentWhileLocked(
         expectedVersion: InstallerVersion,
         priorVersion: InstallerVersion
