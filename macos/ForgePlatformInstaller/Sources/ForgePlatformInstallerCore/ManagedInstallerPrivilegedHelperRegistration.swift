@@ -562,6 +562,27 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         }
     }
 
+    /// One bounded transition from the published 0.3.28 helper after an
+    /// isolated product worker wrote bytecode into the immutable Python slot.
+    /// The operator must independently recover the unpublished product venv
+    /// and drifted slot, preserve provider credentials and historical effects,
+    /// and prove no live worker or product effect before invocation.
+    /// Only the signed 0.3.29 successor is admitted.
+    public func replaceMVP0328ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.29"),
+                  let prior = try? InstallerVersion("0.3.28"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
     private func replaceBoundedRunningParentWhileLocked(
         expectedVersion: InstallerVersion,
         priorVersion: InstallerVersion
