@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import os
 
 /// Separate authority shapes for a published product instance and a new
 /// deployment that does not yet have any product-owned instance identity.
@@ -66,6 +67,10 @@ private enum ManagedPythonProductVenvStagedWheel: Sendable {
 /// recheck, never an XPC path or a CLI-selected artifact.
 struct MacOSManagedPythonProductVenvWheelInstaller:
     ManagedPythonProductVenvWheelInstalling, Sendable {
+    private static let diagnostic = Logger(
+        subsystem: "com.autonomous-engineering-system.forge-platform-installer",
+        category: "runtime-activation"
+    )
     typealias AuthorityCheck = @Sendable () async -> ManagedInstallerProductWheelBinding?
     typealias PrepublicationAuthorityCheck =
         @Sendable () async -> ManagedInstallerPrepublicationProductWheelBinding?
@@ -143,12 +148,18 @@ struct MacOSManagedPythonProductVenvWheelInstaller:
     func readPublished(
         _ published: URL, request: ManagedPythonProductVenvMutationRequest
     ) async -> Result<String, ManagedPythonRuntimeActivationFailure> {
-        guard let slot = await admit(request, published: published),
-              let interpreterSHA256 = await verifiedInterpreterDigest(
+        guard let slot = await admit(request, published: published) else {
+            Self.diagnostic.error("gate=wheel-read-admission")
+            return .failure(.rejected)
+        }
+        guard let interpreterSHA256 = await verifiedInterpreterDigest(
                 request, venv: slot.root.appendingPathComponent(
                     slot.name, isDirectory: true
                 )
-              ) else { return .failure(.rejected) }
+              ) else {
+            Self.diagnostic.error("gate=wheel-read-interpreter")
+            return .failure(.rejected)
+        }
         let workerRequest: ManagedInstallerProductWheelWorkerRequest
         do {
             workerRequest = try ManagedInstallerProductWheelWorkerRequest(
@@ -161,10 +172,14 @@ struct MacOSManagedPythonProductVenvWheelInstaller:
                 interpreterSHA256: interpreterSHA256
             )
         } catch { return .failure(.rejected) }
-        return await execute(
+        let result = await execute(
             workerRequest, request: request, published: published,
             targetVenv: published
         )
+        if case .failure = result {
+            Self.diagnostic.error("gate=wheel-read-worker")
+        }
+        return result
     }
 
     private func admit(
@@ -212,12 +227,25 @@ struct MacOSManagedPythonProductVenvWheelInstaller:
         published: URL,
         targetVenv: URL
     ) async -> Result<String, ManagedPythonRuntimeActivationFailure> {
-        guard case .success(let interpreter) = runtime.verifiedInterpreter(for: request),
-              case .success(let signedWorker) = await resource.locate(),
-              await staged.admits(
+        guard case .success(let interpreter) = runtime.verifiedInterpreter(for: request) else {
+            if workerRequest.action == .readPublished {
+                Self.diagnostic.error("gate=wheel-worker-runtime-before")
+            }
+            return .failure(.rejected)
+        }
+        guard case .success(let signedWorker) = await resource.locate() else {
+            if workerRequest.action == .readPublished {
+                Self.diagnostic.error("gate=wheel-worker-resource")
+            }
+            return .failure(.rejected)
+        }
+        guard await staged.admits(
                 request,
                 slotName: MacOSManagedPythonProductVenvSlotLayout.slotName(for: request)
               ) else {
+            if workerRequest.action == .readPublished {
+                Self.diagnostic.error("gate=wheel-worker-authority-before")
+            }
             return .failure(.rejected)
         }
         let invocation = ManagedInstallerProductWorkerInvocation(
@@ -230,29 +258,52 @@ struct MacOSManagedPythonProductVenvWheelInstaller:
             timeoutNanoseconds: 120_000_000_000
         )
         let result = await runner.runWheelWorker(invocation, request: workerRequest)
-        guard case .success(let receipt) = result,
-              receipt.action == workerRequest.action,
+        guard case .success(let receipt) = result else {
+            if workerRequest.action == .readPublished {
+                Self.diagnostic.error("gate=wheel-worker-execution")
+            }
+            return .failure(.rejected)
+        }
+        guard receipt.action == workerRequest.action,
               receipt.requestSHA256 == "sha256:" + SHA256.hash(
                 data: workerRequest.canonicalJSONData()
               ).map({ String(format: "%02x", $0) }).joined(),
               CompositionCatalogValidation.isTaggedSHA256(receipt.bindingEvidence),
               CompositionCatalogValidation.isTaggedSHA256(receipt.verificationEvidence),
-              receipt.fileCount > 0,
-              await staged.admits(
+              receipt.fileCount > 0 else {
+            if workerRequest.action == .readPublished {
+                Self.diagnostic.error("gate=wheel-worker-receipt")
+            }
+            return .failure(.rejected)
+        }
+        guard await staged.admits(
                 request,
                 slotName: MacOSManagedPythonProductVenvSlotLayout.slotName(for: request)
-              ),
-              published == helperRoot.appendingPathComponent(
+              ) else {
+            if workerRequest.action == .readPublished {
+                Self.diagnostic.error("gate=wheel-worker-authority-after")
+            }
+            return .failure(.rejected)
+        }
+        guard published == helperRoot.appendingPathComponent(
                 ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
                 isDirectory: true
               ).appendingPathComponent(
                 MacOSManagedPythonProductVenvSlotLayout.slotName(for: request),
                 isDirectory: true
-              ),
-              case .success(let fresh) = runtime.verifiedInterpreter(for: request),
+              ) else {
+            if workerRequest.action == .readPublished {
+                Self.diagnostic.error("gate=wheel-worker-published-path")
+            }
+            return .failure(.rejected)
+        }
+        guard case .success(let fresh) = runtime.verifiedInterpreter(for: request),
               fresh == interpreter,
               Self.digest(targetVenv.appendingPathComponent("bin/python3"),
                           owner: expectedOwner) == workerRequest.interpreterSHA256 else {
+            if workerRequest.action == .readPublished {
+                Self.diagnostic.error("gate=wheel-worker-runtime-after")
+            }
             return .failure(.rejected)
         }
         return .success(receipt.bindingEvidence)

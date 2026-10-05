@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 
 public enum ManagedPythonRuntimeActivationFailure: Error, Equatable, Sendable {
     case invalidRequest
@@ -626,6 +627,10 @@ public extension ManagedPythonRuntimeActivating {
 /// preparation. Every created venv and activation is independently read back;
 /// stale initial state or any identity drift fails closed.
 public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
+    private static let diagnostic = Logger(
+        subsystem: "com.autonomous-engineering-system.forge-platform-installer",
+        category: "runtime-activation"
+    )
     private let mutation: any ManagedPythonRuntimeActivating
     private let operationLock: any ManagedPythonRuntimeOperationLocking
     private let receiptStore: any ManagedPythonRuntimeActivationStoring
@@ -726,8 +731,10 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
                 return .failure(failure)
             }
         case .success:
+            Self.diagnostic.error("gate=activation-initial-readback-shape")
             return .failure(.rejected)
         case .failure(let failure):
+            Self.diagnostic.error("gate=activation-initial-readback-failed")
             return .failure(failure)
         }
 
@@ -736,8 +743,10 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
         case .success(let readback) where readback.matchesFinal(request):
             finalReadback = readback
         case .success:
+            Self.diagnostic.error("gate=activation-final-readback-shape")
             return .failure(.rejected)
         case .failure(let failure):
+            Self.diagnostic.error("gate=activation-final-readback-failed")
             return .failure(failure)
         }
 
@@ -749,12 +758,15 @@ public struct ManagedPythonRuntimeActivationCoordinator: Sendable {
                 finalReadback: finalReadback
             )
             guard case .success = await receiptStore.savePendingRuntimeActivation(receipt) else {
+                Self.diagnostic.error("gate=activation-pending-receipt-save")
                 return .failure(.receiptPersistenceFailed)
             }
             return .success(receipt)
         } catch let failure as ManagedPythonRuntimeActivationFailure {
+            Self.diagnostic.error("gate=activation-receipt-invalid")
             return .failure(failure)
         } catch {
+            Self.diagnostic.error("gate=activation-receipt-construction")
             return .failure(.rejected)
         }
     }

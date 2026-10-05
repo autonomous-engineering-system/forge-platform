@@ -1,9 +1,14 @@
 import Foundation
+import os
 
 /// First-install activation after the exact venvs are ready. The absent state
 /// must be bootstrapped before runtime-slot preparation. Upgrade/rollback need
 /// separate qualified prior-slot readback and remain fail-closed here.
 struct MacOSManagedPythonInitialRuntimeActivator: ManagedPythonRuntimeActivating, Sendable {
+    private static let diagnostic = Logger(
+        subsystem: "com.autonomous-engineering-system.forge-platform-installer",
+        category: "runtime-activation"
+    )
     private let venvs: any ManagedPythonProductVenvCreating
     private let runtime: any ManagedPythonProductVenvRuntimeVerifying
     private let hostState: any ManagedPythonInitialHostStateReading
@@ -61,7 +66,9 @@ struct MacOSManagedPythonInitialRuntimeActivator: ManagedPythonRuntimeActivating
         let state: ManagedPythonRuntimeInstalledReadback
         switch hostState.observe() {
         case .success(let readback): state = readback
-        case .failure(let failure): return .failure(failure)
+        case .failure(let failure):
+            Self.diagnostic.error("gate=active-host-observe")
+            return .failure(failure)
         }
         guard state.activeRuntimeIdentitySHA256 != nil else { return .success(state) }
         guard let firstEnvironment = request.productVirtualEnvironments.first,
@@ -69,11 +76,15 @@ struct MacOSManagedPythonInitialRuntimeActivator: ManagedPythonRuntimeActivating
               state.activeRuntimeSlotIdentity == request.runtimeSlotIdentity,
               case .success = runtime.verifiedInterpreter(for: venvRequest(
                   request, environment: firstEnvironment
-              )) else { return .failure(.rejected) }
+              )) else {
+            Self.diagnostic.error("gate=active-runtime-identity-or-interpreter")
+            return .failure(.rejected)
+        }
         if request.action != .noChange || state != request.initialReadback {
             guard state.evidenceReference == request.expectedResumeEvidenceReference,
                   state.retainedRuntimeIdentitySHA256s
                     == request.requiredRetainedRuntimeIdentitySHA256s else {
+                Self.diagnostic.error("gate=active-resume-evidence")
                 return .failure(.rejected)
             }
         }
@@ -81,8 +92,12 @@ struct MacOSManagedPythonInitialRuntimeActivator: ManagedPythonRuntimeActivating
             let exact = venvRequest(request, environment: environment)
             switch await venvs.readProductVenv(exact) {
             case .success(let receipt?) where receipt.matches(exact): break
-            case .success: return .failure(.rejected)
-            case .failure(let failure): return .failure(failure)
+            case .success:
+                Self.diagnostic.error("gate=active-venv-readback-rejected")
+                return .failure(.rejected)
+            case .failure(let failure):
+                Self.diagnostic.error("gate=active-venv-readback-failed")
+                return .failure(failure)
             }
         }
         return .success(state)
@@ -116,9 +131,15 @@ struct MacOSManagedPythonInitialRuntimeActivator: ManagedPythonRuntimeActivating
                 retainedRuntimeIdentitySHA256s: [],
                 evidenceReference: request.expectedResumeEvidenceReference
             )
-            guard case .success = persister.persistManagedPythonHostState(final),
-                  case .success(let durable) = hostState.readOrBootstrap(),
-                  durable == final else { return .failure(.rejected) }
+            guard case .success = persister.persistManagedPythonHostState(final) else {
+                Self.diagnostic.error("gate=host-persist")
+                return .failure(.rejected)
+            }
+            guard case .success(let durable) = hostState.readOrBootstrap(),
+                  durable == final else {
+                Self.diagnostic.error("gate=host-persist-readback")
+                return .failure(.rejected)
+            }
             return .success(try ManagedPythonActivationMutationReceipt(
                 operationID: request.operationID,
                 activeRuntimeIdentitySHA256: request.runtimeIdentitySHA256,
@@ -127,7 +148,10 @@ struct MacOSManagedPythonInitialRuntimeActivator: ManagedPythonRuntimeActivating
                 state: .active,
                 evidenceReference: durable.evidenceReference
             ))
-        } catch { return .failure(.rejected) }
+        } catch {
+            Self.diagnostic.error("gate=activation-receipt-construction")
+            return .failure(.rejected)
+        }
     }
 
     private func venvRequest(

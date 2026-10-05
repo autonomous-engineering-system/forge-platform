@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 
 /// Helper-side creation of one exact product venv using the admitted runtime.
 /// The activation coordinator owns the operation lock; retries only adopt a
@@ -29,6 +30,10 @@ public protocol ManagedPythonProductVenvWheelInstalling: Sendable {
 }
 
 struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, Sendable {
+    private static let diagnostic = Logger(
+        subsystem: "com.autonomous-engineering-system.forge-platform-installer",
+        category: "runtime-activation"
+    )
     private let layout: MacOSManagedPythonProductVenvSlotLayout
     private let runtimeVerifier: any ManagedPythonProductVenvRuntimeVerifying
     private let readback: MacOSManagedPythonProductVenvReadback
@@ -53,7 +58,9 @@ struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, S
         switch readback.readPublished(request) {
         case .success(let ready?): receipt = ready
         case .success(nil): return .success(nil)
-        case .failure(let failure): return .failure(failure)
+        case .failure(let failure):
+            Self.diagnostic.error("gate=venv-probe-failed")
+            return .failure(failure)
         }
         let published: URL
         switch layout.readPublishedDirectory(for: request) {
@@ -65,8 +72,12 @@ struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, S
         case .success(let evidence)
             where CompositionCatalogValidation.isTaggedSHA256(evidence):
             return .success(receipt)
-        case .success: return .failure(.rejected)
-        case .failure(let failure): return .failure(failure)
+        case .success:
+            Self.diagnostic.error("gate=venv-wheel-evidence-rejected")
+            return .failure(.rejected)
+        case .failure(let failure):
+            Self.diagnostic.error("gate=venv-wheel-readback-failed")
+            return .failure(failure)
         }
     }
 
