@@ -295,7 +295,9 @@ struct MacOSManagedInstallerProductWorkerRunner:
         let standardOutput = Pipe()
         let standardError = Pipe()
         process.executableURL = invocation.interpreterURL
-        process.arguments = ["-I", "-S", invocation.workerURL.path]
+        // Isolated mode ignores PYTHON* environment variables. -B keeps the
+        // worker's stdlib imports from modifying the verified runtime slot.
+        process.arguments = ["-I", "-S", "-B", invocation.workerURL.path]
         process.environment = [
             "HOME": "/var/empty",
             "LANG": "C",
