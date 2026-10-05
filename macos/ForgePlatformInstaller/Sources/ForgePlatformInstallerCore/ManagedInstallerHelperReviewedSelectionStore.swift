@@ -15,13 +15,33 @@ struct FileManagedInstallerHelperReviewedSelectionStore: Sendable {
     private static let lockName = ".reviewed-selection-registration.lock"
     private let rootDirectory: URL
     private let expectedOwner: uid_t
+    private let completedGitTransition:
+        @Sendable (String) -> ManagedInstallerManagedGitOperationRecord?
 
     init(
         rootDirectory: URL = FileManagedInstallerReleasedRouteXPCService.productionRoot,
-        expectedOwner: uid_t = 0
+        expectedOwner: uid_t = 0,
+        completedGitTransition: @escaping @Sendable (String)
+            -> ManagedInstallerManagedGitOperationRecord? = { _ in nil }
     ) {
         self.rootDirectory = Self.canonicalRoot(rootDirectory)
         self.expectedOwner = expectedOwner
+        self.completedGitTransition = completedGitTransition
+    }
+
+    static func production() -> Self {
+        let state = ManagedInstallerHelperStateRootBootstrap.operationStateRoot(
+            for: FileManagedInstallerReleasedRouteXPCService.productionRoot
+        )
+        let journal = FileManagedInstallerManagedGitOperationJournalStore(
+            rootDirectory: state
+        )
+        return Self(completedGitTransition: { operationID in
+            guard case .success(let record?) = journal.loadTerminal(
+                operationID: operationID
+            ) else { return nil }
+            return record
+        })
     }
 
     func register(
@@ -40,9 +60,21 @@ struct FileManagedInstallerHelperReviewedSelectionStore: Sendable {
         }
         let name = Self.fileName(for: selection.intent.operationID)
         if let existing = try read(named: name, root: root) {
-            guard existing == selection.canonicalJSONData() else {
+            if existing == selection.canonicalJSONData() { return }
+            let prior = try ManagedInstallerReviewedSelection.decodeJSON(existing)
+            guard admitsCompletedGitTransition(
+                from: prior, to: selection, admittedPlan: admittedPlan
+            ) else {
                 throw ManagedInstallerHelperReviewedSelectionStoreFailure.conflict
             }
+            let resumed = Self.postToolFileName(for: selection.intent)
+            if let current = try read(named: resumed, root: root) {
+                guard current == selection.canonicalJSONData() else {
+                    throw ManagedInstallerHelperReviewedSelectionStoreFailure.conflict
+                }
+                return
+            }
+            try writeNew(selection.canonicalJSONData(), named: resumed, root: root)
             return
         }
         try writeNew(selection.canonicalJSONData(), named: name, root: root)
@@ -53,7 +85,9 @@ struct FileManagedInstallerHelperReviewedSelectionStore: Sendable {
     ) throws -> ManagedInstallerReviewedSelection {
         let root = try openRoot()
         defer { Darwin.close(root) }
-        guard let bytes = try read(named: Self.fileName(for: intent.operationID), root: root),
+        let resumed = try read(named: Self.postToolFileName(for: intent), root: root)
+        guard let bytes = try resumed
+            ?? read(named: Self.fileName(for: intent.operationID), root: root),
               let selection = try? ManagedInstallerReviewedSelection.decodeJSON(bytes),
               selection.intent == intent else {
             throw ManagedInstallerHelperReviewedSelectionStoreFailure.unavailable
@@ -65,6 +99,64 @@ struct FileManagedInstallerHelperReviewedSelectionStore: Sendable {
         let digest = SHA256.hash(data: Data(operationID.utf8))
             .map { String(format: "%02x", $0) }.joined()
         return "reviewed-selection-\(digest).json"
+    }
+
+    private static func postToolFileName(
+        for intent: ManagedInstallerReviewedExecutionIntent
+    ) -> String {
+        let bound = intent.operationID + "\u{0}" + intent.stablePlanFingerprint
+        let digest = SHA256.hash(data: Data(bound.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return "reviewed-selection-post-tool-\(digest).json"
+    }
+
+    /// A completed, helper-owned Git mutation can advance the physical host
+    /// from the prior reviewed INSTALL to a new reviewed NO_CHANGE state.
+    /// Preserve the original registration and admit only that exact transition;
+    /// every other changed review for the same operation remains a conflict.
+    private func admitsCompletedGitTransition(
+        from prior: ManagedInstallerReviewedSelection,
+        to current: ManagedInstallerReviewedSelection,
+        admittedPlan: ManagedInstallerStablePlan
+    ) -> Bool {
+        let old = prior.intent
+        let new = current.intent
+        guard old.operationID == new.operationID,
+              old.stablePlanFingerprint != new.stablePlanFingerprint,
+              old.deploymentID == new.deploymentID,
+              old.sessionID == new.sessionID,
+              old.installerVersion == new.installerVersion,
+              old.installerReleaseSHA256 == new.installerReleaseSHA256,
+              prior.routeRequest == current.routeRequest,
+              prior.componentIdentities == current.componentIdentities,
+              prior.enabledProviderTargetIDs == current.enabledProviderTargetIDs,
+              prior.pairingTarget == current.pairingTarget,
+              !admittedPlan.deployment.exists,
+              Set(admittedPlan.reviewedOperation.components.map(\.componentID))
+                == Set(current.componentIdentities),
+              admittedPlan.reviewedOperation.components.count
+                == current.componentIdentities.count,
+              admittedPlan.reviewedOperation.components.allSatisfy({
+                  $0.change == .install && $0.installedVersion == nil
+                      && $0.updateAssessmentReference == nil
+              }),
+              admittedPlan.originalManagedToolActions.count == 1,
+              let action = admittedPlan.originalManagedToolActions.first,
+              action.requirement.identity == .git,
+              action.action == .noChange,
+              let active = action.initialReadback,
+              active.state == .active,
+              active.matches(action.requirement),
+              let terminal = completedGitTransition(old.operationID),
+              terminal.phase == .complete,
+              terminal.operationID == old.operationID,
+              terminal.stablePlanFingerprint == old.stablePlanFingerprint,
+              terminal.action == .install,
+              terminal.targetVersion == action.requirement.version,
+              terminal.targetArtifactSHA256 == action.requirement.artifact.sha256,
+              terminal.finalReadbackEvidenceReference == active.evidenceReference
+        else { return false }
+        return true
     }
 
     private func openRoot() throws -> Int32 {

@@ -59,6 +59,73 @@ final class ManagedInstallerHelperReviewedSelectionStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.load(for: changedSelection.intent))
     }
 
+    func testCompletedGitTransitionRegistersOnlyExactPostToolReview() throws {
+        let before = try ReleasedRouteFixture(includeManagedGit: true)
+        let after = try ReleasedRouteFixture(
+            includeManagedGit: true, reuseActiveGit: true
+        )
+        let oldPlan = try makePlan(before)
+        let newPlan = try makePlan(after)
+        let oldSelection = try ManagedInstallerReviewedSelection(stablePlan: oldPlan)
+        let newSelection = try ManagedInstallerReviewedSelection(stablePlan: newPlan)
+        XCTAssertEqual(oldSelection.intent.operationID, newSelection.intent.operationID)
+        XCTAssertNotEqual(oldSelection.intent.stablePlanFingerprint,
+                          newSelection.intent.stablePlanFingerprint)
+
+        let request = try ManagedInstallerManagedToolMutationRequest(
+            stablePlan: oldPlan, plannedAction: try XCTUnwrap(
+                oldPlan.originalManagedToolActions.first
+            )
+        )
+        let terminal = try ManagedInstallerManagedGitOperationRecord(request: request)
+            .staged(slotEvidenceReference: "receipt:managed-git-slot")
+            .completed(
+                mutationEvidenceReference: "receipt:managed-git-mutation",
+                finalReadbackEvidenceReference: "receipt:managed-git-active"
+            )
+        let (root, _) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let withoutReceipt = FileManagedInstallerHelperReviewedSelectionStore(
+            rootDirectory: root, expectedOwner: getuid()
+        )
+        try withoutReceipt.register(oldSelection, admittedPlan: oldPlan)
+        XCTAssertThrowsError(
+            try withoutReceipt.register(newSelection, admittedPlan: newPlan)
+        )
+        let mismatchedTerminal = try ManagedInstallerManagedGitOperationRecord(
+            request: request
+        ).staged(slotEvidenceReference: "receipt:managed-git-slot")
+            .completed(
+                mutationEvidenceReference: "receipt:managed-git-mutation",
+                finalReadbackEvidenceReference: "receipt:other-git-state"
+            )
+        let mismatchedReceipt = FileManagedInstallerHelperReviewedSelectionStore(
+            rootDirectory: root, expectedOwner: getuid(),
+            completedGitTransition: { operationID in
+                operationID == terminal.operationID
+                    ? mismatchedTerminal
+                    : nil
+            }
+        )
+        XCTAssertThrowsError(
+            try mismatchedReceipt.register(newSelection, admittedPlan: newPlan)
+        )
+        let store = FileManagedInstallerHelperReviewedSelectionStore(
+            rootDirectory: root, expectedOwner: getuid(),
+            completedGitTransition: { operationID in
+                operationID == terminal.operationID ? terminal : nil
+            }
+        )
+        try store.register(newSelection, admittedPlan: newPlan)
+        try store.register(newSelection, admittedPlan: newPlan)
+        XCTAssertEqual(try store.load(for: oldSelection.intent), oldSelection)
+        XCTAssertEqual(try store.load(for: newSelection.intent), newSelection)
+        let files = try FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasPrefix("reviewed-selection-") }
+        XCTAssertEqual(files.count, 2)
+    }
+
     func testInsecureRootFileLinkAndLockFailClosed() throws {
         let fixture = try ReleasedRouteFixture()
         let plan = try makePlan(fixture)
