@@ -16,6 +16,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case helperReplaceMVP0323
     case helperReplaceMVP0324
     case helperReplaceMVP0325
+    case helperReplaceMVP0326
     case selfUpdateCheck
     case selfUpdateApply
     case deploymentList
@@ -153,6 +154,7 @@ public enum InstallerCLIParser {
       forge-platform-installer helper replace-mvp-0323 [--yes] [--non-interactive] [--json]
       forge-platform-installer helper replace-mvp-0324 [--yes] [--non-interactive] [--json]
       forge-platform-installer helper replace-mvp-0325 [--yes] [--non-interactive] [--json]
+      forge-platform-installer helper replace-mvp-0326 [--yes] [--non-interactive] [--json]
       forge-platform-installer self-update check [--json]
       forge-platform-installer self-update apply [--yes] [--json]
       forge-platform-installer deployment list [--json]
@@ -312,6 +314,8 @@ public enum InstallerCLIParser {
             command = .helperReplaceMVP0324
         case ["helper", "replace-mvp-0325"]:
             command = .helperReplaceMVP0325
+        case ["helper", "replace-mvp-0326"]:
+            command = .helperReplaceMVP0326
         case ["self-update", "check"]:
             command = .selfUpdateCheck
         case ["self-update", "apply"]:
