@@ -340,11 +340,12 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
         let slotRoot = root.appendingPathComponent(identity, isDirectory: true)
         let bin = slotRoot.appendingPathComponent("bin", isDirectory: true)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-        for directory in [slotRoot, bin] {
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o700], ofItemAtPath: directory.path
-            )
-        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: slotRoot.path
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: bin.path
+        )
         let executable = bin.appendingPathComponent("git")
         try bytes.write(to: executable)
         try FileManager.default.setAttributes(
@@ -374,6 +375,19 @@ final class ManagedInstallerManagedToolReconciliationTests: XCTestCase {
         ) == true)
         XCTAssertEqual(runner.lastCommand?.environment["HOME"], "/var/empty")
         XCTAssertEqual(runner.lastCommand?.environment["GIT_CONFIG_NOSYSTEM"], "1")
+
+        for unexpectedMode in [0o700, 0o775] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: unexpectedMode], ofItemAtPath: bin.path
+            )
+            let driftedBin = await verifier.verifyGitBinary(
+                requirement: fixture.requirement, slot: slot
+            )
+            XCTAssertEqual(driftedBin.journalFailure, .rejected)
+        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: bin.path
+        )
 
         runner.output = Data("git version 2.46.0\n".utf8)
         let wrongVersion = await verifier.verifyGitBinary(

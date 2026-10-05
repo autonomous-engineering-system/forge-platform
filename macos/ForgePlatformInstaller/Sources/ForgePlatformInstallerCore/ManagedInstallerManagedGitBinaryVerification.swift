@@ -93,7 +93,8 @@ struct MacOSManagedInstallerManagedGitBinaryVerifier:
         try requirePrivateDirectory(root)
         let slot = try openPrivateDirectory(slotIdentity, parent: root)
         defer { _ = Darwin.close(slot) }
-        let bin = try openPrivateDirectory("bin", parent: slot)
+        // The signed archive publishes bin/ as 0755 inside the private 0700 slot.
+        let bin = try openPrivateDirectory("bin", parent: slot, expectedMode: 0o755)
         defer { _ = Darwin.close(bin) }
         let executable = "git".withCString {
             Darwin.openat(bin, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
@@ -140,13 +141,15 @@ struct MacOSManagedInstallerManagedGitBinaryVerifier:
             .map { String(format: "%02x", $0) }.joined()
     }
 
-    private func openPrivateDirectory(_ name: String, parent: Int32) throws -> Int32 {
+    private func openPrivateDirectory(
+        _ name: String, parent: Int32, expectedMode: mode_t = 0o700
+    ) throws -> Int32 {
         let descriptor = name.withCString {
             Darwin.openat(parent, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
         }
         guard descriptor >= 0 else { throw BinaryFailure.insecure }
         do {
-            try requirePrivateDirectory(descriptor)
+            try requirePrivateDirectory(descriptor, expectedMode: expectedMode)
             return descriptor
         } catch {
             _ = Darwin.close(descriptor)
@@ -154,12 +157,14 @@ struct MacOSManagedInstallerManagedGitBinaryVerifier:
         }
     }
 
-    private func requirePrivateDirectory(_ descriptor: Int32) throws {
+    private func requirePrivateDirectory(
+        _ descriptor: Int32, expectedMode: mode_t = 0o700
+    ) throws {
         var details = stat()
         guard Darwin.fstat(descriptor, &details) == 0,
               (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
               details.st_uid == expectedOwner,
-              details.st_mode & mode_t(0o7777) == mode_t(0o700) else {
+              details.st_mode & mode_t(0o7777) == expectedMode else {
             throw BinaryFailure.insecure
         }
     }
