@@ -24,7 +24,8 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         XCTAssertEqual(receipt.runtimeSlotIdentity, fixture.runtimeSlotIdentity)
         XCTAssertNil(receipt.rollbackRuntimeIdentitySHA256)
         XCTAssertEqual(receipt.preparationEvidenceReferences, [
-            "receipt:activation-inspection", "receipt:activation-slot",
+            "archive-inspection-" + String(repeating: "a", count: 64),
+            "receipt:activation-slot",
         ])
         XCTAssertEqual(Set(receipt.productVenvEvidenceReferences.keys), Set([
             "engineering-platform-server", "forge-runtime",
@@ -39,6 +40,39 @@ final class ManagedPythonRuntimeActivationTests: XCTestCase {
         XCTAssertEqual(observations.activations, 1)
         let pendingReceipt = await store.pendingReceipt()
         XCTAssertEqual(pendingReceipt, receipt)
+    }
+
+    func testActivationReceiptRejectsMalformedArchiveInspectionEvidence() async throws {
+        let fixture = try ActivationFixture()
+        let request = try fixture.request(initial: fixture.missingReadback())
+        let receipt = try activationSuccess(await ManagedPythonRuntimeActivationCoordinator(
+            mutation: ActivationMutation(request: request),
+            operationLock: ActivationLock(),
+            receiptStore: ActivationReceiptStore()
+        ).activate(request))
+        for malformed in [
+            "archive-inspection-short",
+            "archive-inspection-" + String(repeating: "A", count: 64),
+            "archive-inspection-" + String(repeating: "a", count: 65),
+            "opaque-inspection-" + String(repeating: "a", count: 64),
+        ] {
+            XCTAssertThrowsError(try ManagedPythonRuntimeActivationReceipt(
+                operationID: receipt.operationID,
+                sessionID: receipt.sessionID,
+                deploymentID: receipt.deploymentID,
+                runtimeIdentitySHA256: receipt.runtimeIdentitySHA256,
+                runtimeSlotIdentity: receipt.runtimeSlotIdentity,
+                rollbackRuntimeIdentitySHA256: receipt.rollbackRuntimeIdentitySHA256,
+                assetEvidenceReferences: receipt.assetEvidenceReferences,
+                preparationEvidenceReferences: [
+                    malformed, receipt.preparationEvidenceReferences[1],
+                ],
+                productVenvEvidenceReferences: receipt.productVenvEvidenceReferences,
+                activationEvidenceReference: receipt.activationEvidenceReference,
+                finalReadbackEvidenceReference: receipt.finalReadbackEvidenceReference,
+                state: .ready
+            ))
+        }
     }
 
     func testExactExistingRuntimeAndVenvsAreIdempotent() async throws {
@@ -790,7 +824,7 @@ struct ActivationFixture {
             abiTag: runtime.abiTag,
             platformTag: "macosx_26_0_arm64",
             policyRevision: runtime.policyRevision,
-            evidenceReference: "receipt:activation-inspection"
+            evidenceReference: "archive-inspection-" + String(repeating: "a", count: 64)
         )
         let slot = try ManagedPythonRuntimeSlotReceipt(
             operationID: operationID,
