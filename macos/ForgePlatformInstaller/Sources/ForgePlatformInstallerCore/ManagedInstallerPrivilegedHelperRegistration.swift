@@ -583,6 +583,27 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         }
     }
 
+    /// One bounded transition from the published 0.3.29 helper after two
+    /// physically isolated fresh-install attempts stopped between managed
+    /// Python host activation and the pending activation receipt. The operator
+    /// must independently recover the exact unpublished runtime and venv state,
+    /// preserve provider credentials and historical effects, and prove no live
+    /// worker or product effect before invocation. Only signed 0.3.30 is admitted.
+    public func replaceMVP0329ForCleanInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.3.30"),
+                  let prior = try? InstallerVersion("0.3.29"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
     private func replaceBoundedRunningParentWhileLocked(
         expectedVersion: InstallerVersion,
         priorVersion: InstallerVersion
