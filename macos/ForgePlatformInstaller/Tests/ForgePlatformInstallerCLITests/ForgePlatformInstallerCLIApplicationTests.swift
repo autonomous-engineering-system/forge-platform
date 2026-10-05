@@ -1158,6 +1158,47 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertEqual(callsAfterStale, 1)
     }
 
+    func testBoundedMVP0328ReplacementRequiresConsentAndFreshRelease() async throws {
+        let current = try release("0.3.29")
+        let registrar = CLIHelperRegistrarSpy(result: .ready(
+            try ManagedInstallerPrivilegedHelperRegistrationReceipt(status: .enabled)
+        ))
+        let startup = CLIStartupSpy(
+            outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator())
+        )
+        let denied = await run(
+            ["helper", "replace-mvp-0328", "--non-interactive"],
+            startup: startup, version: "0.3.29",
+            mvp0328Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(denied.code, InstallerCLIExitCode.confirmationRequired.rawValue)
+        let callsAfterDenial = await registrar.calls()
+        XCTAssertEqual(callsAfterDenial, 0)
+
+        let replaced = await run(
+            ["helper", "replace-mvp-0328", "--yes", "--non-interactive", "--json"],
+            startup: startup, version: "0.3.29",
+            mvp0328Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(replaced.code, InstallerCLIExitCode.success.rawValue)
+        XCTAssertTrue(replaced.stdout.joined().contains("helper-enabled"))
+        let callsAfterReplacement = await registrar.calls()
+        XCTAssertEqual(callsAfterReplacement, 1)
+
+        let stale = await run(
+            ["helper", "replace-mvp-0328", "--yes", "--json"],
+            startup: CLIStartupSpy(
+                outcome: .ready(currentRelease: current, coordinator: CLIReadyCoordinator()),
+                recheckOutcome: .updateRequired(try release("0.3.30"))
+            ),
+            version: "0.3.29",
+            mvp0328Replacement: { _ in await registrar.invoke() }
+        )
+        XCTAssertEqual(stale.code, InstallerCLIExitCode.installerUpdateRequired.rawValue)
+        let callsAfterStale = await registrar.calls()
+        XCTAssertEqual(callsAfterStale, 1)
+    }
+
     func testHelperRegistrarFactoryRoutesOnlyThroughAnAvailableCoordinator() async throws {
         let version = try InstallerVersion("0.3.18")
         let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator(
@@ -1179,6 +1220,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             (.mvp0325, .registeredParentMismatch),
             (.mvp0326, .registeredParentMismatch),
             (.mvp0327, .registeredParentMismatch),
+            (.mvp0328, .registeredParentMismatch),
         ]
         for (action, failure) in actions {
             let absent = InstallerCLIHelperRegistration.makeRegistrar(
@@ -1308,6 +1350,9 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         },
         mvp0327Replacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
             .failed(.serviceUnavailable)
+        },
+        mvp0328Replacement: @escaping InstallerCLIHelperRegistration.Registrar = { _ in
+            .failed(.serviceUnavailable)
         }
     ) async -> (code: Int32, stdout: [String], stderr: [String]) {
         let output = LockedStrings()
@@ -1334,6 +1379,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             replaceMVP0325Helper: mvp0325Replacement,
             replaceMVP0326Helper: mvp0326Replacement,
             replaceMVP0327Helper: mvp0327Replacement,
+            replaceMVP0328Helper: mvp0328Replacement,
             stdout: { output.append($0) },
             stderr: { errors.append($0) }
         )
