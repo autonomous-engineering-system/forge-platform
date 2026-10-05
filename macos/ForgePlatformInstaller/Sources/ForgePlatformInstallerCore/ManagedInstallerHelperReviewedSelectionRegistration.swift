@@ -21,7 +21,7 @@ struct ManagedInstallerHelperReviewedSelectionRegistration:
             .production() else { return nil }
         return Self(
             admission: admission,
-            store: FileManagedInstallerHelperReviewedSelectionStore()
+            store: FileManagedInstallerHelperReviewedSelectionStore.production()
         )
     }
 
