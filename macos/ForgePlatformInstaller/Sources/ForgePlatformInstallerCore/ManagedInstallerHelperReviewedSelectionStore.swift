@@ -316,3 +316,97 @@ struct FileManagedInstallerHelperReviewedSelectionStore: Sendable {
             && (details.st_mode & mode_t(0o7777)) == mode_t(0o600)
     }
 }
+
+extension FileManagedInstallerHelperReviewedSelectionStore {
+    /// Peer identity is captured by the signed XPC listener, never decoded from
+    /// the selection. The record binds that identity to the reviewed intent.
+    func registerOperator(
+        _ user: ManagedInstallerNamedOperator,
+        selection: ManagedInstallerReviewedSelection
+    ) throws {
+        guard try ManagedInstallerNamedOperator.resolve(uid: user.uid) == user else {
+            throw ManagedInstallerHelperReviewedSelectionStoreFailure.conflict
+        }
+        let data = Self.operatorData(user, intent: selection.intent)
+        let root = try openRoot(); defer { Darwin.close(root) }
+        let lock = try acquireLock(root)
+        defer { _ = flock(lock, LOCK_UN); Darwin.close(lock) }
+        let name = Self.operatorFileName(selection.intent)
+        if let prior = try read(named: name, root: root) {
+            guard prior == data else { throw ManagedInstallerHelperReviewedSelectionStoreFailure.conflict }
+        } else { try writeNew(data, named: name, root: root) }
+    }
+
+    func loadOperator(for intent: ManagedInstallerReviewedExecutionIntent) throws
+        -> ManagedInstallerNamedOperator {
+        let root = try openRoot(); defer { Darwin.close(root) }
+        guard let raw = try read(named: Self.operatorFileName(intent), root: root) else {
+            throw ManagedInstallerHelperReviewedSelectionStoreFailure.unavailable
+        }
+        var reader = try StrictJSONResourceReader(data: raw)
+        guard let fields = try reader.parseDocument().objectValue,
+              let userFields = fields["operator"]?.objectValue,
+              let uid = userFields["uid"]?.integerValue, uid > 0,
+              let numericUID = UInt32(exactly: uid) else {
+            throw ManagedInstallerHelperReviewedSelectionStoreFailure.conflict
+        }
+        let user = try ManagedInstallerNamedOperator.resolve(uid: numericUID)
+        guard Self.operatorData(user, intent: intent) == raw else {
+            throw ManagedInstallerHelperReviewedSelectionStoreFailure.conflict
+        }
+        return user
+    }
+
+    func loadOperator(for claim: ManagedInstallerProductServiceAccountClaim) throws
+        -> ManagedInstallerNamedOperator {
+        let root = try openRoot(); defer { Darwin.close(root) }
+        let identity = claim.operationID + "\u{0}" + claim.stablePlanFingerprint
+        let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        guard let raw = try read(named: "reviewed-installer-user-" + digest + ".json", root: root) else {
+            throw ManagedInstallerHelperReviewedSelectionStoreFailure.unavailable
+        }
+        var reader = try StrictJSONResourceReader(data: raw)
+        guard let fields = try reader.parseDocument().objectValue,
+              fields["schema"]?.stringValue == "forge-platform.reviewed-installer-user/v1",
+              fields["operation_id"]?.stringValue == claim.operationID,
+              fields["stable_plan_fingerprint"]?.stringValue == claim.stablePlanFingerprint,
+              fields["deployment_id"]?.stringValue == claim.deploymentID,
+              let userFields = fields["operator"]?.objectValue,
+              let uid = userFields["uid"]?.integerValue,
+              let number = UInt32(exactly: uid), number > 0 else {
+            throw ManagedInstallerHelperReviewedSelectionStoreFailure.conflict
+        }
+        let user = try ManagedInstallerNamedOperator.resolve(uid: number)
+        var userReader = try StrictJSONResourceReader(data: user.canonicalJSONData())
+        guard Set(fields.keys) == Set(["schema", "operation_id", "stable_plan_fingerprint", "deployment_id", "operator"]),
+              StrictSignedJSON.canonicalPayload(from: .object(fields)) == raw,
+              StrictSignedJSON.canonicalPayload(from: .object(userFields))
+                == StrictSignedJSON.canonicalPayload(from: try userReader.parseDocument()) else {
+            throw ManagedInstallerHelperReviewedSelectionStoreFailure.conflict
+        }
+        return user
+    }
+
+    private static func operatorFileName(_ intent: ManagedInstallerReviewedExecutionIntent) -> String {
+        let identity = intent.operationID + "\u{0}" + intent.stablePlanFingerprint
+        let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "reviewed-installer-user-" + digest + ".json"
+    }
+
+    private static func operatorData(
+        _ user: ManagedInstallerNamedOperator,
+        intent: ManagedInstallerReviewedExecutionIntent
+    ) -> Data {
+        StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string("forge-platform.reviewed-installer-user/v1"),
+            "operation_id": .string(intent.operationID),
+            "stable_plan_fingerprint": .string(intent.stablePlanFingerprint),
+            "deployment_id": .string(intent.deploymentID),
+            "operator": .object([
+                "account_name": .string(user.accountName),
+                "uid": .integer(String(user.uid)), "gid": .integer(String(user.gid)),
+                "generated_uid": .string(user.generatedUID.uuidString.lowercased()),
+            ]),
+        ]))
+    }
+}

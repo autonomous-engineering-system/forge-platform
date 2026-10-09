@@ -90,7 +90,8 @@ private struct SlotHarness {
     let siblingName: String
 
     var root: URL {
-        parent.appendingPathComponent("AutonomousEngineeringSystem/ForgePlatformInstaller")
+        parent.appendingPathComponent(InstallerBuildProfile.parentDirectoryName)
+            .appendingPathComponent(InstallerBuildProfile.stateDirectoryName)
     }
     var venvsURL: URL { root.appendingPathComponent("managed-python-product-venvs") }
     var slotURL: URL { venvsURL.appendingPathComponent(slotName) }

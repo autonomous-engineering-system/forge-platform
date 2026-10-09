@@ -35,6 +35,19 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentLifecycleRecoverPurge(String, operationID: String)
 }
 
+public extension InstallerCLICommand {
+    var requiresAdministratorForMutation: Bool {
+        switch self {
+        case .deploymentApply, .deploymentRemove, .deploymentLifecyclePreserve,
+             .deploymentLifecyclePurge, .deploymentLifecycleRecover,
+             .deploymentLifecycleRecoverPurge:
+            true
+        default:
+            false
+        }
+    }
+}
+
 public enum ManagedInstallerCompositionChoice: String, CaseIterable, Hashable, Sendable {
     case forge = "forge"
     case engineeringPlatform = "ep"
@@ -1143,7 +1156,7 @@ public struct InstallerCLIWorkflow: Sendable {
         return InstallerCLIResult(
             exitCode: .success,
             status: "planned",
-            message: "Gekwalificeerd wijzigingsplan is read-only opgebouwd; er is geen productmutatie uitgevoerd.",
+                message: "Gekwalificeerd wijzigingsplan is opgebouwd; er is geen productmutatie uitgevoerd.",
             details: [
                 "deployment_id": deploymentID,
                 "composition": session.compositionIdentity,

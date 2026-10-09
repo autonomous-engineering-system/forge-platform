@@ -26,8 +26,8 @@ PRODUCT_OPERATION_STATES = frozenset({
     "COMPLETED", "CLEANUP_PENDING", "RECOVERY_PENDING", "FAILED",
 })
 RESUMABLE_PRODUCT_STATES = frozenset({"CLEANUP_PENDING", "RECOVERY_PENDING"})
-INSTALLATION_READBACK_STATES = frozenset({"ABSENT", "ACTIVE", "UNHEALTHY", "UNKNOWN"})
-HEALTH_STATES = frozenset({"HEALTHY", "UNHEALTHY", "UNKNOWN"})
+INSTALLATION_READBACK_STATES = frozenset({"ABSENT", "ACTIVE", "UNHEALTHY", "UNKNOWN", "INSTALLED_UNPAIRED"})
+HEALTH_STATES = frozenset({"HEALTHY", "UNHEALTHY", "UNKNOWN", "AWAITING_PEER"})
 UPDATE_AVAILABILITY = frozenset({"UPDATE_AVAILABLE", "UP_TO_DATE", "INCOMPATIBLE", "UNKNOWN"})
 INVENTORY_COVERAGE_STATES = frozenset({"MACHINE_WIDE", "PARTIAL", "UNKNOWN"})
 CONFLICT_STATES = frozenset({"NONE", "CONFLICTING", "UNKNOWN"})
@@ -229,14 +229,16 @@ class ProductInstallationReadback:
                 raise ValueError("absent installation readback cannot identify a runtime or artifact")
             if self.health_state != "UNKNOWN" or self.health_evidence_reference is not None:
                 raise ValueError("absent installation readback must have unknown health without health evidence")
-        elif self.state in {"ACTIVE", "UNHEALTHY"}:
+        elif self.state in {"ACTIVE", "UNHEALTHY", "INSTALLED_UNPAIRED"}:
+            if self.state == "INSTALLED_UNPAIRED" and self.component != "forge-runtime":
+                raise ValueError("waiting-for-peer installation is only defined for Forge")
             _require(self.selected_runtime_identity or "", "selected_runtime_identity")
             _require(self.selected_executable_identity or "", "selected_executable_identity")
             _require(self.selected_instance_identity or "", "selected_instance_identity")
             if not isinstance(self.artifact, ArtifactCorrelation):
                 raise ValueError("selected installation readback requires an artifact correlation")
             _require(self.health_evidence_reference or "", "health_evidence_reference")
-            expected_health = "HEALTHY" if self.state == "ACTIVE" else "UNHEALTHY"
+            expected_health = {"ACTIVE": "HEALTHY", "UNHEALTHY": "UNHEALTHY", "INSTALLED_UNPAIRED": "AWAITING_PEER"}[self.state]
             if self.health_state != expected_health:
                 raise ValueError("installation readback state and health state disagree")
         else:
@@ -442,7 +444,12 @@ class ComponentOperationCoordinator:
             if observation.state != "ABSENT":
                 raise RuntimeError("completed product removal did not report the exact installation absent")
             return
-        if observation.state != "ACTIVE" or observation.health_state != "HEALTHY":
+        awaiting_peer = (request.component == "forge-runtime" and request.kind in {"install", "repair"}
+                         and observation.state == "INSTALLED_UNPAIRED"
+                         and observation.health_state == "AWAITING_PEER"
+                         and observation.inventory_coverage == "MACHINE_WIDE"
+                         and observation.conflict_state == "NONE")
+        if not awaiting_peer and (observation.state != "ACTIVE" or observation.health_state != "HEALTHY"):
             raise RuntimeError("completed product operation did not report a healthy selected runtime")
         if observation.artifact != request.artifact.correlation:
             raise RuntimeError("completed product operation did not select the requested artifact correlation")

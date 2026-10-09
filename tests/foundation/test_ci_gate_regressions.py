@@ -169,6 +169,8 @@ class CoverageContractTests(unittest.TestCase):
             source = root / gate.SOURCE_PREFIX
             source.mkdir(parents=True)
             (source / "Old.swift").write_text("let value = 1\n", encoding="utf-8")
+            (source / "ScopedKeychainAccess.c").write_text("/* native helper */\n", encoding="utf-8")
+            (source / "ScopedKeychainAccess.h").write_text("/* native declarations */\n", encoding="utf-8")
             git("add", ".")
             git("commit", "-qm", "fixture base")
             base = git("rev-parse", "HEAD")

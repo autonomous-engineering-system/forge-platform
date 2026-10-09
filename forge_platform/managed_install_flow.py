@@ -351,7 +351,19 @@ class ManagedForgeEPInstallationCoordinator:
         if deployment_result.state != "COMPLETE":
             return self._nonterminal_result(deployment_result, currency)
 
-        current = self.registry.load(plan.deployment_id)
+        return self._pair_and_finalize(
+            operation_id, desired=desired, readback_requests=readback_requests,
+            adapters=adapters, pairing_executor=pairing_executor, composition_id=composition_id,
+            composition_manifest_digest=composition_manifest_digest, credential_issuer=credential_issuer,
+            credential_reference=credential_reference, currency=currency, guarded_registry=guarded_registry)
+
+
+    def _pair_and_finalize(
+        self, operation_id, *, desired, readback_requests, adapters, pairing_executor,
+        composition_id, composition_manifest_digest, credential_issuer, credential_reference,
+        currency, guarded_registry,
+    ):
+        current = self.registry.load(desired.deployment_id)
         if current is None:
             raise ManagedForgeEPInstallationError(
                 "deployment registry commit was not observable after product operations"
@@ -377,6 +389,20 @@ class ManagedForgeEPInstallationCoordinator:
                 )
             if getattr(issued, "state", None) != "COMPLETE":
                 raise ManagedForgeEPInstallationError("initial EP credential is not terminal")
+            # The real file-based System Keychain item must be readable by
+            # the exact reviewed Forge daemon user before authenticated pairing.
+            # The signed helper derives that user from its authority and owner
+            # record; neither this request nor credential bytes select a UID.
+            if current.peer_binding is None:
+                from .managed_ep_installation_credential import EPInstallationCredentialRecord
+                reader_method = ("prepare_installation_service_reader"
+                                 if isinstance(issued, EPInstallationCredentialRecord)
+                                 else "prepare_service_reader")
+                prepare_reader = getattr(self.secure_store, reader_method, None)
+                if not callable(prepare_reader) or prepare_reader(
+                    credential_reference, operation_id=operation_id
+                ) is not True:
+                    raise ManagedForgeEPInstallationError("released service credential access is unavailable")
 
         pairing_reference: str
         expected_forge = desired.by_component[FORGE_COMPONENT].instance_id
@@ -392,7 +418,7 @@ class ManagedForgeEPInstallationCoordinator:
             pairing_reference = current.peer_binding.receipt_reference
         else:
             currency.require(
-                deployment_id=plan.deployment_id,
+                deployment_id=desired.deployment_id,
                 mutation="forge-ep-pairing",
                 component=None,
                 instance_id=None,
@@ -414,7 +440,7 @@ class ManagedForgeEPInstallationCoordinator:
                     "product pairing evidence targets different instances"
                 )
             paired = ManagedDeploymentPairingCoordinator(guarded_registry).commit(
-                plan.deployment_id,
+                desired.deployment_id,
                 expected_revision=current.revision,
                 evidence=pairing_evidence,
             )
@@ -429,7 +455,7 @@ class ManagedForgeEPInstallationCoordinator:
         if readiness is None:
             return ManagedForgeEPInstallationResult(
                 operation_id,
-                plan.deployment_id,
+                desired.deployment_id,
                 "READINESS_FAILED",
                 current.revision,
                 self._product_references(current),
@@ -450,7 +476,7 @@ class ManagedForgeEPInstallationCoordinator:
         )
         return ManagedForgeEPInstallationResult(
             operation_id,
-            plan.deployment_id,
+            desired.deployment_id,
             "COMPLETE",
             current.revision,
             self._product_references(current),
@@ -772,7 +798,11 @@ class ManagedSingleProductInstallationCoordinator:
             or observation.installation_identity != binding.instance_id
             or observation.selected_instance_identity != binding.instance_id
             or observation.artifact != readback_requests[component].artifact.correlation
-            or not observation.single_operational_installation_verified
+            or not (observation.single_operational_installation_verified
+                    or (component == FORGE_COMPONENT and observation.state == "INSTALLED_UNPAIRED"
+                        and observation.health_state == "AWAITING_PEER"
+                        and observation.inventory_coverage == "MACHINE_WIDE"
+                        and observation.conflict_state == "NONE"))
             or observation.health_evidence_reference is None
         ):
             return ManagedSingleProductInstallationResult(

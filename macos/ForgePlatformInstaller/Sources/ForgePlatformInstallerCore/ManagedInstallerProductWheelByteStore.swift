@@ -23,9 +23,9 @@ struct MacOSManagedInstallerProductWheelByteStore {
         let helperRoot: URL
         do { helperRoot = try bootstrap.prepare() }
         catch { return .failure(.unavailable) }
-        guard helperRoot.lastPathComponent == "ForgePlatformInstaller",
+        guard helperRoot.lastPathComponent == InstallerBuildProfile.stateDirectoryName,
               helperRoot.deletingLastPathComponent().lastPathComponent
-                == "AutonomousEngineeringSystem" else { return .failure(.rejected) }
+                == InstallerBuildProfile.parentDirectoryName else { return .failure(.rejected) }
         let rootURL = helperRoot.appendingPathComponent(
             ManagedInstallerHelperStateRootBootstrap.stagedDirectoryName,
             isDirectory: true
@@ -56,6 +56,29 @@ struct MacOSManagedInstallerProductWheelByteStore {
         } catch let error as ManagedInstallerProductWheelStagingFailure {
             return .failure(error)
         } catch { return .failure(.unavailable) }
+    }
+
+    /// Read-only recovery of the already verified digest cache. Absence is
+    /// explicit; a damaged or foreign file never becomes a cache miss.
+    func readVerified(artifactSHA256: String) -> Result<Data?, ManagedInstallerProductWheelStagingFailure> {
+        guard Darwin.geteuid() == requiredEffectiveUID,
+              CompositionCatalogValidation.isTaggedSHA256(artifactSHA256) else { return .failure(.rejected) }
+        let rootURL = FileManagedInstallerReleasedRouteXPCService.productionRoot
+            .appendingPathComponent(ManagedInstallerHelperStateRootBootstrap.stagedDirectoryName, isDirectory: true)
+        let root = Darwin.open(rootURL.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        guard root >= 0 else { return .failure(.rejected) }
+        defer { _ = Darwin.close(root) }
+        var details = stat()
+        guard Darwin.fstat(root, &details) == 0, details.st_uid == expectedOwner,
+              details.st_mode & mode_t(0o7777) == mode_t(0o700) else { return .failure(.rejected) }
+        do {
+            guard let bytes = try readExact(String(artifactSHA256.dropFirst(7)) + ".artifact", in: root)
+            else { return .success(nil) }
+            guard "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: bytes) == artifactSHA256
+            else { return .failure(.rejected) }
+            return .success(bytes)
+        } catch let failure as ManagedInstallerProductWheelStagingFailure { return .failure(failure) }
+        catch { return .failure(.unavailable) }
     }
 
     private func publish(_ bytes: Data, as name: String, in root: Int32) throws {

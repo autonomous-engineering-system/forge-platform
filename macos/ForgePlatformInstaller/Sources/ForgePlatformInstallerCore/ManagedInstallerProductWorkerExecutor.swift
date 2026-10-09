@@ -71,6 +71,8 @@ struct SignedManagedInstallerForgeUpdateResourcesChecker:
         }
         return true
     }
+
+
 }
 
 /// Resolves one active helper-owned CPython slot and the exact code-sealed
@@ -278,6 +280,7 @@ struct MacOSManagedInstallerProductWorkerRunner:
         ) else { return .failure(.rejected) }
         return .success(receipt)
     }
+
 
     private func runVerifiedWorker(
         _ invocation: ManagedInstallerProductWorkerInvocation,

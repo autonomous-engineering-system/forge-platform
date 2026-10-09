@@ -9,9 +9,20 @@ protocol ManagedInstallerKeychainChildStoring {
     func putVerified(
         reference: String, operationID: String, material: String
     ) -> Result<Bool, ManagedInstallerSystemKeychainFailure>
+    func prepareServiceReader(reference: String, operationID: String)
+        -> Result<Void, ManagedInstallerSystemKeychainFailure>
+    func prepareInstallationServiceReader(reference: String, operationID: String)
+        -> Result<Void, ManagedInstallerSystemKeychainFailure>
     func clearOwned(
         reference: String, operationID: String
     ) -> Result<Void, ManagedInstallerSystemKeychainFailure>
+}
+
+extension ManagedInstallerKeychainChildStoring {
+    func prepareInstallationServiceReader(reference: String, operationID: String)
+        -> Result<Void, ManagedInstallerSystemKeychainFailure> { .failure(.rejected) }
+    func prepareServiceReader(reference: String, operationID: String)
+        -> Result<Void, ManagedInstallerSystemKeychainFailure> { .failure(.rejected) }
 }
 
 extension ManagedInstallerSystemKeychainCredentialStore:
@@ -42,7 +53,7 @@ enum ManagedInstallerKeychainStoreChild {
                   let schema = object["schema"] as? String,
                   schema == ManagedInstallerKeychainStoreChild.schema,
                   let action = object["action"] as? String,
-                  ["fingerprint", "put-verified", "clear-owned"].contains(action),
+                  ["fingerprint", "put-verified", "clear-owned", "prepare-service-reader", "prepare-installation-service-reader"].contains(action),
                   let reference = object["reference"] as? String,
                   reference.range(
                     of: "^keychain://[A-Za-z0-9._-]{1,128}/[A-Za-z0-9._-]{1,128}$",
@@ -91,6 +102,15 @@ enum ManagedInstallerKeychainStoreChild {
                     material: material
                   ) else { return nil }
             value = ["verified": verified]
+        case "prepare-service-reader", "prepare-installation-service-reader":
+            let result = request.action == "prepare-installation-service-reader"
+                ? store.prepareInstallationServiceReader(reference: request.reference, operationID: request.operationID)
+                : store.prepareServiceReader(reference: request.reference, operationID: request.operationID)
+            switch result {
+            case .success: value = ["reader_ready": true]
+            case .failure(let failure):
+                return nil
+            }
         case "clear-owned":
             guard case .success = store.clearOwned(
                 reference: request.reference, operationID: request.operationID

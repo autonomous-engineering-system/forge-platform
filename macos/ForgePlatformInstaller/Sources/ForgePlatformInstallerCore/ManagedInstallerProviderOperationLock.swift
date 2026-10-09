@@ -123,7 +123,7 @@ public struct FileManagedInstallerProviderOperationLock:
             && (details.st_mode & mode_t(0o7777)) == mode_t(0o600)
     }
 
-    private static func canonicalRootDirectory(for input: URL) -> URL {
+    fileprivate static func canonicalRootDirectory(for input: URL) -> URL {
         let standardized = input.standardizedFileURL
         let parent = standardized.deletingLastPathComponent()
         let resolvedParent: String? = parent.withUnsafeFileSystemRepresentation { path in
@@ -142,9 +142,43 @@ private final class FileManagedInstallerProviderOperationLease:
     @unchecked Sendable {
     private let stateLock = NSLock()
     private var fileDescriptor: Int32?
+    private var borrowers = 0
 
     init(fileDescriptor: Int32) {
         self.fileDescriptor = fileDescriptor
+    }
+
+    func borrow(rootDirectory: URL) -> ManagedInstallerProviderOperationBorrow? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard let descriptor = fileDescriptor else { return nil }
+        let canonical = FileManagedInstallerProviderOperationLock.canonicalRootDirectory(for: rootDirectory)
+        let root = canonical.path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard root >= 0 else { return nil }
+        defer { _ = Darwin.close(root) }
+        var directory = stat(), held = stat(), current = stat()
+        guard Darwin.fstat(root, &directory) == 0,
+              directory.st_uid == Darwin.geteuid(),
+              directory.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
+              directory.st_mode & mode_t(0o7777) == mode_t(0o700),
+              Darwin.fstat(descriptor, &held) == 0,
+              FileManagedInstallerProviderOperationLock.lockFileName.withCString({
+                  Darwin.fstatat(root, $0, &current, AT_SYMLINK_NOFOLLOW)
+              }) == 0,
+              held.st_dev == current.st_dev, held.st_ino == current.st_ino,
+              held.st_uid == Darwin.geteuid(), held.st_nlink == 1,
+              held.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              held.st_mode & mode_t(0o7777) == mode_t(0o600) else { return nil }
+        borrowers += 1
+        return ManagedInstallerProviderOperationBorrow(lease: self)
+    }
+
+    func returnBorrow() {
+        stateLock.lock()
+        borrowers -= 1
+        stateLock.unlock()
     }
 
     deinit {
@@ -158,6 +192,10 @@ private final class FileManagedInstallerProviderOperationLease:
             stateLock.unlock()
             return .success(())
         }
+        guard borrowers == 0 else {
+            stateLock.unlock()
+            return .failure(.releaseFailed)
+        }
         fileDescriptor = nil
         stateLock.unlock()
 
@@ -166,4 +204,19 @@ private final class FileManagedInstallerProviderOperationLease:
         guard unlocked && closed else { return .failure(.releaseFailed) }
         return .success(())
     }
+}
+
+/// Pins the real kernel lease across asynchronous admission and publication.
+/// A caller cannot release it until this borrow has ended; fake protocol
+/// implementations and descriptors from another state root are rejected.
+final class ManagedInstallerProviderOperationBorrow: @unchecked Sendable {
+    private let lease: FileManagedInstallerProviderOperationLease
+    fileprivate init(lease: FileManagedInstallerProviderOperationLease) { self.lease = lease }
+    deinit { lease.returnBorrow() }
+}
+
+func borrowManagedInstallerProviderOperationLease(
+    _ lease: any ManagedInstallerProviderOperationLock, rootDirectory: URL
+) -> ManagedInstallerProviderOperationBorrow? {
+    (lease as? FileManagedInstallerProviderOperationLease)?.borrow(rootDirectory: rootDirectory)
 }

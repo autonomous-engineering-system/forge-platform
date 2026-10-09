@@ -41,6 +41,21 @@ class ManagedSystemKeychainStoreTests(unittest.TestCase):
         self.addCleanup(self.root.stop)
         self.addCleanup(self.stat.stop)
 
+    def test_installation_reader_uses_distinct_action_and_has_no_legacy_fallback(self):
+        requests=[]
+        def run(args,**kwargs):
+            request=json.loads(kwargs['input']);requests.append(request)
+            return subprocess.CompletedProcess(args,0,receipt({'reader_ready':True}),b'')
+        with patch('forge_platform.managed_system_keychain_store.subprocess.run',side_effect=run):
+            self.assertTrue(self.store.prepare_installation_service_reader(REFERENCE,operation_id=OPERATION))
+        self.assertEqual(requests,[{'schema':'forge-platform.keychain-store-child/v1',
+            'action':'prepare-installation-service-reader','reference':REFERENCE,'operation_id':OPERATION}])
+        with patch('forge_platform.managed_system_keychain_store.subprocess.run',
+                   return_value=subprocess.CompletedProcess([],1,b'',b'')) as process:
+            with self.assertRaises(ManagedSystemKeychainStoreError):
+                self.store.prepare_installation_service_reader(REFERENCE,operation_id=OPERATION)
+            self.assertEqual(process.call_count,1)
+
     def test_exact_private_child_and_secret_free_receipts(self) -> None:
         values = [
             {"fingerprint": None},

@@ -4,6 +4,23 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
+    func testInstallationForgeCannotFallBackToUnreviewedServiceIdentity() throws {
+        let id = UUID().uuidString
+        let claim = ManagedInstallerProductServiceAccountClaim(stablePlanFingerprint: String(repeating: "a", count: 64),
+            operationID: "missing-review-" + id, deploymentID: "deployment-" + id,
+            componentIdentity: "forge-runtime", instanceID: "forge-" + id,
+            productArtifactSHA256: ManagedInstallerProductServiceAccountPlanner.installationForgeArtifactSHA256,
+            accountName: "_fpi_" + String(repeating: "a", count: 20))
+        XCTAssertNil(ManagedInstallerProductServiceAccountPlanner.reviewedAccountName(for: claim))
+        let historical = ManagedInstallerProductServiceAccountClaim(stablePlanFingerprint: claim.stablePlanFingerprint,
+            operationID: claim.operationID, deploymentID: claim.deploymentID,
+            componentIdentity: claim.componentIdentity, instanceID: claim.instanceID,
+            productArtifactSHA256: "sha256:" + String(repeating: "b", count: 64), accountName: claim.accountName)
+        XCTAssertEqual(ManagedInstallerProductServiceAccountPlanner.reviewedAccountName(for: historical),
+            ManagedInstallerProductServiceAccountPlanner.name(deploymentID: claim.deploymentID,
+                componentIdentity: claim.componentIdentity, instanceID: claim.instanceID))
+    }
+
     func testFreshWorkerAuthorityRequiresExactReviewedInstancesAndActivation()
         async throws {
         let fixture = try accountPlanFixture(
@@ -569,6 +586,7 @@ final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
         XCTAssertEqual(repeated, receipt)
     }
 
+
     func testPreproviderAdmissionRejectsBeforeOrAfterAccountBoundary() async throws {
         let fixture = try accountPlanFixture()
         let record = try preproviderJournal(for: fixture.plan)
@@ -731,6 +749,7 @@ private final class PreproviderAccounts:
         return result
     }
 }
+
 
 private final class AccountPreparationOS:
     ManagedInstallerProductServiceAccountOSMutating, @unchecked Sendable {

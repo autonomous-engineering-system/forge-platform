@@ -33,7 +33,15 @@ from .component_operations import (
 from .forge_update_intent import ForgeUpdateIntent, ForgeUpdateIntentStore
 from .qualified_forge_lifecycle import (
     qualified_forge_238_update_selection, qualified_forge_239_update_selection,
-    qualified_forge_lifecycle_artifact,
+    qualified_forge_lifecycle_artifact, qualified_forge_installation_pairing_artifact,
+    qualified_forge_281_update_selection,
+)
+
+
+from .forge_281_maintenance_resources import (
+    CONTROLLER_SOURCE as _FORGE_281_CONTROLLER_SOURCE,
+    CONTROLLER_SHA256 as _FORGE_281_CONTROLLER_SHA256,
+    RELEASE_RECEIPT_SHA256 as _FORGE_281_RELEASE_RECEIPT_SHA256,
 )
 
 
@@ -78,21 +86,27 @@ class SubprocessForgeCommandRunner:
 
 
 class SubprocessForgeServiceAccountCommandRunner:
-    """Read Forge peer readiness as the account that runs its LaunchDaemon."""
+    """Run bounded peer commands as the account that runs Forge LaunchDaemon."""
 
     def __init__(self, target: ForgeServerTarget, executable: Path) -> None:
         self.target = target
         self.executable = executable
 
+    @staticmethod
+    def _allowed_command(args: tuple[str, ...]) -> bool:
+        if args in {("health", "snapshot"), ("server", "status"), ("execution-host", "preflight"),
+                    ("installation-peer", "show"), ("installation-peer", "preflight")}:
+            return True
+        from .forge_ep_pairing_executor import ForgeEPInstallationPairingBinding
+        return ForgeEPInstallationPairingBinding.validate_command(args)
+
     def run(self, argv: Sequence[str]) -> ForgeCommandResult:
         if (
             os.geteuid() != 0 or not argv or argv[0] != str(self.executable)
-            or len(argv) != 5
-            or tuple(argv[1:]) != (
-                "--data-root", str(self.target.data_root), "execution-host", "preflight"
-            )
+            or tuple(argv[1:3]) != ("--data-root", str(self.target.data_root))
+            or not self._allowed_command(tuple(argv[3:]))
         ):
-            raise ForgeServerAdapterError("Forge service-account preflight authority is invalid")
+            raise ForgeServerAdapterError("Forge service-account command authority is invalid")
         try:
             account = pwd.getpwnam(self.target.service_account)
         except KeyError as error:
@@ -118,10 +132,10 @@ class SubprocessForgeServiceAccountCommandRunner:
             )
         except (OSError, subprocess.TimeoutExpired):
             raise ForgeServerAdapterError(
-                "Forge service-account preflight is unavailable"
+                "Forge service-account command is unavailable"
             ) from None
         if len(completed.stdout) > 1_048_576:
-            raise ForgeServerAdapterError("Forge service-account preflight exceeded its response bound")
+            raise ForgeServerAdapterError("Forge service-account command exceeded its response bound")
         return ForgeCommandResult(completed.returncode, completed.stdout, "")
 
 
@@ -139,6 +153,7 @@ class ForgeServerTarget:
     service_account: str
     bind_port: int
     api_credential_file: Path
+    service_user_identity_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.instance_id, str) or not self.instance_id:
@@ -158,6 +173,14 @@ class ForgeServerTarget:
             raise ValueError("Forge service_account is required")
         if isinstance(self.bind_port, bool) or not isinstance(self.bind_port, int) or not 1 <= self.bind_port <= 65535:
             raise ValueError("Forge bind_port is invalid")
+
+    @property
+    def product_runtime_id(self) -> str:
+        # The installer selector is chosen before Forge creates its own UUID.
+        # Never edit Forge's marker/database to force those identities equal.
+        from .managed_forge_instance_bootstrap import read_runtime_binding
+        binding = read_runtime_binding(self)
+        return self.instance_id if binding is None else binding["runtime_id"]
 
     @property
     def service_label(self) -> str:
@@ -260,8 +283,16 @@ class ForgeReadinessProbe(Protocol):
     def readiness(self, target: ForgeServerTarget) -> Mapping[str, object]: ...
 
 
+class _ForgeNoRedirect(urllib_request.HTTPRedirectHandler):
+    def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+        return None
+
+
 class ForgeHTTPReadinessProbe:
     """Authenticated loopback readiness; bearer bytes are never returned/logged."""
+
+    def __init__(self, *, allow_standalone: bool = False):
+        self.allow_standalone = allow_standalone
 
     def readiness(self, target: ForgeServerTarget) -> Mapping[str, object]:
         try:
@@ -274,11 +305,7 @@ class ForgeHTTPReadinessProbe:
             f"http://127.0.0.1:{target.bind_port}/v1/readiness",
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         )
-        try:
-            with urllib_request.urlopen(req, timeout=5) as response:
-                raw = response.read(1_048_577)
-        except (HTTPError, URLError, TimeoutError, OSError) as error:
-            raise ForgeServerAdapterError("Forge Server readiness is unavailable") from error
+        raw = self._response(req, timeout=5, limit=1_048_576)
         if len(raw) > 1_048_576:
             raise ForgeServerAdapterError("Forge Server readiness exceeded the response bound")
         try:
@@ -287,7 +314,93 @@ class ForgeHTTPReadinessProbe:
             raise ForgeServerAdapterError("Forge Server readiness returned invalid JSON") from error
         if not isinstance(value, Mapping):
             raise ForgeServerAdapterError("Forge Server readiness is not a JSON object")
+        peer = value.get("execution_host_peer")
+        if (self.allow_standalone and value.get("ready") is not True
+            and isinstance(peer, Mapping) and peer.get("state") == "NOT_CONFIGURED"):
+            if value.get("instance_id") != target.product_runtime_id:
+                raise ForgeServerAdapterError("Forge strict readiness identified another runtime")
+            standalone_request = urllib_request.Request(
+                f"http://127.0.0.1:{target.bind_port}/v1/readiness/standalone",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            standalone_raw = self._response(standalone_request, timeout=2, limit=64 * 1024)
+            if len(standalone_raw) > 64 * 1024:
+                raise ForgeServerAdapterError("Forge standalone readiness exceeded the response bound")
+            standalone = json.loads(standalone_raw)
+            if (not isinstance(standalone, Mapping)
+                or standalone.get("contract_version") != "forge-server-standalone-readiness/v1"
+                or standalone.get("mode") != "STANDALONE"
+                or standalone.get("execution_ready") is not False
+                or standalone.get("instance_id") != target.product_runtime_id
+                or standalone.get("execution_host_peer") != peer):
+                raise ForgeServerAdapterError("Forge standalone readiness contradicted exact peer state")
+            return standalone
         return value
+
+    def installation_readiness(self, target: ForgeServerTarget, artifact: QualifiedArtifact) -> Mapping[str, object]:
+        """Published installation profile only; never claims project execution."""
+        if not qualified_forge_installation_pairing_artifact(artifact):
+            raise ForgeServerAdapterError("installation readiness requires exact released Forge")
+        try:
+            token = target.api_credential_file.read_text(encoding="utf-8").strip()
+            if not token: raise ValueError()
+            req = urllib_request.Request(
+                f"http://127.0.0.1:{target.bind_port}/v1/readiness/installation",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+            value = json.loads(self._response(req, timeout=5, limit=64*1024, allow_redirects=False))
+        except Exception:
+            raise ForgeServerAdapterError("installation readiness unavailable") from None
+        self.validate_installation_readiness(value, target)
+        return value
+
+    @staticmethod
+    def validate_installation_readiness(value, target):
+        if (not isinstance(value, Mapping)
+                or value.get("contract_version") != "forge-server-installation-readiness/v1"
+                or value.get("instance_id") != target.product_runtime_id
+                or value.get("project_authorized") is not False
+                or value.get("execution_ready") is not False
+                or any(type(value.get(k)) is not bool for k in ("ready","service_ready","component_connected"))):
+            raise ForgeServerAdapterError("installation readiness authority changed")
+        provider, scheduler, peer = value.get("provider"), value.get("scheduler"), value.get("installation_peer")
+        if (not isinstance(provider, Mapping) or type(provider.get("ready")) is not bool
+                or not isinstance(scheduler, Mapping) or not isinstance(peer, Mapping)
+                or value["service_ready"] != (provider["ready"] and scheduler.get("state") in {"READY","IDLE"})
+                or value["component_connected"] != (peer.get("status") == "CONNECTED")
+                or value["ready"] != (value["service_ready"] and value["component_connected"])
+                or value["component_connected"] and (
+                    peer.get("forge_instance_id") != target.product_runtime_id
+                    or peer.get("purpose") != "INSTALLATION_READBACK"
+                    or peer.get("project_authorized") is not False
+                    or peer.get("execution_ready") is not False)):
+            raise ForgeServerAdapterError("installation readiness contradicts product state")
+
+    @staticmethod
+    def _response(request, *, timeout: int, limit: int, allow_redirects: bool = True) -> bytes:
+        # Published Forge readiness uses 503 for a valid NOT_READY document.
+        # Authentication errors and other failures never qualify as readiness.
+        try:
+            response = (urllib_request.urlopen(request, timeout=timeout) if allow_redirects
+                        else urllib_request.build_opener(_ForgeNoRedirect()).open(request, timeout=timeout))
+        except HTTPError as error:
+            if error.code != 503:
+                error.close()
+                raise ForgeServerAdapterError("Forge Server readiness is unavailable") from error
+            response = error
+        except (URLError, TimeoutError, OSError) as error:
+            raise ForgeServerAdapterError("Forge Server readiness is unavailable") from error
+        with response:
+            raw = response.read(limit + 1)
+        if len(raw) > limit:
+            raise ForgeServerAdapterError("Forge Server readiness exceeded the response bound")
+        if getattr(response, "code", None) == 503:
+            try:
+                value = json.loads(raw)
+            except (ValueError, UnicodeError) as error:
+                raise ForgeServerAdapterError("Forge Server readiness returned invalid JSON") from error
+            if not isinstance(value, Mapping) or value.get("ready") is not False:
+                raise ForgeServerAdapterError("Forge Server 503 contradicted readiness state")
+        return raw
 
 
 @dataclass(frozen=True)
@@ -307,6 +420,8 @@ class ForgeUpdateBinding:
     existing_version: str
     base_python: Path
     intent_root: Path | None = None
+    installed_wheel: Path | None = None
+    installer_instance_id: str | None = None
 
     def __post_init__(self) -> None:
         for value in (
@@ -320,19 +435,30 @@ class ForgeUpdateBinding:
         ):
             raise ValueError("Forge update intent root must be absolute")
 
+        if (self.installed_wheel is None) != (self.installer_instance_id is None):
+            raise ValueError("Forge maintenance installed-wheel and selector evidence must be paired")
+        if self.installed_wheel is not None and (not self.installed_wheel.is_absolute()
+                or ".." in self.installed_wheel.parts
+                or _FORGE_LIFECYCLE_ID.fullmatch(self.installer_instance_id or "") is None):
+            raise ValueError("Forge maintenance installed-wheel evidence is invalid")
+
     def durable_snapshot(self) -> tuple[tuple[str, str], ...]:
         """Freeze every helper-owned update input across worker restarts."""
         if self.intent_root is None:
             raise ForgeServerAdapterError("Forge durable update intent root is unavailable")
-        return tuple(sorted(
-            (name, str(getattr(self, name))) for name in (
+        values = {
+            name: str(getattr(self, name)) for name in (
                 "updater_executable", "qualification_receipt",
                 "qualification_receipt_sha256", "controller_source", "controller_sha256",
                 "resolver", "resolver_sha256", "runtime_root", "runtime_id",
                 "installation_id", "peer_configuration_digest", "existing_interpreter",
                 "existing_version", "base_python", "intent_root",
             )
-        ))
+        }
+        if self.installed_wheel is not None:
+            values.update(installed_wheel=str(self.installed_wheel),
+                          installer_instance_id=self.installer_instance_id)
+        return tuple(sorted(values.items()))
 
 
 class ForgeUpdateBindingProvider(Protocol):
@@ -422,6 +548,16 @@ def _verified_forge_239_release_receipt(binding: ForgeUpdateBinding) -> bool:
     return _verified_external_release_receipt(binding, _FORGE_239_RELEASE_RECEIPT_SHA256)
 
 
+
+def _verified_forge_281_controller(binding: ForgeUpdateBinding) -> bool:
+    return _verified_external_controller(binding, _FORGE_281_CONTROLLER_SOURCE,
+        _FORGE_281_CONTROLLER_SHA256, _FORGE_281_RELEASE_RECEIPT_SHA256)
+
+
+def _verified_forge_281_release_receipt(binding: ForgeUpdateBinding) -> bool:
+    return _verified_external_release_receipt(binding, _FORGE_281_RELEASE_RECEIPT_SHA256)
+
+
 def _verified_external_release_receipt(binding: ForgeUpdateBinding, expected_digest: str) -> bool:
     if binding.qualification_receipt_sha256 != expected_digest:
         return False
@@ -474,7 +610,113 @@ def _verified_published_update_resources(binding: ForgeUpdateBinding, version: s
         return _verified_forge_238_controller(binding) and _verified_forge_238_release_receipt(binding)
     if version == "2.7.39":
         return _verified_forge_239_controller(binding) and _verified_forge_239_release_receipt(binding)
+    if version == "2.8.1":
+        return _verified_forge_281_controller(binding) and _verified_forge_281_release_receipt(binding)
     return False
+
+
+class SubprocessForge281MaintenanceCommandRunner:
+    """Execute only the pinned controller as the reviewed real Forge operator.
+
+    Installer journals remain root-owned. This entrance refuses an unprepared
+    operator runtime compartment rather than relaxing product ownership.
+    """
+    def __init__(self, target: ForgeServerTarget, binding: ForgeUpdateBinding):
+        self.target, self.binding = target, binding
+
+    def run(self, argv: Sequence[str]) -> ForgeCommandResult:
+        from .managed_installer_user_identity import resolve_identity_sha256
+        b = self.binding
+        if (os.geteuid() != 0 or self.target.service_account.startswith("_")
+            or self.target.service_user_identity_sha256 is None
+            or resolve_identity_sha256(self.target.service_account) != self.target.service_user_identity_sha256
+            or not _verified_forge_281_controller(b) or not _verified_forge_281_release_receipt(b)
+            or tuple(argv[:3]) != (str(b.base_python), "-I", str(b.updater_executable))
+            or b.installer_instance_id != self.target.instance_id or b.installed_wheel is None):
+            raise ForgeServerAdapterError("Forge maintenance operator execution is not admitted")
+        account = pwd.getpwnam(self.target.service_account)
+        if account.pw_uid <= 0 or account.pw_gid <= 0 or account.pw_name != self.target.service_account:
+            raise ForgeServerAdapterError("Forge maintenance operator is unavailable")
+        membership = subprocess.run(("/usr/bin/dsmemberutil", "checkmembership", "-U", account.pw_name, "-G", "admin"),
+            cwd="/", stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}, timeout=5, check=False)
+        if membership.returncode or membership.stdout.strip() != b"user is a member of the group":
+            raise ForgeServerAdapterError("Forge maintenance operator is no longer an administrator")
+        args = tuple(argv[3:]); values = {}; assess = False
+        index = 0
+        while index < len(args):
+            key = args[index]
+            if key == "--assess-only":
+                if assess: raise ForgeServerAdapterError("Forge maintenance command contains duplicate mode")
+                assess = True; index += 1; continue
+            if key in values or index + 1 >= len(args) or not key.startswith("--"):
+                raise ForgeServerAdapterError("Forge maintenance command shape is invalid")
+            values[key] = args[index + 1]; index += 2
+        fixed = {"--data-root": str(self.target.data_root), "--runtime-root": str(b.runtime_root),
+                 "--runtime-id": b.runtime_id, "--installation-id": b.installation_id,
+                 "--resolver": str(b.resolver), "--resolver-sha256": b.resolver_sha256,
+                 "--existing-interpreter": str(b.existing_interpreter), "--existing-version": "2.7.39",
+                 "--base-python": str(b.base_python), "--controller-source": _FORGE_281_CONTROLLER_SOURCE,
+                 "--controller-sha256": _FORGE_281_CONTROLLER_SHA256,
+                 "--qualification-receipt": str(b.qualification_receipt),
+                 "--qualification-receipt-sha256": _FORGE_281_RELEASE_RECEIPT_SHA256,
+                 "--version": "2.8.1", "--product-source": "c8833ffa4754800de451cce94b109ef1ad07123f",
+                 "--wheel-sha256": "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0",
+                 "--installed-source": "ebc43dc12da27353f85c991a26da9852aa790f05",
+                 "--installed-artifact-digest": "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+                 "--peer-configuration-digest": b.peer_configuration_digest}
+        variable = {"--operation-id", "--wheel", "--installed-wheel"}
+        if not assess: variable.add("--assessment-digest")
+        if (set(values) != set(fixed) | variable or any(values.get(k) != v for k, v in fixed.items())
+            or _FORGE_LIFECYCLE_ID.fullmatch(values["--operation-id"]) is None
+            or not assess and re.fullmatch(r"sha256:[0-9a-f]{64}", values["--assessment-digest"]) is None):
+            raise ForgeServerAdapterError("Forge maintenance command changed its exact binding")
+        for path in (self.target.data_root, b.runtime_root, b.resolver.parent):
+            if path.is_symlink() or path.resolve(strict=True) != path:
+                raise ForgeServerAdapterError("Forge maintenance compartment path is unsafe")
+            info = path.stat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != account.pw_uid or info.st_mode & 0o022:
+                raise ForgeServerAdapterError("Forge maintenance operator compartment is not prepared")
+        for key, expected in (("--wheel", fixed["--wheel-sha256"]),
+                              ("--installed-wheel", fixed["--installed-artifact-digest"])):
+            path = Path(values[key])
+            if (not path.is_absolute() or path.is_symlink() or path.resolve(strict=True) != path
+                or not path.is_relative_to(b.runtime_root)):
+                raise ForgeServerAdapterError("Forge maintenance public inputs are outside the reviewed compartment")
+            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW_ANY", 0x20000000))
+            try:
+                before = os.fstat(fd)
+                if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or before.st_uid != account.pw_uid or before.st_mode & 0o022
+                    or not 0 < before.st_size <= 512 * 1024 * 1024):
+                    raise ForgeServerAdapterError("Forge maintenance public wheel metadata is invalid")
+                import time
+                digest = sha256(); remaining = before.st_size + 1; total = 0
+                deadline = time.monotonic() + 30
+                while remaining > 0:
+                    if time.monotonic() > deadline:
+                        raise ForgeServerAdapterError("Forge maintenance input read timed out")
+                    chunk = os.read(fd, min(65536, remaining))
+                    if not chunk: break
+                    digest.update(chunk); total += len(chunk); remaining -= len(chunk)
+                after = os.fstat(fd)
+                if (total != before.st_size or "sha256:" + digest.hexdigest() != expected
+                    or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+                    raise ForgeServerAdapterError("Forge maintenance public wheel inputs changed")
+            finally: os.close(fd)
+        try:
+            completed = subprocess.run(tuple(argv), cwd=str(self.target.data_root),
+                user=account.pw_uid, group=account.pw_gid, extra_groups=(),
+                env={"HOME": account.pw_dir, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                     "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1"},
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=900, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise ForgeServerAdapterError("Forge maintenance operator execution is unavailable") from None
+        if (len(completed.stdout.encode()) > 1048576
+            or resolve_identity_sha256(self.target.service_account) != self.target.service_user_identity_sha256):
+            raise ForgeServerAdapterError("Forge maintenance output or operator currency is invalid")
+        return ForgeCommandResult(completed.returncode, completed.stdout, "")
 
 
 @dataclass(frozen=True)
@@ -507,6 +749,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         update_binding_provider: ForgeUpdateBindingProvider | None = None,
         lifecycle_executable: Path | None = None,
         uninstall_binding: ForgeUninstallBinding | None = None,
+        instance_bootstrap=None,
     ) -> None:
         if not forge_executable.is_absolute():
             raise ValueError("Forge executable must be absolute")
@@ -523,7 +766,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
                 target, forge_executable
             )
         )
-        self.readiness_probe = readiness_probe or ForgeHTTPReadinessProbe()
+        self.readiness_probe = readiness_probe or ForgeHTTPReadinessProbe(allow_standalone=instance_bootstrap is not None)
         self.update_binding = update_binding
         if update_binding is not None and update_binding_provider is not None:
             raise ValueError("Forge update binding authorities are ambiguous")
@@ -534,13 +777,15 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self.update_binding_provider = update_binding_provider
         self.lifecycle_executable = lifecycle_executable
         self.uninstall_binding = uninstall_binding
+        self.instance_bootstrap = instance_bootstrap
 
     def _binding_for(self, request: ComponentOperationRequest) -> ForgeUpdateBinding | None:
         if self.update_binding_provider is None:
             return self.update_binding
         binding = self.update_binding_provider.resolve(request)
         if not isinstance(binding, ForgeUpdateBinding) or (
-            binding.runtime_id != self.target.instance_id
+            binding.runtime_id != (self.target.product_runtime_id
+                if qualified_forge_installation_pairing_artifact(request.artifact) else self.target.instance_id)
             or binding.existing_version != self.installed_artifact.version
         ):
             raise ForgeServerAdapterError("Forge update provider changed the selected instance")
@@ -600,7 +845,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             or status.get("product_version") != installed_version
             or status.get("data_root") != str(target.data_root)
             or status.get("initialized") is not True
-            or status.get("instance_id") != target.instance_id
+            or status.get("instance_id") != target.product_runtime_id
             or not isinstance(status.get("runtime_status"), str)
             or status["runtime_status"] in {"unavailable", "uninitialized", ""}
         ):
@@ -615,7 +860,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             or isinstance(peer.get("configuration_revision"), bool)
             or not isinstance(peer.get("configuration_revision"), int)
             or peer["configuration_revision"] < 1
-            or peer.get("owning_forge_runtime_id") != target.instance_id
+            or peer.get("owning_forge_runtime_id") != target.product_runtime_id
             or not isinstance(peer.get("configuration_digest"), str)
             or re.fullmatch(r"sha256:[0-9a-f]{64}", peer["configuration_digest"]) is None
         ):
@@ -678,6 +923,12 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         return value
 
     def _run(self, *args: str, allow_nonzero: bool = False) -> Mapping[str, object]:
+        if self.instance_bootstrap is not None:
+            from .managed_forge_instance_bootstrap import read_runtime_binding
+            if read_runtime_binding(self.target) is not None and not (
+                len(args) >= 2 and args[0] == "server" and args[1].startswith(("update-", "uninstall", "preserve", "restore", "purge"))
+            ):
+                return self.instance_bootstrap.run(*args, allow_nonzero=allow_nonzero)
         result = self.runner.run((str(self.forge_executable), "--data-root", str(self.target.data_root), *args))
         return self._json_result(result, "Forge command", allow_nonzero=allow_nonzero)
 
@@ -723,7 +974,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         )
         expected = {
             "schema_version": "1.0",
-            "instance_id": self.target.instance_id,
+            "instance_id": self.target.product_runtime_id,
             "provider_id": FORGE_PROVIDER_ID,
             "provider_type": "CODEX_CLI_CHATGPT_SESSION",
             "executable_path": str(codex_executable),
@@ -814,6 +1065,37 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             "execution-host", "preflight",
         ))
         return self._json_result(result, "Forge service-account preflight")
+
+    def configure_installation_peer(self, binding) -> Mapping[str, object]:
+        """Delegate installation-only binding as the actual bound Forge operator."""
+        from .forge_ep_pairing_executor import ForgeEPInstallationPairingBinding
+        if not isinstance(binding, ForgeEPInstallationPairingBinding):
+            raise ForgeServerAdapterError("typed installation pairing authority is required")
+        if not qualified_forge_installation_pairing_artifact(self.installed_artifact):
+            raise ForgeServerAdapterError("installation pairing requires a qualified Forge artifact")
+        result = self.service_account_runner.run((
+            str(self.forge_executable), "--data-root", str(self.target.data_root),
+            *binding.command,
+        ))
+        return self._json_result(result, "Forge installation pairing")
+
+    def read_installation_peer(self) -> Mapping[str, object]:
+        if not qualified_forge_installation_pairing_artifact(self.installed_artifact):
+            raise ForgeServerAdapterError("installation pairing requires a qualified Forge artifact")
+        result = self.service_account_runner.run((
+            str(self.forge_executable), "--data-root", str(self.target.data_root),
+            "installation-peer", "show",
+        ))
+        return self._json_result(result, "Forge installation pairing readback")
+
+    def preflight_installation_peer(self) -> Mapping[str, object]:
+        if not qualified_forge_installation_pairing_artifact(self.installed_artifact):
+            raise ForgeServerAdapterError("installation pairing requires a qualified Forge artifact")
+        result = self.service_account_runner.run((
+            str(self.forge_executable), "--data-root", str(self.target.data_root),
+            "installation-peer", "preflight",
+        ))
+        return self._json_result(result, "Forge installation connectivity")
 
     def _peer_detach_request(
         self, *, operation_id: str, binding_id: str, revision: int,
@@ -977,7 +1259,23 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
                 None, None, None, None, None, "UNKNOWN", "MACHINE_WIDE", "NONE",
                 "forge-status:" + _digest_json(status),
             )
-        if status.get("instance_id") != self.target.instance_id:
+        if self.instance_bootstrap is not None:
+            from .managed_forge_instance_bootstrap import read_runtime_binding
+            if read_runtime_binding(self.target) is None:
+                pending = self.instance_bootstrap.pending_runtime(status)
+                if pending is not None:
+                    # This is a real partial product init, not an absent runtime.
+                    # Only its immutable root-owned intent authorizes continuation.
+                    return ProductInstallationReadback(
+                        FORGE_COMPONENT, self.target.instance_id, "UNHEALTHY",
+                        "forge-runtime:" + self.installed_artifact.digest + ":" + pending,
+                        "forge-executable:" + _digest_json({"executable": str(self.forge_executable)}),
+                        self.target.service_label, self.target.instance_id,
+                        self.installed_artifact.correlation, "UNHEALTHY", "MACHINE_WIDE", "NONE",
+                        "forge-bootstrap-pending:" + _digest_json(status),
+                        "forge-bootstrap-health-pending:" + _digest_json(status),
+                    )
+        if status.get("instance_id") != self.target.product_runtime_id:
             raise ForgeServerAdapterError("Forge status returned a different instance identity")
         if status.get("product_version") != self.installed_artifact.version:
             raise ForgeServerAdapterError("Forge status version does not match the selected installed artifact")
@@ -989,17 +1287,29 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             )
         health = self._run("health", "snapshot", allow_nonzero=True)
         try:
-            readiness = self.readiness_probe.readiness(self.target)
+            if (qualified_forge_installation_pairing_artifact(self.installed_artifact)
+                    and isinstance(self.readiness_probe, ForgeHTTPReadinessProbe)):
+                readiness = self.readiness_probe.installation_readiness(self.target, self.installed_artifact)
+            else:
+                readiness = self.readiness_probe.readiness(self.target)
+            if qualified_forge_installation_pairing_artifact(self.installed_artifact):
+                ForgeHTTPReadinessProbe.validate_installation_readiness(readiness, self.target)
         except ForgeServerAdapterError:
             readiness = {"ready": False}
-        if readiness.get("ready") is True and readiness.get("instance_id") != self.target.instance_id:
+        if readiness.get("ready") is True and readiness.get("instance_id") != self.target.product_runtime_id:
             raise ForgeServerAdapterError("Forge readiness describes a different instance")
-        ready = health.get("outcome") == "HEALTHY" and readiness.get("ready") is True
+        # The released installation profile owns service/provider/scheduler
+        # and EP connectivity. Global/project health coverage is separate.
+        ready = readiness.get("ready") is True and (
+            qualified_forge_installation_pairing_artifact(self.installed_artifact)
+            or health.get("outcome") == "HEALTHY"
+        )
+        awaiting_peer = self._awaiting_peer(readiness)
         evidence = "forge-health:" + _digest_json({"health": health, "readiness": readiness})
         return ProductInstallationReadback(
             FORGE_COMPONENT,
             self.target.instance_id,
-            "ACTIVE" if ready else "UNHEALTHY",
+            "ACTIVE" if ready else ("INSTALLED_UNPAIRED" if awaiting_peer else "UNHEALTHY"),
             "forge-runtime:" + self.installed_artifact.digest,
             "forge-executable:" + _digest_json({
                 "instance_id": self.target.instance_id,
@@ -1009,12 +1319,36 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             self.target.service_label,
             self.target.instance_id,
             self.installed_artifact.correlation,
-            "HEALTHY" if ready else "UNHEALTHY",
+            "HEALTHY" if ready else ("AWAITING_PEER" if awaiting_peer else "UNHEALTHY"),
             "MACHINE_WIDE",
             "NONE",
             "forge-status:" + _digest_json(status),
             evidence,
         )
+
+    def _awaiting_peer(self, readiness):
+        if self.instance_bootstrap is None or self.target.service_user_identity_sha256 is None:
+            return False
+        if qualified_forge_installation_pairing_artifact(self.installed_artifact):
+            if (readiness.get("contract_version") != "forge-server-installation-readiness/v1"
+                    or readiness.get("instance_id") != self.target.product_runtime_id
+                    or readiness.get("ready") is not False
+                    or readiness.get("service_ready") is not True
+                    or readiness.get("component_connected") is not False
+                    or readiness.get("project_authorized") is not False
+                    or readiness.get("execution_ready") is not False):
+                return False
+            peer = self.read_installation_peer()
+            return peer.get("status") == "NOT_CONFIGURED" and peer.get("execution_ready") is False
+        peer = readiness.get("execution_host_peer", {})
+        provider = readiness.get("provider", {})
+        scheduler = readiness.get("scheduler", {})
+        return (readiness.get("instance_id") == self.target.product_runtime_id
+                and readiness.get("ready") is False
+                and isinstance(peer, Mapping) and peer.get("state") == "NOT_CONFIGURED"
+                and isinstance(provider, Mapping) and provider.get("ready") is True
+                and isinstance(scheduler, Mapping)
+                and scheduler.get("last_error") == "PeerConfigurationError")
 
     def assess_update(self, request: ComponentOperationRequest) -> ProductUpdateAssessment:
         self._validate_request(request)
@@ -1025,7 +1359,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             and self.installed_artifact == request.artifact
             and qualified_forge_lifecycle_artifact(self.installed_artifact)
         )
-        if request.artifact.version in {"2.7.38", "2.7.39"} and not current_239:
+        if request.artifact.version in {"2.7.38", "2.7.39", "2.8.1"} and not current_239:
             return self._assess_external_published_update(request)
         binding = None if current_239 else self._binding_for(request)
         uninstall = self.uninstall_binding if current_239 else None
@@ -1110,6 +1444,15 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         self, request: ComponentOperationRequest, binding: ForgeUpdateBinding,
         wheel: Path, *, assessment_digest: str = "", assess_only: bool,
     ) -> tuple[dict[str, str], tuple[str, ...]]:
+        installed_wheel = binding.installed_wheel
+        if request.artifact.version == "2.8.1":
+            from .forge_281_compartment import prepared_281_candidate_wheel, Forge281CompartmentError
+            if installed_wheel is None:
+                raise ForgeServerAdapterError("Forge maintenance lacks the original published wheel")
+            try:
+                wheel = prepared_281_candidate_wheel(binding, request)
+            except (Forge281CompartmentError, OSError, ValueError):
+                raise ForgeServerAdapterError("Forge maintenance inputs lack exact owned preparation") from None
         selected = {
             "operation_id": request.operation_id,
             "version": request.artifact.version,
@@ -1158,6 +1501,11 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             "--installed-source", self.installed_artifact.source_revision,
             "--installed-artifact-digest", self.installed_artifact.digest,
         )
+        if request.artifact.version == "2.8.1":
+            if binding.installed_wheel is None or binding.installer_instance_id != self.target.instance_id:
+                raise ForgeServerAdapterError("Forge maintenance lacks the exact original wheel and installer selector")
+            selected["installed_wheel"] = str(installed_wheel)
+            argv += ("--installed-wheel", str(installed_wheel))
         return selected, argv + (("--assess-only",) if assess_only else (
             "--assessment-digest", assessment_digest,
         ))
@@ -1175,10 +1523,14 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             selected = qualified_forge_238_update_selection
             verify_controller = _verified_forge_238_controller
             verify_receipt = _verified_forge_238_release_receipt
-        else:
+        elif request.artifact.version == "2.7.39":
             selected = qualified_forge_239_update_selection
             verify_controller = _verified_forge_239_controller
             verify_receipt = _verified_forge_239_release_receipt
+        else:
+            selected = qualified_forge_281_update_selection
+            verify_controller = _verified_forge_281_controller
+            verify_receipt = _verified_forge_281_release_receipt
         if (
             binding is None or not isinstance(wheel, Path) or not wheel.is_absolute()
             or not selected(self.installed_artifact, request.artifact)
@@ -1186,12 +1538,14 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             or not verify_receipt(binding)
         ):
             return unavailable
-        if binding.runtime_id != self.target.instance_id or binding.existing_version != self.installed_artifact.version:
+        if binding.runtime_id != (self.target.product_runtime_id if request.artifact.version == "2.8.1" else self.target.instance_id) or binding.existing_version != self.installed_artifact.version:
             raise ForgeServerAdapterError("Forge external controller installed target changed")
         selected, argv = self._external_published_request(
             request, binding, wheel, assess_only=True,
         )
-        payload = self._json_result(self.runner.run(argv), "Forge external update assessment")
+        command_runner = (SubprocessForge281MaintenanceCommandRunner(self.target, binding)
+            if request.artifact.version == "2.8.1" and type(self.runner) is SubprocessForgeCommandRunner else self.runner)
+        payload = self._json_result(command_runner.run(argv), "Forge external update assessment")
         digest = payload.get("assessment_digest")
         unsigned = dict(payload)
         unsigned.pop("assessment_digest", None)
@@ -1234,6 +1588,25 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             or digest != _forge_product_digest(unsigned)
         ):
             raise ForgeServerAdapterError("Forge external assessment lacks exact product evidence")
+        if state == "UNKNOWN" and type(self.update_binding_provider).__name__ == "ReleasedForge281MaintenanceBindingProvider":
+            # Only fixed source locations escape the sealed worker; never the
+            # product error text, paths, database contents or credentials.
+            error_code = payload["evidence"].get("error")
+            if isinstance(error_code, str) and error_code.startswith("instance tree contains a foreign-owned entry:"):
+                raise ForgeServerAdapterError("maintenance source diagnosis: foreign owner") from None
+            if isinstance(error_code, str) and error_code.startswith("instance tree contains a group/world-writable entry:"):
+                raise ForgeServerAdapterError("maintenance source diagnosis: writable entry") from None
+            if isinstance(error_code, str) and error_code.startswith("instance tree contains a symbolic link:"):
+                raise ForgeServerAdapterError("maintenance source diagnosis: linked entry") from None
+            if isinstance(error_code, str) and error_code.startswith("[Errno 2]"):
+                raise ForgeServerAdapterError("maintenance source diagnosis: missing entry") from None
+            if error_code == "selected peer configuration changed":
+                raise ForgeServerAdapterError("maintenance source diagnosis: changed peer") from None
+            if isinstance(error_code, str) and error_code.startswith("required regular file is unavailable:"):
+                raise ForgeServerAdapterError("maintenance source diagnosis: unavailable file") from None
+            if error_code == "selected runtime storage integrity is unavailable":
+                raise ForgeServerAdapterError("maintenance source diagnosis: storage integrity") from None
+            raise ForgeServerAdapterError("maintenance source diagnosis: unclassified controller rejection") from None
         if state == "UP_TO_DATE" and self.installed_artifact != request.artifact:
             raise ForgeServerAdapterError("Forge external assessment current artifact changed")
         if state == "UPDATE_AVAILABLE" and self.installed_artifact == request.artifact:
@@ -1252,8 +1625,24 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             "artifact": request.artifact.correlation.__dict__,
         })
         if request.kind in {"install", "repair"}:
+            if self.instance_bootstrap is not None:
+                self.instance_bootstrap.ensure(request.operation_id)
             self.supervisor.register(self.target, self.forge_executable)
             self.supervisor.start(self.target)
+            if self.instance_bootstrap is not None:
+                import time
+                deadline = time.monotonic() + 30
+                while True:
+                    try:
+                        ready = self.readiness_probe.readiness(self.target)
+                    except (OSError, ValueError, ForgeServerAdapterError):
+                        ready = {}
+                    if ((ready.get("ready") is True and ready.get("instance_id") == self.target.product_runtime_id)
+                        or self._awaiting_peer(ready)):
+                        break
+                    if time.monotonic() >= deadline:
+                        raise ForgeServerAdapterError("Forge exact service did not become ready after bootstrap")
+                    time.sleep(0.5)
             state = "COMPLETED"
         elif request.kind == "remove":
             return self._run_uninstall(request)
@@ -1282,13 +1671,13 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         binding = self._binding_for(request)
         if (
             binding is None or binding.intent_root is None
-            or binding.runtime_id != self.target.instance_id
+            or binding.runtime_id != (self.target.product_runtime_id if request.artifact.version == "2.8.1" else self.target.instance_id)
         ):
             raise ForgeServerAdapterError("Forge durable update binding changed or is unavailable")
         store = ForgeUpdateIntentStore(binding.intent_root)
         existing = store.read(request.operation_id)
         binding_snapshot = (
-            binding.durable_snapshot() if request.artifact.version == "2.7.39" else None
+            binding.durable_snapshot() if request.artifact.version in {"2.7.39", "2.8.1"} else None
         )
         if existing is not None:
             if existing.binding_snapshot != binding_snapshot:
@@ -1321,7 +1710,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
 
         before = self.readback(request)
         if (
-            before.state != "ACTIVE"
+            not (before.state == "ACTIVE" or self._preservation_maintenance_eligible(request, binding, before))
             or before.artifact != self.installed_artifact.correlation
             or before.selected_instance_identity != self.target.instance_id
         ):
@@ -1354,12 +1743,12 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         store: ForgeUpdateIntentStore,
         intent: ForgeUpdateIntent,
     ) -> str:
-        if request.artifact.version == "2.7.39" and (
+        if request.artifact.version in {"2.7.39", "2.8.1"} and (
             intent.binding_snapshot != binding.durable_snapshot()
         ):
             raise ForgeServerAdapterError("Forge update resume changed the durable product binding")
         if intent.phase == "UPDATER_INVOKED":
-            if request.artifact.version in {"2.7.38", "2.7.39"} and not (
+            if request.artifact.version in {"2.7.38", "2.7.39", "2.8.1"} and not (
                 _verified_published_update_resources(binding, request.artifact.version)
             ):
                 raise ForgeServerAdapterError("Forge exact external update evidence changed before mutation")
@@ -1373,11 +1762,10 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         if intent.phase == "PRODUCT_COMPLETE":
             self.supervisor.register(self.target, binding.resolver)
             self.supervisor.start(self.target)
-        self.forge_executable = binding.resolver
-        self.installed_artifact = request.artifact
+        self._adopt_completed_update(request, binding, intent)
         after = self.readback(request)
         if (
-            after.state != "ACTIVE"
+            not (after.state == "ACTIVE" or self._preservation_maintenance_unpaired(request, after))
             or after.artifact != request.artifact.correlation
             or after.selected_instance_identity != self.target.instance_id
         ):
@@ -1387,6 +1775,88 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         if intent.phase != "COMPLETE" or intent.product_receipt_reference is None:
             raise ForgeServerAdapterError("Forge update lacks a terminal durable product receipt")
         return intent.product_receipt_reference
+
+    def _preservation_maintenance_eligible(self, request, binding, before) -> bool:
+        """Specific released 239→281 migration eligibility, never a ready claim.
+
+        A historical project peer may be disconnected. The official controller
+        must still return the reviewed fresh assessment before service mutation.
+        """
+        def rejected():
+            # Debug-only, source-location-only diagnosis of a closed gate.
+            import sys
+            if len(Path(sys.argv[0]).parents) > 2 and Path(sys.argv[0]).parents[2].name == "ForgePlatformInstallerDebug.app":
+                print("MAINTENANCE_SOURCE=forge_server_adapter.py:" + str(sys._getframe(1).f_lineno), file=sys.stderr, flush=True)
+            return False
+        from .forge_update_binding_provider import ReleasedForge281MaintenanceBindingProvider
+        from .managed_installer_user_identity import resolve_identity_sha256
+        if (type(self.update_binding_provider) is not ReleasedForge281MaintenanceBindingProvider
+            or not qualified_forge_281_update_selection(self.installed_artifact, request.artifact)
+            or before.state not in {"UNHEALTHY", "INSTALLED_UNPAIRED"}
+            or before.artifact != self.installed_artifact.correlation
+            or before.selected_instance_identity != self.target.instance_id
+            or self.instance_bootstrap is None
+            or self.target.service_account.startswith("_")
+            or self.target.service_user_identity_sha256 is None
+            or resolve_identity_sha256(self.target.service_account) != self.target.service_user_identity_sha256
+            or not _verified_published_update_resources(binding, "2.8.1")):
+            return rejected()
+        status = self._run("server", "status")
+        if (status.get("initialized") is not True or status.get("runtime_status") != "active"
+            or status.get("product_version") != self.installed_artifact.version
+            or status.get("instance_id") != binding.runtime_id
+            or binding.runtime_id != self.target.product_runtime_id
+            or not self.supervisor.loaded(self.target)):
+            return rejected()
+        readiness = self.readiness_probe.readiness(self.target)
+        provider, scheduler, peer = (readiness.get(k) for k in ("provider", "scheduler", "execution_host_peer"))
+        if readiness.get("instance_id") != binding.runtime_id or readiness.get("ready") is not False:
+            return rejected()
+        if not isinstance(provider, Mapping) or provider.get("ready") is not True:
+            return rejected()
+        if not isinstance(scheduler, Mapping) or scheduler.get("state") not in {"READY", "IDLE"}:
+            return rejected()
+        # The released legacy preflight raises ValueError on HTTP403, so its
+        # readiness projects ERROR:EP rejected request: 403 rather than
+        # NOT_READY. Preserve that exact historical denied peer for the
+        # qualified offline update; it never grants connectivity/authority.
+        if not isinstance(peer, Mapping) or peer.get("state") not in {
+                "NOT_CONFIGURED", "NOT_READY", "ERROR:EP rejected request: 403"}:
+            return rejected()
+        return True
+
+    def _preservation_maintenance_unpaired(self, request, after) -> bool:
+        from .forge_update_binding_provider import ReleasedForge281MaintenanceBindingProvider
+        return (type(self.update_binding_provider) is ReleasedForge281MaintenanceBindingProvider
+            and qualified_forge_installation_pairing_artifact(request.artifact)
+            and self.installed_artifact == request.artifact
+            and after.state == "INSTALLED_UNPAIRED" and after.health_state == "AWAITING_PEER"
+            and after.artifact == request.artifact.correlation
+            and after.selected_instance_identity == self.target.instance_id
+            and after.inventory_coverage == "MACHINE_WIDE" and after.conflict_state == "NONE")
+
+    def _adopt_completed_update(self, request, binding, intent) -> None:
+        """Retarget command delegates only after the exact product receipt."""
+        if (intent.phase not in {"PRODUCT_COMPLETE", "COMPLETE"}
+            or intent.operation_id != request.operation_id
+            or intent.request_fingerprint != request.fingerprint()
+            or intent.instance_id != self.target.instance_id
+            or intent.candidate_artifact != request.artifact.digest
+            or intent.product_receipt_reference is None):
+            raise ForgeServerAdapterError("Forge resolver adoption lacks exact terminal product evidence")
+        self.forge_executable = binding.resolver
+        self.installed_artifact = request.artifact
+        if isinstance(self.service_account_runner, SubprocessForgeServiceAccountCommandRunner):
+            self.service_account_runner = SubprocessForgeServiceAccountCommandRunner(
+                self.target, binding.resolver
+            )
+        if self.instance_bootstrap is not None:
+            from copy import copy
+            # Do not alter a shared old-artifact authority delegate or any
+            # protected runtime-binding record while projecting new readback.
+            self.instance_bootstrap = copy(self.instance_bootstrap)
+            self.instance_bootstrap.executable = binding.resolver
+            self.instance_bootstrap.artifact = request.artifact
 
     def removal_support(self) -> str:
         """Advertise support only for a helper-bound exact product dispatcher."""
@@ -1583,15 +2053,19 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             "--existing-version", binding.existing_version,
             "--base-python", str(binding.base_python),
         )
-        if request.artifact.version in {"2.7.38", "2.7.39"}:
+        if request.artifact.version in {"2.7.38", "2.7.39", "2.8.1"}:
             if request.artifact.version == "2.7.38":
                 selected_update = qualified_forge_238_update_selection
                 verify_controller = _verified_forge_238_controller
                 verify_receipt = _verified_forge_238_release_receipt
-            else:
+            elif request.artifact.version == "2.7.39":
                 selected_update = qualified_forge_239_update_selection
                 verify_controller = _verified_forge_239_controller
                 verify_receipt = _verified_forge_239_release_receipt
+            else:
+                selected_update = qualified_forge_281_update_selection
+                verify_controller = _verified_forge_281_controller
+                verify_receipt = _verified_forge_281_release_receipt
             if (
                 not selected_update(self.installed_artifact, request.artifact)
                 or not verify_controller(binding)
@@ -1604,7 +2078,9 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
                 request, binding, wheel, assessment_digest=assessment_digest,
                 assess_only=False,
             )
-        result = self.runner.run(argv)
+        command_runner = (SubprocessForge281MaintenanceCommandRunner(self.target, binding)
+            if request.artifact.version == "2.8.1" and type(self.runner) is SubprocessForgeCommandRunner else self.runner)
+        result = command_runner.run(argv)
         payload = self._json_result(result, "Forge installed updater")
         if (
             payload.get("contract_version") != "forge-installed-update/v1"

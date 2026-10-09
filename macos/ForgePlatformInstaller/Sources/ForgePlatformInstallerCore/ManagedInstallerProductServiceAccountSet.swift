@@ -66,7 +66,7 @@ struct ManagedInstallerProductServiceAccountSetResolver {
         guard snapshot.installerRelease == expectedInstallerRelease else {
             return .failure(.rejected)
         }
-        let claims = snapshot.routes.flatMap { route in
+        let legacyClaims = snapshot.routes.flatMap { route in
             [
                 Claim(
                     deploymentID: route.deploymentID,
@@ -74,7 +74,8 @@ struct ManagedInstallerProductServiceAccountSetResolver {
                     instanceID: route.forgeInstanceID,
                     serviceAccount: route.forgeServiceAccount,
                     artifactSHA256: route.forgeArtifactSHA256,
-                    venvSlotName: route.forgeVenvSlotName
+                    venvSlotName: route.forgeVenvSlotName,
+                    serviceUserIdentitySHA256: route.forgeServiceUserIdentitySHA256
                 ),
                 Claim(
                     deploymentID: route.deploymentID,
@@ -93,9 +94,22 @@ struct ManagedInstallerProductServiceAccountSetResolver {
                 instanceID: route.instanceID,
                 serviceAccount: route.serviceAccount,
                 artifactSHA256: route.artifactSHA256,
-                venvSlotName: route.venvSlotName
+                venvSlotName: route.venvSlotName,
+                serviceUserIdentitySHA256: route.serviceUserIdentitySHA256
             )
         }
+        let installationClaims = snapshot.installationRoutes.flatMap { route in
+            [Claim(deploymentID: route.deploymentID, componentIdentity: "forge-runtime",
+                   instanceID: route.forgeInstanceID, serviceAccount: route.forgeServiceAccount,
+                   artifactSHA256: route.forgeArtifactSHA256, venvSlotName: route.forgeVenvSlot,
+                   serviceUserIdentitySHA256: route.forgeServiceUserIdentitySHA256,
+                   requiresAdministrator: true),
+             Claim(deploymentID: route.deploymentID, componentIdentity: "engineering-platform-server",
+                   instanceID: route.engineeringPlatformInstanceID,
+                   serviceAccount: route.engineeringPlatformServiceAccount,
+                   artifactSHA256: route.engineeringPlatformArtifactSHA256, venvSlotName: route.epVenvSlot)]
+        }
+        let claims = legacyClaims + installationClaims
         guard !claims.isEmpty,
               Set(claims.map(\.serviceAccount)).count == claims.count,
               Set(claims.map(\.instanceID)).count == claims.count else {
@@ -126,6 +140,14 @@ struct ManagedInstallerProductServiceAccountSetResolver {
                       !bindings.contains(where: { $0.uid == observed.uid }) else {
                     return .failure(.rejected)
                 }
+                if !claim.serviceAccount.hasPrefix("_") {
+                    guard let user = try? ManagedInstallerNamedOperator.resolve(uid: observed.uid),
+                          user.accountName == claim.serviceAccount, user.gid == observed.gid,
+                          !claim.requiresAdministrator || user.isAdministrator,
+                          "sha256:" + user.identitySHA256 == claim.serviceUserIdentitySHA256 else {
+                        return .failure(.rejected)
+                    }
+                }
                 bindings.append(ManagedInstallerProductServiceAccountBinding(
                     deploymentID: claim.deploymentID,
                     componentIdentity: claim.componentIdentity,
@@ -154,5 +176,7 @@ struct ManagedInstallerProductServiceAccountSetResolver {
         let serviceAccount: String
         let artifactSHA256: String
         let venvSlotName: String?
+        var serviceUserIdentitySHA256: String? = nil
+        var requiresAdministrator: Bool = false
     }
 }

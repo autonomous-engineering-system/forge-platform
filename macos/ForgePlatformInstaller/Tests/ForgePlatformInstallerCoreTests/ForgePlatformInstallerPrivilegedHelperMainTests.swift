@@ -4,6 +4,25 @@ import ForgePlatformInstallerCore
 @testable import ForgePlatformInstallerPrivilegedHelper
 
 final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
+    func testNamedForgeProbeKeepsEPAndGitHubDedicated() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/reviewed-provider-root", isDirectory: true)
+        let forge = root.path + "/provider-contexts/deployments/deployment-one/providers/forge-runtime/fpi-two/codex"
+        var args = ["helper", "--provider-account-probe", "operator-example", "501", "20",
+                    "codex", "authentication-status", forge + "/runtime/0.157.1/bin/codex", forge + "/home"]
+        XCTAssertNotNil(ManagedInstallerProviderAccountProbeChild.parse(args, allowedRoot: root))
+        for name in ["root", "_foreign", "a/b", "bad user"] {
+            args[2] = name
+            XCTAssertNil(ManagedInstallerProviderAccountProbeChild.parse(args, allowedRoot: root))
+        }
+        args[2] = "operator-example"
+        args[5] = "github-cli"
+        args[7] = forge + "/runtime/2.70.0/bin/gh"
+        XCTAssertNil(ManagedInstallerProviderAccountProbeChild.parse(args, allowedRoot: root))
+        let ep = root.path + "/products/engineering-platform/instances/fpi-one/providers/codex"
+        args[5] = "codex"; args[7] = ep + "/runtime/bin/codex"; args[8] = ep + "/home"
+        XCTAssertNil(ManagedInstallerProviderAccountProbeChild.parse(args, allowedRoot: root))
+    }
+
     func testAccountProbeChildAcceptsOnlyFixedProviderAndSameOwnedHome() throws {
         let root = URL(fileURLWithPath: "/private/tmp/probe-root", isDirectory: true)
         let provider = root.appendingPathComponent(

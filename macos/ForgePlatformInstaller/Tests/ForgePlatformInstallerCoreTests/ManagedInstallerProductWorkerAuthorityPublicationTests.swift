@@ -4,6 +4,7 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProductWorkerAuthorityPublicationTests: XCTestCase {
+
     func testV5BindsDistinctHelperOwnedProductVenvSlots() async throws {
         let (legacy, _) = try fixture()
         let route = try XCTUnwrap(legacy.routes.first)

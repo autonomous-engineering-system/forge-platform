@@ -57,9 +57,9 @@ struct MacOSManagedInstallerProductServiceVenvSlotSearch {
         let root: URL
         do { root = try bootstrap.prepare() }
         catch { return .failure(.unavailable) }
-        guard root.lastPathComponent == "ForgePlatformInstaller",
+        guard root.lastPathComponent == InstallerBuildProfile.stateDirectoryName,
               root.deletingLastPathComponent().lastPathComponent
-                == "AutonomousEngineeringSystem" else {
+                == InstallerBuildProfile.parentDirectoryName else {
             return .failure(.rejected)
         }
         let venvs = root.appendingPathComponent(

@@ -24,7 +24,9 @@ struct MacOSOpenDirectoryLocalRecordBackend: ManagedInstallerLocalRecordReading 
                 values[key] = strings
             }
             return .success(values)
-        } catch { return .failure(.unavailable) }
+        } catch {
+            return .failure(.unavailable)
+        }
     }
 
     func create(type: String, name: String, attributes: [String: [String]])
@@ -33,7 +35,9 @@ struct MacOSOpenDirectoryLocalRecordBackend: ManagedInstallerLocalRecordReading 
             let node = try ODNode(session: ODSession.default(), name: "/Local/Default")
             _ = try node.createRecord(withRecordType: type, name: name, attributes: attributes)
             return .success(())
-        } catch { return .failure(.unavailable) }
+        } catch {
+            return .failure(.unavailable)
+        }
     }
 }
 

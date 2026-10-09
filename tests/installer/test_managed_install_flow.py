@@ -248,6 +248,8 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
             issuer = Mock()
             issuer.ensure.return_value.state = "COMPLETE"
             issuer.read_terminal.return_value.state = "COMPLETE"
+            coordinator.secure_store = Mock()
+            coordinator.secure_store.prepare_service_reader.return_value = True
             pairer = Pairer()
             args = dict(
                 mutation_requests=mutations, readback_requests=reads,
@@ -260,9 +262,29 @@ class ManagedForgeEPInstallFlowTests(unittest.TestCase):
             self.assertEqual(coordinator.execute("install-credential", plan, **args).state, "COMPLETE")
             issuer.ensure.assert_called_once()
             self.assertEqual(pairer.calls, 1)
+            coordinator.secure_store.prepare_service_reader.assert_called_once_with(
+                "keychain://forge.ep/production", operation_id="install-credential")
             self.assertEqual(coordinator.execute("install-credential", plan, **args).state, "COMPLETE")
             issuer.read_terminal.assert_called_once()
             self.assertEqual(pairer.calls, 1)
+
+    def test_service_credential_access_failure_prevents_pairing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (coordinator, registry, _guard, _forge, _ep, adapters,
+             reads, mutations, plan) = self._fixture(directory)
+            issuer = Mock(); issuer.ensure.return_value.state = "COMPLETE"
+            coordinator.secure_store = Mock()
+            coordinator.secure_store.prepare_service_reader.return_value = False
+            pairer = Pairer()
+            with self.assertRaisesRegex(ManagedForgeEPInstallationError, "service credential access"):
+                coordinator.execute("install-access-fail", plan,
+                    mutation_requests=mutations, readback_requests=reads,
+                    adapters=adapters, pairing_executor=pairer,
+                    composition_id="forge-ep-qualified-v3",
+                    composition_manifest_digest="sha256:" + "c" * 64,
+                    credential_issuer=issuer, credential_reference="keychain://forge.ep/production")
+            self.assertEqual(pairer.calls, 0)
+            self.assertIsNone(registry.load(plan.deployment_id).peer_binding)
 
     def test_initial_ep_credential_failure_prevents_pairing(self):
         with tempfile.TemporaryDirectory() as directory:

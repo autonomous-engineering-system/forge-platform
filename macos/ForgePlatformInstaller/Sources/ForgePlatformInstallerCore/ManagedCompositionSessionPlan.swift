@@ -159,7 +159,7 @@ struct ManagedCompositionSessionPlanBuilder {
         return requirements
     }
 
-    private static func managedPythonRuntime(
+    static func managedPythonRuntime(
         _ value: StrictJSONResourceValue?
     ) throws -> ManagedPythonRuntimeIdentity {
         let names: Set<String> = [

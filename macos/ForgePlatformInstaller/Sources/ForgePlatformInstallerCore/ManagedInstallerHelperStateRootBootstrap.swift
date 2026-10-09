@@ -9,8 +9,8 @@ public enum ManagedInstallerHelperStateRootBootstrapFailure: Error, Equatable, S
 /// opened by descriptor without following links and checked before the next
 /// component is created. No caller-selected path crosses an XPC boundary.
 public struct ManagedInstallerHelperStateRootBootstrap: Sendable {
-    private static let vendorName = "AutonomousEngineeringSystem"
-    private static let installerName = "ForgePlatformInstaller"
+    private static let vendorName = InstallerBuildProfile.parentDirectoryName
+    private static let installerName = InstallerBuildProfile.stateDirectoryName
     static let productVenvsDirectoryName = "managed-python-product-venvs"
     static let managedGitSlotsDirectoryName = "managed-git-slots"
     static let productsDirectoryName = "products"

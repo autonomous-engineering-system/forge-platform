@@ -30,6 +30,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from validate_installer_version import load_manifest
+from forge_platform.forge_281_maintenance_resources import (
+    CONTROLLER_NAME as FORGE281_CONTROLLER_NAME, RECEIPT_NAME as FORGE281_RECEIPT_NAME,
+    CONTROLLER_SHA256 as FORGE281_CONTROLLER_SHA256, RELEASE_RECEIPT_SHA256 as FORGE281_RECEIPT_SHA256,
+    METADATA as FORGE281_METADATA,
+)
 from forge_platform.composition_catalog_trust import (
     COMPOSITION_CATALOG_TRUST_MAXIMUM_BYTES,
     COMPOSITION_CATALOG_TRUST_RESOURCE_NAME,
@@ -242,6 +247,18 @@ def _validated_forge_239_receipt_resource(
     if not contents or digest != _FORGE_239_RECEIPT_SHA256:
         raise ValueError("Forge 2.7.39 receipt does not match the public release")
     return SealedForgeReleaseCompleteReceiptResource(source, contents, digest)
+
+
+def _sealed_forge_281_resource(value: str, *, receipt: bool):
+    source, contents = _read_regular_non_symlink_file(value,
+        description="Forge 2.8.1 maintenance receipt" if receipt else "Forge 2.8.1 maintenance controller",
+        maximum_bytes=_FORGE_RELEASE_RECEIPT_MAXIMUM_BYTES if receipt else _FORGE_UPDATE_CONTROLLER_MAXIMUM_BYTES)
+    digest = "sha256:" + sha256(contents).hexdigest()
+    expected = FORGE281_RECEIPT_SHA256 if receipt else FORGE281_CONTROLLER_SHA256
+    if not contents or digest != expected:
+        raise ValueError("Forge 2.8.1 maintenance resource does not match its exact source")
+    resource = SealedForgeReleaseCompleteReceiptResource if receipt else SealedForgeUpdateControllerResource
+    return resource(source, contents, digest)
 
 
 def _read_regular_non_symlink_file(value: str, *, description: str, maximum_bytes: int) -> tuple[Path, bytes]:
@@ -579,6 +596,8 @@ def package(
     forge_release_receipt: SealedForgeReleaseCompleteReceiptResource | None = None,
     forge_239_update_controller: SealedForgeUpdateControllerResource | None = None,
     forge_239_release_receipt: SealedForgeReleaseCompleteReceiptResource | None = None,
+    forge_281_maintenance_controller: SealedForgeUpdateControllerResource | None = None,
+    forge_281_release_receipt: SealedForgeReleaseCompleteReceiptResource | None = None,
     output: Path,
     bundle_identifier: str,
     sealed_release_trust: SealedReleaseTrustResource | None = None,
@@ -644,6 +663,15 @@ def package(
         )
         if forge_update_controller is None:
             raise ValueError("Forge release receipt requires exact update controller")
+    if (forge_281_maintenance_controller is None) != (forge_281_release_receipt is None):
+        raise ValueError("Forge 2.8.1 maintenance controller and receipt must be paired")
+    if forge_281_maintenance_controller is not None and forge_281_release_receipt is not None:
+        for resource, expected in ((forge_281_maintenance_controller, FORGE281_CONTROLLER_SHA256),
+                                   (forge_281_release_receipt, FORGE281_RECEIPT_SHA256)):
+            if not resource.contents or "sha256:" + sha256(resource.contents).hexdigest() != expected:
+                raise ValueError("Forge 2.8.1 maintenance resource bytes changed")
+        if helper_executable is None or product_worker is None:
+            raise ValueError("Forge 2.8.1 maintenance resources require helper and product worker")
     if (forge_239_update_controller is None) != (forge_239_release_receipt is None):
         raise ValueError("Forge 2.7.39 update controller and release receipt must be paired")
     if forge_239_update_controller is not None and forge_239_release_receipt is not None:
@@ -785,6 +813,8 @@ def package(
         if forge_release_receipt is not None:
             metadata[_FORGE_RELEASE_RECEIPT_DIGEST_INFO_KEY] = forge_release_receipt.sha256
             metadata[_FORGE_RELEASE_SOURCE_INFO_KEY] = _FORGE_RELEASE_SOURCE
+        if forge_281_maintenance_controller is not None:
+            metadata.update(FORGE281_METADATA)
         if forge_239_update_controller is not None and forge_239_release_receipt is not None:
             metadata[_FORGE_239_CONTROLLER_DIGEST_INFO_KEY] = forge_239_update_controller.sha256
             metadata[_FORGE_239_CONTROLLER_SOURCE_INFO_KEY] = _FORGE_239_CONTROLLER_SOURCE
@@ -815,6 +845,13 @@ def package(
             with forge_receipt_destination.open("xb") as stream:
                 stream.write(forge_release_receipt.contents)
             forge_receipt_destination.chmod(0o644)
+        if forge_281_maintenance_controller is not None and forge_281_release_receipt is not None:
+            for name, resource in ((FORGE281_CONTROLLER_NAME, forge_281_maintenance_controller),
+                                   (FORGE281_RECEIPT_NAME, forge_281_release_receipt)):
+                destination = resources / name
+                with destination.open("xb") as stream:
+                    stream.write(resource.contents)
+                destination.chmod(0o644)
         if forge_239_update_controller is not None and forge_239_release_receipt is not None:
             with forge_239_controller_destination.open("xb") as stream:
                 stream.write(forge_239_update_controller.contents)
@@ -888,6 +925,8 @@ def main() -> None:
         help=("exact public Forge 2.7.39 RELEASE_COMPLETE receipt copied to "
               f"Contents/Resources/{_FORGE_239_RECEIPT_RESOURCE_NAME}"),
     )
+    parser.add_argument("--forge-281-maintenance-controller")
+    parser.add_argument("--forge-281-release-complete-receipt")
     parser.add_argument("--output", required=True)
     parser.add_argument("--bundle-identifier", required=True)
     parser.add_argument(
@@ -979,6 +1018,12 @@ def main() -> None:
             forge_release_receipt=forge_release_receipt,
             forge_239_update_controller=forge_239_update_controller,
             forge_239_release_receipt=forge_239_release_receipt,
+            forge_281_maintenance_controller=(
+                _sealed_forge_281_resource(args.forge_281_maintenance_controller, receipt=False)
+                if args.forge_281_maintenance_controller is not None else None),
+            forge_281_release_receipt=(
+                _sealed_forge_281_resource(args.forge_281_release_complete_receipt, receipt=True)
+                if args.forge_281_release_complete_receipt is not None else None),
             output=output,
             bundle_identifier=bundle_identifier,
             sealed_release_trust=sealed_release_trust,

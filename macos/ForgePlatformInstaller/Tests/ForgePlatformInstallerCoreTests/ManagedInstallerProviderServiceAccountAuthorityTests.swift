@@ -4,6 +4,65 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProviderServiceAccountAuthorityTests: XCTestCase {
+    func testV7UsesExistingProductAccountsAndBindsForgeToActualOperatorIdentity() throws {
+        let original = try fixture()
+        let user = try ManagedInstallerNamedOperator.resolve(uid: getuid())
+        let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: original.canonicalJSONData()) as? [String: Any])
+        var fields = try XCTUnwrap((wire["routes"] as? [[String: Any]])?.first)
+        fields.removeValue(forKey: "pairing")
+        fields["forge_service_account"] = user.accountName
+        fields["forge_service_user_identity_sha256"] = "sha256:" + user.identitySHA256
+        fields["forge_venv_slot"] = "venv-" + String(repeating: "a", count: 64)
+        fields["ep_venv_slot"] = "venv-" + String(repeating: "b", count: 64)
+        fields["installation_pairing"] = ["operation_id": "installation-op", "binding_id": "installation-binding",
+            "consumer_id": "installation-consumer", "credential_reference": "keychain://installation/new"]
+        var jsonReader = try StrictJSONResourceReader(data: JSONSerialization.data(withJSONObject: fields))
+        let route = try ManagedInstallerInstallationRouteAuthority(jsonReader.parseDocument())
+        let snapshot = try ManagedInstallerProductWorkerAuthoritySnapshot(installerRelease: original.installerRelease,
+            candidateManifests: original.candidateManifests, routes: [], installationRoutes: [route])
+        let resolver = ManagedInstallerProviderServiceAccountAuthorityResolver(
+            reader: FixedCanonicalAuthorityReader(snapshot: snapshot))
+        let (request, requirement) = try target(deploymentID: route.deploymentID, owner: .forgeRuntime,
+                                              instance: route.forgeInstanceID)
+        let authority = try resolver.resolve(request: request, requirement: requirement,
+            productArtifactSHA256: route.forgeArtifactSHA256,
+            expectedInstallerRelease: snapshot.installerRelease).get()
+        XCTAssertEqual(authority.serviceAccount, user.accountName)
+        XCTAssertEqual(authority.serviceUserIdentitySHA256, "sha256:" + user.identitySHA256)
+        func bound(gid: UInt32) -> Result<ManagedInstallerProviderLocalServiceAccount,
+                                         ManagedInstallerProviderServiceAccountAuthorityFailure> {
+            ManagedInstallerProviderServiceAccountOSBinder(authority: resolver,
+                lookup: FixedOSAccountLookup(observed: .success(.init(
+                    accountName: user.accountName, uid: user.uid, gid: gid))))
+                .resolve(request: request, requirement: requirement,
+                         productArtifactSHA256: route.forgeArtifactSHA256,
+                         expectedInstallerRelease: snapshot.installerRelease)
+        }
+        XCTAssertEqual(try bound(gid: user.gid).get().uid, user.uid)
+        XCTAssertEqual(bound(gid: user.gid + 1).failure, .rejected)
+        XCTAssertEqual(resolver.resolve(request: request, requirement: requirement,
+            productArtifactSHA256: route.engineeringPlatformArtifactSHA256,
+            expectedInstallerRelease: snapshot.installerRelease).failure, .rejected)
+        let (epRequest, epRequirement) = try target(deploymentID: route.deploymentID,
+            owner: .engineeringPlatformServer, instance: route.engineeringPlatformInstanceID)
+        let ep = try resolver.resolve(request: epRequest, requirement: epRequirement,
+            productArtifactSHA256: route.engineeringPlatformArtifactSHA256,
+            expectedInstallerRelease: snapshot.installerRelease).get()
+        XCTAssertEqual(ep.serviceAccount, route.engineeringPlatformServiceAccount)
+        XCTAssertNil(ep.serviceUserIdentitySHA256)
+        let (forgeGitHubRequest, forgeGitHubRequirement) = try target(deploymentID: route.deploymentID,
+            owner: .forgeRuntime, instance: route.forgeInstanceID, provider: .githubCLI)
+        XCTAssertEqual(resolver.resolve(request: forgeGitHubRequest, requirement: forgeGitHubRequirement,
+            productArtifactSHA256: route.forgeArtifactSHA256,
+            expectedInstallerRelease: snapshot.installerRelease).failure, .rejected)
+        let (epGitHubRequest, epGitHubRequirement) = try target(deploymentID: route.deploymentID,
+            owner: .engineeringPlatformServer, instance: route.engineeringPlatformInstanceID, provider: .githubCLI)
+        XCTAssertEqual(try resolver.resolve(request: epGitHubRequest, requirement: epGitHubRequirement,
+            productArtifactSHA256: route.engineeringPlatformArtifactSHA256,
+            expectedInstallerRelease: snapshot.installerRelease).get().serviceAccount,
+            route.engineeringPlatformServiceAccount)
+    }
+
     func testReadsCanonicalPublishedAuthorityAndResolvesExactForgeAndEPAccounts() throws {
         let snapshot = try fixture()
         let route = try XCTUnwrap(snapshot.routes.first)
@@ -196,7 +255,7 @@ final class ManagedInstallerProviderServiceAccountAuthorityTests: XCTestCase {
         XCTAssertEqual(resolve(.failure(.unavailable)).failure, .unavailable)
         XCTAssertEqual(
             MacOSManagedInstallerProviderOSAccountLookup()
-                .lookup("invalid-account").failure,
+                .lookup("root").failure,
             .invalidRequest
         )
         XCTAssertEqual(
@@ -247,7 +306,7 @@ final class ManagedInstallerProviderServiceAccountAuthorityTests: XCTestCase {
     }
 
     private func target(
-        deploymentID: String, owner: ProviderOwnerComponent, instance: String
+        deploymentID: String, owner: ProviderOwnerComponent, instance: String, provider: ProviderID = .codex
     ) throws -> (ManagedInstallerProviderRuntimeMutationRequest, ProviderRequirement) {
         let runtime = try ProviderRuntimeRequirement(
             version: InstallerVersion("1.2.3"), archiveKind: .tarGzip,
@@ -257,7 +316,7 @@ final class ManagedInstallerProviderServiceAccountAuthorityTests: XCTestCase {
             executableSHA256: "sha256:" + String(repeating: "b", count: 64)
         )
         let requirement = ProviderRequirement(
-            provider: .codex, isRequired: true, minimumVersion: runtime.version,
+            provider: provider, isRequired: true, minimumVersion: runtime.version,
             credentialScope: .component, ownerComponent: owner,
             targetIdentity: instance, runtime: runtime
         )

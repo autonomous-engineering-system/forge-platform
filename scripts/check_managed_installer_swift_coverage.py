@@ -26,7 +26,7 @@ def required_targets(base_ref: str | None) -> tuple[str, ...]:
             cwd=ROOT, check=True, capture_output=True, timeout=30,
         )
     result = subprocess.run(
-        ["git", "ls-files", "-z", "--", SOURCE_PREFIX],
+        ["git", "ls-files", "-z", "--", f":(glob){SOURCE_PREFIX}**/*.swift"],
         cwd=ROOT, check=True, capture_output=True, timeout=30,
     )
     targets: set[str] = set()

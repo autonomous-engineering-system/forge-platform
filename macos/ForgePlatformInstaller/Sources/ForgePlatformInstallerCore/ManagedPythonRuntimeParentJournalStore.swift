@@ -380,6 +380,7 @@ public protocol ManagedPythonRuntimeParentJournalStoring:
 }
 
 extension FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeParentJournalStoring {
+
     public func startPlannedOperation(
         _ record: ManagedPythonRuntimeParentJournalRecord
     ) async -> Result<Void, ManagedPythonRuntimeTerminalReceiptFailure> {

@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import XCTest
+import ScopedKeychainAccess
 @testable import ForgePlatformInstallerCore
 
 private final class FakeManagedInstallerSystemKeychainItems: ManagedInstallerSystemKeychainItemAccessing {
@@ -45,6 +46,25 @@ private final class FakeManagedInstallerSystemKeychainItems: ManagedInstallerSys
 }
 
 final class ManagedInstallerSystemKeychainCredentialStoreTests: XCTestCase {
+    func testInstallationIssuanceFingerprintIncludesAbsentCompositionAndRejectsAttachedAuthority() throws {
+        let wire = Data(#"{"schema":"forge-platform.managed-deployment/v1","deployment_id":"deployment-test","revision":1,"label":null,"components":[{"component":"forge-runtime","instance_id":"forge-test","receipt_reference":"receipt:forge"},{"component":"engineering-platform-server","instance_id":"ep-test","receipt_reference":"receipt:ep"}],"peer_binding":null}"#.utf8)
+        var document = try XCTUnwrap(JSONSerialization.jsonObject(with: wire) as? [String: Any])
+        document["composition_binding"] = NSNull()
+        let canonical = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys, .withoutEscapingSlashes])
+        XCTAssertEqual(try ManagedInstallerSystemKeychainCredentialStore.installationDeploymentFingerprint(wire),
+                       "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: canonical))
+        for changed in [
+            ["peer_binding": ["binding_id": "already-attached"]],
+            ["schema": "forge-platform.managed-deployment/v2"],
+            ["revision": true], ["unreviewed": "extra"],
+        ] as [[String: Any]] {
+            var invalid = try XCTUnwrap(JSONSerialization.jsonObject(with: wire) as? [String: Any])
+            invalid.merge(changed) { _, new in new }
+            XCTAssertThrowsError(try ManagedInstallerSystemKeychainCredentialStore.installationDeploymentFingerprint(
+                JSONSerialization.data(withJSONObject: invalid)))
+        }
+    }
+
     private let reference = "keychain://forge.platform.qualification/ep-credential-a"
     private let operation = "ep-credential-a-001"
 
@@ -151,6 +171,22 @@ final class ManagedInstallerSystemKeychainCredentialStoreTests: XCTestCase {
                 XCTAssertEqual(result, .success(false))
             }
         }
+    }
+
+    func testNewRootOnlyAccessPreservesRootOwnerAndRequiresExactReaderGrant() throws {
+        let initial = try XCTUnwrap(FPIKeychainCreateRootOnlyAccess())
+        var uid: uid_t = 99
+        var gid: gid_t = 99
+        var type: SecAccessOwnerType = 0
+        var entries: CFArray?
+        XCTAssertEqual(SecAccessCopyOwnerAndACL(initial, &uid, &gid, &type, &entries), errSecSuccess)
+        XCTAssertEqual(uid, 0)
+        XCTAssertEqual(type & UInt32(kSecUseOnlyUID), UInt32(kSecUseOnlyUID))
+        XCTAssertFalse(FPIKeychainHasUIDReadAccess(initial, initial, 501))
+        let selected = try XCTUnwrap(FPIKeychainCreateUIDReadUpdate(initial, 501))
+        XCTAssertTrue(FPIKeychainHasUIDReadAccess(selected, initial, 501))
+        XCTAssertFalse(FPIKeychainHasUIDReadAccess(selected, initial, 502))
+        XCTAssertNil(FPIKeychainCreateUIDReadAccess(0))
     }
 
     func testFileKeychainBackendUsesOnlyExplicitDisposableKeychain() throws {

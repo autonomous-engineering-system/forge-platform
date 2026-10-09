@@ -16,16 +16,31 @@ protocol ManagedInstallerFreshProviderProbeAccessGranting: Sendable {
     ) -> Result<Void, ManagedInstallerFreshProviderProbeAccessFailure>
 }
 
+protocol ManagedInstallerFreshProviderPriorAccountReading: Sendable {
+    func read(
+        release: VerifiedInstallerRelease,
+        candidateDeploymentID: String
+    ) -> Result<ManagedInstallerFreshProviderPriorAccounts.Readback,
+                ManagedInstallerFreshProviderProbeAccessFailure>
+}
+
 /// Reads the previous published product routes and terminal deployment registry
 /// together. A missing authority is valid only while the registry is empty;
 /// an unreadable authority is never equivalent to a fresh host.
 struct ManagedInstallerFreshProviderPriorAccounts: Sendable {
+    struct Readback: Equatable, Sendable {
+        let installed: [ManagedInstallerProductServiceAccountBinding]
+        let candidate: [ManagedInstallerProductServiceAccountBinding]
+        let candidateManifestDigests: Set<String>
+    }
+
     let root: URL
     let expectedOwner: uid_t
 
     func read(
-        release: VerifiedInstallerRelease
-    ) -> Result<[ManagedInstallerProductServiceAccountBinding],
+        release: VerifiedInstallerRelease,
+        candidateDeploymentID: String
+    ) -> Result<Readback,
                 ManagedInstallerFreshProviderProbeAccessFailure> {
         let authority = FileManagedInstallerProductWorkerAuthorityReader(
             rootDirectory: root, expectedOwner: expectedOwner
@@ -38,19 +53,59 @@ struct ManagedInstallerFreshProviderPriorAccounts: Sendable {
               case .success(let snapshot) = authority.readCanonicalAuthorityIfPresent()
         else { return .failure(.unavailable) }
         if snapshot == nil {
-            return records.records.isEmpty ? .success([]) : .failure(.rejected)
+            return records.records.isEmpty
+                ? .success(Readback(
+                    installed: [], candidate: [], candidateManifestDigests: []
+                ))
+                : .failure(.rejected)
         }
         let resolver = ManagedInstallerProductServiceAccountSetResolver(reader: authority)
         guard case .success(let bindings) = resolver.resolve(
             expectedInstallerRelease: release
-        ),
-              Set(records.records.map(\.target.id))
-                == Set(bindings.map(\.deploymentID)) else {
+        ), let snapshot else { return .failure(.rejected) }
+        return Self.classify(
+            bindings: bindings,
+            registeredDeploymentIDs: Set(records.records.map(\.target.id)),
+            candidateDeploymentID: candidateDeploymentID,
+            candidateManifestDigests: Set(snapshot.candidateManifests.map(\.digest))
+        )
+    }
+
+    /// A prepublished route for the exact fresh candidate is not an installed
+    /// deployment. It remains separately visible so the caller can bind it to
+    /// the newly journaled accounts and signed composition before reusing any
+    /// provider access. Any other route without a terminal registry record is
+    /// rejected.
+    static func classify(
+        bindings: [ManagedInstallerProductServiceAccountBinding],
+        registeredDeploymentIDs: Set<String>,
+        candidateDeploymentID: String,
+        candidateManifestDigests: Set<String>
+    ) -> Result<Readback, ManagedInstallerFreshProviderProbeAccessFailure> {
+        guard ManagedInstallerProductWorkerRouteAuthority.isSafeIdentity(
+            candidateDeploymentID
+        ), !registeredDeploymentIDs.contains(candidateDeploymentID) else {
             return .failure(.rejected)
         }
-        return .success(bindings)
+        let bindingIDs = Set(bindings.map(\.deploymentID))
+        let unregistered = bindingIDs.subtracting(registeredDeploymentIDs)
+        guard registeredDeploymentIDs.isSubset(of: bindingIDs),
+              unregistered.isEmpty || unregistered == [candidateDeploymentID]
+        else { return .failure(.rejected) }
+        return .success(Readback(
+            installed: bindings.filter {
+                registeredDeploymentIDs.contains($0.deploymentID)
+            },
+            candidate: bindings.filter {
+                $0.deploymentID == candidateDeploymentID
+            },
+            candidateManifestDigests: candidateManifestDigests
+        ))
     }
 }
+
+extension ManagedInstallerFreshProviderPriorAccounts:
+    ManagedInstallerFreshProviderPriorAccountReading {}
 
 /// Grants only the access needed for fixed status commands, after runtime
 /// extraction and before physical provider observation. All paths come from
@@ -62,19 +117,20 @@ struct MacOSManagedInstallerFreshProviderProbeAccess:
     private let expectedOwner: uid_t
     private let requiredEffectiveUID: uid_t
     private let accounts: any ManagedInstallerFreshProductAccountReading
-    private let prior: ManagedInstallerFreshProviderPriorAccounts
+    private let prior: any ManagedInstallerFreshProviderPriorAccountReading
 
     init(root: URL = FileManagedInstallerReleasedRouteXPCService.productionRoot,
          expectedOwner: uid_t = 0, requiredEffectiveUID: uid_t = 0,
          accounts: any ManagedInstallerFreshProductAccountReading =
             MacOSManagedInstallerProductServiceAccountDirectoryMutation(
                 directory: MacOSOpenDirectoryLocalAccountStore()
-            )) {
+            ),
+         prior: (any ManagedInstallerFreshProviderPriorAccountReading)? = nil) {
         self.root = root
         self.expectedOwner = expectedOwner
         self.requiredEffectiveUID = requiredEffectiveUID
         self.accounts = accounts
-        prior = ManagedInstallerFreshProviderPriorAccounts(
+        self.prior = prior ?? ManagedInstallerFreshProviderPriorAccounts(
             root: root, expectedOwner: expectedOwner
         )
     }
@@ -89,28 +145,64 @@ struct MacOSManagedInstallerFreshProviderProbeAccess:
               !stablePlan.deployment.exists,
               stablePlan.session == material.session,
               root.isFileURL, root.baseURL == nil,
-              root.lastPathComponent == "ForgePlatformInstaller",
+              root.lastPathComponent == InstallerBuildProfile.stateDirectoryName,
               root.deletingLastPathComponent().lastPathComponent
-                == "AutonomousEngineeringSystem",
-              !stablePlan.enabledProviderRequirements.isEmpty,
+                == InstallerBuildProfile.parentDirectoryName,
+              !stablePlan.enabledProviderRequirements.isEmpty else {
+            return .failure(.rejected)
+        }
+        guard let authorityRelease = ManagedInstallerProductWorkerReleaseBinding
+                .workerRelease(
+                    for: stablePlan.reviewedOperation.currentInstallerRelease
+                ),
               let exactAccounts = try? ManagedInstallerProductServiceAccountPreproviderReceipt(
                 stablePlan: stablePlan, material: material,
                 parentJournalRecord: preprovider.parentJournalRecord,
                 accounts: preprovider.accounts
-              ), exactAccounts == preprovider,
-              let exactProviders = try? ManagedInstallerProviderRuntimePlanPreparationReceipt(
+              ), exactAccounts == preprovider else {
+            return .failure(.rejected)
+        }
+        guard let exactProviders = try? ManagedInstallerProviderRuntimePlanPreparationReceipt(
                 stablePlan: stablePlan, providerReceipts: providers.providerReceipts
-              ), exactProviders == providers,
-              case .success(let old) = prior.read(
-                release: stablePlan.reviewedOperation.currentInstallerRelease
-              ),
-              !old.contains(where: { $0.deploymentID == stablePlan.deployment.id })
-        else { return .failure(.rejected) }
+              ), exactProviders == providers else {
+            return .failure(.rejected)
+        }
+        guard case .success(let priorReadback) = prior.read(
+                release: authorityRelease,
+                candidateDeploymentID: stablePlan.deployment.id
+              ) else {
+            return .failure(.rejected)
+        }
 
         let fresh: [ManagedInstallerProductServiceAccountReadback]
         do {
             fresh = try readFresh(preprovider.accounts)
-        } catch { return .failure(.rejected) }
+        } catch {
+            return .failure(.rejected)
+        }
+        let candidateMatchesFresh = priorReadback.candidate.isEmpty || (
+            priorReadback.candidateManifestDigests.contains(
+                stablePlan.session.manifestSHA256
+            )
+                && priorReadback.candidate.count == fresh.count
+                && priorReadback.candidate.allSatisfy { binding in
+                    fresh.contains { account in
+                        binding.deploymentID == account.claim.deploymentID
+                            && binding.componentIdentity
+                                == account.claim.componentIdentity
+                            && binding.instanceID == account.claim.instanceID
+                            && binding.serviceAccount == account.claim.accountName
+                            && binding.artifactSHA256
+                                == account.claim.productArtifactSHA256
+                            && binding.uid == account.uid
+                            && binding.gid == account.gid
+                    }
+                }
+        )
+        guard candidateMatchesFresh else {
+            return .failure(.rejected)
+        }
+        let old = priorReadback.installed
         guard Set(old.map(\.uid)).isDisjoint(with: Set(fresh.map(\.uid))),
               Set(old.map(\.instanceID)).isDisjoint(with:
                 Set(fresh.map { $0.claim.instanceID })) else {
@@ -151,23 +243,28 @@ struct MacOSManagedInstallerFreshProviderProbeAccess:
         guard let paths = paths(
             root: root, requirements: stablePlan.enabledProviderRequirements,
             new: added, all: all, deploymentID: stablePlan.deployment.id
-        ) else { return .failure(.rejected) }
+        ) else {
+            return .failure(.rejected)
+        }
         for (path, selected) in paths.directories {
             guard case .success(let repeated) = prior.read(
-                release: stablePlan.reviewedOperation.currentInstallerRelease
-            ), repeated == old,
+                release: authorityRelease,
+                candidateDeploymentID: stablePlan.deployment.id
+            ), repeated == priorReadback,
                   (try? readFresh(preprovider.accounts)) == fresh else {
                 return .failure(.rejected)
             }
             switch grantSearch(path, accounts: selected) {
             case .success: break
-            case .failure(let failure): return .failure(failure)
+            case .failure(let failure):
+                return .failure(failure)
             }
         }
         for (path, selected) in paths.executables {
             guard case .success(let repeated) = prior.read(
-                release: stablePlan.reviewedOperation.currentInstallerRelease
-            ), repeated == old,
+                release: authorityRelease,
+                candidateDeploymentID: stablePlan.deployment.id
+            ), repeated == priorReadback,
                   (try? readFresh(preprovider.accounts)) == fresh else {
                 return .failure(.rejected)
             }
@@ -176,13 +273,16 @@ struct MacOSManagedInstallerFreshProviderProbeAccess:
                 requiredEffectiveUID: requiredEffectiveUID
             ).ensureExecute(for: selected) {
             case .success: break
-            case .failure(.unavailable): return .failure(.unavailable)
-            case .failure: return .failure(.rejected)
+            case .failure(.unavailable):
+                return .failure(.unavailable)
+            case .failure:
+                return .failure(.rejected)
             }
         }
         guard case .success(let final) = prior.read(
-            release: stablePlan.reviewedOperation.currentInstallerRelease
-        ), final == old,
+            release: authorityRelease,
+            candidateDeploymentID: stablePlan.deployment.id
+        ), final == priorReadback,
               (try? readFresh(preprovider.accounts)) == fresh else {
             return .failure(.rejected)
         }

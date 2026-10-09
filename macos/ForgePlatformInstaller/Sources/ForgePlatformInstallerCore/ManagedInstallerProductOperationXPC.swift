@@ -255,8 +255,8 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
     ManagedInstallerPreservedLifecycleTransporting,
     ManagedInstallerPreserveRecoveryTransporting,
     ManagedInstallerPurgeRecoveryTransporting {
-    public static let machServiceName =
-        "com.autonomous-engineering-system.forge-platform-installer.helper.product-operations"
+    public static let machServiceName = InstallerBuildProfile.helperLabel
+        + ".product-operations"
 
     private let connection: NSXPCConnection
     private let parentAdmission: ManagedInstallerHelperXPCParentAdmission?

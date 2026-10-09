@@ -14,6 +14,7 @@ struct ManagedInstallerProviderServiceAccountAuthority: Equatable, Sendable {
     let productArtifactSHA256: String
     let serviceAccount: String
     let authoritySHA256: String
+    var serviceUserIdentitySHA256: String? = nil
 }
 
 struct ManagedInstallerProviderLocalServiceAccount: Equatable, Sendable {
@@ -111,6 +112,13 @@ struct ManagedInstallerProviderServiceAccountOSBinder:
                   observed.uid != 0, observed.gid != 0 else {
                 return .failure(.rejected)
             }
+            if let identity = bound.serviceUserIdentitySHA256 {
+                guard let user = try? ManagedInstallerNamedOperator.resolve(uid: observed.uid),
+                      user.accountName == bound.serviceAccount, user.gid == observed.gid,
+                      user.isAdministrator, "sha256:" + user.identitySHA256 == identity else {
+                    return .failure(.rejected)
+                }
+            }
             return .success(ManagedInstallerProviderLocalServiceAccount(
                 authority: bound, uid: observed.uid, gid: observed.gid
             ))
@@ -176,6 +184,7 @@ struct ManagedInstallerProviderServiceAccountAuthorityResolver: Sendable {
             return .failure(.rejected)
         }
         var accounts: [String] = []
+        var serviceUserIdentitySHA256: String?
         for route in snapshot.routes where route.deploymentID == request.deploymentID {
             switch owner {
             case .forgeRuntime where route.forgeInstanceID == targetIdentity
@@ -195,6 +204,18 @@ struct ManagedInstallerProviderServiceAccountAuthorityResolver: Sendable {
                 && route.artifactSHA256 == productArtifactSHA256 {
             accounts.append(route.serviceAccount)
         }
+        for route in snapshot.installationRoutes where route.deploymentID == request.deploymentID {
+            switch owner {
+            case .forgeRuntime where route.forgeInstanceID == targetIdentity
+                && route.forgeArtifactSHA256 == productArtifactSHA256 && requirement.provider == .codex:
+                accounts.append(route.forgeServiceAccount)
+                serviceUserIdentitySHA256 = route.forgeServiceUserIdentitySHA256
+            case .engineeringPlatformServer where route.engineeringPlatformInstanceID == targetIdentity
+                && route.engineeringPlatformArtifactSHA256 == productArtifactSHA256:
+                accounts.append(route.engineeringPlatformServiceAccount)
+            default: break
+            }
+        }
         guard accounts.count == 1,
               let serviceAccount = accounts.first,
               ManagedInstallerProductWorkerRouteAuthority
@@ -209,7 +230,8 @@ struct ManagedInstallerProviderServiceAccountAuthorityResolver: Sendable {
             providerTargetID: request.providerTargetID,
             productArtifactSHA256: productArtifactSHA256,
             serviceAccount: serviceAccount,
-            authoritySHA256: "sha256:" + digest
+            authoritySHA256: "sha256:" + digest,
+            serviceUserIdentitySHA256: serviceUserIdentitySHA256
         ))
     }
 }

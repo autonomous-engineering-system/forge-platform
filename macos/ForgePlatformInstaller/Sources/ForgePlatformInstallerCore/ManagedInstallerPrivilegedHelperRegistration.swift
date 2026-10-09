@@ -76,6 +76,8 @@ public final class MacOSManagedInstallerPrivilegedHelperServiceController:
     private let unregistrar: @Sendable () throws -> Void
     private let parentVersionReader: @Sendable () -> InstallerVersion?
     private let idleParentVersionReader: @Sendable () -> InstallerVersion?
+    private let spawnFailedParentVersionReader: @Sendable () -> InstallerVersion?
+    private let runningLocalDebugParentVersionReader: @Sendable () -> InstallerVersion?
     private let jobAbsenceReader: @Sendable () -> Bool
 
     public init() {
@@ -87,6 +89,12 @@ public final class MacOSManagedInstallerPrivilegedHelperServiceController:
         unregistrar = { try service.unregister() }
         parentVersionReader = { RegisteredInstallerHelperParentReader().readVersion() }
         idleParentVersionReader = { RegisteredInstallerHelperParentReader().readIdleVersion() }
+        spawnFailedParentVersionReader = {
+            nil
+        }
+        runningLocalDebugParentVersionReader = {
+            nil
+        }
         jobAbsenceReader = { RegisteredInstallerHelperParentReader().readAbsent() }
     }
 
@@ -95,6 +103,8 @@ public final class MacOSManagedInstallerPrivilegedHelperServiceController:
         registrar: @escaping @Sendable () throws -> Void,
         parentVersionReader: @escaping @Sendable () -> InstallerVersion? = { nil },
         idleParentVersionReader: @escaping @Sendable () -> InstallerVersion? = { nil },
+        spawnFailedParentVersionReader: @escaping @Sendable () -> InstallerVersion? = { nil },
+        runningLocalDebugParentVersionReader: @escaping @Sendable () -> InstallerVersion? = { nil },
         jobAbsenceReader: @escaping @Sendable () -> Bool = { false },
         unregistrar: @escaping @Sendable () throws -> Void = {}
     ) {
@@ -103,6 +113,8 @@ public final class MacOSManagedInstallerPrivilegedHelperServiceController:
         self.unregistrar = unregistrar
         self.parentVersionReader = parentVersionReader
         self.idleParentVersionReader = idleParentVersionReader
+        self.spawnFailedParentVersionReader = spawnFailedParentVersionReader
+        self.runningLocalDebugParentVersionReader = runningLocalDebugParentVersionReader
         self.jobAbsenceReader = jobAbsenceReader
     }
 
@@ -128,6 +140,7 @@ public final class MacOSManagedInstallerPrivilegedHelperServiceController:
         idleParentVersionReader()
     }
 
+
     public func readSystemJobAbsent() -> Bool {
         jobAbsenceReader()
     }
@@ -149,6 +162,7 @@ struct RegisteredInstallerHelperParentReader: Sendable {
         guard let observation = readObservation(), observation.status == 0 else { return nil }
         return Self.parseIdle(observation.output)
     }
+
 
     func readAbsent() -> Bool {
         guard let observation = readObservation() else { return false }
@@ -199,6 +213,7 @@ struct RegisteredInstallerHelperParentReader: Sendable {
               lines.filter({ $0 == "runs = 0" }).count == 1 else { return nil }
         return parse(output)
     }
+
 
     static func parse(_ output: String) -> InstallerVersion? {
         let lines = output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
@@ -341,6 +356,7 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
             )
         }
     }
+
 
     /// One bounded, owner-authorized clean-install recovery from the released
     /// 0.3.14 parent. The caller separately proves that this disposable host

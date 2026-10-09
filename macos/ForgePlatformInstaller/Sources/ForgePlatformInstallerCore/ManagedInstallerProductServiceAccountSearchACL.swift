@@ -70,6 +70,7 @@ struct MacOSManagedInstallerProductServiceAccountSearchACL {
         return ensureAccess(for: accounts)
     }
 
+
     private func ensureAccess(
         for accounts: [ManagedInstallerProductServiceAccountBinding]
     ) -> Result<Void, ManagedInstallerProductServiceAccountSearchACLFailure> {

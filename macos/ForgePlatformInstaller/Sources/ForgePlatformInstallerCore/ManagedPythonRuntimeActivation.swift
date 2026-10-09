@@ -519,8 +519,9 @@ public struct ManagedPythonRuntimeActivationReceipt: Equatable, Sendable {
                   ManagedPythonRuntimeInstalledReadback.isEvidenceReference
               ),
               preparationEvidenceReferences.count == 2,
-              preparationEvidenceReferences.allSatisfy(
-                  ManagedPythonRuntimeInstalledReadback.isEvidenceReference
+              Self.isInspectionEvidenceReference(preparationEvidenceReferences[0]),
+              ManagedPythonRuntimeInstalledReadback.isEvidenceReference(
+                  preparationEvidenceReferences[1]
               ),
               !productVenvEvidenceReferences.isEmpty,
               productVenvEvidenceReferences.allSatisfy({
@@ -547,6 +548,18 @@ public struct ManagedPythonRuntimeActivationReceipt: Equatable, Sendable {
         self.activationEvidenceReference = activationEvidenceReference
         self.finalReadbackEvidenceReference = finalReadbackEvidenceReference
         self.state = state
+    }
+
+    private static func isInspectionEvidenceReference(_ value: String) -> Bool {
+        if ManagedPythonRuntimeInstalledReadback.isEvidenceReference(value) {
+            return true
+        }
+        let prefix = "archive-inspection-"
+        guard value.hasPrefix(prefix) else { return false }
+        let digest = value.dropFirst(prefix.count)
+        return digest.utf8.count == 64 && digest.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
     }
 
     func matches(_ request: ManagedPythonRuntimeActivationRequest) -> Bool {

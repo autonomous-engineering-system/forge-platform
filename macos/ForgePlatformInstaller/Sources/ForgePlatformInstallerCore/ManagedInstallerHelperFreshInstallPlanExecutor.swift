@@ -45,6 +45,8 @@ struct ProductionManagedInstallerHelperExecutionMaterialAdmission:
 /// original claim, and the local directory is independently reread here.
 struct ManagedInstallerFreshAccountBoundProductOperations:
     ManagedInstallerProductOperationsExecuting, Sendable {
+    private static func trace(_ gate: String) {
+    }
     private let accounts: any ManagedInstallerFreshProductAccountReading
     private let downstream: any ManagedInstallerProductOperationsExecuting
 
@@ -70,15 +72,18 @@ struct ManagedInstallerFreshAccountBoundProductOperations:
               ), exact == receipt,
               let preprovider = receipt.preparationReceipt.preproviderAccountReceipt,
               preprovider.matches(plan) else {
+            Self.trace("account-bound-receipt")
             return .failed(.staleSession, stages: [])
         }
         for account in preprovider.accounts {
             guard case .success(let fresh?) = accounts.readAccountSynchronously(
                 account.claim
             ), fresh == account else {
+                Self.trace("account-bound-readback")
                 return .failed(.staleSession, stages: [])
             }
         }
+        Self.trace("account-bound-complete")
         return await downstream.executeProductOperations(
             stablePlan: plan, runtimeTransactionReceipt: receipt
         )

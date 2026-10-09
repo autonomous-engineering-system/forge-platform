@@ -66,6 +66,7 @@ final class ManagedInstallerProductWorkerVenvEvidenceStoreTests: XCTestCase {
                        .rejected)
     }
 
+
     private func fixture() throws -> (
         URL, FileManagedInstallerProductWorkerVenvEvidenceStore
     ) {

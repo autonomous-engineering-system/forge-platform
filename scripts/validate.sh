@@ -19,11 +19,15 @@ python3 tests/component_operations/test_ep_system_provisioner_adapter.py
 python3 -m unittest tests.component_operations.test_ep_consumer_registration
 python3 -m unittest tests.component_operations.test_ep_credential_recovery
 python3 -m unittest tests.installer.test_managed_ep_credential_issuance
+python3 -m unittest tests.installer.test_managed_ep_installation_credential
+python3 -m unittest tests.installer.test_ep_installation_pairing_adapter
+python3 -m unittest tests.installer.test_installation_credential_issuer
 python3 -m unittest tests.installer.test_managed_pairing_repair_credential
 python3 -m unittest tests.installer.test_managed_pairing_repair_execution
 python3 -m unittest tests.installer.test_managed_pairing_repair_commit
 python3 -m unittest tests.installer.test_released_pairing_repair_selection
 python3 tests/component_operations/test_forge_server_adapter.py
+python3 -m unittest tests.installer.test_installation_pairing_service_account_route
 python3 tests/installer/test_universal_installer.py
 python3 tests/installer/test_managed_deployments.py
 python3 tests/installer/test_managed_preserved_lifecycle_plan.py

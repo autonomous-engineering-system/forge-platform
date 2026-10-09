@@ -94,3 +94,35 @@ def qualified_forge_239_update_selection(
     ) == old and (
         candidate.version, candidate.source_revision, candidate.digest
     ) == new
+
+
+def qualified_forge_installation_pairing_artifact(artifact: QualifiedArtifact | None) -> bool:
+    """Admit installation connectivity only for the exact released 2.8.1 wheel.
+
+    Product source and wheel digest are retained by forge-v2.8.1's actual
+    RELEASE_COMPLETE receipt. This grants no update, detach or removal route;
+    the historical lifecycle matrices above deliberately remain unchanged.
+    """
+    return isinstance(artifact, QualifiedArtifact) and (
+        artifact.version, artifact.source_revision, artifact.digest
+    ) == (
+        "2.8.1", "c8833ffa4754800de451cce94b109ef1ad07123f",
+        "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0",
+    )
+
+
+def qualified_forge_281_update_selection(
+    installed: QualifiedArtifact | None, candidate: QualifiedArtifact | None,
+) -> bool:
+    """Select only published 2.7.39→2.8.1 metadata for maintenance review.
+
+    This grants no controller invocation or lifecycle operation. The exact
+    separately delivered controller, product assessment and preservation
+    evidence must be admitted before the installer may execute an upgrade.
+    """
+    return qualified_forge_installation_pairing_artifact(candidate) and isinstance(
+        installed, QualifiedArtifact,
+    ) and (installed.version, installed.source_revision, installed.digest) == (
+        "2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
+        "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+    )

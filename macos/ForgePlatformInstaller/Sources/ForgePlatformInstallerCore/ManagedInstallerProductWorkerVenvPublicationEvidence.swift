@@ -46,6 +46,12 @@ enum ManagedInstallerProductWorkerVenvPublicationAdmission {
                 name: slot, artifactSHA256: route.artifactSHA256
             )
         }
+        for route in snapshot.installationRoutes {
+            expected["\(route.deploymentID):forge-runtime"] = ExpectedSlot(
+                name: route.forgeVenvSlot, artifactSHA256: route.forgeArtifactSHA256)
+            expected["\(route.deploymentID):engineering-platform-server"] = ExpectedSlot(
+                name: route.epVenvSlot, artifactSHA256: route.engineeringPlatformArtifactSHA256)
+        }
         guard evidence.count == expected.count else { return false }
         var seen: Set<String> = []
         for item in evidence {

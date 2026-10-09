@@ -59,11 +59,13 @@ struct ManagedInstallerHelperCurrentReleaseAdmission: Sendable {
                 rootDirectory: stateRoot
             ),
             feedFactory: { resources in
-                try GitHubSignedInstallerReleaseFeed(
+                let fetcher: any GitHubInstallerReleaseDescriptorFetching =
+                    GitHubReleaseDescriptorTransport()
+                return try GitHubSignedInstallerReleaseFeed(
                     trustConfiguration: resources.releaseTrust,
                     sealedReleaseProvenance: resources.provenance,
                     architecture: MacOSInstallerPlatformContract.architecture,
-                    fetcher: GitHubReleaseDescriptorTransport(),
+                    fetcher: fetcher,
                     acceptanceStore: FileInstallerReleaseAcceptanceStore(
                         rootDirectory: stateRoot
                     )

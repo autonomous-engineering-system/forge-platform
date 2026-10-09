@@ -269,6 +269,7 @@ final class ManagedInstallerHelperReviewedSelectionAdmissionTests: XCTestCase {
                 teamIdentifier: "ZEML4LPXH4"
             ),
             serviceHandler: backend,
+            installerUserStore: store,
             installCodeSigningRequirement: { _, _ in }
         )
         listener.activate()
@@ -276,6 +277,8 @@ final class ManagedInstallerHelperReviewedSelectionAdmissionTests: XCTestCase {
         let transport = MacOSManagedInstallerReleasedRouteXPCTransport(endpoint: listener.endpoint)
         try await transport.registerReviewedSelection(selection)
         XCTAssertEqual(try store.load(for: selection.intent), selection)
+        XCTAssertEqual(try store.loadOperator(for: selection.intent),
+                       try ManagedInstallerNamedOperator.resolve(uid: getuid()))
         await transport.invalidate()
 
         let unavailable = FileManagedInstallerReleasedRouteXPCService(

@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, PropertyMock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -18,7 +18,7 @@ from forge_platform.component_operations import ComponentOperationRequest, Quali
 from forge_platform.forge_server_adapter import (
     ForgeCommandResult, ForgeServerAdapterError, ForgeServerTarget,
 )
-from forge_platform.forge_update_binding_provider import ReleasedForge239UpdateBindingProvider
+from forge_platform.forge_update_binding_provider import ReleasedForge239UpdateBindingProvider, ReleasedForge281MaintenanceBindingProvider
 from forge_platform.forge_update_intent import ForgeUpdateIntent, ForgeUpdateIntentStore
 from forge_platform.forge_update_resources import Forge239UpdateResources
 
@@ -42,16 +42,21 @@ class StatusRunner:
         self.root = root
         self.instance = instance
         self.version = OLD.version
+        self.runtime_id = instance
         self.peer = {"status": "NOT_CONFIGURED", "live_status": "NOT_VERIFIED"}
         self.calls: list[tuple[str, ...]] = []
 
     def run(self, argv) -> ForgeCommandResult:
         self.calls.append(tuple(argv))
+        if tuple(argv)[-2:] == ("health", "snapshot"):
+            return ForgeCommandResult(2, json.dumps({"read_only": True, "product": "forge",
+                "product_version": self.version, "runtime_id": self.runtime_id,
+                "installation_id": "installation-a", "outcome": "MISSING"}), "")
         return ForgeCommandResult(0, json.dumps({
             "product_version": self.version,
             "data_root": str(self.root / "instances/forge" / self.instance),
             "initialized": True, "runtime_status": "active",
-            "instance_id": self.instance, "execution_host_peer": self.peer,
+            "instance_id": self.runtime_id, "execution_host_peer": self.peer,
         }), "")
 
 
@@ -99,6 +104,51 @@ class ReleasedForge239UpdateBindingProviderTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.patch.stop()
         self.temporary.cleanup()
+
+    def test_281_maintenance_keeps_selector_and_owns_real_runtime_uuid(self) -> None:
+        # Contract fixtures; no installed-product or signed-app claim.
+        candidate = QualifiedArtifact("2.8.1", "c8833ffa4754800de451cce94b109ef1ad07123f",
+            NEW.source, "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0", NEW.qualification)
+        fields = dict(vars(self.provider)); fields["installed_artifact"] = NEW
+        provider = ReleasedForge281MaintenanceBindingProvider(**fields)
+        request = replace(self.request, artifact=candidate)
+        self.runner.version = NEW.version; self.runner.runtime_id = "forge-runtime-own-uuid"
+        with patch("forge_platform.forge_update_binding_provider.read_forge_281_maintenance_resources",
+                   return_value=self.resources), patch.object(ForgeServerTarget, "product_runtime_id",
+                   new_callable=PropertyMock, return_value=self.runner.runtime_id), patch(
+                   "forge_platform.forge_281_compartment.prepare_281_compartment") as prepare:
+            from forge_platform.forge_281_compartment import PreparedForge281Compartment
+            runtime=self.target.instances_root/".maintenance-forge-a/runtime"
+            prepare.return_value=PreparedForge281Compartment(runtime,runtime.parent/"bin/forge",
+                self.executable.parent/"python3",runtime/"inputs/forge_autonomy-2.7.39-py3-none-any.whl",
+                runtime/"inputs/forge_autonomy-2.8.1-py3-none-any.whl",
+                "sha256:"+sha256(self.executable.read_bytes()).hexdigest(),self.executable)
+            binding = provider.resolve(request)
+            self.assertEqual(binding.runtime_id, "forge-runtime-own-uuid")
+            self.assertEqual(binding.runtime_root, runtime)
+            self.assertEqual(binding.installation_id, "installation-a")
+            self.assertEqual(binding.existing_version, "2.7.39")
+            self.assertEqual(binding.installed_wheel,
+                runtime / "inputs/forge_autonomy-2.7.39-py3-none-any.whl")
+            intent = ForgeUpdateIntent(request.operation_id, request.fingerprint(), self.target.instance_id,
+                NEW.digest, candidate.digest, "forge-update-assess:sha256:" + "a" * 64,
+                binding_snapshot=binding.durable_snapshot())
+            self.assertEqual(intent.payload()["schema"], "forge-platform.forge-update-intent/v3")
+            store = ForgeUpdateIntentStore(binding.intent_root)
+            store.prepare(intent)
+            self.assertEqual(store.read(request.operation_id), intent)
+            drift = dict(binding.durable_snapshot()); drift["installer_instance_id"] = "different-selector"
+            with self.assertRaises(ValueError): replace(intent, binding_snapshot=tuple(sorted(drift.items())))
+            with self.assertRaises(ValueError): replace(intent, candidate_artifact=NEW.digest)
+            self.assertEqual(binding.controller_source, "0ea8c1a263a8b71a09d1206387099b748789b04b")
+            self.assertEqual(binding.qualification_receipt_sha256,
+                "sha256:51017bb17faa3d2568e457360d54b873deddbf59eeedb86310b4cb56e1345a76")
+            calls = len(self.runner.calls)
+            with self.assertRaises(ForgeServerAdapterError):
+                provider.resolve(replace(request, artifact=replace(candidate, source_revision="0" * 40)))
+            self.assertEqual(len(self.runner.calls), calls)
+            # Historical provider never adopts the new target selection.
+            with self.assertRaises(ForgeServerAdapterError): self.provider.resolve(request)
 
     def test_fresh_unpaired_binding_uses_exact_product_status_and_private_instance(self) -> None:
         binding = self.provider.resolve(self.request)

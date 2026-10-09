@@ -12,7 +12,8 @@ import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
+from io import BytesIO
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -30,6 +31,7 @@ from forge_platform.forge_server_adapter import (
     MacOSForgeLaunchDaemonSupervisor,
     SubprocessForgeCommandRunner,
     SubprocessForgeServiceAccountCommandRunner,
+    SubprocessForge281MaintenanceCommandRunner,
     _verified_forge_238_controller,
     _verified_forge_238_release_receipt,
     _verified_forge_239_controller,
@@ -45,6 +47,22 @@ ARTIFACT = QualifiedArtifact(
     "sha256:" + "a" * 64,
     "https://evidence.example.invalid/forge-2.7.34",
 )
+
+
+class ForgeMaintenanceOperatorEntranceTests(unittest.TestCase):
+    def test_unreviewed_or_dedicated_account_cannot_launch_controller(self):
+        root = Path("/private/tmp/forge-maintenance-entrance-contract")
+        target = ForgeServerTarget("selector", root / "instances/selector", root / "instances",
+            "_fpi_legacy", 8811, root / "api.token")
+        binding = ForgeUpdateBinding(root / "controller.py", root / "receipt.json", "sha256:" + "a" * 64,
+            "b" * 40, "sha256:" + "c" * 64, root / "resolver", "sha256:" + "d" * 64,
+            root / "runtime", "runtime-id", "installation-id", "sha256:" + "e" * 64,
+            root / "old/python", "2.7.39", root / "base/python", root / "intents")
+        with patch("forge_platform.forge_server_adapter.os.geteuid", return_value=0), \
+             patch("forge_platform.forge_server_adapter.subprocess.run") as run:
+            with self.assertRaises(ForgeServerAdapterError):
+                SubprocessForge281MaintenanceCommandRunner(target, binding).run((str(binding.base_python), "-I", str(binding.updater_executable)))
+            run.assert_not_called()
 
 
 class ForgeServiceAccountPreflightTests(unittest.TestCase):
@@ -1128,6 +1146,91 @@ class ForgeServerAdapterTests(unittest.TestCase):
     def request(self, kind: str, op: str = "forge-operation-001") -> ComponentOperationRequest:
         return ComponentOperationRequest(op, "forge-runtime", kind, ARTIFACT, self.prepared.instance_id, "server", {})
 
+    def test_released_installation_readiness_is_independent_of_project_health_registry(self):
+        candidate = QualifiedArtifact("2.8.1", "c8833ffa4754800de451cce94b109ef1ad07123f",
+            ARTIFACT.source, "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0",
+            ARTIFACT.qualification)
+        request = replace(self.request("install"), artifact=candidate)
+        self.adapter.installed_artifact = candidate
+        self.supervisor.running = True
+        status = {"initialized": True, "instance_id": self.target.instance_id, "product_version": "2.8.1"}
+        readiness = {"contract_version": "forge-server-installation-readiness/v1",
+            "instance_id": self.target.instance_id, "ready": True, "service_ready": True,
+            "component_connected": True, "project_authorized": False, "execution_ready": False,
+            "provider": {"ready": True}, "scheduler": {"state": "IDLE"},
+            "installation_peer": {"status": "CONNECTED", "forge_instance_id": self.target.instance_id,
+                "purpose": "INSTALLATION_READBACK", "project_authorized": False, "execution_ready": False}}
+        with patch.object(self.adapter, "_run", side_effect=[status, {"outcome": "MISSING"}]), \
+             patch.object(self.adapter.readiness_probe, "readiness", return_value=readiness):
+            self.assertEqual(self.adapter.readback(request).state, "ACTIVE")
+        for bad in ({**readiness, "service_ready": False}, {**readiness, "execution_ready": True},
+                    {**readiness, "instance_id": "foreign-runtime"}):
+            with patch.object(self.adapter, "_run", side_effect=[status, {"outcome": "MISSING"}]), \
+                 patch.object(self.adapter.readiness_probe, "readiness", return_value=bad):
+                self.assertEqual(self.adapter.readback(request).state, "UNHEALTHY")
+
+    def test_only_exact_preservation_provider_can_maintain_disconnected_historical_peer(self):
+        from forge_platform.forge_update_binding_provider import ReleasedForge281MaintenanceBindingProvider
+        old = QualifiedArtifact("2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05", ARTIFACT.source,
+            "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1", ARTIFACT.qualification)
+        new = QualifiedArtifact("2.8.1", "c8833ffa4754800de451cce94b109ef1ad07123f", ARTIFACT.source,
+            "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0", ARTIFACT.qualification)
+        self.supervisor.running = True
+        before = replace(self.adapter.readback(self.request("update")), state="UNHEALTHY",
+            health_state="UNHEALTHY", artifact=old.correlation)
+        request = replace(self.request("update"), artifact=new)
+        self.adapter.installed_artifact = old
+        self.adapter.target = replace(self.target, service_account="named-test-operator",
+            service_user_identity_sha256="sha256:" + "5" * 64)
+        self.adapter.instance_bootstrap = SimpleNamespace()
+        binding = SimpleNamespace(runtime_id=self.target.instance_id)
+        self.assertFalse(self.adapter._preservation_maintenance_eligible(request, binding, before))
+        self.adapter.update_binding_provider = object.__new__(ReleasedForge281MaintenanceBindingProvider)
+        status = {"initialized": True, "runtime_status": "active", "product_version": old.version,
+            "instance_id": self.target.instance_id}
+        document = {"instance_id": self.target.instance_id, "ready": False,
+            "provider": {"ready": True}, "scheduler": {"state": "IDLE"},
+            "execution_host_peer": {"state": "NOT_READY"}}
+        with patch("forge_platform.managed_installer_user_identity.resolve_identity_sha256", return_value=self.adapter.target.service_user_identity_sha256), \
+             patch("forge_platform.forge_server_adapter._verified_published_update_resources", return_value=True), \
+             patch.object(self.adapter, "_run", return_value=status), \
+             patch.object(self.adapter.readiness_probe, "readiness", return_value=document):
+            self.assertTrue(self.adapter._preservation_maintenance_eligible(request, binding, before))
+            historical_denied={**document,"execution_host_peer":{"state":"ERROR:EP rejected request: 403"}}
+            with patch.object(self.adapter.readiness_probe,"readiness",return_value=historical_denied):
+                self.assertTrue(self.adapter._preservation_maintenance_eligible(request,binding,before))
+            for bad in ({**document, "provider": {"ready": False}},
+                        {**document, "scheduler": {"state": "FAILED"}},
+                        {**document, "execution_host_peer": {"state": "ERROR:foreign"}},
+                        {**document, "execution_host_peer": {"state": "ERROR:EP rejected request: 401"}},
+                        {**document, "instance_id": "foreign"}):
+                with patch.object(self.adapter.readiness_probe, "readiness", return_value=bad):
+                    self.assertFalse(self.adapter._preservation_maintenance_eligible(request, binding, before))
+            self.assertFalse(self.adapter._preservation_maintenance_eligible(replace(request, artifact=ARTIFACT), binding, before))
+            with patch.object(self.adapter, "_run", return_value={**status, "instance_id": "foreign"}):
+                self.assertFalse(self.adapter._preservation_maintenance_eligible(request, binding, before))
+
+    def test_update_retargets_both_command_delegates_only_after_product_receipt(self):
+        request = self.request("update")
+        old_bootstrap = SimpleNamespace(executable=self.adapter.forge_executable, artifact=ARTIFACT)
+        self.adapter.instance_bootstrap = old_bootstrap
+        self.adapter.service_account_runner = SubprocessForgeServiceAccountCommandRunner(
+            self.target, self.adapter.forge_executable)
+        binding = SimpleNamespace(resolver=Path("/private/tmp/owned-maintenance/bin/forge"))
+        intent = ForgeUpdateIntent(request.operation_id, request.fingerprint(), self.target.instance_id,
+            ARTIFACT.digest, ARTIFACT.digest, "forge-update-assess:sha256:" + "1" * 64)
+        with self.assertRaises(ForgeServerAdapterError):
+            self.adapter._adopt_completed_update(request, binding, intent)
+        self.assertIs(self.adapter.instance_bootstrap, old_bootstrap)
+        terminal = replace(intent, phase="PRODUCT_COMPLETE", product_receipt_reference="forge-update:sha256:" + "2" * 64)
+        with self.assertRaises(ForgeServerAdapterError):
+            self.adapter._adopt_completed_update(replace(request, operation_id="foreign"), binding, terminal)
+        self.adapter._adopt_completed_update(request, binding, terminal)
+        self.assertEqual(self.adapter.instance_bootstrap.executable, binding.resolver)
+        self.assertEqual(self.adapter.service_account_runner.executable, binding.resolver)
+        self.assertIsNot(self.adapter.instance_bootstrap, old_bootstrap)
+        self.assertEqual(old_bootstrap.executable, Path("/opt/forge/bin/forge"))
+
     def test_product_init_supplies_authoritative_instance_identity_before_binding(self) -> None:
         self.assertEqual(self.prepared.instance_id, "forge-instance-1")
         init = [call for call in self.runner.calls if call[-2:] == ("server", "init")]
@@ -1698,6 +1801,59 @@ class ForgeServerAdapterTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ForgeServerAdapterError, "JSON object"):
                 probe.readiness(self.target)
+
+    def test_unpaired_installation_never_claims_execution_ready(self) -> None:
+        self.adapter.instance_bootstrap = SimpleNamespace()
+        self.adapter.target = replace(self.target, service_user_identity_sha256="sha256:" + "a" * 64)
+        document = {"instance_id": self.target.product_runtime_id, "ready": False,
+                    "provider": {"ready": True}, "execution_host_peer": {"state": "NOT_CONFIGURED"},
+                    "scheduler": {"last_error": "PeerConfigurationError"}}
+        self.assertTrue(self.adapter._awaiting_peer(document))
+        for change in (
+            {"provider": {"ready": False}},
+            {"scheduler": {"last_error": "PermissionError"}},
+            {"execution_host_peer": {"state": "NOT_READY"}},
+            {"instance_id": "another-runtime"},
+        ):
+            self.assertFalse(self.adapter._awaiting_peer({**document, **change}))
+
+    def test_http_readiness_accepts_only_explicit_not_ready_503(self) -> None:
+        credential = self.target.api_credential_file
+        credential.parent.mkdir(parents=True, exist_ok=True)
+        credential.write_text("synthetic-bearer", encoding="utf-8")
+        probe = ForgeHTTPReadinessProbe()
+        for status, body, accepted in (
+            (503, b'{"ready":false,"instance_id":"forge-instance-1"}', True),
+            (503, b'{"ready":true}', False),
+            (503, b'{"error":"unavailable"}', False),
+            (401, b'{"ready":false}', False),
+        ):
+            with self.subTest(status=status, body=body), patch(
+                "forge_platform.forge_server_adapter.urllib_request.urlopen",
+                side_effect=HTTPError("http://127.0.0.1/readiness", status, "bounded", {}, BytesIO(body)),
+            ):
+                if accepted:
+                    self.assertFalse(probe.readiness(self.target)["ready"])
+                else:
+                    with self.assertRaises(ForgeServerAdapterError):
+                        probe.readiness(self.target)
+
+    def test_standalone_503_does_not_hide_unconfigured_provider(self) -> None:
+        credential = self.target.api_credential_file
+        credential.parent.mkdir(parents=True, exist_ok=True)
+        credential.write_text("synthetic-bearer", encoding="utf-8")
+        peer = {"ready": False, "state": "NOT_CONFIGURED"}
+        strict = {"ready": False, "instance_id": self.target.product_runtime_id,
+                  "provider": {"ready": False, "state": "NOT_READY"}, "execution_host_peer": peer}
+        standalone = {**strict, "contract_version": "forge-server-standalone-readiness/v1",
+                      "mode": "STANDALONE", "execution_ready": False, "service_ready": False}
+        errors = [HTTPError("http://127.0.0.1/readiness", 503, "bounded", {},
+                            BytesIO(json.dumps(document).encode())) for document in (strict, standalone)]
+        with patch("forge_platform.forge_server_adapter.urllib_request.urlopen", side_effect=errors):
+            value = ForgeHTTPReadinessProbe(allow_standalone=True).readiness(self.target)
+        self.assertFalse(value["ready"])
+        self.assertFalse(value["service_ready"])
+        self.assertFalse(value["execution_ready"])
 
     def test_json_result_and_request_correlation_fail_closed(self) -> None:
         with self.assertRaisesRegex(ForgeServerAdapterError, "invalid JSON"):

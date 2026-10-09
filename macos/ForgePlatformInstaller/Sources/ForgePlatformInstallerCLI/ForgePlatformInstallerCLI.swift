@@ -70,6 +70,10 @@ enum ForgePlatformInstallerCLIApplication {
             InstallerCLIHelperRegistration.liveQualificationReplacer,
         replaceIdleHelper: @escaping InstallerCLIHelperRegistration.Registrar =
             InstallerCLIHelperRegistration.liveIdleReplacer,
+        replaceDebugSpawnFailedHelper: @escaping InstallerCLIHelperRegistration.Registrar =
+            InstallerCLIHelperRegistration.liveDebugSpawnFailedReplacer,
+        replaceDebugRunningHelper: @escaping InstallerCLIHelperRegistration.Registrar =
+            InstallerCLIHelperRegistration.liveDebugRunningReplacer,
         replaceMVP0314Helper: @escaping InstallerCLIHelperRegistration.Registrar =
             InstallerCLIHelperRegistration.liveMVP0314Replacer,
         replaceMVP0316Helper: @escaping InstallerCLIHelperRegistration.Registrar =
@@ -121,6 +125,19 @@ enum ForgePlatformInstallerCLIApplication {
             )
             render(result, json: invocation.options.json, stdout: stdout, stderr: stderr)
             return result.exitCode.rawValue
+        }
+
+        if invocation.command.requiresAdministratorForMutation {
+            let user = try? ManagedInstallerNamedOperator.resolve(uid: Darwin.getuid())
+            guard user?.isAdministrator == true else {
+                let result = InstallerCLIResult(
+                    exitCode: .blocked, status: "administrator-required",
+                    message: "Voor installatie of wijziging van systeemservices is een Mac-beheerderaccount vereist. Start de installer vanuit dat account.",
+                    details: ["helper_root_is_not_caller_authorization": "true"]
+                )
+                render(result, json: invocation.options.json, stdout: stdout, stderr: stderr)
+                return result.exitCode.rawValue
+            }
         }
 
         if invocation.command == .version {

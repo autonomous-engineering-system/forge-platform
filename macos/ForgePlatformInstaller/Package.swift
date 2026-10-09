@@ -14,7 +14,8 @@ let package = Package(
         ),
     ],
     targets: [
-        .target(name: "ForgePlatformInstallerCore"),
+        .target(name: "ScopedKeychainAccess", publicHeadersPath: "include"),
+        .target(name: "ForgePlatformInstallerCore", dependencies: ["ScopedKeychainAccess"]),
         .executableTarget(
             name: "ForgePlatformInstaller",
             dependencies: ["ForgePlatformInstallerCore"]

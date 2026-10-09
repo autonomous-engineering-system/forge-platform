@@ -928,7 +928,19 @@ class ManagedDeploymentRegistry:
     @staticmethod
     def _read(path: Path) -> ManagedDeployment:
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            data = path.read_bytes()
+        except OSError as error:
+            raise ManagedDeploymentError("managed deployment record is invalid") from error
+        return ManagedDeploymentRegistry.decode_record_bytes(data, expected_deployment_id=path.stem)
+
+    @staticmethod
+    def decode_record_bytes(data: bytes, *, expected_deployment_id: str) -> ManagedDeployment:
+        """Decode a verified archived record without weakening path-bound reads."""
+        try:
+            if not isinstance(data, bytes) or not 0 < len(data) <= 64 * 1024:
+                raise ValueError("record bytes")
+            _safe_id(expected_deployment_id, "deployment identity")
+            raw = json.loads(data.decode("utf-8"))
             if not isinstance(raw, dict):
                 raise ValueError("fields")
             schema = raw.get("schema")
@@ -999,6 +1011,6 @@ class ManagedDeploymentRegistry:
             )
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
             raise ManagedDeploymentError("managed deployment record is invalid") from error
-        if deployment.deployment_id != path.stem:
+        if deployment.deployment_id != expected_deployment_id:
             raise ManagedDeploymentError("managed deployment identity does not match its record path")
         return deployment

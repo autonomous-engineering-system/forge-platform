@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 protocol ManagedInstallerFreshSingleProductWorkerAuthorityPublishing: Sendable {
@@ -38,6 +39,9 @@ extension FileManagedInstallerManagedDeploymentRegistryReader:
 /// are retained only after exact terminal registry and physical slot readback.
 struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
     ManagedInstallerProductOperationsExecuting, Sendable {
+    private static func trace(_ gate: String) {
+    }
+
     typealias WheelFactory = @Sendable (ManagedInstallerStablePlan) async
         -> (any ManagedPythonProductVenvWheelInstalling)?
     typealias PriorWheelFactory = @Sendable (
@@ -47,6 +51,18 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
     ) async -> (any ManagedPythonProductVenvWheelInstalling)?
     typealias ReaderFactory = @Sendable (ManagedInstallerStablePlan)
         -> any ManagedInstallerProductWorkerVenvReading
+    typealias ServiceVenvAccess = @Sendable (VerifiedInstallerRelease)
+        -> Result<Void, ManagedInstallerProductServiceVenvSlotSearchFailure>
+
+    private static func productionServiceVenvAccess(_ release: VerifiedInstallerRelease)
+        -> Result<Void, ManagedInstallerProductServiceVenvSlotSearchFailure> {
+        MacOSManagedInstallerProductServiceVenvSlotSearch(
+            bootstrap: ManagedInstallerHelperStateRootBootstrap(),
+            accounts: ManagedInstallerProductServiceAccountSetResolver(
+                reader: FileManagedInstallerProductWorkerAuthorityReader()
+            )
+        ).ensureSearch(expectedInstallerRelease: release)
+    }
 
     private let material: any ManagedInstallerHelperExecutionMaterialAdmitting
     private let currency: any ManagedInstallerMutationCurrencyChecking
@@ -59,7 +75,10 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
     private let wheelFactory: WheelFactory
     private let priorWheelFactory: PriorWheelFactory
     private let readerFactory: ReaderFactory
+    private let serviceVenvAccess: ServiceVenvAccess
     private let epProviderRegistration: (any ManagedInstallerFreshEPProviderRegistering)?
+    private let pairingAuthority: (@Sendable (ManagedInstallerStablePlan)
+        -> ManagedInstallerProductWorkerPairingAuthority?)?
     private let downstream: any ManagedInstallerProductOperationsExecuting
 
     init(
@@ -74,7 +93,10 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         wheelFactory: @escaping WheelFactory,
         priorWheelFactory: @escaping PriorWheelFactory,
         readerFactory: @escaping ReaderFactory,
+        serviceVenvAccess: @escaping ServiceVenvAccess = { productionServiceVenvAccess($0) },
         epProviderRegistration: (any ManagedInstallerFreshEPProviderRegistering)? = nil,
+        pairingAuthority: (@Sendable (ManagedInstallerStablePlan)
+            -> ManagedInstallerProductWorkerPairingAuthority?)? = nil,
         downstream: any ManagedInstallerProductOperationsExecuting
     ) {
         self.material = material
@@ -88,7 +110,9 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         self.wheelFactory = wheelFactory
         self.priorWheelFactory = priorWheelFactory
         self.readerFactory = readerFactory
+        self.serviceVenvAccess = serviceVenvAccess
         self.epProviderRegistration = epProviderRegistration
+        self.pairingAuthority = pairingAuthority
         self.downstream = downstream
     }
 
@@ -133,8 +157,51 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
             epProviderRegistration: ManagedInstallerReviewedEPProviderRegistration
                 .production(loader: ManagedInstallerHelperReviewedSelectionRegistration
                     .production()),
+            pairingAuthority: localDebugPairingAuthority,
             downstream: downstream
         )
+    }
+
+    /// This local qualification profile uses only the owner's reviewed public
+    /// scope. The product worker still obtains the secret from EP through its
+    /// authenticated registration route and stores it in the system Keychain.
+    /// Released builds require a separate reviewed pairing-authority source.
+    private static var localDebugPairingAuthority:
+        (@Sendable (ManagedInstallerStablePlan)
+            -> ManagedInstallerProductWorkerPairingAuthority?)? {
+        return nil
+    }
+
+    private func publishFreshAuthority(
+        installationPairing: Bool, plan: ManagedInstallerStablePlan,
+        material: ManagedVerifiedCompositionMaterial,
+        snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
+        accounts: [ManagedInstallerProductServiceAccountReadback],
+        activation: ManagedPythonRuntimeActivationReceipt,
+        evidence: [ManagedInstallerProductWorkerVenvPublicationEvidence],
+        priorEvidence: [ManagedInstallerProductWorkerVenvPublicationEvidence],
+        wheel: any ManagedPythonProductVenvWheelInstalling
+    ) async -> Result<ManagedInstallerProductWorkerAuthorityPublicationReceipt,
+                      ManagedInstallerProductWorkerAuthorityPublicationFailure> {
+        if installationPairing {
+            guard let publisher = authority as? FileManagedInstallerProductWorkerAuthorityPublisher,
+                  case .success(let lease) = FileManagedInstallerProviderOperationLock(
+                    rootDirectory: FileManagedInstallerReleasedRouteXPCService.productionRoot
+                        .appendingPathComponent("state", isDirectory: true))
+                    .acquireExclusiveManagedInstallerProviderOperationLock()
+            else { return .failure(.invalidAuthority) }
+            let result = await publisher.publishFreshInstallationProductWorkerAuthority(
+                plan: plan, material: material, snapshot: snapshot, accounts: accounts,
+                activation: activation, venvEvidence: evidence,
+                priorVenvEvidence: priorEvidence, lease: lease)
+            guard case .success = lease.releaseExclusiveManagedInstallerProviderOperationLock()
+            else { return .failure(.unavailable) }
+            return result
+        }
+        return await authority.publishVerifiedFreshInstallProductWorkerAuthority(
+            plan: plan, material: material, snapshot: snapshot, accounts: accounts,
+            accountReader: self.accounts, activation: activation, venvEvidence: evidence,
+            priorVenvEvidence: priorEvidence, reader: readerFactory(plan), wheel: wheel)
     }
 
     func executeProductOperations(
@@ -142,50 +209,37 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         runtimeTransactionReceipt receipt: ManagedInstallerRuntimeTransactionReceipt
     ) async -> ManagedDeploymentExecutionResult {
         guard !plan.deployment.exists,
-              plan.reviewedOperation.components.count == 1,
+              (1...2).contains(plan.reviewedOperation.components.count),
               let preprovider = receipt.preparationReceipt.preproviderAccountReceipt,
-              preprovider.matches(plan), preprovider.accounts.count == 1,
-              let admitted = await material.admit(
+              preprovider.matches(plan),
+              preprovider.accounts.count == plan.reviewedOperation.components.count else {
+            Self.trace("product-input")
+            return .failed(.staleSession, stages: [])
+        }
+        guard let admitted = await material.admit(
                   deployment: plan.deployment,
                   componentIdentities: plan.session.productVirtualEnvironments
                       .map(\.componentIdentity).sorted()
               ), admitted.material.session == plan.session,
-              admitted.currentRelease == plan.reviewedOperation.currentInstallerRelease,
-              let exact = try? ManagedInstallerRuntimeTransactionReceipt(
+              admitted.currentRelease == plan.reviewedOperation.currentInstallerRelease else {
+            Self.trace("product-material")
+            return .failed(.staleSession, stages: [])
+        }
+        guard let exact = try? ManagedInstallerRuntimeTransactionReceipt(
                   stablePlan: plan,
                   preparationReceipt: receipt.preparationReceipt,
                   managedToolReconciliationReceipt:
                     receipt.managedToolReconciliationReceipt,
                   completionReceipt: receipt.completionReceipt
               ), exact == receipt else {
+            Self.trace("product-runtime-receipt")
             return .failed(.staleSession, stages: [])
         }
+        Self.trace("product-runtime-admitted")
         let activation = receipt.completionReceipt.activationReceipt
-        let account = preprovider.accounts[0]
-        guard case .success(let current?) = accounts.readAccountSynchronously(
-                  account.claim
-              ), current == account,
-              let environment = plan.session.productVirtualEnvironments.first,
-              let slotReference = activation.preparationEvidenceReferences.last,
-              let reference = activation.productVenvEvidenceReferences[
-                  environment.componentIdentity
-              ] else { return .failed(.staleSession, stages: []) }
-        let request = ManagedPythonProductVenvMutationRequest(
-            operationID: plan.activationPlan.operationID,
-            deploymentID: plan.deployment.id, environment: environment,
-            runtimeSlotIdentity: activation.runtimeSlotIdentity,
-            runtimeSlotEvidenceReference: slotReference
-        )
-        guard let venvReceipt = try? ManagedPythonProductVenvReceipt(
-            operationID: request.operationID,
-            deploymentID: request.deploymentID,
-            componentIdentity: request.componentIdentity,
-            venvIdentity: request.venvIdentity,
-            runtimeIdentitySHA256: request.runtimeIdentitySHA256,
-            runtimeSlotIdentity: request.runtimeSlotIdentity,
-            runtimeSlotEvidenceReference: request.runtimeSlotEvidenceReference,
-            state: .ready, evidenceReference: reference
-        ), let wheel = await wheelFactory(plan) else {
+        guard let slotReference = activation.preparationEvidenceReferences.last,
+              let wheel = await wheelFactory(plan) else {
+            Self.trace("product-wheel-factory")
             return .failed(.executionFailed, stages: [])
         }
         let venvRoot = FileManagedInstallerReleasedRouteXPCService.productionRoot
@@ -193,13 +247,56 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                 ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName,
                 isDirectory: true
             )
-        let slot = venvRoot.appendingPathComponent(
-            MacOSManagedPythonProductVenvSlotLayout.slotName(for: request),
-            isDirectory: true
-        )
-        guard case .success(let wheelBinding) = await wheel.readPublished(
-                  slot, request: request
-              ), CompositionCatalogValidation.isTaggedSHA256(wheelBinding),
+        var evidence: [ManagedInstallerProductWorkerVenvPublicationEvidence] = []
+        for environment in plan.session.productVirtualEnvironments {
+            guard let account = preprovider.accounts.first(where: {
+                $0.claim.componentIdentity == environment.componentIdentity
+            }), case .success(let current?) = accounts.readAccountSynchronously(
+                account.claim
+            ), current == account,
+            let reference = activation.productVenvEvidenceReferences[
+                environment.componentIdentity
+            ] else {
+                Self.trace("product-account-or-venv-reference")
+                return .failed(.staleSession, stages: [])
+            }
+            let request = ManagedPythonProductVenvMutationRequest(
+                operationID: plan.activationPlan.operationID,
+                deploymentID: plan.deployment.id, environment: environment,
+                runtimeSlotIdentity: activation.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: slotReference
+            )
+            guard let venvReceipt = try? ManagedPythonProductVenvReceipt(
+                operationID: request.operationID,
+                deploymentID: request.deploymentID,
+                componentIdentity: request.componentIdentity,
+                venvIdentity: request.venvIdentity,
+                runtimeIdentitySHA256: request.runtimeIdentitySHA256,
+                runtimeSlotIdentity: request.runtimeSlotIdentity,
+                runtimeSlotEvidenceReference: request.runtimeSlotEvidenceReference,
+                state: .ready, evidenceReference: reference
+            ) else {
+                Self.trace("product-venv-receipt")
+                return .failed(.staleSession, stages: [])
+            }
+            let slot = venvRoot.appendingPathComponent(
+                MacOSManagedPythonProductVenvSlotLayout.slotName(for: request),
+                isDirectory: true
+            )
+            guard case .success(let wheelBinding) = await wheel.readPublished(
+                slot, request: request
+            ), CompositionCatalogValidation.isTaggedSHA256(wheelBinding)
+            else {
+                Self.trace("product-wheel-readback")
+                return .failed(.staleSession, stages: [])
+            }
+            Self.trace("product-wheel-admitted")
+            evidence.append(ManagedInstallerProductWorkerVenvPublicationEvidence(
+                request: request, activationReceipt: venvReceipt,
+                wheelBindingEvidence: wheelBinding
+            ))
+        }
+        guard evidence.count == preprovider.accounts.count,
               case .success(let prior) = authority.readExistingAuthorityForFreshInstall(),
               case .success(let priorRegistry) = registry.read(),
               ManagedInstallerFreshPriorWorkerRegistryAdmission.accepts(
@@ -211,6 +308,7 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                     prior: prior, registry: priorRegistry,
                     excluding: plan.deployment.id, store: evidenceStore
               ) else {
+            Self.trace("product-prior-evidence")
             return .failed(.staleSession, stages: [])
         }
         let priorDigest = prior.map {
@@ -228,7 +326,9 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                 $0.deploymentID == item.request.deploymentID
             }).flatMap {
                 Self.priorComponentRoute($0, component: item.request.componentIdentity)
-            }
+            } ?? prior?.installationRoutes.first(where: {
+                $0.deploymentID == item.request.deploymentID
+            })?.wheelReadbackRoute(component: item.request.componentIdentity)
             guard let route, let priorDigest,
                   let key = ManagedInstallerPriorProductWheelRouteKey(
                     deploymentID: route.deploymentID,
@@ -241,47 +341,71 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         }
         guard let combinedWheel = ManagedInstallerFreshPriorProductWheelRouter(
             freshDeploymentID: plan.deployment.id,
-            freshComponentIdentity: environment.componentIdentity,
+            freshComponentIdentities: Set(evidence.map(\.request.componentIdentity)),
             fresh: wheel, priorEvidence: priorEvidence, prior: priorWheels
         ) else { return .failed(.staleSession, stages: []) }
-        let evidence = [ManagedInstallerProductWorkerVenvPublicationEvidence(
-            request: request, activationReceipt: venvReceipt,
-            wheelBindingEvidence: wheelBinding
-        )]
         // Persist before authority publication. A crash may leave an orphan
         // record, but cannot leave an authority without its recovery evidence.
-        guard case .success = evidenceStore.persist(evidence[0]) else {
-            return .failed(.staleSession, stages: [])
+        for item in evidence {
+            guard case .success = evidenceStore.persist(item) else {
+                Self.trace("product-evidence-persist")
+                return .failed(.staleSession, stages: [])
+            }
         }
-        guard let snapshot = ManagedInstallerFreshSingleProductWorkerRouteBuilder(
-                  ports: ports
-              ).build(
-                  plan: plan, material: admitted.material,
-                  accounts: preprovider.accounts, activation: activation,
-                  venvEvidence: evidence, prior: prior
-              ),
+        let installationPairing = evidence.count == 2
+            && plan.reviewedOperation.pairingTarget == nil
+            && Set(plan.reviewedOperation.components.map(\.artifactDigest)) == [
+                ManagedInstallerInstallationProductWorkerAuthorityAdmission.epArtifact,
+                "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0"]
+        let snapshot: ManagedInstallerProductWorkerAuthoritySnapshot?
+        if installationPairing {
+            snapshot = ManagedInstallerFreshInstallationProductWorkerRouteBuilder(ports: ports)
+                .build(plan: plan, material: admitted.material, accounts: preprovider.accounts,
+                       activation: activation, venvEvidence: evidence, prior: prior)
+        } else if evidence.count == 1 {
+            snapshot = ManagedInstallerFreshSingleProductWorkerRouteBuilder(
+                ports: ports
+            ).build(plan: plan, material: admitted.material,
+                    accounts: preprovider.accounts, activation: activation,
+                    venvEvidence: evidence, prior: prior)
+        } else if evidence.count == 2, let pairing = pairingAuthority?(plan) {
+            snapshot = ManagedInstallerFreshPairedProductWorkerRouteBuilder(
+                ports: ports
+            ).build(plan: plan, material: admitted.material,
+                    accounts: preprovider.accounts, activation: activation,
+                    venvEvidence: evidence, pairing: pairing, prior: prior)
+        } else { snapshot = nil }
+        guard let snapshot,
               let refreshed = await material.admit(
                   deployment: plan.deployment,
-                  componentIdentities: [environment.componentIdentity]
+                  componentIdentities: evidence.map(\.request.componentIdentity).sorted()
               ), refreshed == admitted,
               case .success(let prePublishRegistry) = registry.read(),
               prePublishRegistry == priorRegistry,
-              case .success(let publication) = await authority
-                .publishVerifiedFreshInstallProductWorkerAuthority(
+              case .success(let publication) = await publishFreshAuthority(
+                    installationPairing: installationPairing,
                     plan: plan, material: admitted.material, snapshot: snapshot,
-                    accounts: preprovider.accounts, accountReader: accounts,
-                    activation: activation, venvEvidence: evidence,
-                    priorVenvEvidence: priorEvidence,
-                    reader: readerFactory(plan), wheel: combinedWheel
-                ),
+                    accounts: preprovider.accounts, activation: activation,
+                    evidence: evidence, priorEvidence: priorEvidence, wheel: combinedWheel),
               publication.sha256 == "sha256:" + GitHubInstallerReleaseDescriptor
                 .sha256(of: snapshot.canonicalJSONData()),
               case .success(let freshDigest) = authorityReadback.readAuthorityDigest(),
               freshDigest == publication.sha256,
               case .success(let unchangedRegistry) = registry.read(),
               unchangedRegistry == priorRegistry else {
+            Self.trace("product-authority-publication")
             return .failed(.staleSession, stages: [])
         }
+        // The new authority names the exact independently published venv
+        // slots. Prepare bounded service search access before an account may
+        // execute a product from those newly selected slots.
+        guard let accessRelease = ManagedInstallerProductWorkerReleaseBinding.workerRelease(
+                for: plan.reviewedOperation.currentInstallerRelease
+              ), case .success = serviceVenvAccess(accessRelease) else {
+            Self.trace("product-service-venv-access")
+            return .failed(.staleSession, stages: [])
+        }
+        Self.trace("product-authority-published")
         switch await currency.recheckInstallerBeforeMutation(
             currentVersion: plan.reviewedOperation.currentInstallerRelease.version
         ) {
@@ -291,7 +415,9 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
                 $0.ownerComponent == .engineeringPlatformServer
             }
             if !epRequirements.isEmpty {
-                guard environment.componentIdentity == "engineering-platform-server",
+                guard evidence.contains(where: {
+                    $0.request.componentIdentity == "engineering-platform-server"
+                }),
                       let registration = epProviderRegistration,
                       let intent = try? ManagedInstallerReviewedExecutionIntent(
                         stablePlan: plan

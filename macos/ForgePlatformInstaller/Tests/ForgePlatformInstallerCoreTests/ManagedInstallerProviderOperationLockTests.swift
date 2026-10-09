@@ -4,6 +4,34 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerProviderOperationLockTests: XCTestCase {
+    func testBorrowPinsLeaseAndRejectsReleasedOrDifferentRoot() throws {
+        let root = try providerLockRoot(), other = try providerLockRoot()
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: other) }
+        let lock = FileManagedInstallerProviderOperationLock(rootDirectory: root)
+        let lease = try providerLockLease(lock.acquireExclusiveManagedInstallerProviderOperationLock())
+        XCTAssertNil(borrowManagedInstallerProviderOperationLease(lease, rootDirectory: other))
+        var borrowed = borrowManagedInstallerProviderOperationLease(lease, rootDirectory: root)
+        XCTAssertNotNil(borrowed)
+        XCTAssertEqual(providerLockFailure(lease.releaseExclusiveManagedInstallerProviderOperationLock()), .releaseFailed)
+        XCTAssertEqual(providerLockFailure(lock.acquireExclusiveManagedInstallerProviderOperationLock()), .operationInProgress)
+        borrowed = nil
+        try providerLockRelease(lease.releaseExclusiveManagedInstallerProviderOperationLock())
+        XCTAssertNil(borrowManagedInstallerProviderOperationLease(lease, rootDirectory: root))
+    }
+
+    func testBorrowRejectsReplacedLockInode() throws {
+        let root = try providerLockRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lease = try providerLockLease(FileManagedInstallerProviderOperationLock(rootDirectory: root)
+            .acquireExclusiveManagedInstallerProviderOperationLock())
+        let path = root.appendingPathComponent(FileManagedInstallerProviderOperationLock.lockFileName)
+        try FileManager.default.moveItem(at: path, to: root.appendingPathComponent("held-old-lock"))
+        FileManager.default.createFile(atPath: path.path, contents: Data(),
+            attributes: [.posixPermissions: NSNumber(value: 0o600)])
+        XCTAssertNil(borrowManagedInstallerProviderOperationLease(lease, rootDirectory: root))
+        try providerLockRelease(lease.releaseExclusiveManagedInstallerProviderOperationLock())
+    }
+
     func testSecondProcessLeaseIsBusyUntilFirstLeaseIsReleased() throws {
         let root = try providerLockRoot()
         defer { try? FileManager.default.removeItem(at: root) }

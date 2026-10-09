@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from forge_platform.managed_product_operation_service import (
     ManagedProductOperationHelperService,
@@ -134,6 +135,58 @@ def _single_authority(component: str) -> dict:
 
 
 class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
+    def installation_authority(self):
+        value=_authority(); value['schema']='forge-platform.product-worker-authority/v7'
+        manifest=value['candidate_manifests'][0]['payload']
+        for c in manifest['components']:
+            if c['identity']=='forge-runtime':
+                c['artifact'].update(version='2.8.1',source_revision='c8833ffa4754800de451cce94b109ef1ad07123f',
+                    digest='sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0')
+            else:
+                c['artifact'].update(version='2.3.113',source_revision='9318636060706534635954e9131e42e2f63928ef',
+                    digest='sha256:878e36323e37b29d97a188c02257283c3dc322c60755d57dc9017259f8ac386e')
+        value['candidate_manifests'][0]['digest']='sha256:'+sha256(_canonical(manifest)).hexdigest()
+        route=value['routes'][0];route.pop('pairing')
+        route.update(forge_service_account='operator-admin',forge_service_user_identity_sha256='sha256:'+'1'*64,
+            forge_artifact_sha256='sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0',
+            ep_artifact_sha256='sha256:878e36323e37b29d97a188c02257283c3dc322c60755d57dc9017259f8ac386e',
+            forge_venv_slot='venv-'+'2'*64,ep_venv_slot='venv-'+'3'*64,
+            installation_pairing=dict(operation_id='installation-op',binding_id='installation-binding',
+                consumer_id='installation-consumer',credential_reference='keychain://installation/new'))
+        value['installation_routes']=[route];value['routes']=[];value['single_routes']=[]
+        return value
+
+    def installation_loader(self):
+        return ProductWorkerAuthorityLoader(root=self.root,expected_owner_uid=os.getuid(),
+            worker_path=Path('/Applications/ForgePlatformInstallerDebug.app/Contents/Resources/forge-platform-product-worker.pyz'))
+
+    def test_v7_constructs_concrete_installation_service_without_project_revoker(self):
+        self.write(self.installation_authority())
+        with patch('forge_platform.product_worker_authority.resolve_identity_sha256',return_value='sha256:'+'1'*64):
+            service=self.installation_loader().load()
+        self.assertIsInstance(service,ManagedProductOperationHelperService)
+        self.assertIsNone(service.preserved_dispatcher)
+        self.assertEqual(dict(service.repair_route_configurations),{})
+
+    def test_v7_denies_legacy_fields_unqualified_release_and_identity_drift(self):
+        for key,value in (('pairing',{}),('project_id','forbidden'),
+                          ('forge_artifact_sha256','sha256:'+'0'*64)):
+            payload=self.installation_authority();payload['installation_routes'][0][key]=value;self.write(payload)
+            with patch('forge_platform.product_worker_authority.resolve_identity_sha256',return_value='sha256:'+'1'*64):
+                with self.assertRaises((ProductWorkerAuthorityError,ValueError)):self.installation_loader().load()
+        self.write(self.installation_authority())
+        with patch('forge_platform.product_worker_authority.resolve_identity_sha256',return_value='sha256:'+'f'*64):
+            with self.assertRaises(ProductWorkerAuthorityError):self.installation_loader().load()
+
+    def test_v7_denies_mixed_routes_shared_claims_or_missing_native_store(self):
+        payload=self.installation_authority();payload['routes']=_authority()['routes'];self.write(payload)
+        with self.assertRaises(ProductWorkerAuthorityError):self.installation_loader().load()
+        payload=self.installation_authority();payload['installation_routes']*=2;self.write(payload)
+        with self.assertRaises(ProductWorkerAuthorityError):self.installation_loader().load()
+        self.write(self.installation_authority())
+        with patch('forge_platform.product_worker_authority.resolve_identity_sha256',return_value='sha256:'+'1'*64):
+            with self.assertRaises(TypeError):self.loader().load()
+
     def test_exact_238_to_239_route_gets_request_bound_helper_provider(self) -> None:
         old = _manifest_payload()
         new = json.loads(json.dumps(old))

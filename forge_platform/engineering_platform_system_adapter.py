@@ -18,6 +18,8 @@ import re
 import subprocess
 from typing import Mapping, Protocol, Sequence
 
+from .managed_product_wheel_cli_staging import stage_product_cli_wheel
+
 from .component_operations import (
     ArtifactCorrelation,
     ComponentOperationRequest,
@@ -82,6 +84,7 @@ class SubprocessProductCommandRunner:
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
                 "PYTHONNOUSERSITE": "1",
                 "PYTHONSAFEPATH": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
             },
         )
         return ProductCommandResult(completed.returncode, completed.stdout, completed.stderr)
@@ -160,6 +163,7 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
             actual = "sha256:" + sha256(path.read_bytes()).hexdigest()
             if actual != artifact.digest:
                 raise EngineeringPlatformAdapterError("EP staged wheel digest changed")
+            path = stage_product_cli_wheel(path, artifact)
         return path
 
     def _run(self, command: str, *arguments: str) -> Mapping[str, object]:
@@ -236,6 +240,33 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
                 EP_COMPONENT, self.target.instance_id, "ABSENT",
                 None, None, None, None, None, "UNKNOWN", "MACHINE_WIDE",
                 "NONE", inventory_ref,
+            )
+
+        if entry.get("state") == "PROVIDER_BOOTSTRAP_PENDING" or entry.get("status") == "PROVIDER_BOOTSTRAP_PENDING":
+            # EP's own inventory reports this exact namespace before instance.json
+            # or a selected runtime exists. Its create collision gate admits only
+            # the same account and label. A bootstrap is not an installed runtime.
+            exact_bootstrap = (
+                inventory.get("state") == "OBSERVED"
+                and set(entry) == {
+                    "schema_version", "instance_id", "display_label", "service_account",
+                    "service_label", "state", "descriptor", "status",
+                }
+                and entry.get("schema_version") == 1
+                and entry.get("state") == "PROVIDER_BOOTSTRAP_PENDING"
+                and entry.get("status") == "PROVIDER_BOOTSTRAP_PENDING"
+                and entry.get("display_label") == self.target.display_label
+                and entry.get("service_account") == self.target.service_account
+                and entry.get("descriptor") == str(
+                    self.product_root / "instances" / self.target.instance_id / "provider-bootstrap.json"
+                )
+                and isinstance(entry.get("service_label"), str)
+                and bool(entry["service_label"])
+            )
+            return ProductInstallationReadback(
+                EP_COMPONENT, self.target.instance_id, "ABSENT" if exact_bootstrap else "UNKNOWN",
+                None, None, None, None, None, "UNKNOWN", "MACHINE_WIDE",
+                "NONE" if exact_bootstrap else "UNKNOWN", inventory_ref,
             )
 
         status = self._run("status", "--instance-id", self.target.instance_id)

@@ -75,6 +75,35 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(staleResult.failure, .rejected)
     }
 
+    func testPhysicalPostToolReaderIgnoresVolatileFreeBytesButRejectsThresholdDrift()
+        async throws {
+        let fixture = try FreshReplannerFixture(freshInstall: true)
+        let material = ManagedInstallerHelperExecutionMaterial(
+            material: ManagedVerifiedCompositionMaterial(
+                session: fixture.stablePlan.session,
+                manifestBytes: physicalPostToolManifest()
+            ),
+            currentRelease: fixture.stablePlan.reviewedOperation.currentInstallerRelease
+        )
+        let request = try ManagedInstallerPostToolHostObservationRequest(
+            stablePlan: fixture.stablePlan, request: fixture.request
+        )
+        let stable = try physicalPostToolReader(
+            fixture: fixture, material: material,
+            host: SequencedPhysicalPostToolFactSource(disks: [1_000, 900])
+        )
+        let observed = try await stable.readAtomicPostToolHostState(for: request).get()
+        XCTAssertEqual(observed.gates.first(where: { $0.gate == .hostPreflight })?.passed,
+                       true)
+
+        let crossed = try physicalPostToolReader(
+            fixture: fixture, material: material,
+            host: SequencedPhysicalPostToolFactSource(disks: [1_000, 100])
+        )
+        let crossedResult = await crossed.readAtomicPostToolHostState(for: request)
+        XCTAssertEqual(crossedResult.failure, .rejected)
+    }
+
     func testPhysicalPostToolReaderRejectsMissingMaterialDriftAndFailedHost() async throws {
         let fixture = try FreshReplannerFixture(freshInstall: true)
         let request = try ManagedInstallerPostToolHostObservationRequest(
@@ -1405,6 +1434,8 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         let identity = try ManagedInstallerPostToolXPCHelperIdentity(
             teamIdentifier: "ZEML4LPXH4"
         )
+        let expectedHelperIdentifier =
+            "com.autonomous-engineering-system.forge-platform-installer.helper"
 
         XCTAssertEqual(
             ManagedInstallerPostToolXPCHelperIdentity.signingIdentifier,
@@ -1413,8 +1444,7 @@ final class ManagedPythonRuntimeFreshPostToolReplannerTests: XCTestCase {
         XCTAssertEqual(
             identity.codeSigningRequirement,
             "anchor apple generic"
-                + " and identifier \"com.autonomous-engineering-system."
-                + "forge-platform-installer.helper\""
+                + " and identifier \"\(expectedHelperIdentifier)\""
                 + " and certificate 1[field.1.2.840.113635.100.6.2.6] exists"
                 + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
                 + " and certificate leaf[subject.OU] = \"ZEML4LPXH4\""
@@ -3515,6 +3545,23 @@ private struct PhysicalPostToolFactSource:
     func readFacts() -> ManagedInstallerPostToolPhysicalHostFacts? { facts }
 }
 
+private final class SequencedPhysicalPostToolFactSource:
+    ManagedInstallerPostToolPhysicalHostFactReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private let disks: [UInt64]
+    private var index = 0
+
+    init(disks: [UInt64]) { self.disks = disks }
+
+    func readFacts() -> ManagedInstallerPostToolPhysicalHostFacts? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard index < disks.count else { return nil }
+        defer { index += 1 }
+        return physicalPostToolFacts(disk: disks[index])
+    }
+}
+
 private struct PhysicalPostToolMaterialSource:
     ManagedInstallerHelperExecutionMaterialAdmitting {
     let admitted: ManagedInstallerHelperExecutionMaterial?
@@ -3542,7 +3589,7 @@ private func physicalPostToolReader(
     gitPlan: ToolReadback.Plan = .exact,
     pythonResult: Result<ManagedPythonRuntimeInstalledReadback,
                          ManagedPythonRuntimeTerminalReceiptFailure>? = nil,
-    host: PhysicalPostToolFactSource = PhysicalPostToolFactSource(
+    host: any ManagedInstallerPostToolPhysicalHostFactReading = PhysicalPostToolFactSource(
         facts: physicalPostToolFacts()
     )
 ) throws -> ManagedInstallerPostToolPhysicalAtomicHostReader {

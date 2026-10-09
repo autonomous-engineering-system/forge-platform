@@ -33,6 +33,7 @@ _BINDING_FIELDS = frozenset({
     "runtime_root", "runtime_id", "installation_id", "peer_configuration_digest",
     "existing_interpreter", "existing_version", "base_python", "intent_root",
 })
+_MAINTENANCE_BINDING_FIELDS = _BINDING_FIELDS | {"installed_wheel", "installer_instance_id"}
 _BINDING_PATHS = frozenset({
     "updater_executable", "qualification_receipt", "resolver", "runtime_root",
     "existing_interpreter", "base_python", "intent_root",
@@ -100,17 +101,30 @@ class ForgeUpdateIntent:
         if self.binding_snapshot is not None:
             if (
                 not isinstance(self.binding_snapshot, tuple)
-                or len(self.binding_snapshot) != len(_BINDING_FIELDS)
+                or len(self.binding_snapshot) not in {len(_BINDING_FIELDS), len(_MAINTENANCE_BINDING_FIELDS)}
                 or any(
                     not isinstance(item, tuple) or len(item) != 2
                     or not isinstance(item[0], str) or not isinstance(item[1], str)
                     for item in self.binding_snapshot
                 )
                 or tuple(sorted(self.binding_snapshot)) != self.binding_snapshot
-                or {key for key, _ in self.binding_snapshot} != _BINDING_FIELDS
+                or {key for key, _ in self.binding_snapshot} not in (_BINDING_FIELDS, _MAINTENANCE_BINDING_FIELDS)
             ):
                 raise ValueError("Forge update durable binding shape is invalid")
             values = dict(self.binding_snapshot)
+            maintenance = set(values) == _MAINTENANCE_BINDING_FIELDS
+            if maintenance:
+                from .forge_281_maintenance_resources import CONTROLLER_SOURCE, CONTROLLER_SHA256, RELEASE_RECEIPT_SHA256
+                if (self.installed_artifact != "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1"
+                    or self.candidate_artifact != "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0"
+                    or values["controller_source"] != CONTROLLER_SOURCE
+                    or values["controller_sha256"] != CONTROLLER_SHA256
+                    or values["qualification_receipt_sha256"] != RELEASE_RECEIPT_SHA256
+                    or values["existing_version"] != "2.7.39"
+                    or values["installer_instance_id"] != self.instance_id
+                    or not Path(values["installed_wheel"]).is_absolute()
+                    or ".." in Path(values["installed_wheel"]).parts or "\x00" in values["installed_wheel"]):
+                    raise ValueError("Forge maintenance durable evidence is invalid")
             if any(
                 not Path(values[key]).is_absolute()
                 or ".." in Path(values[key]).parts
@@ -122,7 +136,7 @@ class ForgeUpdateIntent:
                 not _SOURCE.fullmatch(values["controller_source"])
                 or not _OPERATION_ID.fullmatch(values["runtime_id"])
                 or not _OPERATION_ID.fullmatch(values["installation_id"])
-                or values["runtime_id"] != self.instance_id
+                or (not maintenance and values["runtime_id"] != self.instance_id)
                 or not values["existing_version"]
                 or len(values["existing_version"]) > 64
             ):
@@ -130,8 +144,10 @@ class ForgeUpdateIntent:
 
     def payload(self) -> dict[str, object]:
         result = {
-            "schema": "forge-platform.forge-update-intent/v2"
-                if self.binding_snapshot is not None else "forge-platform.forge-update-intent/v1",
+            "schema": ("forge-platform.forge-update-intent/v3" if self.binding_snapshot is not None
+                and "installed_wheel" in dict(self.binding_snapshot) else
+                "forge-platform.forge-update-intent/v2" if self.binding_snapshot is not None else
+                "forge-platform.forge-update-intent/v1"),
             "operation_id": self.operation_id,
             "request_fingerprint": self.request_fingerprint,
             "instance_id": self.instance_id,
@@ -184,7 +200,8 @@ class ForgeUpdateIntentStore:
             raise ForgeUpdateIntentError("Forge update intent is unreadable") from error
         if not isinstance(value, dict):
             raise ForgeUpdateIntentError("Forge update intent shape is invalid")
-        v2 = value.get("schema") == "forge-platform.forge-update-intent/v2"
+        v3 = value.get("schema") == "forge-platform.forge-update-intent/v3"
+        v2 = value.get("schema") == "forge-platform.forge-update-intent/v2" or v3
         if (
             set(value) != (_FIELDS | {"binding_snapshot"} if v2 else _FIELDS)
             or not v2 and value.get("schema") != "forge-platform.forge-update-intent/v1"
@@ -192,7 +209,7 @@ class ForgeUpdateIntentStore:
             raise ForgeUpdateIntentError("Forge update intent shape is invalid")
         try:
             snapshot = value.get("binding_snapshot")
-            if v2 and (not isinstance(snapshot, dict) or set(snapshot) != _BINDING_FIELDS):
+            if v2 and (not isinstance(snapshot, dict) or set(snapshot) != (_MAINTENANCE_BINDING_FIELDS if v3 else _BINDING_FIELDS)):
                 raise ValueError("Forge update binding snapshot is invalid")
             intent = ForgeUpdateIntent(
                 **{key: value[key] for key in _FIELDS if key != "schema"},
@@ -275,6 +292,25 @@ class ForgeUpdateIntentStore:
                 return existing
             for entry in self.root.iterdir():
                 if not entry.name.endswith(".json"):
+                    continue
+                if entry.name.endswith('.preparation.json'):
+                    # A separately typed public-input proof shares this
+                    # private directory; it is never a product update intent.
+                    from .forge_281_compartment import _proof
+                    try:
+                        preparation = _proof(entry, os.geteuid())
+                    except (OSError, RuntimeError, ValueError):
+                        raise ForgeUpdateIntentError('Forge maintenance preparation index is unreadable') from None
+                    selection = preparation.get('selection') if isinstance(preparation, dict) else None
+                    if (not isinstance(preparation, dict)
+                        or set(preparation) != {'schema', 'state', 'selection'}
+                        or preparation.get('schema') != 'forge-platform.forge281-maintenance-preparation/v1'
+                        or preparation.get('state') not in {'PREPARED', 'COMPLETE'}
+                        or not isinstance(selection, dict)
+                        or selection.get('operation_id') != entry.name[:-len('.preparation.json')]
+                        or selection.get('installed_digest') != 'sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1'
+                        or selection.get('candidate_digest') != 'sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0'):
+                        raise ForgeUpdateIntentError('Forge maintenance preparation index is invalid')
                     continue
                 other = self.read(entry.name[:-5])
                 if other is not None and other.instance_id == intent.instance_id and other.phase != "COMPLETE":

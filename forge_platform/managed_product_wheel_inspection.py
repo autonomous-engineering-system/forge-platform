@@ -51,6 +51,19 @@ _ENTRYPOINTS = {
 }
 
 
+_FORGE_281_ENTRYPOINTS = {
+    "forge": "forge.__main__:main",
+    "forge-advisory": "forge.advisory_cli:main",
+    "forge-advisory-context": "forge.advisory_context:main",
+    "forge-advisory-grant": "forge.advisory_grant:main",
+    "forge-mission-derive-actions": "forge.mission_no_dispatch:main",
+    "forge-mission-lifecycle": "forge.mission_lifecycle_cli:main",
+    "forge-workspace-read-grant": "forge.workspace_read_grant:main",
+    "forge-workspace-review-grant": "forge.workspace_review_grant:main",
+    "forge-workspace-worklist-control-grant": "forge.workspace_worklist_control_grant:main",
+}
+
+
 class ManagedProductWheelInspectionError(ValueError):
     """The exact wheel is missing, malformed, or violates its frozen contract."""
 
@@ -92,6 +105,8 @@ def inspect_product_wheel(
     distribution, metadata_name, package_root, expected_entrypoints = _ENTRYPOINTS[
         component_identity
     ]
+    if component_identity == "forge-runtime" and version == "2.8.1":
+        expected_entrypoints = _FORGE_281_ENTRYPOINTS
     dist_info = f"{distribution}-{version}.dist-info"
     try:
         with zipfile.ZipFile(BytesIO(wheel)) as archive:
@@ -214,10 +229,22 @@ def _package_metadata(raw: bytes, name: str, version: str) -> None:
         metadata = Parser().parsestr(raw.decode("utf-8"), headersonly=True)
     except UnicodeError as error:
         raise ManagedProductWheelInspectionError("package metadata is not UTF-8") from error
+    dependencies = metadata.get_all("Requires-Dist")
+    # The qualified Forge 2.8.1 wheel declares only this optional validation
+    # extra. Installing the default product does not activate that extra.
+    # Unknown extras, active dependencies and other release shapes stay closed.
+    qualified_validation_extra = (
+        name == "forge-autonomy" and version == "2.8.1"
+        and metadata.get_all("Provides-Extra") == ["validation"]
+        and dependencies == [
+            'coverage<8,>=7; extra == "validation"',
+            'jsonschema<5,>=4; extra == "validation"',
+        ]
+    )
     if (
         metadata.get_all("Name") != [name]
         or metadata.get_all("Version") != [version]
-        or metadata.get_all("Requires-Dist") not in (None, [])
+        or (dependencies not in (None, []) and not qualified_validation_extra)
     ):
         raise ManagedProductWheelInspectionError("wheel product identity changed")
 

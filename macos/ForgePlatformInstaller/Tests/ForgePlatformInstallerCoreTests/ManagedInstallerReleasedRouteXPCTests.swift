@@ -128,6 +128,8 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             .failed(.executionFailed, stages: [])
         )
 
+        let (operatorStore, operatorRoot) = try temporaryReviewedOperatorTestStore()
+        defer { try? FileManager.default.removeItem(at: operatorRoot) }
         let listener = MacOSManagedInstallerReleasedRouteXPCListener(
             listener: .anonymous(),
             callerIdentity: try ManagedInstallerProductOperationXPCCallerIdentity(
@@ -135,11 +137,20 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
                 teamIdentifier: "ZEML4LPXH4"
             ),
             serviceHandler: handler,
+            installerUserStore: operatorStore,
             installCodeSigningRequirement: { _, _ in }
         )
         listener.activate()
         defer { listener.invalidate() }
         let transport = MacOSManagedInstallerReleasedRouteXPCTransport(endpoint: listener.endpoint)
+        do {
+            _ = try await transport.executeReviewedIntent(intent)
+            XCTFail("unreviewed connection was admitted")
+        } catch {
+            XCTAssertEqual(error as? ManagedInstallerReleasedRouteXPCFailure, .unavailable)
+        }
+        try operatorStore.registerOperator(ManagedInstallerNamedOperator.resolve(uid: getuid()),
+            selection: ManagedInstallerReviewedSelection(stablePlan: plan))
         let transported = try await transport.executeReviewedIntent(intent)
         XCTAssertEqual(
             transported,
@@ -204,6 +215,10 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             XCTUnwrap(physicalReply)
         ), physical)
 
+        let (operatorStore, operatorRoot) = try temporaryReviewedOperatorTestStore()
+        defer { try? FileManager.default.removeItem(at: operatorRoot) }
+        try operatorStore.registerOperator(ManagedInstallerNamedOperator.resolve(uid: getuid()),
+            selection: ManagedInstallerReviewedSelection(stablePlan: plan))
         let listener = MacOSManagedInstallerReleasedRouteXPCListener(
             listener: .anonymous(),
             callerIdentity: try ManagedInstallerProductOperationXPCCallerIdentity(
@@ -211,6 +226,7 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
                 teamIdentifier: "ZEML4LPXH4"
             ),
             serviceHandler: handler,
+            installerUserStore: operatorStore,
             installCodeSigningRequirement: { _, _ in }
         )
         listener.activate()
@@ -359,12 +375,17 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         XCTAssertEqual(admittedCompletion, completed.canonicalJSONData())
         XCTAssertEqual(drainGate.readDrain(operationID: "upgrade-a", expectedEpoch: 31),
                        .quiescent)
+        let (operatorStore, operatorRoot) = try temporaryReviewedOperatorTestStore()
+        defer { try? FileManager.default.removeItem(at: operatorRoot) }
+        try operatorStore.registerOperator(ManagedInstallerNamedOperator.resolve(uid: getuid()),
+            selection: ManagedInstallerReviewedSelection(stablePlan: plan))
         let listener = MacOSManagedInstallerReleasedRouteXPCListener(
             listener: .anonymous(),
             callerIdentity: try ManagedInstallerProductOperationXPCCallerIdentity(
                 bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
                 teamIdentifier: "ZEML4LPXH4"
             ), serviceHandler: service,
+            installerUserStore: operatorStore,
             installCodeSigningRequirement: { _, _ in }
         )
         listener.activate()
@@ -818,7 +839,7 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
 
         XCTAssertEqual(
             MacOSManagedInstallerReleasedRouteXPCTransport.machServiceName,
-            "com.autonomous-engineering-system.forge-platform-installer.helper.released-route"
+            InstallerBuildProfile.helperLabel + ".released-route"
         )
         let named = MacOSManagedInstallerReleasedRouteXPCListener(
             callerIdentity: try ManagedInstallerProductOperationXPCCallerIdentity(

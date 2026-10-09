@@ -37,6 +37,7 @@ final class UnavailableManagedInstallerPrivilegedHelperBackend:
         reply(nil)
     }
 
+
     func loadManagedDeploymentRegistryRecord(
         _ deploymentID: String,
         withReply reply: @escaping (Data?) -> Void
