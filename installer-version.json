@@ -14,5 +14,5 @@
   "channel": "stable",
   "product": "forge-platform-installer",
   "schema": "forge-platform.installer-version/v1",
-  "version": "0.3.30"
+  "version": "0.4.0"
 }
