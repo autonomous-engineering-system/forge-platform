@@ -1,5 +1,6 @@
 import CryptoKit
 import Darwin
+import Dispatch
 import Foundation
 
 public enum ManagedInstallerReleasedRouteXPCFailure: Error, Equatable, Sendable {
@@ -1112,11 +1113,13 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     private let connection: NSXPCConnection
     private let parentAdmission: ManagedInstallerHelperXPCParentAdmission?
     private var resumed: Bool
+    private let readOnlyReplyTimeout: TimeInterval
 
     public init(
         helperIdentity: ManagedInstallerPostToolXPCHelperIdentity,
         expectedParentVersion: InstallerVersion? = nil
     ) {
+        readOnlyReplyTimeout = 30
         parentAdmission = .production(expectedVersion: expectedParentVersion)
         resumed = false
         connection = NSXPCConnection(machServiceName: Self.machServiceName, options: .privileged)
@@ -1128,8 +1131,11 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
 
     init(
         endpoint: NSXPCListenerEndpoint,
-        parentAdmission: ManagedInstallerHelperXPCParentAdmission? = nil
+        parentAdmission: ManagedInstallerHelperXPCParentAdmission? = nil,
+        readOnlyReplyTimeout: TimeInterval = 30
     ) {
+        precondition(readOnlyReplyTimeout > 0 && readOnlyReplyTimeout.isFinite)
+        self.readOnlyReplyTimeout = readOnlyReplyTimeout
         self.parentAdmission = parentAdmission
         resumed = parentAdmission.map { _ in false } ?? true
         connection = NSXPCConnection(listenerEndpoint: endpoint)
@@ -1151,7 +1157,7 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     }
 
     public func loadManagedDeploymentInventory() async throws -> ManagedDeploymentInventory {
-        let data = try await call { service, reply in
+        let data = try await call(readOnly: true) { service, reply in
             service.loadManagedDeploymentInventory(withReply: reply)
         }
         return try ManagedInstallerReleasedRouteXPCCodec.decodeInventory(data)
@@ -1164,7 +1170,7 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
         guard ManagedPythonRuntimeStagingValidation.isOperationID(deploymentID) else {
             throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
         }
-        let data = try await call { service, reply in
+        let data = try await call(readOnly: true) { service, reply in
             service.loadManagedDeploymentRegistryRecord(deploymentID, withReply: reply)
         }
         return try ManagedInstallerManagedDeploymentRegistryRecord.decode(
@@ -1186,7 +1192,7 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
             inventoryEvidenceReference: inventory.evidenceReference
         )
         let requestData = request.canonicalJSONData()
-        let data = try await call { service, reply in
+        let data = try await call(readOnly: true) { service, reply in
             service.loadReleasedRouteSnapshot(requestData, withReply: reply)
         }
         return try ManagedInstallerReleasedRouteXPCCodec.decodeSnapshot(
@@ -1305,6 +1311,7 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     }
 
     private func call(
+        readOnly: Bool = false,
         _ invoke: @escaping (
             ManagedInstallerReleasedRouteXPCService,
             @escaping (Data?) -> Void
@@ -1312,6 +1319,13 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     ) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             let gate = ManagedInstallerReleasedRouteXPCReplyGate(continuation: continuation)
+            // A failed helper launch can leave a Mach read queued indefinitely.
+            // Bound observation only: mutation completion remains journal-owned.
+            if readOnly {
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + readOnlyReplyTimeout) {
+                    gate.complete(.failure(.unavailable))
+                }
+            }
             guard admitConnection(),
                   let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
