@@ -5,7 +5,7 @@ import ForgePlatformInstallerCore
 
 final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
     func testAccountProbeChecksRealNamedUserAndRejectsOtherScope() throws {
-        let user = try ManagedInstallerNamedOperator.resolve(uid: getuid())
+        let user = try qualificationNamedAdministrator()
         let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
         let home = root.path + "/provider-contexts/deployments/source-qualification/providers/forge-runtime/source-qualification/codex/home"
         var args = ["helper", ManagedInstallerProviderAccountProbeChild.flag, user.accountName,

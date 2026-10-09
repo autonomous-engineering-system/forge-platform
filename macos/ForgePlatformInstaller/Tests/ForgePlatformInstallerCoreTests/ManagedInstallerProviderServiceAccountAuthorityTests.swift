@@ -6,7 +6,7 @@ import XCTest
 final class ManagedInstallerProviderServiceAccountAuthorityTests: XCTestCase {
     func testV7UsesExistingProductAccountsAndBindsForgeToActualOperatorIdentity() throws {
         let original = try fixture()
-        let user = try ManagedInstallerNamedOperator.resolve(uid: getuid())
+        let user = try qualificationNamedAdministrator()
         let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: original.canonicalJSONData()) as? [String: Any])
         var fields = try XCTUnwrap((wire["routes"] as? [[String: Any]])?.first)
         fields.removeValue(forKey: "pairing")
