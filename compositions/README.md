@@ -53,3 +53,24 @@ sequence-2 asset name so the three topology choices remain an exact set.
 The active sequence-1 PLANNED host operation must be independently recovered
 under the existing fail-closed root guards before a new catalog selection; no
 provider credential may be copied or treated as readiness evidence.
+
+## Sequence 3: installation pairing without a project
+
+The new sequence-3 inputs select EP 2.3.113 and Forge 2.8.1 for EP-only,
+Forge-only and combined installation choices. The combined route uses
+INSTALLATION_READBACK authority; project selection and execution authority
+belong to the later Workspace flow.
+
+Exact products:
+- EP source 9318636060706534635954e9131e42e2f63928ef, wheel
+  sha256:878e36323e37b29d97a188c02257283c3dc322c60755d57dc9017259f8ac386e.
+- Forge source c8833ffa4754800de451cce94b109ef1ad07123f, wheel
+  sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0.
+
+Each manifest binds its public product release-complete receipt and the
+[immutable v2 managed-Python wheel qualification](https://github.com/autonomous-engineering-system/forge-platform/releases/download/forge-platform-product-managed-python-evidence-v2/product-managed-python-evidence.json),
+sha256:bb383237917b769968c11cbae112635a348d04465e26de3924a1b46f6db546a4.
+That report proves exact released-wheel installation, metadata and CLI help;
+catalog signing/publication and actual published installer acceptance have
+their own gates. The minimum installer is 0.4.2. Historical sequence-1/2
+inputs remain immutable, and no unqualified upgrade edge is advertised.
