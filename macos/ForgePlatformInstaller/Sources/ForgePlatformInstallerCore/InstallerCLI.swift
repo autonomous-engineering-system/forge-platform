@@ -30,6 +30,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentPairingRepairPlan(String, operationID: String)
     case deploymentLifecyclePlan(String, operationID: String, operation: String, component: String)
     case deploymentLifecyclePreserve(String, operationID: String, component: String)
+    case deploymentLifecycleRestore(String, operationID: String, component: String)
     case deploymentLifecyclePurge(String, operationID: String, component: String)
     case deploymentLifecycleRecover(String, component: String)
     case deploymentLifecycleRecoverPurge(String, operationID: String)
@@ -38,7 +39,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
 public extension InstallerCLICommand {
     var requiresAdministratorForMutation: Bool {
         switch self {
-        case .deploymentApply, .deploymentRemove, .deploymentLifecyclePreserve,
+        case .deploymentApply, .deploymentRemove, .deploymentLifecyclePreserve, .deploymentLifecycleRestore,
              .deploymentLifecyclePurge, .deploymentLifecycleRecover,
              .deploymentLifecycleRecoverPurge:
             true
@@ -184,6 +185,7 @@ public enum InstallerCLIParser {
       forge-platform-installer deployment pairing repair plan --deployment <id> --operation-id <id> [--json]
       forge-platform-installer deployment lifecycle plan <preserve|restore|purge> --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--json]
       forge-platform-installer deployment lifecycle preserve --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> [--review-fingerprint <sha256:...> --yes] [--non-interactive] [--json]
+      forge-platform-installer deployment lifecycle restore --deployment <id> --operation-id <id> --component engineering-platform-server [--review-fingerprint <sha256:...> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment lifecycle purge --deployment <id> --operation-id <id> --component <forge-runtime|engineering-platform-server> --confirm-instance-id <id> [--review-fingerprint <sha256:...> --yes] [--non-interactive] [--json]
       forge-platform-installer deployment lifecycle recover --deployment <id> --component <forge-runtime|engineering-platform-server> [--json]
       forge-platform-installer deployment lifecycle recover-purge --deployment <id> --operation-id <id> [--json]
@@ -420,6 +422,19 @@ public enum InstallerCLIParser {
             command = .deploymentLifecyclePreserve(
                 deployment, operationID: operationID, component: component
             )
+        case ["deployment", "lifecycle", "restore"]:
+            guard let deployment, deployment != "new",
+                  let operationID,
+                  ManagedInstallerPreservedLifecycleReviewIntent.isID(operationID),
+                  let component,
+                  component == "engineering-platform-server",
+                  reviewFingerprint.map(CompositionCatalogValidation.isTaggedSHA256) ?? true,
+                  confirmedInstanceID == nil else {
+                throw InstallerCLIParseError.invalidArguments
+            }
+            command = .deploymentLifecycleRestore(
+                deployment, operationID: operationID, component: component
+            )
         case ["deployment", "lifecycle", "purge"]:
             guard let deployment, deployment != "new",
                   let operationID,
@@ -461,7 +476,7 @@ public enum InstallerCLIParser {
             case .deploymentPlan, .deploymentApply, .deploymentRemove,
                  .deploymentRemovePlan, .deploymentPairingRepairPlan,
                  .deploymentLifecyclePlan,
-                 .deploymentLifecyclePreserve, .deploymentLifecyclePurge,
+                 .deploymentLifecyclePreserve, .deploymentLifecycleRestore, .deploymentLifecyclePurge,
                  .deploymentLifecycleRecover, .deploymentLifecycleRecoverPurge:
                 break
             default:
@@ -472,7 +487,7 @@ public enum InstallerCLIParser {
             switch command {
             case .deploymentRemovePlan, .deploymentRemove,
                  .deploymentPairingRepairPlan, .deploymentLifecyclePlan,
-                 .deploymentLifecyclePreserve, .deploymentLifecyclePurge,
+                 .deploymentLifecyclePreserve, .deploymentLifecycleRestore, .deploymentLifecyclePurge,
                  .deploymentLifecycleRecover, .deploymentLifecycleRecoverPurge: break
             default:
                 throw InstallerCLIParseError.invalidArguments
@@ -666,6 +681,26 @@ public struct InstallerCLIWorkflow: Sendable {
     }
 
     public func preserveComponent(
+        deploymentID: String, operationID: String, component: String,
+        options: InstallerCLIOptions, confirm: Confirmation
+    ) async -> InstallerCLIResult {
+        await transitionComponent(operation: "PRESERVE", deploymentID: deploymentID,
+            operationID: operationID, component: component, options: options, confirm: confirm)
+    }
+
+    public func restoreComponent(
+        deploymentID: String, operationID: String, component: String,
+        options: InstallerCLIOptions, confirm: Confirmation
+    ) async -> InstallerCLIResult {
+        guard component == "engineering-platform-server" else {
+            return Self.blocked("De beoordeelde RESTORE-route ondersteunt uitsluitend een zelfstandige EP-instance.")
+        }
+        return await transitionComponent(operation: "RESTORE", deploymentID: deploymentID,
+            operationID: operationID, component: component, options: options, confirm: confirm)
+    }
+
+    private func transitionComponent(
+        operation: String,
         deploymentID: String,
         operationID: String,
         component: String,
@@ -678,12 +713,12 @@ public struct InstallerCLIWorkflow: Sendable {
         let session: ManagedInstallerPreservedLifecycleReviewSession
         switch await workflow.prepare(
             operationID: operationID, deploymentID: deploymentID,
-            operation: "PRESERVE", component: component
+            operation: operation, component: component
         ) {
         case .failure(let failure):
             return InstallerCLIResult(
                 exitCode: .blocked, status: "lifecycle-review-blocked",
-                message: "Het exacte PRESERVE-voorstel is niet beschikbaar.",
+                message: "Het exacte \(operation)-voorstel is niet beschikbaar.",
                 details: ["reason": String(describing: failure)]
             )
         case .success(let reviewed): session = reviewed
@@ -701,7 +736,7 @@ public struct InstallerCLIWorkflow: Sendable {
                 return lifecycleConfirmationRequired(session)
             }
         } else {
-            let prompt = "Bevestig PRESERVE voor deployment \(deploymentID), component \(component), instance \(session.intent.instanceID), registerrevisie \(session.proposal.registryRevision), operation \(operationID), fingerprint \(session.reviewFingerprint)?"
+            let prompt = "Bevestig \(operation) voor deployment \(deploymentID), component \(component), instance \(session.intent.instanceID), registerrevisie \(session.proposal.registryRevision), operation \(operationID), fingerprint \(session.reviewFingerprint)?"
             guard await confirm(prompt) else {
                 return lifecycleConfirmationRequired(session)
             }
@@ -710,7 +745,9 @@ public struct InstallerCLIWorkflow: Sendable {
         case .failure(let failure):
             return InstallerCLIResult(
                 exitCode: .executionFailed, status: "lifecycle-execution-failed",
-                message: "De helper heeft PRESERVE niet terminaal bevestigd; hervat dezelfde operation ID na verse review.",
+                message: operation == "RESTORE"
+                    ? "RESTORE is niet terminaal bevestigd; behoud dezelfde operation ID en controleer product- en registry-readback."
+                    : "De helper heeft \(operation) niet terminaal bevestigd; hervat dezelfde operation ID na verse review.",
                 details: ["reason": String(describing: failure),
                           "operation_id": operationID]
             )
@@ -721,11 +758,11 @@ public struct InstallerCLIWorkflow: Sendable {
                   (try? ManagedInstallerPreservedLifecycleReceipt.decodeJSON(
                     receipt.canonicalJSONData(), request: request
                   )) == receipt else {
-                return Self.blocked("Het PRESERVE-receipt hoort niet bij het beoordeelde doel.")
+                return Self.blocked("Het \(operation)-receipt hoort niet bij het beoordeelde doel.")
             }
             return InstallerCLIResult(
-                exitCode: .success, status: "lifecycle-preserve-complete",
-                message: "Product-PRESERVE en exact registry-readback zijn terminaal bevestigd.",
+                exitCode: .success, status: "lifecycle-" + operation.lowercased() + "-complete",
+                message: "Product-\(operation) en exact registry-readback zijn terminaal bevestigd.",
                 details: [
                     "operation_id": operationID,
                     "deployment_id": deploymentID,

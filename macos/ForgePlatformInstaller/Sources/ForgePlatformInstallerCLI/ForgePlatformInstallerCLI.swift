@@ -434,6 +434,11 @@ enum ForgePlatformInstallerCLIApplication {
                     component: component, options: invocation.options,
                     confirm: confirm
                 )
+            case .deploymentLifecycleRestore(let deployment, let operationID, let component):
+                result = await workflow.restoreComponent(
+                    deploymentID: deployment, operationID: operationID,
+                    component: component, options: invocation.options, confirm: confirm
+                )
             case .deploymentLifecyclePurge(let deployment, let operationID, let component):
                 result = await workflow.purgeComponent(
                     deploymentID: deployment, operationID: operationID,

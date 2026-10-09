@@ -154,6 +154,8 @@ public struct ManagedInstallerPreservedLifecycleReviewProposal: Equatable, Senda
     public let component: String
     public let instanceID: String
     public let hasPreserveEvidence: Bool
+    public let preserveOperationID: String?
+    public let preserveReceiptDigest: String?
     private let canonicalData: Data
 
     public static func decodeJSON(
@@ -229,6 +231,8 @@ public struct ManagedInstallerPreservedLifecycleReviewProposal: Equatable, Senda
             registryRevision: revision, operation: intent.operation,
             component: intent.component, instanceID: intent.instanceID,
             hasPreserveEvidence: hasPreserveOperation,
+            preserveOperationID: review["preserve_operation_id"]?.stringValue,
+            preserveReceiptDigest: review["preserve_receipt_digest"]?.stringValue,
             canonicalData: data
         )
     }

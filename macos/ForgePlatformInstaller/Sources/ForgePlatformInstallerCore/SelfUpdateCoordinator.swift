@@ -854,6 +854,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
               let preservedLifecycleTransport,
               let preservedRegistryReadTransport,
               (session.intent.operation == "PRESERVE" && confirmedInstanceID == nil
+                || session.intent.operation == "RESTORE" && confirmedInstanceID == nil
+                    && session.intent.component == "engineering-platform-server"
                 || session.intent.operation == "PURGE"
                     && confirmedInstanceID == session.intent.instanceID),
               session.inventoryEvidenceReference == session.inventory.evidenceReference,
@@ -865,9 +867,10 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                   == session.intent.installedCompositionIdentity,
               session.target.installedCompositionManifestSHA256
                   == session.intent.installedManifestSHA256,
-              (session.intent.component == "forge-runtime"
-                  ? session.target.forgeInstanceID
-                  : session.target.engineeringPlatformInstanceID) == session.intent.instanceID,
+              (session.intent.operation == "RESTORE"
+                  ? session.target.preservedEngineeringPlatformInstanceID
+                  : session.intent.component == "forge-runtime"
+                    ? session.target.forgeInstanceID : session.target.engineeringPlatformInstanceID) == session.intent.instanceID,
               (try? ManagedInstallerPreservedLifecycleReviewProposal.decodeJSON(
                   session.proposal.canonicalJSONData(), intent: session.intent
               )) == session.proposal,
@@ -888,15 +891,29 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                 self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
                 return .failure(.rejected)
             }
-            var beforePurgeRegistry: ManagedInstallerManagedDeploymentRegistryRecord?
-            if session.intent.operation == "PURGE" {
+            var beforeLifecycleRegistry: ManagedInstallerManagedDeploymentRegistryRecord?
+            if session.intent.operation == "PURGE" || session.intent.operation == "RESTORE" {
                 guard let current = try? await preservedRegistryReadTransport
                     .loadManagedDeploymentRegistryRecord(deploymentID: session.target.id),
                       current.target == session.target,
                       current.revision == session.proposal.registryRevision else {
                     return .failure(.rejected)
                 }
-                beforePurgeRegistry = current
+                if session.intent.operation == "RESTORE" {
+                    guard session.target.forgeInstanceID == nil,
+                          session.target.preservedForgeInstanceID == nil,
+                          session.target.engineeringPlatformInstanceID == nil,
+                          Set(current.preservedComponents.keys) == ["engineering-platform-server"],
+                          current.componentReceiptReferences.isEmpty,
+                          current.peerReceiptReference == nil, current.historicalPeerReceiptReference == nil,
+                          let preserved = current.preservedComponents["engineering-platform-server"],
+                          preserved.instanceID == session.intent.instanceID,
+                          preserved.preserveOperationID == session.proposal.preserveOperationID,
+                          preserved.preserveReceiptDigest == session.proposal.preserveReceiptDigest else {
+                        return .failure(.rejected)
+                    }
+                }
+                beforeLifecycleRegistry = current
             }
             switch await self.checkForUpdateWhileLocked(
                 currentVersion: session.intent.installerRelease.version,
@@ -979,8 +996,29 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                       preserved.preserveReceiptDigest == receipt.receiptDigest else {
                     return .failure(.rejected)
                 }
+            } else if session.intent.operation == "RESTORE" {
+                guard let beforeLifecycleRegistry,
+                      let expected = try? ManagedDeploymentTarget(
+                        id: session.target.id, label: session.target.label, exists: true,
+                        engineeringPlatformInstanceID: session.intent.instanceID,
+                        installedCompositionID: session.target.installedCompositionID,
+                        installedCompositionManifestSHA256: session.target.installedCompositionManifestSHA256
+                      ), after.existing.first(where: { $0.id == session.target.id }) == expected,
+                      let registry = try? await preservedRegistryReadTransport
+                        .loadManagedDeploymentRegistryRecord(deploymentID: session.target.id),
+                      registry.target == expected, registry.revision == receipt.registryRevision,
+                      registry.revision == beforeLifecycleRegistry.revision + 1,
+                      registry.preservedComponents.isEmpty,
+                      Set(registry.componentReceiptReferences.keys) == ["engineering-platform-server"],
+                      let reference = registry.componentReceiptReferences["engineering-platform-server"],
+                      reference.hasPrefix("receipt:restore-"),
+                      CompositionCatalogValidation.isTaggedSHA256("sha256:" + reference.dropFirst("receipt:restore-".count)),
+                      registry.peerReceiptReference == nil, registry.historicalPeerReceiptReference == nil,
+                      registry.compositionReceiptReference == beforeLifecycleRegistry.compositionReceiptReference else {
+                    return .failure(.rejected)
+                }
             } else {
-                guard let beforePurgeRegistry else { return .failure(.rejected) }
+                guard let beforeLifecycleRegistry else { return .failure(.rejected) }
                 let otherComponent = session.intent.component == "forge-runtime"
                     ? "engineering-platform-server" : "forge-runtime"
                 let forge = session.intent.component == "forge-runtime"
@@ -993,7 +1031,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                     ? nil : session.target.preservedEngineeringPlatformInstanceID
                 if [forge, ep, preservedForge, preservedEP].compactMap({ $0 }).isEmpty {
                     guard !after.existing.contains(where: { $0.id == session.target.id }),
-                          receipt.registryRevision == beforePurgeRegistry.revision + 1 else {
+                          receipt.registryRevision == beforeLifecycleRegistry.revision + 1 else {
                         return .failure(.rejected)
                     }
                 } else {
@@ -1010,13 +1048,13 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                             .loadManagedDeploymentRegistryRecord(deploymentID: session.target.id),
                           registry.target == expected,
                           registry.revision == receipt.registryRevision,
-                          registry.revision == beforePurgeRegistry.revision + 1,
+                          registry.revision == beforeLifecycleRegistry.revision + 1,
                           registry.componentReceiptReferences[session.intent.component] == nil,
                           registry.preservedComponents[session.intent.component] == nil,
                           registry.componentReceiptReferences[otherComponent]
-                            == beforePurgeRegistry.componentReceiptReferences[otherComponent],
+                            == beforeLifecycleRegistry.componentReceiptReferences[otherComponent],
                           registry.preservedComponents[otherComponent]
-                            == beforePurgeRegistry.preservedComponents[otherComponent] else {
+                            == beforeLifecycleRegistry.preservedComponents[otherComponent] else {
                         return .failure(.rejected)
                     }
                 }
