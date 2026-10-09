@@ -189,6 +189,43 @@ final class ManagedInstallerFreshPriorWorkerVenvEvidenceAdmissionTests: XCTestCa
             records: [record], evidenceReference:
                 "registry:sha256:" + String(repeating: "e", count: 64)
         )
+        // Metadata/store fixtures exercise enumeration, not installed proof.
+        let installation = try ManagedInstallerInstallationRouteAuthority(.object([
+            "deployment_id": .string(route.deploymentID),
+            "forge_instance_id": .string(route.forgeInstanceID),
+            "forge_installation_id": .string(route.forgeInstallationID),
+            "forge_service_account": .string("fixtureadmin"),
+            "forge_service_user_identity_sha256": .string("sha256:" + String(repeating: "d", count: 64)),
+            "forge_bind_port": .integer(String(route.forgeBindPort)),
+            "forge_artifact_sha256": .string(forgeArtifact),
+            "ep_artifact_sha256": .string(epArtifact),
+            "ep_instance_id": .string(route.engineeringPlatformInstanceID),
+            "ep_display_label": .string("Prior EP"),
+            "ep_service_account": .string(route.engineeringPlatformServiceAccount),
+            "ep_bind_port": .integer(String(route.engineeringPlatformBindPort)),
+            "forge_venv_slot": .string(try XCTUnwrap(route.forgeVenvSlotName)),
+            "ep_venv_slot": .string(try XCTUnwrap(route.engineeringPlatformVenvSlotName)),
+            "installation_pairing": .object([
+                "operation_id": .string("prior-operation"), "binding_id": .string("prior-binding"),
+                "consumer_id": .string("prior-consumer"), "credential_reference": .string("keychain://prior/installation")])
+        ]))
+        let v7 = try ManagedInstallerProductWorkerAuthoritySnapshot(
+            installerRelease: authority.installerRelease, candidateManifests: [manifest],
+            routes: [], installationRoutes: [installation])
+        let v7Loaded = try ManagedInstallerFreshPriorWorkerVenvEvidenceAdmission.load(
+            prior: v7, registry: registry, excluding: "new-deployment",
+            store: PairStore(evidences: [forge, ep])).get()
+        XCTAssertEqual(v7Loaded.map(\.request.componentIdentity), ["engineering-platform-server", "forge-runtime"])
+        XCTAssertEqual(ManagedInstallerFreshPriorWorkerVenvEvidenceAdmission.load(
+            prior: v7, registry: registry, excluding: "new-deployment",
+            store: PairStore(evidences: [forge])).failure, .rejected)
+        let projectedForge = try XCTUnwrap(installation.wheelReadbackRoute(component: "forge-runtime"))
+        XCTAssertEqual(projectedForge.serviceAccount, "fixtureadmin")
+        XCTAssertEqual(projectedForge.serviceUserIdentitySHA256, installation.forgeServiceUserIdentitySHA256)
+        XCTAssertEqual(projectedForge.venvSlotName, installation.forgeVenvSlot)
+        XCTAssertEqual(installation.wheelReadbackRoute(component: "engineering-platform-server")?.venvSlotName,
+                       installation.epVenvSlot)
+        XCTAssertNil(installation.wheelReadbackRoute(component: "unknown"))
         let exact = PairStore(evidences: [forge, ep])
         let result = try ManagedInstallerFreshPriorWorkerVenvEvidenceAdmission.load(
             prior: authority, registry: registry, excluding: "new-deployment",

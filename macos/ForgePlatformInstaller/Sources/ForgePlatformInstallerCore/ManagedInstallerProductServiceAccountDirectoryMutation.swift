@@ -43,6 +43,8 @@ struct MacOSManagedInstallerProductServiceAccountDirectoryMutation:
     private static let minimumID: UInt32 = 200_000
     private static let idRange: UInt32 = 500_000
     private static let disabledAuthority = ";DisabledUser;"
+    private static let projectionAttempts = 30
+    private static let projectionRetryNanoseconds: UInt64 = 200_000_000
 
     private let directory: any ManagedInstallerLocalDirectoryOperating
     private let requiredEffectiveUID: uid_t
@@ -64,6 +66,15 @@ struct MacOSManagedInstallerProductServiceAccountDirectoryMutation:
     func readAccountSynchronously(_ claim: ManagedInstallerProductServiceAccountClaim)
         -> Result<ManagedInstallerProductServiceAccountReadback?,
                   ManagedInstallerProductServiceAccountPreparationFailure> {
+        if !claim.accountName.hasPrefix("_") {
+            guard claim.componentIdentity == "forge-runtime",
+                  let user = try? FileManagedInstallerHelperReviewedSelectionStore.production().loadOperator(for: claim),
+                  user.accountName == claim.accountName else { return .failure(.rejected) }
+            let evidence = "receipt:named-operator-" + user.identitySHA256
+            return .success(ManagedInstallerProductServiceAccountReadback(
+                claim: claim, uid: user.uid, gid: user.gid, evidenceReference: evidence
+            ))
+        }
         guard let expected = expectedIdentity(claim) else { return .failure(.invalidRequest) }
         switch collisions(expected) {
         case .failure(let failure): return .failure(failure)
@@ -89,6 +100,11 @@ struct MacOSManagedInstallerProductServiceAccountDirectoryMutation:
     func createAccount(_ claim: ManagedInstallerProductServiceAccountClaim) async
         -> Result<ManagedInstallerProductServiceAccountReadback,
                   ManagedInstallerProductServiceAccountPreparationFailure> {
+        if !claim.accountName.hasPrefix("_") {
+            guard Darwin.geteuid() == requiredEffectiveUID,
+                  case .success(let readback?) = readAccountSynchronously(claim) else { return .failure(.rejected) }
+            return .success(readback)
+        }
         guard Darwin.geteuid() == requiredEffectiveUID,
               let expected = expectedIdentity(claim) else { return .failure(.invalidRequest) }
         switch collisions(expected) {
@@ -102,9 +118,10 @@ struct MacOSManagedInstallerProductServiceAccountDirectoryMutation:
             if case .failure(let failure) = directory.createGroup(expected.group) {
                 return .failure(failure)
             }
-            guard case .success(expected.group) = directory.group(
-                named: expected.group.name
-            ) else { return .failure(.rejected) }
+            switch await readCreatedGroup(expected.group) {
+            case .success: break
+            case .failure(let failure): return .failure(failure)
+            }
         case .failure(let failure): return .failure(failure)
         }
         switch directory.user(named: expected.user.name) {
@@ -116,11 +133,44 @@ struct MacOSManagedInstallerProductServiceAccountDirectoryMutation:
             }
         case .failure(let failure): return .failure(failure)
         }
-        switch readAccountSynchronously(claim) {
-        case .success(let value?): return .success(value)
-        case .success(nil): return .failure(.rejected)
-        case .failure(let failure): return .failure(failure)
+        return await readCreatedAccount(claim)
+    }
+
+    /// Open Directory can commit a record before its independent POSIX
+    /// projection clears a negative lookup. Wait only for the exact identity;
+    /// a conflicting record or directory error still fails immediately.
+    private func readCreatedGroup(_ expected: ManagedInstallerLocalDirectoryGroup) async
+        -> Result<Void, ManagedInstallerProductServiceAccountPreparationFailure> {
+        for attempt in 0..<Self.projectionAttempts {
+            if Task.isCancelled { return .failure(.unavailable) }
+            switch directory.group(named: expected.name) {
+            case .success(expected): return .success(())
+            case .success(nil): break
+            case .success: return .failure(.rejected)
+            case .failure(let failure): return .failure(failure)
+            }
+            if attempt + 1 < Self.projectionAttempts {
+                try? await Task.sleep(nanoseconds: Self.projectionRetryNanoseconds)
+            }
         }
+        return .failure(.unavailable)
+    }
+
+    private func readCreatedAccount(_ claim: ManagedInstallerProductServiceAccountClaim) async
+        -> Result<ManagedInstallerProductServiceAccountReadback,
+                  ManagedInstallerProductServiceAccountPreparationFailure> {
+        for attempt in 0..<Self.projectionAttempts {
+            if Task.isCancelled { return .failure(.unavailable) }
+            switch readAccountSynchronously(claim) {
+            case .success(let value?): return .success(value)
+            case .success(nil): break
+            case .failure(let failure): return .failure(failure)
+            }
+            if attempt + 1 < Self.projectionAttempts {
+                try? await Task.sleep(nanoseconds: Self.projectionRetryNanoseconds)
+            }
+        }
+        return .failure(.unavailable)
     }
 
     private func expectedIdentity(

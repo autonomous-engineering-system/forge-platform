@@ -146,6 +146,45 @@ class ManagedProductWheelInspectionTests(TestCase):
                 b"[console_scripts]\nforge = foreign.module:main\n"
             )))
 
+    def test_forge_281_optional_validation_extra_is_inactive_by_default(self) -> None:
+        metadata = (
+            'Metadata-Version: 2.4\nName: forge-autonomy\nVersion: 2.8.1\n'
+            'Provides-Extra: validation\n'
+            'Requires-Dist: coverage<8,>=7; extra == "validation"\n'
+            'Requires-Dist: jsonschema<5,>=4; extra == "validation"\n'
+        ).encode()
+        entrypoints = (
+            "[console_scripts]\nforge = forge.__main__:main\n"
+            "forge-advisory = forge.advisory_cli:main\n"
+            "forge-advisory-context = forge.advisory_context:main\n"
+            "forge-advisory-grant = forge.advisory_grant:main\n"
+            "forge-mission-derive-actions = forge.mission_no_dispatch:main\n"
+            "forge-mission-lifecycle = forge.mission_lifecycle_cli:main\n"
+            "forge-workspace-read-grant = forge.workspace_read_grant:main\n"
+            "forge-workspace-review-grant = forge.workspace_review_grant:main\n"
+            "forge-workspace-worklist-control-grant = forge.workspace_worklist_control_grant:main\n"
+        ).encode()
+        data = wheel_bytes(version="2.8.1", metadata_override=metadata, entrypoint_override=entrypoints)
+        inspect_product_wheel(data, component_identity="forge-runtime", version="2.8.1",
+                              artifact_sha256="sha256:" + sha256(data).hexdigest())
+        for changed in (
+            metadata.replace(b'; extra == "validation"', b''),
+            metadata.replace(b'Provides-Extra: validation', b'Provides-Extra: runtime'),
+            metadata.replace(b'coverage<8,>=7', b'unknown-package'),
+            metadata + b'Requires-Dist: active-runtime-dependency\n',
+        ):
+            data = wheel_bytes(version="2.8.1", metadata_override=changed, entrypoint_override=entrypoints)
+            with self.subTest(metadata=changed), self.assertRaises(ManagedProductWheelInspectionError):
+                inspect_product_wheel(data, component_identity="forge-runtime", version="2.8.1",
+                                      artifact_sha256="sha256:" + sha256(data).hexdigest())
+
+        for changed in (entrypoints.replace(b"forge.advisory_cli:main", b"foreign.module:main"),
+                        entrypoints + b"foreign-command = foreign.module:main\n"):
+            data = wheel_bytes(version="2.8.1", metadata_override=metadata, entrypoint_override=changed)
+            with self.subTest(entrypoints=changed), self.assertRaises(ManagedProductWheelInspectionError):
+                inspect_product_wheel(data, component_identity="forge-runtime", version="2.8.1",
+                                      artifact_sha256="sha256:" + sha256(data).hexdigest())
+
     def test_bounded_expansion_and_malformed_zip_fail_closed(self) -> None:
         with patch("forge_platform.managed_product_wheel_inspection.MAXIMUM_EXPANDED_BYTES", 10):
             with self.assertRaises(ManagedProductWheelInspectionError):

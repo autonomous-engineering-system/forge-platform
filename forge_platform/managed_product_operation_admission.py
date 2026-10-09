@@ -14,11 +14,11 @@ from hashlib import sha256
 import json
 from pathlib import PurePosixPath
 import re
-from typing import Mapping
+from typing import Mapping, Callable
 from urllib.parse import urlsplit
 
 from .composition_identity import require_composition_identity
-from .managed_deployments import ManagedDeployment, ManagedDeploymentRegistry
+from .managed_deployments import ManagedDeployment, ManagedDeploymentRegistry, ManagedDeploymentPlan
 from .universal_installer import CompositionManifest
 
 
@@ -155,6 +155,7 @@ class AdmittedNativeProductOperation:
     request: NativeProductOperationRequest
     manifest: CompositionManifest
     current_deployment: ManagedDeployment | None
+    completed_create_plan: ManagedDeploymentPlan | None = None
 
 
 def decode_native_product_operation_request(
@@ -287,6 +288,7 @@ def admit_native_product_operation(
     registry: ManagedDeploymentRegistry,
     current_installer_release: NativeInstallerReleaseBinding,
     installed_manifest: CompositionManifest | None = None,
+    completed_create_plan_reader: Callable[[NativeProductOperationRequest, CompositionManifest, ManagedDeployment], ManagedDeploymentPlan | None] | None = None,
 ) -> AdmittedNativeProductOperation:
     """Compare native intent with the exact manifest and durable registry."""
 
@@ -340,6 +342,17 @@ def admit_native_product_operation(
 
     current = registry.load(request.deployment_id)
     if (current is not None) != request.deployment_exists:
+        # A fresh create can commit both real products before authenticated
+        # pairing fails. Only the helper's completed saga and exact component
+        # receipts may admit continuation; the real current registry stays
+        # visible throughout admission and dispatch.
+        if (current is not None and not request.deployment_exists
+            and installed_manifest is None
+            and all(operation.change == "install" for operation in operations.values())
+            and callable(completed_create_plan_reader)):
+            prior_plan = completed_create_plan_reader(request, manifest, current)
+            if isinstance(prior_plan, ManagedDeploymentPlan):
+                return AdmittedNativeProductOperation(request, manifest, current, prior_plan)
         raise ManagedProductOperationAdmissionError("deployment existence changed after review")
     if current is None:
         if any(operation.change != "install" for operation in operations.values()):

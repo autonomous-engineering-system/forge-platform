@@ -5,6 +5,114 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
+    func testAccountCohortsAllowOnlySameNamedForgeAcrossDistinctInstances() {
+        let digest = "sha256:" + String(repeating: "a", count: 64)
+        func existing(_ component: String, _ name: String, _ instance: String = "old-instance")
+            -> ManagedInstallerProductServiceAccountBinding {
+            .init(deploymentID: "old", componentIdentity: component, instanceID: instance,
+                  serviceAccount: name, artifactSHA256: digest, uid: 501, gid: 20,
+                  authoritySHA256: digest)
+        }
+        func fresh(_ component: String, _ name: String, _ uid: UInt32 = 501, _ gid: UInt32 = 20,
+                   _ instance: String = "new-instance") -> ManagedInstallerProductServiceAccountReadback {
+            .init(claim: .init(stablePlanFingerprint: digest, operationID: "source-op", deploymentID: "new",
+                              componentIdentity: component, instanceID: instance,
+                              productArtifactSHA256: digest, accountName: name),
+                  uid: uid, gid: gid, evidenceReference: "receipt:source-account")
+        }
+        let old = existing("forge-runtime", "operator-example")
+        XCTAssertTrue(MacOSManagedInstallerFreshProviderProbeAccess.acceptsAccountCohorts(
+            installed: [old], fresh: [fresh("forge-runtime", "operator-example")]))
+        XCTAssertTrue(MacOSManagedInstallerFreshProviderProbeAccess.acceptsAccountCohorts(
+            installed: [old], fresh: [fresh("engineering-platform-server", "_fpi_aaaaaaaaaaaaaaaaaaaa", 502)]))
+        for invalid in [
+            fresh("engineering-platform-server", "operator-example"),
+            fresh("forge-runtime", "different-operator"),
+            fresh("forge-runtime", "operator-example", 501, 21),
+            fresh("forge-runtime", "operator-example", 501, 20, "old-instance")
+        ] {
+            XCTAssertFalse(MacOSManagedInstallerFreshProviderProbeAccess.acceptsAccountCohorts(installed: [old], fresh: [invalid]))
+        }
+        XCTAssertFalse(MacOSManagedInstallerFreshProviderProbeAccess.acceptsAccountCohorts(
+            installed: [existing("forge-runtime", "_fpi_aaaaaaaaaaaaaaaaaaaa")],
+            fresh: [fresh("forge-runtime", "_fpi_aaaaaaaaaaaaaaaaaaaa")]))
+    }
+
+    func testPhysicalPriorReaderDistinguishesEmptyMissingAndDamagedAuthority() throws {
+        let base = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(at: base.appendingPathComponent("state/deployments"),
+            withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let fixture = try FreshRuntimeFixture()
+        let release = try XCTUnwrap(ManagedInstallerProductWorkerReleaseBinding.workerRelease(
+            for: fixture.plan.reviewedOperation.currentInstallerRelease))
+        let reader = ManagedInstallerFreshProviderPriorAccounts(root: base, expectedOwner: getuid())
+        guard case .success(let empty) = reader.read(release: release, candidateDeploymentID: "source-candidate") else {
+            return XCTFail("empty physical registry rejected")
+        }
+        XCTAssertTrue(empty.installed.isEmpty)
+        let file = base.appendingPathComponent("product-worker-authority.json")
+        try Data("{\"schema\":\"damaged\"}".utf8).write(to: file)
+        chmod(file.path, 0o600)
+        XCTAssertEqual(reader.read(release: release, candidateDeploymentID: "source-candidate").failure, .unavailable)
+    }
+
+    func testPriorAccountsSeparateExactUninstalledCandidateFromInstalledRoutes() {
+        let installed = priorBinding(
+            deployment: "deployment-installed", component: "forge-runtime",
+            account: "_fpi_aaaaaaaaaaaaaaaaaaaa", uid: 501
+        )
+        let candidateForge = priorBinding(
+            deployment: "deployment-candidate", component: "forge-runtime",
+            account: "_fpi_bbbbbbbbbbbbbbbbbbbb", uid: 502
+        )
+        let candidateEP = priorBinding(
+            deployment: "deployment-candidate",
+            component: "engineering-platform-server",
+            account: "_fpi_cccccccccccccccccccc", uid: 503
+        )
+        let result = ManagedInstallerFreshProviderPriorAccounts.classify(
+            bindings: [candidateEP, installed, candidateForge],
+            registeredDeploymentIDs: ["deployment-installed"],
+            candidateDeploymentID: "deployment-candidate",
+            candidateManifestDigests: ["sha256:" + String(repeating: "d", count: 64)]
+        )
+        guard case .success(let readback) = result else {
+            return XCTFail("exact candidate should be classified")
+        }
+        XCTAssertEqual(readback.installed, [installed])
+        XCTAssertEqual(Set(readback.candidate.map(\.componentIdentity)), [
+            "forge-runtime", "engineering-platform-server",
+        ])
+        XCTAssertEqual(readback.candidateManifestDigests, [
+            "sha256:" + String(repeating: "d", count: 64),
+        ])
+    }
+
+    func testPriorAccountsRejectUnknownOrTerminalCandidateRoute() {
+        let candidate = priorBinding(
+            deployment: "deployment-candidate", component: "forge-runtime",
+            account: "_fpi_bbbbbbbbbbbbbbbbbbbb", uid: 502
+        )
+        let unknown = priorBinding(
+            deployment: "deployment-unknown", component: "forge-runtime",
+            account: "_fpi_cccccccccccccccccccc", uid: 503
+        )
+        XCTAssertEqual(ManagedInstallerFreshProviderPriorAccounts.classify(
+            bindings: [candidate, unknown], registeredDeploymentIDs: [],
+            candidateDeploymentID: "deployment-candidate",
+            candidateManifestDigests: []
+        ).failure, .rejected)
+        XCTAssertEqual(ManagedInstallerFreshProviderPriorAccounts.classify(
+            bindings: [candidate],
+            registeredDeploymentIDs: ["deployment-candidate"],
+            candidateDeploymentID: "deployment-candidate",
+            candidateManifestDigests: []
+        ).failure, .rejected)
+    }
+
     func testPhysicalFreshProviderAccessBindsReceiptAndPrivateRuntime() throws {
         let runtime = try ProviderRuntimeRequirement(
             version: InstallerVersion("2.70.0"), archiveKind: .tarGzip,
@@ -53,9 +161,9 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             .appendingPathComponent("fresh-provider-access-\(UUID().uuidString)",
                                     isDirectory: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let root = base.appendingPathComponent(
-            "AutonomousEngineeringSystem/ForgePlatformInstaller", isDirectory: true
-        )
+        let root = base
+            .appendingPathComponent(InstallerBuildProfile.parentDirectoryName, isDirectory: true)
+            .appendingPathComponent(InstallerBuildProfile.stateDirectoryName, isDirectory: true)
         let target = root.appendingPathComponent(
             "provider-contexts/deployments/\(fixture.plan.deployment.id)/providers/"
                 + "forge-runtime/\(fixture.plan.deployment.id)/github-cli/runtime/"
@@ -80,7 +188,8 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             withIntermediateDirectories: true
         )
         var path = base
-        for segment in ["AutonomousEngineeringSystem", "ForgePlatformInstaller",
+        for segment in [InstallerBuildProfile.parentDirectoryName,
+                        InstallerBuildProfile.stateDirectoryName,
                         "provider-contexts", "deployments", fixture.plan.deployment.id,
                         "providers", "forge-runtime", fixture.plan.deployment.id,
                         "github-cli", "runtime", "2.70.0", "bin"] {
@@ -106,9 +215,18 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             atPath: epExecutable.path, contents: Data("ep-provider-binary".utf8)
         ))
         XCTAssertEqual(chmod(epExecutable.path, 0o500), 0)
+        let workerRelease = try XCTUnwrap(
+            ManagedInstallerProductWorkerReleaseBinding.workerRelease(
+                for: fixture.plan.reviewedOperation.currentInstallerRelease
+            )
+        )
         let access = MacOSManagedInstallerFreshProviderProbeAccess(
             root: root, expectedOwner: geteuid(), requiredEffectiveUID: geteuid(),
-            accounts: FreshRuntimeAccountReader(readbacks: accounts.accounts)
+            accounts: FreshRuntimeAccountReader(readbacks: accounts.accounts),
+            prior: FreshRuntimePriorAccounts(
+                expectedRelease: workerRelease,
+                candidateDeploymentID: fixture.plan.deployment.id
+            )
         )
         let provider = try XCTUnwrap(fixture.provider)
         XCTAssertNoThrow(try access.grant(
@@ -119,6 +237,30 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             stablePlan: fixture.plan, material: fixture.material,
             preprovider: accounts, providers: provider
         ).get())
+        let candidateBindings = accounts.accounts.map { account in
+            ManagedInstallerProductServiceAccountBinding(
+                deploymentID: account.claim.deploymentID, componentIdentity: account.claim.componentIdentity,
+                instanceID: account.claim.instanceID, serviceAccount: account.claim.accountName,
+                artifactSHA256: account.claim.productArtifactSHA256, uid: account.uid, gid: account.gid,
+                authoritySHA256: "sha256:" + String(repeating: "e", count: 64))
+        }
+        let candidateAccess = MacOSManagedInstallerFreshProviderProbeAccess(
+            root: root, expectedOwner: geteuid(), requiredEffectiveUID: geteuid(),
+            accounts: FreshRuntimeAccountReader(readbacks: accounts.accounts),
+            prior: FreshRuntimePriorAccounts(expectedRelease: workerRelease,
+                candidateDeploymentID: fixture.plan.deployment.id,
+                readback: .init(installed: [], candidate: candidateBindings,
+                                candidateManifestDigests: [fixture.plan.session.manifestSHA256])))
+        XCTAssertNoThrow(try candidateAccess.grant(stablePlan: fixture.plan, material: fixture.material,
+                                                  preprovider: accounts, providers: provider).get())
+        let mismatchedCandidate = MacOSManagedInstallerFreshProviderProbeAccess(
+            root: root, expectedOwner: geteuid(), requiredEffectiveUID: geteuid(),
+            accounts: FreshRuntimeAccountReader(readbacks: accounts.accounts),
+            prior: FreshRuntimePriorAccounts(expectedRelease: workerRelease,
+                candidateDeploymentID: fixture.plan.deployment.id,
+                readback: .init(installed: [], candidate: candidateBindings, candidateManifestDigests: [])))
+        XCTAssertEqual(mismatchedCandidate.grant(stablePlan: fixture.plan, material: fixture.material,
+                                                 preprovider: accounts, providers: provider).failure, .rejected)
         let fileACL = try XCTUnwrap(acl_get_file(
             executable.path, ACL_TYPE_EXTENDED
         ))
@@ -147,6 +289,19 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             stablePlan: fixture.plan, material: fixture.material,
             preprovider: accounts, providers: provider
         ).failure, .rejected)
+    }
+
+    private func priorBinding(
+        deployment: String, component: String, account: String, uid: uid_t
+    ) -> ManagedInstallerProductServiceAccountBinding {
+        ManagedInstallerProductServiceAccountBinding(
+            deploymentID: deployment,
+            componentIdentity: component,
+            instanceID: "instance-\(uid)", serviceAccount: account,
+            artifactSHA256: "sha256:" + String(repeating: "a", count: 64),
+            uid: uid, gid: uid,
+            authoritySHA256: "sha256:" + String(repeating: "b", count: 64)
+        )
     }
 
     func testExactJournalAccountsProvidersPythonOrderAndReceipt() async throws {
@@ -983,12 +1138,17 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             ) { continuation.resume(returning: $0) }
         }
         XCTAssertNotNil(xpcReceipt)
+        let (operatorStore, operatorRoot) = try temporaryReviewedOperatorTestStore()
+        defer { try? FileManager.default.removeItem(at: operatorRoot) }
+        try operatorStore.registerOperator(ManagedInstallerNamedOperator.resolve(uid: getuid()),
+            selection: ManagedInstallerReviewedSelection(stablePlan: fixture.plan))
         let listener = MacOSManagedInstallerReleasedRouteXPCListener(
             listener: .anonymous(),
             callerIdentity: try ManagedInstallerProductOperationXPCCallerIdentity(
                 bundleIdentifier: "com.autonomous-engineering-system.forge-platform-installer",
                 teamIdentifier: "ZEML4LPXH4"
             ), serviceHandler: service,
+            installerUserStore: operatorStore,
             installCodeSigningRequirement: { _, _ in }
         )
         listener.activate()
@@ -1310,6 +1470,58 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                        fixture.preprovider.accounts[0].claim.instanceID)
     }
 
+    func testPairedProductAuthorityPublishesBothBeforeDispatch() async throws {
+        let target = try ManagedInstallerReviewedPairingTarget(
+            projectID: "forge", repositoryID: "forge",
+            repositoryIdentity: "pcvantol:forge"
+        )
+        let fixture = try FreshRuntimeFixture(pairingTarget: target)
+        let pairing = try ManagedInstallerProductWorkerPairingAuthority(
+            bindingID: "binding-reviewed", consumerID: "forge",
+            hostID: "host-reviewed", projectID: target.projectID,
+            repositoryID: target.repositoryID,
+            repositoryIdentity: target.repositoryIdentity,
+            credentialReference: "keychain://forge.platform.installer.debug/reviewed",
+            operatorID: "installer"
+        )
+        let authority = FreshSingleRouteAuthority()
+        let downstream = FreshAccountProductDispatch()
+        let operations = singleRouteOperations(
+            fixture: fixture, authority: authority, downstream: downstream,
+            pairingAuthority: { _ in pairing }
+        )
+        let result = await operations.executeProductOperations(
+            stablePlan: fixture.plan,
+            runtimeTransactionReceipt: try freshRuntimeTransactionReceipt(
+                fixture: fixture, includeAccounts: true
+            )
+        )
+        XCTAssertEqual(result, .failed(.executionFailed, stages: []))
+        XCTAssertEqual(authority.publications, 1)
+        XCTAssertEqual(authority.snapshot?.routes.first?.pairing, pairing)
+        XCTAssertEqual(authority.snapshot?.routes.count, 1)
+        XCTAssertTrue(authority.snapshot?.singleRoutes.isEmpty == true)
+        let calls = await downstream.calls()
+        XCTAssertEqual(calls, 1)
+
+        let blockedAuthority = FreshSingleRouteAuthority()
+        let blockedDownstream = FreshAccountProductDispatch()
+        let blocked = singleRouteOperations(
+            fixture: fixture, authority: blockedAuthority,
+            downstream: blockedDownstream
+        )
+        let blockedResult = await blocked.executeProductOperations(
+            stablePlan: fixture.plan,
+            runtimeTransactionReceipt: try freshRuntimeTransactionReceipt(
+                fixture: fixture, includeAccounts: true
+            )
+        )
+        XCTAssertEqual(blockedResult, .failed(.staleSession, stages: []))
+        XCTAssertEqual(blockedAuthority.publications, 0)
+        let blockedCalls = await blockedDownstream.calls()
+        XCTAssertEqual(blockedCalls, 0)
+    }
+
     func testEPProviderRegistrationRunsOnlyAfterFreshWorkerAuthorityPublication()
         async throws {
         let base = try stagedProviderRequirement()
@@ -1421,7 +1633,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             fixture: fixture, includeAccounts: true
         )
         for failure in ["account", "wheel", "material", "evidence", "registry",
-                        "registry-drift", "publisher", "currency"] {
+                        "registry-drift", "publisher", "currency", "service-access"] {
             let authority = FreshSingleRouteAuthority(failPublication: failure == "publisher")
             let downstream = FreshAccountProductDispatch()
             let operations = singleRouteOperations(
@@ -1461,7 +1673,9 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         downstream: FreshAccountProductDispatch,
         failure: String = "",
         prior: FreshPriorSingleRouteFixture? = nil,
-        epRegistration: (any ManagedInstallerFreshEPProviderRegistering)? = nil
+        epRegistration: (any ManagedInstallerFreshEPProviderRegistering)? = nil,
+        pairingAuthority: (@Sendable (ManagedInstallerStablePlan)
+            -> ManagedInstallerProductWorkerPairingAuthority?)? = nil
     ) -> ManagedInstallerFreshSingleProductWorkerPublishingOperations {
         let admitted = ManagedInstallerHelperExecutionMaterial(
             material: fixture.material,
@@ -1493,10 +1707,20 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             },
             readerFactory: { _ in
                 FreshSingleRouteVenvReader(
-                    reference: "receipt:fresh-venv-"
-                        + fixture.plan.session.productVirtualEnvironments[0].componentIdentity
+                    reference: fixture.plan.session.productVirtualEnvironments.count == 1
+                        ? "receipt:fresh-venv-"
+                            + fixture.plan.session.productVirtualEnvironments[0]
+                                .componentIdentity
+                        : nil
                 )
-            }, epProviderRegistration: epRegistration, downstream: downstream
+            }, serviceVenvAccess: { release in
+                guard release == ManagedInstallerProductWorkerReleaseBinding.workerRelease(
+                    for: admitted.currentRelease), failure != "service-access" else {
+                    return .failure(.rejected)
+                }
+                return .success(())
+            }, epProviderRegistration: epRegistration,
+            pairingAuthority: pairingAuthority, downstream: downstream
         )
     }
 
@@ -1699,7 +1923,7 @@ private struct FreshSingleRouteWheel: ManagedPythonProductVenvWheelInstalling {
 }
 
 private struct FreshSingleRouteVenvReader: ManagedInstallerProductWorkerVenvReading {
-    let reference: String
+    let reference: String?
 
     func readPublished(_ request: ManagedPythonProductVenvMutationRequest)
         -> Result<ManagedPythonProductVenvReceipt?, ManagedPythonRuntimeActivationFailure> {
@@ -1711,6 +1935,7 @@ private struct FreshSingleRouteVenvReader: ManagedInstallerProductWorkerVenvRead
             runtimeSlotIdentity: request.runtimeSlotIdentity,
             runtimeSlotEvidenceReference: request.runtimeSlotEvidenceReference,
             state: .ready, evidenceReference: reference
+                ?? "receipt:fresh-venv-" + request.componentIdentity
         ))
     }
 }
@@ -1767,13 +1992,17 @@ private final class FreshSingleRouteAuthority:
                   priorAuthority: self.snapshot,
                   accounts: accounts, activation: activation,
                   venvEvidence: venvEvidence
-              ), let evidence = venvEvidence.first,
-              case .success(let reread?) = reader.readPublished(evidence.request),
-              reread == evidence.activationReceipt,
-              case .success(let wheelDigest) = await wheel.readPublished(
-                  URL(fileURLWithPath: "/var/empty"), request: evidence.request
-              ), wheelDigest == evidence.wheelBindingEvidence else {
+              ) else {
             return .failure(.invalidAuthority)
+        }
+        for evidence in venvEvidence {
+            guard case .success(let reread?) = reader.readPublished(evidence.request),
+                  reread == evidence.activationReceipt,
+                  case .success(let wheelDigest) = await wheel.readPublished(
+                    URL(fileURLWithPath: "/var/empty"), request: evidence.request
+                  ), wheelDigest == evidence.wheelBindingEvidence else {
+                return .failure(.invalidAuthority)
+            }
         }
         for previous in priorVenvEvidence {
             guard case .success(let reread?) = reader.readPublished(previous.request),
@@ -1884,7 +2113,8 @@ private struct FreshRuntimeFixture {
 
     init(wheelBytes: Data = Data("qualified-wheel-test-bytes".utf8),
          providers: [ProviderRequirement] = [],
-         components: [String] = ["forge-runtime", "engineering-platform-server"])
+         components: [String] = ["forge-runtime", "engineering-platform-server"],
+         pairingTarget: ManagedInstallerReviewedPairingTarget? = nil)
         throws {
         let wheel = try PrepublicationWheelFixture(
             wheelBytes: wheelBytes, providerRequirements: providers,
@@ -1916,7 +2146,8 @@ private struct FreshRuntimeFixture {
                     artifactDigest: wheel.artifactDigest,
                     detail: "Exact Forge install"
                 ),
-            ].filter { components.contains($0.componentID) }
+            ].filter { components.contains($0.componentID) },
+            pairingTarget: pairingTarget
         )
         let journal = try ManagedPythonRuntimeParentJournalRecord(
             plan: plan.activationPlan, stablePlanFingerprint: plan.fingerprint,
@@ -2279,6 +2510,27 @@ private struct FreshRuntimeAccountReader: ManagedInstallerFreshProductAccountRea
         -> Result<ManagedInstallerProductServiceAccountReadback?,
                   ManagedInstallerProductServiceAccountPreparationFailure> {
         .success(readbacks.first(where: { $0.claim == claim }))
+    }
+}
+
+private struct FreshRuntimePriorAccounts:
+    ManagedInstallerFreshProviderPriorAccountReading {
+    let expectedRelease: VerifiedInstallerRelease
+    let candidateDeploymentID: String
+    var readback: ManagedInstallerFreshProviderPriorAccounts.Readback? = nil
+
+    func read(
+        release: VerifiedInstallerRelease,
+        candidateDeploymentID: String
+    ) -> Result<ManagedInstallerFreshProviderPriorAccounts.Readback,
+                ManagedInstallerFreshProviderProbeAccessFailure> {
+        guard release == expectedRelease,
+              candidateDeploymentID == self.candidateDeploymentID else {
+            return .failure(.rejected)
+        }
+        return .success(readback ?? .init(
+            installed: [], candidate: [], candidateManifestDigests: []
+        ))
     }
 }
 

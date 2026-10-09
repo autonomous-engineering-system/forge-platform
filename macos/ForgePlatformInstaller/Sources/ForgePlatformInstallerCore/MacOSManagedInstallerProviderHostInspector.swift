@@ -502,11 +502,7 @@ public struct MacOSManagedInstallerProviderHostInspector:
                         componentIdentity: owner.rawValue
                     ),
                   freshClaim.accountName
-                    == ManagedInstallerProductServiceAccountPlanner.name(
-                        deploymentID: request.deploymentID,
-                        componentIdentity: owner.rawValue,
-                        instanceID: freshClaim.instanceID
-                    ),
+                    == ManagedInstallerProductServiceAccountPlanner.reviewedAccountName(for: freshClaim),
                   targetIdentity == request.deploymentID,
                   case .success(let readback?) = freshAccountReader
                     .readAccountSynchronously(freshClaim),

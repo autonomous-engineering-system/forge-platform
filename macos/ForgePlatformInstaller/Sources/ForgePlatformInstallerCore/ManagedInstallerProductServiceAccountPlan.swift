@@ -61,6 +61,19 @@ struct ManagedInstallerProductServiceAccountPlanner {
                 deploymentID: stablePlan.deployment.id,
                 componentIdentity: component.componentID
             )
+            let intent = try? ManagedInstallerReviewedExecutionIntent(stablePlan: stablePlan)
+            let reviewedUser = intent.flatMap {
+                try? FileManagedInstallerHelperReviewedSelectionStore.production().loadOperator(for: $0)
+            }
+            let installationForge = Self.isInstallationForge(binding)
+            if component.componentID == "forge-runtime", binding.version == "2.8.1" {
+                guard installationForge, let reviewedUser, reviewedUser.isAdministrator else {
+                    return .failure(.rejected)
+                }
+            }
+            let accountName = component.componentID == "forge-runtime"
+                && (binding.version == "2.7.39" || installationForge)
+                ? reviewedUser?.accountName : nil
             claims.append(ManagedInstallerProductServiceAccountClaim(
                 stablePlanFingerprint: stablePlan.fingerprint,
                 operationID: stablePlan.activationPlan.operationID,
@@ -68,7 +81,7 @@ struct ManagedInstallerProductServiceAccountPlanner {
                 componentIdentity: component.componentID,
                 instanceID: identity,
                 productArtifactSHA256: binding.artifactSHA256,
-                accountName: Self.name(
+                accountName: accountName ?? Self.name(
                     deploymentID: stablePlan.deployment.id,
                     componentIdentity: component.componentID,
                     instanceID: identity
@@ -80,6 +93,14 @@ struct ManagedInstallerProductServiceAccountPlanner {
             return .failure(.rejected)
         }
         return .success(claims)
+    }
+
+    static let installationForgeArtifactSHA256 = "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0"
+
+    static func isInstallationForge(_ binding: ManagedInstallerPrepublicationProductWheelBinding) -> Bool {
+        binding.componentIdentity == "forge-runtime" && binding.version == "2.8.1"
+            && binding.sourceRevision == "c8833ffa4754800de451cce94b109ef1ad07123f"
+            && binding.artifactSHA256 == installationForgeArtifactSHA256
     }
 
     /// Product instances are distinct from the deployment correlation ID and
@@ -110,5 +131,20 @@ struct ManagedInstallerProductServiceAccountPlanner {
         }
         let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
         return "_fpi_" + String(digest.prefix(20))
+    }
+
+    /// The independently captured installer peer owns new Forge claims. EP
+    /// and unregistered historical claims retain their deterministic accounts.
+    /// Corrupt/conflicting owner evidence never falls back to a legacy name.
+    static func reviewedAccountName(for claim: ManagedInstallerProductServiceAccountClaim) -> String? {
+        let legacy = name(deploymentID: claim.deploymentID,
+                          componentIdentity: claim.componentIdentity, instanceID: claim.instanceID)
+        guard claim.componentIdentity == "forge-runtime" else { return legacy }
+        do {
+            let user = try FileManagedInstallerHelperReviewedSelectionStore.production().loadOperator(for: claim)
+            return user.isAdministrator ? user.accountName : nil
+        } catch ManagedInstallerHelperReviewedSelectionStoreFailure.unavailable {
+            return claim.productArtifactSHA256 == installationForgeArtifactSHA256 ? nil : legacy
+        } catch { return nil }
     }
 }

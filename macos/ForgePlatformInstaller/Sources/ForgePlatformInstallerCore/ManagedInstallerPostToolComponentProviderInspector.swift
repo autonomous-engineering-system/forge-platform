@@ -72,7 +72,7 @@ struct ManagedInstallerPostToolComponentProviderInspector:
                 deploymentID: stablePlan.deployment.id,
                 componentIdentity: owner.rawValue
             )
-            return ManagedInstallerProductServiceAccountClaim(
+            let original = ManagedInstallerProductServiceAccountClaim(
                 stablePlanFingerprint: stablePlan.fingerprint,
                 operationID: stablePlan.activationPlan.operationID,
                 deploymentID: stablePlan.deployment.id,
@@ -82,6 +82,13 @@ struct ManagedInstallerPostToolComponentProviderInspector:
                     deploymentID: stablePlan.deployment.id,
                     componentIdentity: owner.rawValue, instanceID: instance
                 )
+            )
+            guard let account = ManagedInstallerProductServiceAccountPlanner.reviewedAccountName(for: original) else { return nil }
+            return ManagedInstallerProductServiceAccountClaim(
+                stablePlanFingerprint: original.stablePlanFingerprint, operationID: original.operationID,
+                deploymentID: original.deploymentID, componentIdentity: original.componentIdentity,
+                instanceID: original.instanceID, productArtifactSHA256: original.productArtifactSHA256,
+                accountName: account
             )
         }
         let forgeClaim = claim(.forgeRuntime)

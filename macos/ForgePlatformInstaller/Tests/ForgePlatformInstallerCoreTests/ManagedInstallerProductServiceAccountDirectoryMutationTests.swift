@@ -49,6 +49,24 @@ final class ManagedInstallerProductServiceAccountDirectoryMutationTests: XCTestC
         XCTAssertEqual(directory.createsUser, 2)
     }
 
+    func testWaitsForExactPOSIXProjectionAfterCreatingGroupAndUser() async throws {
+        let claim = exactClaim()
+        let directory = DirectoryFixture()
+        directory.hiddenGroupReadsAfterCreate = 2
+        directory.hiddenUserReadsAfterCreate = 2
+        let mutation = MacOSManagedInstallerProductServiceAccountDirectoryMutation(
+            directory: directory, requiredEffectiveUID: geteuid()
+        )
+        let created = try await mutation.createAccount(claim).get()
+        XCTAssertEqual(created.claim, claim)
+        XCTAssertEqual(directory.createsGroup, 1)
+        XCTAssertEqual(directory.createsUser, 1)
+        XCTAssertEqual(directory.hiddenGroupReadsAfterCreate, 0)
+        XCTAssertEqual(directory.hiddenUserReadsAfterCreate, 0)
+        let readback = try await mutation.readAccount(claim).get()
+        XCTAssertEqual(readback, created)
+    }
+
     func testRejectsForeignUIDGIDAndTamperedExistingUser() async throws {
         let claim = exactClaim()
         let directory = DirectoryFixture()
@@ -141,14 +159,24 @@ final class DirectoryFixture:
     var failUserCreateOnce = false
     var foreignUID = false
     var foreignGID = false
+    var hiddenGroupReadsAfterCreate = 0
+    var hiddenUserReadsAfterCreate = 0
 
     func user(named: String) -> Result<ManagedInstallerLocalDirectoryUser?,
                                      ManagedInstallerProductServiceAccountPreparationFailure> {
-        .success(users[named])
+        if users[named] != nil && hiddenUserReadsAfterCreate > 0 {
+            hiddenUserReadsAfterCreate -= 1
+            return .success(nil)
+        }
+        return .success(users[named])
     }
     func group(named: String) -> Result<ManagedInstallerLocalDirectoryGroup?,
                                       ManagedInstallerProductServiceAccountPreparationFailure> {
-        .success(groups[named])
+        if groups[named] != nil && hiddenGroupReadsAfterCreate > 0 {
+            hiddenGroupReadsAfterCreate -= 1
+            return .success(nil)
+        }
+        return .success(groups[named])
     }
     func userName(forUID: UInt32) -> Result<String?,
         ManagedInstallerProductServiceAccountPreparationFailure> {

@@ -27,8 +27,8 @@ public enum MacOSTrustedInstallerRuntimeBuilderConfigurationError: Error, Equata
 /// installer self-update and read-only catalog state; product services, venvs,
 /// provider credentials and machine-wide mutation locks never live here.
 enum MacOSInstallerUserStateRoot {
-    private static let vendorDirectoryName = "AutonomousEngineeringSystem"
-    private static let installerDirectoryName = "ForgePlatformInstaller"
+    private static let vendorDirectoryName = InstallerBuildProfile.parentDirectoryName
+    private static let installerDirectoryName = InstallerBuildProfile.stateDirectoryName
 
     static func prepare() throws -> URL {
         guard let applicationSupport = FileManager.default.urls(
@@ -242,11 +242,13 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 helperIdentity: helperIdentity,
                 expectedParentVersion: sealedReleaseProvenance.installerVersion
             )
+            let releaseDescriptorFetcher: any GitHubInstallerReleaseDescriptorFetching =
+                GitHubReleaseDescriptorTransport()
             let releaseFeed = try GitHubSignedInstallerReleaseFeed(
                 trustConfiguration: sealedTrustConfiguration,
                 sealedReleaseProvenance: sealedReleaseProvenance,
                 architecture: architecture,
-                fetcher: GitHubReleaseDescriptorTransport(),
+                fetcher: releaseDescriptorFetcher,
                 acceptanceStore: acceptanceStore
             )
 

@@ -1346,6 +1346,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertEqual(driftCalls, 1)
     }
 
+
     private func run(
         _ arguments: [String],
         startup: CLIStartupSpy,
@@ -1508,6 +1509,7 @@ private actor CLIHelperRegistrarSpy {
 
     func calls() -> Int { count }
 }
+
 
 private actor CLITestTrustedRuntime: TrustedInstallerRuntime {
     private let coordinator: CLIReadyCoordinator

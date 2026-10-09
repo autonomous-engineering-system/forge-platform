@@ -305,6 +305,7 @@ final class ManagedInstallerPrivilegedHelperRegistrationTests: XCTestCase {
         }
     }
 
+
     func testIdleSignedOlderReleaseTransitionResumesAfterRegistrationFailure() async throws {
         let current = try InstallerVersion("0.3.8")
         let service = LegacyTransitionService(
@@ -1101,8 +1102,11 @@ private final class LegacyTransitionService:
     private let staysEnabledAfterUnregister: Bool
     private let notFoundAfterUnregister: Bool
     private let reportedStatusInitiallyNotRegistered: Bool
+    private let reportedStatusInitiallyNotFound: Bool
     private let jobAbsentReadbackFails: Bool
     private let idle: Bool
+    private let spawnFailed: Bool
+    private let runningLocalDebug: Bool
     private let oldVersion: String
     private let newVersion: String
 
@@ -1111,7 +1115,10 @@ private final class LegacyTransitionService:
          staysEnabledAfterUnregister: Bool = false,
          notFoundAfterUnregister: Bool = false,
          reportedStatusInitiallyNotRegistered: Bool = false,
-         jobAbsentReadbackFails: Bool = false) {
+         reportedStatusInitiallyNotFound: Bool = false,
+         jobAbsentReadbackFails: Bool = false,
+         spawnFailed: Bool = false,
+         runningLocalDebug: Bool = false) {
         self.idle = idle
         self.oldVersion = oldVersion
         self.newVersion = newVersion
@@ -1120,13 +1127,19 @@ private final class LegacyTransitionService:
         self.staysEnabledAfterUnregister = staysEnabledAfterUnregister
         self.notFoundAfterUnregister = notFoundAfterUnregister
         self.reportedStatusInitiallyNotRegistered = reportedStatusInitiallyNotRegistered
+        self.reportedStatusInitiallyNotFound = reportedStatusInitiallyNotFound
         self.jobAbsentReadbackFails = jobAbsentReadbackFails
+        self.spawnFailed = spawnFailed
+        self.runningLocalDebug = runningLocalDebug
     }
 
     func readStatus() -> ManagedInstallerPrivilegedHelperStatus {
         lock.withLock {
             if enabled && currentIsNew { return .enabled }
-            if enabled { return reportedStatusInitiallyNotRegistered ? .notRegistered : .enabled }
+            if enabled {
+                if reportedStatusInitiallyNotFound { return .notFound }
+                return reportedStatusInitiallyNotRegistered ? .notRegistered : .enabled
+            }
             return notFoundAfterUnregister ? .notFound : .notRegistered
         }
     }
@@ -1138,6 +1151,7 @@ private final class LegacyTransitionService:
     func readIdleRegisteredParentVersion() -> InstallerVersion? {
         lock.withLock { idle && enabled && !currentIsNew ? try? InstallerVersion(oldVersion) : nil }
     }
+
 
     func readSystemJobAbsent() -> Bool {
         lock.withLock { !enabled && !jobAbsentReadbackFails }

@@ -668,6 +668,68 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         ))
     }
 
+    func testProductBridgeAcceptsOnlyExactProviderArchiveInspectionEvidence() {
+        let exact = "provider-archive-inspection-" + String(repeating: "a", count: 64)
+        XCTAssertTrue(ManagedInstallerProductOperationRequest
+            .isRuntimeEvidenceReference(exact))
+        XCTAssertTrue(ManagedInstallerProductOperationRequest
+            .isRuntimeEvidenceReference("receipt:provider-runtime-archive-" +
+                String(repeating: "b", count: 64)))
+        XCTAssertFalse(ManagedInstallerProductOperationRequest
+            .isRuntimeEvidenceReference("provider-archive-inspection-" +
+                String(repeating: "a", count: 63)))
+        XCTAssertFalse(ManagedInstallerProductOperationRequest
+            .isRuntimeEvidenceReference("provider-archive-inspection-" +
+                String(repeating: "A", count: 64)))
+        XCTAssertFalse(ManagedInstallerProductOperationRequest
+            .isRuntimeEvidenceReference("provider-archive-inspection-" +
+                String(repeating: "g", count: 64)))
+    }
+
+    func testProductBridgeBindsOneReferenceForSharedProviderArchive() {
+        let sharedArchive = "receipt:provider-runtime-archive-"
+            + String(repeating: "a", count: 64)
+        let firstInspection = "provider-archive-inspection-"
+            + String(repeating: "b", count: 64)
+        let secondInspection = "provider-archive-inspection-"
+            + String(repeating: "c", count: 64)
+        let references = ManagedInstallerProductOperationRequest
+            .canonicalRuntimeEvidenceReferences([
+                sharedArchive, firstInspection, sharedArchive, secondInspection,
+            ])
+        XCTAssertEqual(references, [
+            firstInspection, secondInspection, sharedArchive,
+        ])
+        XCTAssertTrue(references.allSatisfy(
+            ManagedInstallerProductOperationRequest.isRuntimeEvidenceReference
+        ))
+    }
+
+    func testProductRequestUsesTaggedWorkerDigestAndKeepsNativeReleaseIdentity() throws {
+        let fixture = try RuntimeCompletionFixture()
+        let request = try ManagedInstallerProductOperationRequest(
+            stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: fixture.transactionReceipt()
+        )
+        var reader = try StrictJSONResourceReader(data: request.canonicalJSONData())
+        var fields = try XCTUnwrap(reader.parseDocument().objectValue)
+        var release = try XCTUnwrap(fields["installer_release"]?.objectValue)
+        XCTAssertEqual(release["sha256"]?.stringValue, "sha256:" + request.installerRelease.sha256)
+        XCTAssertEqual(request.installerRelease, fixture.stablePlan.reviewedOperation.currentInstallerRelease)
+        XCTAssertEqual(try ManagedInstallerProductOperationRequest.decodeJSON(request.canonicalJSONData()), request)
+        // A valid fingerprint cannot make the wrong wire representation valid.
+        release["sha256"] = .string(request.installerRelease.sha256)
+        fields["installer_release"] = .object(release)
+        fields.removeValue(forKey: "request_fingerprint")
+        let digest = GitHubInstallerReleaseDescriptor.sha256(
+            of: StrictSignedJSON.canonicalPayload(from: .object(fields))
+        )
+        fields["request_fingerprint"] = .string(digest)
+        XCTAssertThrowsError(try ManagedInstallerProductOperationRequest.decodeJSON(
+            StrictSignedJSON.canonicalPayload(from: .object(fields))
+        ))
+    }
+
     func testProductBridgeRequestRejectsSubstitutedRuntimeReceiptAndJSON() throws {
         let fixture = try RuntimeCompletionFixture()
         let other = try RuntimeCompletionFixture(deploymentID: "other-deployment")
@@ -1173,11 +1235,11 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         )
         XCTAssertEqual(
             MacOSManagedInstallerProductOperationXPCTransport.machServiceName,
-            "com.autonomous-engineering-system.forge-platform-installer.helper.product-operations"
+            InstallerBuildProfile.helperLabel + ".product-operations"
         )
         XCTAssertEqual(
             ManagedInstallerPostToolXPCHelperIdentity.signingIdentifier,
-            "com.autonomous-engineering-system.forge-platform-installer.helper"
+            InstallerBuildProfile.helperLabel
         )
         let transport = MacOSManagedInstallerProductOperationXPCTransport(
             helperIdentity: helper

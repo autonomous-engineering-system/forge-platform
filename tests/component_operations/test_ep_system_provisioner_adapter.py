@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import sys
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -33,6 +34,7 @@ class Runner:
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.inventory_instances: list[dict[str, object]] = []
+        self.inventory_state = "READY"
         self.ready = True
         self.operation_result = "COMPLETE"
         self.providers = {
@@ -58,7 +60,7 @@ class Runner:
         self.calls.append(args)
         command = args[1]
         if command == "inventory":
-            payload = {"state": "READY", "instances": self.inventory_instances}
+            payload = {"state": self.inventory_state, "instances": self.inventory_instances}
         elif command == "status":
             payload = {
                 "contract": "engineering-platform.system-provisioner/v1",
@@ -170,6 +172,30 @@ class EPSystemAdapterTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_exact_product_owned_provider_bootstrap_has_no_installed_runtime(self) -> None:
+        bootstrap = {
+            "schema_version": 1, "instance_id": "ep-prod", "display_label": "Production",
+            "service_account": "_ep_prod", "service_label": "com.engineeringplatform.server.instance-owned",
+            "state": "PROVIDER_BOOTSTRAP_PENDING", "status": "PROVIDER_BOOTSTRAP_PENDING",
+            "descriptor": str(self.adapter.product_root / "instances/ep-prod/provider-bootstrap.json"),
+        }
+        self.runner.inventory_state = "OBSERVED"
+        self.runner.inventory_instances = [bootstrap]
+        self.assertEqual(self.adapter.readback(request("install")).state, "ABSENT")
+        self.assertEqual([call[1] for call in self.runner.calls], ["inventory"])
+        for field, wrong in [
+            ("display_label", "Other"), ("service_account", "_other"),
+            ("descriptor", "/foreign/provider-bootstrap.json"),
+            ("status", "READY"), ("state", "READY"), ("schema_version", 2),
+            ("selected_runtime", {"version": "2.3.106"}),
+        ]:
+            with self.subTest(field=field):
+                self.runner.inventory_instances = [{**bootstrap, field: wrong}]
+                self.assertEqual(self.adapter.readback(request("install")).state, "UNKNOWN")
+        self.runner.inventory_instances = [bootstrap]
+        self.runner.inventory_state = "AMBIGUOUS"
+        self.assertEqual(self.adapter.readback(request("install")).state, "UNKNOWN")
 
     def test_absent_inventory_is_exact_install_target(self) -> None:
         observed = self.adapter.readback(request("install"))
@@ -413,6 +439,14 @@ class EPSystemAdapterTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(EngineeringPlatformAdapterError, "EP Server role"):
             self.adapter.execute(wrong_role)
+
+    def test_product_runner_prevents_shared_runtime_bytecode_writes(self) -> None:
+        with patch("forge_platform.engineering_platform_system_adapter.subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = "{}"
+            run.return_value.stderr = ""
+            SubprocessProductCommandRunner().run(("/absolute/provisioner", "status"))
+        self.assertEqual(run.call_args.kwargs["env"]["PYTHONDONTWRITEBYTECODE"], "1")
 
     def test_subprocess_runner_and_invalid_product_evidence_fail_closed(self) -> None:
         command_runner = SubprocessProductCommandRunner()

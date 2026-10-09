@@ -52,7 +52,14 @@ enum ManagedInstallerFreshPriorWorkerVenvEvidenceAdmission {
                     ),
                 ]
             }
-        let routes = (singles + paired).sorted {
+        let installations = (prior?.installationRoutes ?? [])
+            .filter { $0.deploymentID != deploymentID }.flatMap { route in
+                [PriorRouteComponent(deploymentID: route.deploymentID, componentIdentity: "forge-runtime",
+                    artifactSHA256: route.forgeArtifactSHA256, venvSlotName: route.forgeVenvSlot),
+                 PriorRouteComponent(deploymentID: route.deploymentID, componentIdentity: "engineering-platform-server",
+                    artifactSHA256: route.engineeringPlatformArtifactSHA256, venvSlotName: route.epVenvSlot)]
+            }
+        let routes = (singles + paired + installations).sorted {
             ($0.deploymentID, $0.componentIdentity)
                 < ($1.deploymentID, $1.componentIdentity)
         }

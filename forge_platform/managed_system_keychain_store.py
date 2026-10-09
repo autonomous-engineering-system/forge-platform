@@ -57,6 +57,19 @@ class ManagedSystemKeychainCredentialStore:
             raise ManagedSystemKeychainStoreError("signed worker layout is unavailable")
         self._helper = worker.parent / "forge-platform-installer-helper"
 
+    def prepare_service_reader(self, reference: str, *, operation_id: str) -> bool:
+        receipt = self._invoke("prepare-service-reader", reference, operation_id)
+        if set(receipt) != {"reader_ready"} or receipt["reader_ready"] is not True:
+            raise ManagedSystemKeychainStoreError("released service reader is unavailable")
+        return True
+
+    def prepare_installation_service_reader(self, reference: str, *, operation_id: str) -> bool:
+        """Requires the native installation journal route; never legacy fallback."""
+        receipt = self._invoke("prepare-installation-service-reader", reference, operation_id)
+        if set(receipt) != {"reader_ready"} or receipt["reader_ready"] is not True:
+            raise ManagedSystemKeychainStoreError("installation service reader is unavailable")
+        return True
+
     def _require_helper(self) -> None:
         try:
             info = os.lstat(self._helper)
@@ -75,7 +88,7 @@ class ManagedSystemKeychainCredentialStore:
         material: str | None = None,
     ) -> dict[str, object]:
         if (
-            action not in {"fingerprint", "put-verified", "clear-owned"}
+            action not in {"fingerprint", "put-verified", "clear-owned", "prepare-service-reader", "prepare-installation-service-reader"}
             or not isinstance(reference, str) or _REFERENCE.fullmatch(reference) is None
             or not isinstance(operation_id, str) or _OPERATION.fullmatch(operation_id) is None
             or action == "put-verified" and (

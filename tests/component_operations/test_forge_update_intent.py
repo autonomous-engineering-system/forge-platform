@@ -64,7 +64,7 @@ class ForgeUpdateIntentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / "private"
+        self.root = Path(self.temp.name).resolve() / "private"
         self.root.mkdir(mode=0o700)
         self.store = ForgeUpdateIntentStore(self.root)
         self.intent = ForgeUpdateIntent(
@@ -73,6 +73,23 @@ class ForgeUpdateIntentTests(unittest.TestCase):
             "forge-update-assess:sha256:" + "d" * 64,
         )
         self.receipt = "forge-update:sha256:" + "e" * 64
+
+    def test_typed_maintenance_preparation_is_not_a_product_intent(self) -> None:
+        proof = {"schema": "forge-platform.forge281-maintenance-preparation/v1", "state": "COMPLETE",
+            "selection": {"operation_id": "maintenance-1",
+                "installed_digest": "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1",
+                "candidate_digest": "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0"}}
+        path = self.root / "maintenance-1.preparation.json"
+        original = (json.dumps(proof,sort_keys=True,separators=(",",":"))+"\n").encode()
+        path.write_bytes(original);path.chmod(0o600)
+        self.assertEqual(self.store.prepare(self.intent).phase,"PREPARED")
+        self.assertEqual(path.read_bytes(),original)
+
+    def test_untyped_preparation_file_is_not_silently_skipped(self) -> None:
+        path = self.root / "foreign.preparation.json"
+        path.write_bytes(b'{"schema":"foreign"}\n');path.chmod(0o600)
+        with self.assertRaises(ForgeUpdateIntentError):self.store.prepare(self.intent)
+        self.assertIsNone(self.store.read(self.intent.operation_id))
 
     def test_durable_exact_phase_progression_and_replay(self) -> None:
         self.assertIsNone(self.store.read(self.intent.operation_id))

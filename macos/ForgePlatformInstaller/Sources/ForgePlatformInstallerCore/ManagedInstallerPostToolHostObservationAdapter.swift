@@ -445,8 +445,7 @@ public enum ManagedInstallerPostToolXPCHelperIdentityError: Error, Equatable {
 /// The signing identifier is the fixed privileged Mach service name and cannot
 /// be supplied by a caller.
 public struct ManagedInstallerPostToolXPCHelperIdentity: Equatable, Sendable {
-    public static let signingIdentifier =
-        "com.autonomous-engineering-system.forge-platform-installer.helper"
+    public static let signingIdentifier = InstallerBuildProfile.helperLabel
 
     public let teamIdentifier: String
     public let codeSigningRequirement: String

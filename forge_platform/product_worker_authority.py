@@ -18,10 +18,16 @@ import re
 import stat
 from typing import Callable, Mapping
 
+from .managed_forge_instance_bootstrap import ManagedForgeInstanceBootstrap
+from .managed_installer_user_identity import resolve_identity_sha256
 from .engineering_platform_system_adapter import EPSystemInstanceTarget
-from .forge_ep_pairing_executor import ForgeEPProductPairingBinding
-from .forge_server_adapter import ForgeServerTarget, ForgeUninstallBinding
-from .forge_update_binding_provider import ReleasedForge239UpdateBindingProvider
+from .forge_ep_pairing_executor import ForgeEPProductPairingBinding, ForgeEPInstallationPairingBinding
+from .forge_server_adapter import ForgeServerTarget, ForgeUninstallBinding, ForgeServerProductAdapter, MacOSForgeLaunchDaemonSupervisor
+from .engineering_platform_system_adapter import EngineeringPlatformSystemProvisionerAdapter
+from .installation_credential_issuer import ManagedEPInstallationCredentialIssuer
+from .qualified_ep_lifecycle import qualified_ep_installation_pairing_artifact
+from .qualified_forge_lifecycle import qualified_forge_installation_pairing_artifact
+from .forge_update_binding_provider import ReleasedForge239UpdateBindingProvider, ReleasedForge281MaintenanceBindingProvider
 from .managed_deployments import ManagedDeploymentRegistry
 from .managed_install_flow import ManagedForgeEPInstallationCoordinator
 from .managed_system_keychain_store import ManagedSystemKeychainCredentialStore
@@ -31,16 +37,18 @@ from .managed_product_operation_service import (
     ManagedProductOperationHelperService,
 )
 from .released_product_routes import (
-    ReleasedManagedProductRouteConfiguration,
+    ReleasedManagedProductRouteConfiguration, ReleasedManagedInstallationRouteConfiguration,
     ReleasedManagedSingleProductRouteConfiguration,
 )
-from .qualified_forge_lifecycle import qualified_forge_239_update_selection
+from .qualified_forge_lifecycle import qualified_forge_239_update_selection, qualified_forge_281_update_selection
 from .universal_installer import CompositionManifest, UniversalInstallerError
 
 
 PRODUCT_WORKER_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v3"
 PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v4"
 PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v5"
+PRODUCT_WORKER_NAMED_USER_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v6"
+PRODUCT_WORKER_INSTALLATION_AUTHORITY_SCHEMA = "forge-platform.product-worker-authority/v7"
 PRODUCT_WORKER_ROOT = Path(
     "/Library/Application Support/AutonomousEngineeringSystem/ForgePlatformInstaller"
 )
@@ -90,6 +98,7 @@ class _AuthoritySnapshot:
     installed: tuple[CompositionManifest, ...]
     routes: tuple[Mapping[str, object], ...]
     single_routes: tuple[Mapping[str, object], ...]
+    installation_routes: tuple[Mapping[str, object], ...] = ()
 
 
 class _StableAuthorityCurrencyGuard:
@@ -189,7 +198,7 @@ class ProductWorkerAuthorityLoader:
             )
         if len({port_value for _account_value, port_value in claims}) != len(claims):
             raise ProductWorkerAuthorityError("product routes reuse a bind port")
-        if snapshot.schema == PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA:
+        if snapshot.schema in {PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA, PRODUCT_WORKER_NAMED_USER_AUTHORITY_SCHEMA}:
             slots = [
                 slot for route in snapshot.routes
                 for slot in (route["forge_venv_slot"], route["ep_venv_slot"])
@@ -230,6 +239,17 @@ class ProductWorkerAuthorityLoader:
             ),
             expected_owner_uid=self.expected_owner_uid,
         )
+        if snapshot.installation_routes:
+            for keys in (("deployment_id",),("forge_instance_id","ep_instance_id"),
+                         ("forge_service_account","ep_service_account"),("forge_bind_port","ep_bind_port"),
+                         ("forge_venv_slot","ep_venv_slot"),("forge_installation_id",)):
+                claims=[wire[k] for wire in snapshot.installation_routes for k in keys]
+                if len(set(claims))!=len(claims):raise ProductWorkerAuthorityError("installation claims overlap")
+            for key in ("operation_id","binding_id","consumer_id","credential_reference"):
+                claims=[_mapping(w["installation_pairing"],"installation binding")[key] for w in snapshot.installation_routes]
+                if len(set(claims))!=len(claims):raise ProductWorkerAuthorityError("installation bindings overlap")
+            configurations += tuple(self._installation_route(wire,snapshot,coordinator)
+                                    for wire in snapshot.installation_routes)
         return ManagedProductOperationHelperBuilder.build_pinned(
             current_installer_release=snapshot.release,
             candidate_manifests=snapshot.candidates,
@@ -246,8 +266,10 @@ class ProductWorkerAuthorityLoader:
             _exact_fields(payload, _TOP_FIELDS, "product-worker authority")
         elif schema == PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA:
             _exact_fields(payload, _TOP_FIELDS_V4, "product-worker authority")
-        elif schema == PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA:
+        elif schema in {PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA, PRODUCT_WORKER_NAMED_USER_AUTHORITY_SCHEMA}:
             _exact_fields(payload, _TOP_FIELDS_V4, "product-worker authority")
+        elif schema == PRODUCT_WORKER_INSTALLATION_AUTHORITY_SCHEMA:
+            _exact_fields(payload,_TOP_FIELDS_V4 | {"installation_routes"},"installation authority")
         else:
             raise ProductWorkerAuthorityError("product-worker authority schema is unsupported")
         release_wire = _mapping(payload["installer_release"], "installer release")
@@ -271,15 +293,20 @@ class ProductWorkerAuthorityLoader:
                 payload["single_routes"] if schema in {
                     PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA,
                     PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA,
+                    PRODUCT_WORKER_NAMED_USER_AUTHORITY_SCHEMA, PRODUCT_WORKER_INSTALLATION_AUTHORITY_SCHEMA,
                 } else [],
                 "single-product routes",
             )
         )
-        if not routes and not single_routes:
+        installation_routes=tuple(_mapping(v,"installation route") for v in
+            _list(payload["installation_routes"] if schema==PRODUCT_WORKER_INSTALLATION_AUTHORITY_SCHEMA else [],"installation routes"))
+        if schema==PRODUCT_WORKER_INSTALLATION_AUTHORITY_SCHEMA and (not installation_routes or routes or single_routes):
+            raise ProductWorkerAuthorityError("installation authority cannot mix legacy routes")
+        if not routes and not single_routes and not installation_routes:
             raise ProductWorkerAuthorityError("product-worker routes are unavailable")
         if schema == PRODUCT_WORKER_SINGLE_AUTHORITY_SCHEMA and not single_routes:
             raise ProductWorkerAuthorityError("v4 single-product routes are unavailable")
-        return _AuthoritySnapshot(schema, raw, release, candidates, installed, routes, single_routes)
+        return _AuthoritySnapshot(schema, raw, release, candidates, installed, routes, single_routes, installation_routes)
 
     def _manifests(
         self, value: object, *, required: bool
@@ -305,6 +332,81 @@ class ProductWorkerAuthorityLoader:
                 ) from error
         return tuple(result)
 
+    def _forge_bootstrap(self, deployment, target, artifact, executable, manifests):
+        if (artifact.version != "2.7.39" and not qualified_forge_installation_pairing_artifact(artifact)) or not target.instance_id.startswith("fpi-"):
+            return None
+        providers = {
+            (str(p.runtime.version), p.runtime.executable_digest)
+            for m in manifests for p in m.providers
+            if p.owner_component == "forge-runtime" and p.identity == "codex"
+            and p.runtime is not None
+            and any(c.identity == "forge-runtime" and c.artifact == artifact for c in m.components)
+        }
+        if len(providers) != 1:
+            raise ProductWorkerAuthorityError("Forge bootstrap lacks one exact signed Codex runtime")
+        version, executable_digest = next(iter(providers))
+        context = self.root / "provider-contexts/deployments" / deployment / "providers/forge-runtime" / deployment / "codex"
+        return ManagedForgeInstanceBootstrap(
+            root=self.root, target=target, artifact=artifact, executable=executable,
+            codex_executable=context / "runtime" / version / "bin/codex",
+            codex_home=context / "home", codex_digest=executable_digest,
+        )
+
+    def _installation_route(self,wire,snapshot,coordinator):
+        fields=(_SLOT_ROUTE_FIELDS-{"pairing"})|{"installation_pairing","forge_service_user_identity_sha256"}
+        _exact_fields(wire,fields,"installation route")
+        deployment=_safe_id(wire["deployment_id"],"deployment")
+        forge_id=_safe_id(wire["forge_instance_id"],"Forge instance")
+        _safe_id(wire["forge_installation_id"],"Forge installation")
+        ep_id=_safe_id(wire["ep_instance_id"],"EP instance")
+        account=_string(wire["forge_service_account"],"Forge named account")
+        identity=_digest(wire["forge_service_user_identity_sha256"],"operator identity")
+        if account.startswith("_") or account=="root" or resolve_identity_sha256(account)!=identity:
+            raise ProductWorkerAuthorityError("installation operator identity changed")
+        ep_account=_account(wire["ep_service_account"],"EP service account")
+        forge_port,ep_port=_port(wire["forge_bind_port"],"Forge port"),_port(wire["ep_bind_port"],"EP port")
+        pairing=_mapping(wire["installation_pairing"],"installation binding")
+        _exact_fields(pairing,frozenset({"operation_id","binding_id","consumer_id","credential_reference"}),"installation binding")
+        artifact_map={}
+        for manifest in snapshot.candidates+snapshot.installed:
+            for component in manifest.components:
+                prior=artifact_map.get(component.artifact.digest)
+                if prior is not None and prior!=(component.identity,component.artifact):
+                    raise ProductWorkerAuthorityError("installation artifact identity ambiguous")
+                artifact_map[component.artifact.digest]=(component.identity,component.artifact)
+        forge_entry=artifact_map.get(_digest(wire["forge_artifact_sha256"],"Forge artifact"))
+        ep_entry=artifact_map.get(_digest(wire["ep_artifact_sha256"],"EP artifact"))
+        if (forge_entry is None or ep_entry is None or forge_entry[0]!="forge-runtime"
+                or ep_entry[0]!="engineering-platform-server"
+                or not qualified_forge_installation_pairing_artifact(forge_entry[1])
+                or not qualified_ep_installation_pairing_artifact(ep_entry[1])):
+            raise ProductWorkerAuthorityError("exact published installation products required")
+        slots=[_venv_slot(wire[k]) for k in ("forge_venv_slot","ep_venv_slot")]
+        if len(set(slots))!=2 or forge_id==ep_id or forge_port==ep_port or account==ep_account:
+            raise ProductWorkerAuthorityError("installation target claims overlap")
+        staged={digest:self.root/"staged"/(digest.removeprefix("sha256:")+".artifact")
+                for digest,(component,artifact) in artifact_map.items()
+                if component in {"forge-runtime","engineering-platform-server"}}
+        instances=self.root/"instances/forge"
+        target=ForgeServerTarget(forge_id,instances/forge_id,instances,account,forge_port,
+            self.root/"credentials/forge"/(forge_id+".token"),service_user_identity_sha256=identity)
+        venvs=self.root/"managed-python-product-venvs"
+        forge_executable=venvs/slots[0]/"bin/forge"
+        forge=ForgeServerProductAdapter(forge_executable=forge_executable,target=target,
+            installed_artifact=forge_entry[1],staged_artifacts=staged,
+            supervisor=MacOSForgeLaunchDaemonSupervisor(self.launch_daemons_directory),
+            instance_bootstrap=self._forge_bootstrap(deployment,target,forge_entry[1],forge_executable,snapshot.candidates+snapshot.installed))
+        ep=EngineeringPlatformSystemProvisionerAdapter(provisioner_executable=venvs/slots[1]/"bin/engineering-platform-system-provisioner",
+            product_root=self.root/"products/engineering-platform",
+            target=EPSystemInstanceTarget(ep_id,_string(wire["ep_display_label"],"EP label"),ep_account,ep_port),staged_artifacts=staged)
+        binding=ForgeEPInstallationPairingBinding(_safe_id(pairing["operation_id"],"installation operation"),
+            _pairing_string(pairing,"binding_id"),f"http://127.0.0.1:{ep_port}",ep_id,
+            _pairing_string(pairing,"consumer_id"),_pairing_string(pairing,"credential_reference"),True)
+        issuer=ManagedEPInstallationCredentialIssuer(operations_root=coordinator.operations_root/"installation-ep-credential",
+            deployment_id=deployment,binding=binding,registry=coordinator.registry,currency_guard=coordinator.currency_guard,
+            forge=forge,ep=ep,ep_artifact=ep_entry[1],store=coordinator.secure_store,expected_owner_uid=self.expected_owner_uid)
+        return ReleasedManagedInstallationRouteConfiguration(deployment,forge,ep,binding,issuer)
+
     def _route(
         self,
         wire: Mapping[str, object],
@@ -312,15 +414,26 @@ class ProductWorkerAuthorityLoader:
         installed: tuple[CompositionManifest, ...],
         *, schema: str,
     ) -> ReleasedManagedProductRouteConfiguration:
-        slots_bound = schema == PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA
-        _exact_fields(wire, _SLOT_ROUTE_FIELDS if slots_bound else _ROUTE_FIELDS, "product route")
+        slots_bound = schema in {PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA, PRODUCT_WORKER_NAMED_USER_AUTHORITY_SCHEMA}
+        named_user = schema == PRODUCT_WORKER_NAMED_USER_AUTHORITY_SCHEMA
+        expected_fields = _SLOT_ROUTE_FIELDS if slots_bound else _ROUTE_FIELDS
+        if named_user: expected_fields = expected_fields | {"forge_service_user_identity_sha256"}
+        _exact_fields(wire, expected_fields, "product route")
         deployment = _safe_id(wire["deployment_id"], "deployment id")
         forge_instance = _safe_id(wire["forge_instance_id"], "Forge instance id")
         forge_installation = _safe_id(
             wire["forge_installation_id"], "Forge installation id"
         )
         ep_instance = _safe_id(wire["ep_instance_id"], "EP instance id")
-        forge_account = _account(wire["forge_service_account"], "Forge account")
+        forge_user_identity = wire.get("forge_service_user_identity_sha256")
+        if named_user and not str(wire["forge_service_account"]).startswith("_"):
+            forge_account = _string(wire["forge_service_account"], "Forge operator account")
+            if resolve_identity_sha256(forge_account) != _digest(forge_user_identity, "Forge operator identity"):
+                raise ProductWorkerAuthorityError("Forge reviewed operator identity drifted")
+        else:
+            forge_account = _account(wire["forge_service_account"], "Forge account")
+            if forge_user_identity is not None:
+                raise ProductWorkerAuthorityError("Dedicated Forge account has unexpected human identity")
         ep_account = _account(wire["ep_service_account"], "EP account")
         forge_port = _port(wire["forge_bind_port"], "Forge port")
         ep_port = _port(wire["ep_bind_port"], "EP port")
@@ -367,8 +480,9 @@ class ProductWorkerAuthorityLoader:
             forge_instance, instances / forge_instance, instances,
             forge_account, forge_port,
             self.root / "credentials/forge" / f"{forge_instance}.token",
+            service_user_identity_sha256=forge_user_identity,
         )
-        provider = self._forge_239_provider(
+        provider = self._forge_update_provider(
             artifact=forge_artifact, candidates=tuple(artifacts.values()),
             executable=forge_venv / "bin/forge", target=forge_target,
             installation=forge_installation,
@@ -380,6 +494,9 @@ class ProductWorkerAuthorityLoader:
             forge_executable=forge_venv / "bin/forge",
             forge_target=forge_target,
             forge_installed_artifact=forge_artifact,
+            forge_instance_bootstrap=self._forge_bootstrap(
+                deployment, forge_target, forge_artifact, forge_venv / "bin/forge", candidates + installed
+            ),
             engineering_platform_installed_artifact=ep_artifact,
             engineering_platform_provisioner=(
                 ep_venv / "bin/engineering-platform-system-provisioner"
@@ -420,12 +537,22 @@ class ProductWorkerAuthorityLoader:
         installed: tuple[CompositionManifest, ...],
         *, schema: str,
     ) -> ReleasedManagedSingleProductRouteConfiguration:
-        slots_bound = schema == PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA
-        _exact_fields(wire, _SLOT_SINGLE_ROUTE_FIELDS if slots_bound else _SINGLE_ROUTE_FIELDS,
-                      "single-product route")
+        slots_bound = schema in {PRODUCT_WORKER_SLOT_AUTHORITY_SCHEMA, PRODUCT_WORKER_NAMED_USER_AUTHORITY_SCHEMA}
+        named_user = schema == PRODUCT_WORKER_NAMED_USER_AUTHORITY_SCHEMA
+        expected_fields = _SLOT_SINGLE_ROUTE_FIELDS if slots_bound else _SINGLE_ROUTE_FIELDS
+        if named_user: expected_fields = expected_fields | {"service_user_identity_sha256"}
+        _exact_fields(wire, expected_fields, "single-product route")
         deployment = _safe_id(wire["deployment_id"], "deployment id")
         instance = _safe_id(wire["instance_id"], "product instance id")
-        account = _account(wire["service_account"], "product account")
+        user_identity = wire.get("service_user_identity_sha256")
+        if named_user and not str(wire["service_account"]).startswith("_"):
+            account = _string(wire["service_account"], "Forge operator account")
+            if wire["component_identity"] != "forge-runtime" or resolve_identity_sha256(account) != _digest(user_identity, "Forge operator identity"):
+                raise ProductWorkerAuthorityError("Forge reviewed operator identity drifted")
+        else:
+            account = _account(wire["service_account"], "product account")
+            if user_identity is not None:
+                raise ProductWorkerAuthorityError("Dedicated product account has unexpected human identity")
         port = _port(wire["bind_port"], "product port")
         digest = _digest(wire["artifact_sha256"], "product artifact sha256")
         component = wire["component_identity"]
@@ -460,17 +587,21 @@ class ProductWorkerAuthorityLoader:
             forge_target = ForgeServerTarget(
                 instance, instances / instance, instances, account, port,
                 self.root / "credentials/forge" / f"{instance}.token",
+                service_user_identity_sha256=user_identity,
             )
             return ReleasedManagedSingleProductRouteConfiguration(
                 deployment_id=deployment,
                 component_identity=component,
+                forge_instance_bootstrap=self._forge_bootstrap(
+                    deployment, forge_target, artifact, venv / "bin/forge", candidates + installed
+                ),
                 executable=venv / "bin/forge",
                 target=forge_target,
                 installed_artifact=artifact,
                 staged_artifacts=staged,
                 forge_lifecycle_executable=venv / "bin/forge",
                 forge_uninstall_binding=ForgeUninstallBinding(instance, installation),
-                forge_update_binding_provider=self._forge_239_provider(
+                forge_update_binding_provider=self._forge_update_provider(
                     artifact=artifact, candidates=tuple(artifacts.values()),
                     executable=venv / "bin/forge", target=forge_target,
                     installation=installation,
@@ -494,17 +625,20 @@ class ProductWorkerAuthorityLoader:
             engineering_platform_product_root=self.root / "products/engineering-platform",
         )
 
-    def _forge_239_provider(
+    def _forge_update_provider(
         self, *, artifact, candidates, executable: Path,
         target: ForgeServerTarget, installation: str,
         pairing_id: str | None = None, ep_consumer_id: str | None = None,
     ) -> ReleasedForge239UpdateBindingProvider | None:
-        if self.worker_path is None or self.base_python is None or not any(
-            qualified_forge_239_update_selection(artifact, candidate)
-            for candidate in candidates
-        ):
+        if self.worker_path is None or self.base_python is None:
             return None
-        return ReleasedForge239UpdateBindingProvider(
+        if any(qualified_forge_281_update_selection(artifact, candidate) for candidate in candidates):
+            provider = ReleasedForge281MaintenanceBindingProvider
+        elif any(qualified_forge_239_update_selection(artifact, candidate) for candidate in candidates):
+            provider = ReleasedForge239UpdateBindingProvider
+        else:
+            return None
+        return provider(
             root=self.root, worker=self.worker_path,
             forge_executable=executable, target=target,
             installed_artifact=artifact, installation_id=installation,

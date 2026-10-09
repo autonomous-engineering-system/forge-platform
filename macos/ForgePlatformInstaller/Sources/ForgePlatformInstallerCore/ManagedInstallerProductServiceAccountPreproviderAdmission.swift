@@ -64,11 +64,7 @@ struct ManagedInstallerProductServiceAccountPreproviderReceipt: Equatable, Senda
                   claim.componentIdentity == component.componentID,
                   claim.instanceID == instanceID,
                   claim.productArtifactSHA256 == component.artifactDigest,
-                  claim.accountName == ManagedInstallerProductServiceAccountPlanner.name(
-                      deploymentID: stablePlan.deployment.id,
-                      componentIdentity: component.componentID,
-                      instanceID: instanceID
-                  ),
+                  claim.accountName == ManagedInstallerProductServiceAccountPlanner.reviewedAccountName(for: claim),
                   account.matches(claim) else { return false }
         }
         return true
@@ -110,6 +106,7 @@ struct ManagedInstallerProductServiceAccountPreproviderCoordinator: Sendable {
         self.accounts = accounts
     }
 
+
     func prepare(stablePlan: ManagedInstallerStablePlan,
                  material: ManagedVerifiedCompositionMaterial) async
         -> Result<ManagedInstallerProductServiceAccountPreproviderReceipt,
@@ -120,23 +117,30 @@ struct ManagedInstallerProductServiceAccountPreproviderCoordinator: Sendable {
             return .failure(.invalidRequest)
         }
         let record: ManagedPythonRuntimeParentJournalRecord
-        switch await journal.seedPlannedOperation(stablePlan: stablePlan) {
+        var seeded = await journal.seedPlannedOperation(stablePlan: stablePlan)
+        switch seeded {
         case .success(let value):
             guard ManagedInstallerProductServiceAccountPreproviderReceipt.journalMatches(
                 value, stablePlan: stablePlan
-            ) else { return .failure(.rejected) }
+            ) else {
+                return .failure(.rejected)
+            }
             record = value
-        case .failure(let failure): return .failure(.journal(failure))
+        case .failure(let failure):
+            return .failure(.journal(failure))
         }
         let readbacks: [ManagedInstallerProductServiceAccountReadback]
         switch await accounts.prepare(stablePlan: stablePlan, material: material) {
         case .success(let value): readbacks = value
-        case .failure(let failure): return .failure(.account(failure))
+        case .failure(let failure):
+            return .failure(.account(failure))
         }
         guard let receipt = try? ManagedInstallerProductServiceAccountPreproviderReceipt(
             stablePlan: stablePlan, material: material,
             parentJournalRecord: record, accounts: readbacks
-        ) else { return .failure(.rejected) }
+        ) else {
+            return .failure(.rejected)
+        }
         return .success(receipt)
     }
 }

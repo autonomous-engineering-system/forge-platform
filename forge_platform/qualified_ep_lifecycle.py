@@ -21,3 +21,18 @@ def qualified_ep_lifecycle_artifact(artifact: QualifiedArtifact | None) -> bool:
     return isinstance(artifact, QualifiedArtifact) and (
         artifact.version, artifact.source_revision, artifact.digest
     ) == EP_LIFECYCLE_RELEASE
+
+
+def qualified_ep_installation_pairing_artifact(artifact: QualifiedArtifact | None) -> bool:
+    """Installation credential commands only, exact published EP 2.3.113.
+
+    RELEASE_COMPLETE receipt digest:
+    34f74c085d5de08d5215e938f41e4a3585c9059269fd04e5e4894ac57e204455.
+    Historical project credential and lifecycle authority stays unchanged.
+    """
+    return isinstance(artifact, QualifiedArtifact) and (
+        artifact.version, artifact.source_revision, artifact.digest
+    ) == (
+        "2.3.113", "9318636060706534635954e9131e42e2f63928ef",
+        "sha256:878e36323e37b29d97a188c02257283c3dc322c60755d57dc9017259f8ac386e",
+    )

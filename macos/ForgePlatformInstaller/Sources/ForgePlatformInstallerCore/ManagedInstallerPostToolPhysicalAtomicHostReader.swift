@@ -155,12 +155,22 @@ struct ManagedInstallerPostToolPhysicalAtomicHostReader:
         case .failure(let failure): return .failure(failure)
         }
 
+        let (requiredDiskBytes, diskRequirementOverflow) = requirement
+            .minimumAvailableDiskBytes.addingReportingOverflow(
+                requirement.backupReserveBytes
+            )
+        let diskRequirementMet = !diskRequirementOverflow
+            && facts.availableDiskBytes >= requiredDiskBytes
         let factsValue = StrictJSONResourceValue.object([
             "macos": .string(facts.macOSVersion.description),
             "architecture": .string(facts.hardwareArchitecture),
             "native_arm64": .boolean(facts.nativeArm64Process),
             "rosetta": .boolean(facts.rosettaTranslated),
-            "disk": .integer(String(facts.availableDiskBytes)),
+            "minimum_available_disk_bytes":
+                .integer(String(requirement.minimumAvailableDiskBytes)),
+            "backup_reserve_bytes":
+                .integer(String(requirement.backupReserveBytes)),
+            "disk_requirement_met": .boolean(diskRequirementMet),
             "memory": .integer(String(facts.memoryBytes)),
             "administrator": .boolean(facts.administratorAuthorized),
         ])

@@ -61,10 +61,6 @@ enum ManagedInstallerProviderAccountProbeChild {
               let uid = uid_t(arguments[3]), uid != 0,
               let gid = gid_t(arguments[4]), gid != 0,
               String(uid) == arguments[3], String(gid) == arguments[4],
-              arguments[2].hasPrefix("_fpi_"), arguments[2].utf8.count == 25,
-              arguments[2].utf8.dropFirst(5).allSatisfy({
-                  (48...57).contains($0) || (97...102).contains($0)
-              }),
               ["codex", "github-cli"].contains(arguments[5]),
               ((arguments[1] == flag
                 && ["version", "authentication-status"].contains(arguments[6]))
@@ -83,6 +79,19 @@ enum ManagedInstallerProviderAccountProbeChild {
             allowedRoot.path + "/provider-contexts/deployments/"
         )
         guard epProduct != forgeContext else { return nil }
+        let dedicated = isDedicatedAccount(arguments[2])
+        let named = !arguments[2].isEmpty && arguments[2] != "root"
+            && !arguments[2].hasPrefix("_") && arguments[2].utf8.count <= 255
+            && arguments[2].unicodeScalars.allSatisfy {
+                switch $0.value {
+                case 45, 46, 48...57, 65...90, 95, 97...122: return true
+                default: return false
+                }
+            }
+        // The parent admits an exact immutable reviewed Forge claim. The
+        // child independently resolves that named administrator before setuid.
+        // EP continues to require its dedicated noninteractive account.
+        guard dedicated || (forgeContext && provider == "codex" && named) else { return nil }
         let homeName = epProduct && provider == "github-cli" ? "config" : "home"
         guard arguments[8].hasSuffix("/" + homeName) else { return nil }
         let providerRoot = String(arguments[8].dropLast(homeName.count + 1))
@@ -238,7 +247,23 @@ enum ManagedInstallerProviderAccountProbeChild {
         return true
     }
 
+    private static func isDedicatedAccount(_ name: String) -> Bool {
+        name.hasPrefix("_fpi_") && name.utf8.count == 25
+            && name.utf8.dropFirst(5).allSatisfy {
+                (48...57).contains($0) || (97...102).contains($0)
+            }
+    }
+
     static func matchingLocalAccount(_ request: Request) -> Bool {
+        if !isDedicatedAccount(request.accountName) {
+            guard request.provider == "codex",
+                  request.home.hasPrefix(FileManagedInstallerReleasedRouteXPCService.productionRoot.path
+                    + "/provider-contexts/deployments/"),
+                  let user = try? ManagedInstallerNamedOperator.resolve(uid: request.uid),
+                  user.accountName == request.accountName, user.gid == request.gid,
+                  user.isAdministrator else { return false }
+            return true
+        }
         var record = passwd()
         var pointer: UnsafeMutablePointer<passwd>?
         var buffer = [CChar](repeating: 0, count: 16 * 1_024)

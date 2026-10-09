@@ -8,6 +8,15 @@ on:
         required: true
         type: string
 
+      evidence_version:
+        description: Immutable qualification generation (v1 historical, v2 EP 2.3.113 and Forge 2.8.1)
+        required: true
+        type: choice
+        options:
+          - '1'
+          - '2'
+        default: '2'
+
 permissions:
   contents: read
 
@@ -31,14 +40,21 @@ jobs:
       - name: Require exact current main and unclaimed immutable tag
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          EVIDENCE_VERSION: ${{ inputs.evidence_version }}
         run: |
           set -euo pipefail
+          case "$EVIDENCE_VERSION" in
+            1) CONFIG=product-runtime-qualification-inputs.json ;;
+            2) CONFIG=product-runtime-qualification-inputs-v2.json ;;
+            *) echo 'unsupported immutable evidence version' >&2; exit 1 ;;
+          esac
+          TAG="forge-platform-product-managed-python-evidence-v$EVIDENCE_VERSION"
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test -z "$(git status --porcelain)"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
-          if git ls-remote --exit-code --refs origin refs/tags/forge-platform-product-managed-python-evidence-v1; then
+          if git ls-remote --exit-code --refs origin refs/tags/$TAG; then
             echo 'immutable product/runtime evidence tag already exists' >&2
             exit 1
           else
@@ -58,8 +74,15 @@ jobs:
       - name: Qualify exact published product wheels in separate native managed-Python venvs
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          EVIDENCE_VERSION: ${{ inputs.evidence_version }}
         run: |
           set -euo pipefail
+          case "$EVIDENCE_VERSION" in
+            1) CONFIG=product-runtime-qualification-inputs.json ;;
+            2) CONFIG=product-runtime-qualification-inputs-v2.json ;;
+            *) echo 'unsupported immutable evidence version' >&2; exit 1 ;;
+          esac
+          TAG="forge-platform-product-managed-python-evidence-v$EVIDENCE_VERSION"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
@@ -67,7 +90,7 @@ jobs:
           test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
           python3 -m unittest tests.installer.test_qualify_product_wheels_managed_python
           python3 scripts/qualify_product_wheels_managed_python.py \
-            --config product-runtime-qualification-inputs.json \
+            --config "$CONFIG" \
             --source-sha "$SOURCE_SHA" \
             --output "$RUNNER_TEMP/product-managed-python-evidence.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -96,21 +119,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.source_sha }}
+          EVIDENCE_VERSION: ${{ inputs.evidence_version }}
         run: |
           set -euo pipefail
-          TAG=forge-platform-product-managed-python-evidence-v1
+          case "$EVIDENCE_VERSION" in
+            1) CONFIG=product-runtime-qualification-inputs.json ;;
+            2) CONFIG=product-runtime-qualification-inputs-v2.json ;;
+            *) echo 'unsupported immutable evidence version' >&2; exit 1 ;;
+          esac
+          TAG="forge-platform-product-managed-python-evidence-v$EVIDENCE_VERSION"
           ASSET="$RUNNER_TEMP/product-evidence/product-managed-python-evidence.json"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
-          python3 - "$ASSET" "$SOURCE_SHA" <<'PY'
+          python3 - "$ASSET" "$SOURCE_SHA" "$CONFIG" <<'PY'
           import sys
           from pathlib import Path
           from scripts.qualify_managed_python_runtime import canonical, strict_object
           from scripts.qualify_product_wheels_managed_python import SCHEMA, load_config
           raw = Path(sys.argv[1]).read_bytes()
           report = strict_object(raw)
-          config = load_config(Path('product-runtime-qualification-inputs.json'))
+          config = load_config(Path(sys.argv[3]))
           tools = strict_object(Path('managed-tool-pages.json').read_bytes())
           runtime = next(item for item in tools['assets'] if item['kind'] == 'managed-python-runtime')
           expected = [(item['identity'], item['version'], item['source_revision'], item['wheel']['digest'])
@@ -136,7 +165,7 @@ jobs:
           fi
           gh release create "$TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" \
             --target "$SOURCE_SHA" --draft \
-            --title 'Forge and EP wheels on managed Python qualification v1' \
+            --title "Forge and EP wheels on managed Python qualification v$EVIDENCE_VERSION" \
             --notes 'Native Apple Silicon exact released-wheel install, metadata and CLI help in isolated managed Python 3.14.7 environments. No system service, provider auth, product readiness or live deployment claim.'
           mkdir "$RUNNER_TEMP/draft-readback"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \

@@ -43,8 +43,9 @@ enum ManagedInstallerFreshPriorWorkerRegistryAdmission {
         let single = (prior?.singleRoutes ?? []).filter {
             $0.deploymentID != deploymentID
         }
-        let expectedIDs = Set(paired.map(\.deploymentID) + single.map(\.deploymentID))
-        guard expectedIDs.count == paired.count + single.count,
+        let installation = (prior?.installationRoutes ?? []).filter { $0.deploymentID != deploymentID }
+        let expectedIDs = Set(paired.map(\.deploymentID) + single.map(\.deploymentID) + installation.map(\.deploymentID))
+        guard expectedIDs.count == paired.count + single.count + installation.count,
               Set(registry.records.map(\.target.id)) == expectedIDs,
               registry.records.count == expectedIDs.count else { return false }
 
@@ -72,6 +73,14 @@ enum ManagedInstallerFreshPriorWorkerRegistryAdmission {
                           forge: route.forgeArtifactSHA256,
                           ep: route.engineeringPlatformArtifactSHA256
                       ) else { return false }
+            } else if let route = installation.first(where: { $0.deploymentID == record.target.id }) {
+                guard record.target.forgeInstanceID == route.forgeInstanceID,
+                      record.target.engineeringPlatformInstanceID == route.engineeringPlatformInstanceID,
+                      Set(record.componentReceiptReferences.keys) == ["forge-runtime", "engineering-platform-server"],
+                      record.peerReceiptReference != nil,
+                      priorMatchesManifest(prior, digest: digest,
+                          forge: route.forgeArtifactSHA256, ep: route.engineeringPlatformArtifactSHA256)
+                else { return false }
             } else if let route = single.first(where: {
                 $0.deploymentID == record.target.id
             }) {

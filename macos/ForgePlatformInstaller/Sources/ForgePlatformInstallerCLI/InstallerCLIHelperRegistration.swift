@@ -6,7 +6,7 @@ enum InstallerCLIHelperRegistration {
     typealias Registrar = @Sendable (InstallerVersion) async -> ManagedInstallerPrivilegedHelperRegistrationResult
 
     enum Action: Sendable {
-        case register, qualification, idle, mvp0314, mvp0316, mvp0318, mvp0319, mvp0320, mvp0322, mvp0323, mvp0324, mvp0325, mvp0326, mvp0327, mvp0328, mvp0329
+        case register, qualification, idle, debugSpawnFailed, debugRunning, mvp0314, mvp0316, mvp0318, mvp0319, mvp0320, mvp0322, mvp0323, mvp0324, mvp0325, mvp0326, mvp0327, mvp0328, mvp0329
     }
 
     static func makeRegistrar(
@@ -22,6 +22,10 @@ enum InstallerCLIHelperRegistration {
                 return await instance.replaceLegacyQualification(expectedVersion: expectedVersion)
             case .idle:
                 return await instance.replaceIdleOlderRegistration(expectedVersion: expectedVersion)
+            case .debugSpawnFailed:
+                return .failed(.registeredParentMismatch)
+            case .debugRunning:
+                return .failed(.registeredParentMismatch)
             case .mvp0314:
                 return await instance.replaceMVP0314ForCleanInstall(expectedVersion: expectedVersion)
             case .mvp0316:
@@ -55,6 +59,12 @@ enum InstallerCLIHelperRegistration {
     static let liveRegistrar = makeRegistrar(for: .register, coordinator: liveCoordinator)
     static let liveQualificationReplacer = makeRegistrar(for: .qualification, coordinator: liveCoordinator)
     static let liveIdleReplacer = makeRegistrar(for: .idle, coordinator: liveCoordinator)
+    static let liveDebugSpawnFailedReplacer = makeRegistrar(
+        for: .debugSpawnFailed, coordinator: liveCoordinator
+    )
+    static let liveDebugRunningReplacer = makeRegistrar(
+        for: .debugRunning, coordinator: liveCoordinator
+    )
     static let liveMVP0314Replacer = makeRegistrar(for: .mvp0314, coordinator: liveCoordinator)
     static let liveMVP0316Replacer = makeRegistrar(for: .mvp0316, coordinator: liveCoordinator)
     static let liveMVP0318Replacer = makeRegistrar(for: .mvp0318, coordinator: liveCoordinator)
@@ -83,6 +93,8 @@ enum InstallerCLIHelperRegistration {
         register: Registrar,
         replacingQualification: Bool = false,
         replacingOlder: Bool = false,
+        replacingDebugSpawnFailed: Bool = false,
+        replacingDebugRunning: Bool = false,
         replacingMVP0314: Bool = false,
         replacingMVP0316: Bool = false,
         replacingMVP0318: Bool = false,
@@ -129,6 +141,10 @@ enum InstallerCLIHelperRegistration {
                         ? "Beëindig de actieve 0.3.18-helper na gecontroleerde schone-herstelstatus en registreer de geverifieerde 0.3.19-helper?"
                     : replacingOlder
                         ? "Vervang de exacte inactieve oudere installer-helper door de geverifieerde actuele systeemhelper?"
+                    : replacingDebugSpawnFailed
+                        ? "Registreer de lokale debughelper met mislukte starts opnieuw nadat de oude app verdween?"
+                    : replacingDebugRunning
+                        ? "Vervang de exact geïdentificeerde draaiende lokale debughelper via macOS ServiceManagement?"
                         : "Registreer de geverifieerde installer-helper als systeemdaemon?"
             )
             if !accepted {

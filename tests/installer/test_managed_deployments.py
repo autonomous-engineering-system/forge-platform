@@ -60,6 +60,24 @@ def deployment(
 
 
 class ManagedDeploymentTests(unittest.TestCase):
+    def test_archived_bytes_require_exact_identity_and_keep_path_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ManagedDeploymentRegistry(Path(directory))
+            original = deployment()
+            registry.create(original)
+            raw = (Path(directory) / "production.json").read_bytes()
+            self.assertEqual(ManagedDeploymentRegistry.decode_record_bytes(
+                raw, expected_deployment_id="production"), original)
+            with self.assertRaises(ManagedDeploymentError):
+                ManagedDeploymentRegistry.decode_record_bytes(raw, expected_deployment_id="foreign")
+            archive = Path(directory) / "historical-archive.json"
+            archive.write_bytes(raw)
+            with self.assertRaises(ManagedDeploymentError):
+                ManagedDeploymentRegistry._read(archive)
+            for bad in (b"", b"x" * (64 * 1024 + 1), b"not-json"):
+                with self.subTest(data_size=len(bad)), self.assertRaises(ManagedDeploymentError):
+                    ManagedDeploymentRegistry.decode_record_bytes(bad, expected_deployment_id="production")
+
     def test_ep_only_restore_commit_requires_owning_terminal_and_fresh_readiness(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             registry = ManagedDeploymentRegistry(Path(directory).resolve())

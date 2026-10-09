@@ -6,6 +6,7 @@ public enum ManagedInstallerReleasedRouteXPCFailure: Error, Equatable, Sendable 
     case invalidRequest
     case unavailable
     case rejected
+    case administratorRequired
 }
 
 /// Bounded correlation-only request for a helper-owned released route. It
@@ -566,8 +567,9 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     NSObject, ManagedInstallerReleasedRouteXPCService, @unchecked Sendable {
     public static let inventoryFileName = "managed-deployment-inventory.json"
     public static let productionRoot = URL(
-        fileURLWithPath:
-            "/Library/Application Support/AutonomousEngineeringSystem/ForgePlatformInstaller",
+        fileURLWithPath: "/Library/Application Support/"
+            + InstallerBuildProfile.parentDirectoryName + "/"
+            + InstallerBuildProfile.stateDirectoryName,
         isDirectory: true
     )
 
@@ -663,6 +665,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         reply(loadInventory()?.data)
     }
 
+
     public func loadManagedDeploymentRegistryRecord(
         _ deploymentID: String,
         withReply reply: @escaping (Data?) -> Void
@@ -696,6 +699,7 @@ public final class FileManagedInstallerReleasedRouteXPCService:
             gate.complete(loadStoredRoute(canonicalRequest, request: request))
         }
     }
+
 
     private func loadStoredRoute(
         _ canonicalRequest: Data,
@@ -1102,8 +1106,8 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     ManagedInstallerReviewedEPProviderRegistrationIntentSending,
     ManagedInstallerReviewedSelectionRegistering,
     ManagedInstallerPreservedRegistryReading {
-    public static let machServiceName =
-        "com.autonomous-engineering-system.forge-platform-installer.helper.released-route"
+    public static let machServiceName = InstallerBuildProfile.helperLabel
+        + ".released-route"
 
     private let connection: NSXPCConnection
     private let parentAdmission: ManagedInstallerHelperXPCParentAdmission?
@@ -1152,6 +1156,7 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
         }
         return try ManagedInstallerReleasedRouteXPCCodec.decodeInventory(data)
     }
+
 
     public func loadManagedDeploymentRegistryRecord(
         deploymentID: String
@@ -1282,9 +1287,14 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
         return receipt
     }
 
+
     public func registerReviewedSelection(
         _ selection: ManagedInstallerReviewedSelection
     ) async throws {
+        let user = try ManagedInstallerNamedOperator.resolve(uid: Darwin.getuid())
+        guard user.isAdministrator else {
+            throw ManagedInstallerReleasedRouteXPCFailure.administratorRequired
+        }
         let data = try await call { service, reply in
             service.registerReviewedSelection(selection.canonicalJSONData(), withReply: reply)
         }
@@ -1366,6 +1376,7 @@ public final class ManagedInstallerReleasedRouteXPCServiceHandler:
             gate.complete(ManagedInstallerReleasedRouteXPCCodec.encodeInventory(inventory))
         }
     }
+
 
     public func loadManagedDeploymentRegistryRecord(
         _ deploymentID: String,
@@ -1520,6 +1531,7 @@ public final class MacOSManagedInstallerReleasedRouteXPCListener:
     NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     private let listener: NSXPCListener
     private let serviceHandler: any ManagedInstallerReleasedRouteXPCService
+    private let installerUserStore: FileManagedInstallerHelperReviewedSelectionStore
 
     public convenience init(
         callerIdentity: ManagedInstallerProductOperationXPCCallerIdentity,
@@ -1540,10 +1552,12 @@ public final class MacOSManagedInstallerReleasedRouteXPCListener:
         listener: NSXPCListener,
         callerIdentity: ManagedInstallerProductOperationXPCCallerIdentity,
         serviceHandler: any ManagedInstallerReleasedRouteXPCService,
+        installerUserStore: FileManagedInstallerHelperReviewedSelectionStore = .production(),
         installCodeSigningRequirement: (NSXPCListener, String) -> Void
     ) {
         self.listener = listener
         self.serviceHandler = serviceHandler
+        self.installerUserStore = installerUserStore
         super.init()
         installCodeSigningRequirement(listener, callerIdentity.codeSigningRequirement)
         listener.delegate = self
@@ -1561,7 +1575,9 @@ public final class MacOSManagedInstallerReleasedRouteXPCListener:
         newConnection.exportedInterface = NSXPCInterface(
             with: ManagedInstallerReleasedRouteXPCService.self
         )
-        newConnection.exportedObject = serviceHandler
+        newConnection.exportedObject = ManagedInstallerUserBoundXPCService(
+            service: serviceHandler, peerUID: newConnection.effectiveUserIdentifier, store: installerUserStore
+        )
         newConnection.resume()
         return true
     }

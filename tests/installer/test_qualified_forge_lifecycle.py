@@ -6,12 +6,51 @@ import unittest
 from forge_platform.component_operations import QualifiedArtifact
 from forge_platform.product_preserved_lifecycle import frozen_preserved_release
 from forge_platform.qualified_forge_lifecycle import (
-    qualified_forge_238_update_selection, qualified_forge_239_update_selection,
-    qualified_forge_lifecycle_artifact,
+    qualified_forge_238_update_selection, qualified_forge_239_update_selection, qualified_forge_281_update_selection,
+    qualified_forge_lifecycle_artifact, qualified_forge_installation_pairing_artifact,
 )
 
 
 class QualifiedForgeLifecycleTests(unittest.TestCase):
+    def test_281_maintenance_selection_is_exact_and_does_not_grant_legacy_lifecycle(self) -> None:
+        installed = QualifiedArtifact("2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
+            "released-wheel", "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1", "release-complete")
+        candidate = QualifiedArtifact("2.8.1", "c8833ffa4754800de451cce94b109ef1ad07123f",
+            "released-wheel", "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0", "release-complete")
+        self.assertTrue(qualified_forge_281_update_selection(installed, candidate))
+        self.assertFalse(qualified_forge_lifecycle_artifact(candidate))
+        self.assertFalse(frozen_preserved_release("forge-runtime", candidate))
+        for old, new in (
+            (None, candidate), (installed, None), (candidate, candidate), (candidate, installed),
+            (replace(installed, version="2.7.38"), candidate),
+            (replace(installed, source_revision=candidate.source_revision), candidate),
+            (replace(installed, digest=candidate.digest), candidate),
+            (installed, replace(candidate, version="2.8.0")),
+            (installed, replace(candidate, source_revision=installed.source_revision)),
+            (installed, replace(candidate, digest=installed.digest)),
+        ):
+            self.assertFalse(qualified_forge_281_update_selection(old, new))
+
+    def test_published_281_connectivity_does_not_grant_historical_lifecycle(self) -> None:
+        candidate = QualifiedArtifact(
+            "2.8.1", "c8833ffa4754800de451cce94b109ef1ad07123f",
+            "released-wheel",
+            "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0",
+            "release-complete",
+        )
+        self.assertTrue(qualified_forge_installation_pairing_artifact(candidate))
+        self.assertFalse(qualified_forge_lifecycle_artifact(candidate))
+        self.assertFalse(frozen_preserved_release("forge-runtime", candidate))
+        self.assertFalse(qualified_forge_238_update_selection(candidate, candidate))
+        self.assertFalse(qualified_forge_239_update_selection(candidate, candidate))
+        for changed in (
+            None,
+            replace(candidate, version="2.8.0"),
+            replace(candidate, source_revision="815932ceeaf4235a4971f5e1055b44082fa4dc9a"),
+            replace(candidate, digest="sha256:" + "0" * 64),
+        ):
+            self.assertFalse(qualified_forge_installation_pairing_artifact(changed))
+
     def test_exact_published_239_lifecycle_and_read_only_update_selection(self) -> None:
         old = QualifiedArtifact(
             "2.7.38", "0a3d6e35b01da93bb5a674ae7795558655c16c7d",

@@ -246,6 +246,7 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
     let forgeInstanceID: String
     let forgeInstallationID: String
     let forgeServiceAccount: String
+    let forgeServiceUserIdentitySHA256: String?
     let forgeBindPort: Int
     let forgeArtifactSHA256: String
     let engineeringPlatformArtifactSHA256: String
@@ -271,12 +272,16 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
         engineeringPlatformBindPort: Int,
         pairing: ManagedInstallerProductWorkerPairingAuthority,
         forgeVenvSlotName: String? = nil,
-        engineeringPlatformVenvSlotName: String? = nil
+        engineeringPlatformVenvSlotName: String? = nil,
+        forgeServiceUserIdentitySHA256: String? = nil
     ) throws {
         guard [deploymentID, forgeInstanceID, forgeInstallationID,
                engineeringPlatformInstanceID]
                 .allSatisfy(Self.isSafeIdentity),
               Self.isServiceAccount(forgeServiceAccount),
+              forgeServiceAccount.hasPrefix("_")
+                ? forgeServiceUserIdentitySHA256 == nil
+                : forgeServiceUserIdentitySHA256.map(CompositionCatalogValidation.isTaggedSHA256) == true,
               Self.isServiceAccount(engineeringPlatformServiceAccount),
               forgeServiceAccount != engineeringPlatformServiceAccount,
               (1...65_535).contains(forgeBindPort),
@@ -301,6 +306,7 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
         self.forgeInstanceID = forgeInstanceID
         self.forgeInstallationID = forgeInstallationID
         self.forgeServiceAccount = forgeServiceAccount
+        self.forgeServiceUserIdentitySHA256 = forgeServiceUserIdentitySHA256
         self.forgeBindPort = forgeBindPort
         self.forgeArtifactSHA256 = forgeArtifactSHA256
         self.engineeringPlatformArtifactSHA256 = engineeringPlatformArtifactSHA256
@@ -324,10 +330,12 @@ struct ManagedInstallerProductWorkerRouteAuthority: Equatable, Sendable {
     }
 
     static func isServiceAccount(_ value: String) -> Bool {
-        guard value.hasPrefix("_"), value.utf8.count <= 32 else { return false }
-        return value.unicodeScalars.dropFirst().allSatisfy {
+        guard !value.isEmpty, value != "root", value.utf8.count <= 255 else { return false }
+        // A non-system account is admitted only after the account resolver
+        // checks the immutable peer-attested named-operator review record.
+        return value.unicodeScalars.allSatisfy {
             switch $0.value {
-            case 48...57, 95, 97...122: return true
+            case 45, 46, 48...57, 65...90, 95, 97...122: return true
             default: return false
             }
         }
@@ -356,6 +364,7 @@ struct ManagedInstallerProductWorkerSingleRouteAuthority: Equatable, Sendable {
     let componentIdentity: String
     let instanceID: String
     let serviceAccount: String
+    let serviceUserIdentitySHA256: String?
     let bindPort: Int
     let artifactSHA256: String
     let forgeInstallationID: String?
@@ -367,11 +376,15 @@ struct ManagedInstallerProductWorkerSingleRouteAuthority: Equatable, Sendable {
         serviceAccount: String, bindPort: Int, artifactSHA256: String,
         forgeInstallationID: String? = nil,
         engineeringPlatformDisplayLabel: String? = nil,
-        venvSlotName: String? = nil
+        venvSlotName: String? = nil,
+        serviceUserIdentitySHA256: String? = nil
     ) throws {
         guard ManagedInstallerProductWorkerRouteAuthority.isSafeIdentity(deploymentID),
               ManagedInstallerProductWorkerRouteAuthority.isSafeIdentity(instanceID),
               ManagedInstallerProductWorkerRouteAuthority.isServiceAccount(serviceAccount),
+              serviceAccount.hasPrefix("_") ? serviceUserIdentitySHA256 == nil
+                : (componentIdentity == "forge-runtime"
+                   && serviceUserIdentitySHA256.map(CompositionCatalogValidation.isTaggedSHA256) == true),
               (1...65_535).contains(bindPort),
               CompositionCatalogValidation.isTaggedSHA256(artifactSHA256) else {
             throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
@@ -404,6 +417,7 @@ struct ManagedInstallerProductWorkerSingleRouteAuthority: Equatable, Sendable {
         self.componentIdentity = componentIdentity
         self.instanceID = instanceID
         self.serviceAccount = serviceAccount
+        self.serviceUserIdentitySHA256 = serviceUserIdentitySHA256
         self.bindPort = bindPort
         self.artifactSHA256 = artifactSHA256
         self.forgeInstallationID = forgeInstallationID
@@ -416,6 +430,10 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
     static let schema = "forge-platform.product-worker-authority/v3"
     static let singleSchema = "forge-platform.product-worker-authority/v4"
     static let slotSchema = "forge-platform.product-worker-authority/v5"
+    static let namedUserSchema = "forge-platform.product-worker-authority/v6"
+    static let installationSchema = "forge-platform.product-worker-authority/v7"
+
+    var usesNamedUser: Bool { !installationRoutes.isEmpty || routes.contains { $0.forgeServiceUserIdentitySHA256 != nil } || singleRoutes.contains { $0.serviceUserIdentitySHA256 != nil } }
     static let maximumBytes = 4 * 1_024 * 1_024
 
     let installerRelease: VerifiedInstallerRelease
@@ -423,9 +441,10 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
     let installedManifests: [ManagedInstallerProductWorkerManifestAuthority]
     let routes: [ManagedInstallerProductWorkerRouteAuthority]
     let singleRoutes: [ManagedInstallerProductWorkerSingleRouteAuthority]
+    let installationRoutes: [ManagedInstallerInstallationRouteAuthority]
 
     var usesVenvSlots: Bool {
-        routes.first?.forgeVenvSlotName != nil || singleRoutes.first?.venvSlotName != nil
+        !installationRoutes.isEmpty || routes.first?.forgeVenvSlotName != nil || singleRoutes.first?.venvSlotName != nil
     }
 
     init(
@@ -433,7 +452,8 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
         candidateManifests: [ManagedInstallerProductWorkerManifestAuthority],
         installedManifests: [ManagedInstallerProductWorkerManifestAuthority] = [],
         routes: [ManagedInstallerProductWorkerRouteAuthority],
-        singleRoutes: [ManagedInstallerProductWorkerSingleRouteAuthority] = []
+        singleRoutes: [ManagedInstallerProductWorkerSingleRouteAuthority] = [],
+        installationRoutes: [ManagedInstallerInstallationRouteAuthority] = []
     ) throws {
         guard GitHubInstallerReleaseDescriptorValidation.isHTTPSURL(
                   installerRelease.releasePage
@@ -446,13 +466,19 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
                   installerRelease.signingKeyID
               ),
               !candidateManifests.isEmpty,
-              !routes.isEmpty || !singleRoutes.isEmpty,
+              !routes.isEmpty || !singleRoutes.isEmpty || !installationRoutes.isEmpty,
               Self.uniqueManifests(candidateManifests),
               Self.uniqueManifests(installedManifests),
               Set(routes.map(\.deploymentID) + singleRoutes.map(\.deploymentID)).count
                 == routes.count + singleRoutes.count,
               Self.uniqueRouteClaims(routes, singleRoutes: singleRoutes) else {
             throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
+        }
+        if !installationRoutes.isEmpty {
+            guard routes.isEmpty, singleRoutes.isEmpty,
+                  Self.uniqueInstallationClaims(installationRoutes) else {
+                throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
+            }
         }
         let forgeDigests = Set((candidateManifests + installedManifests).compactMap(
             \.forgeArtifactSHA256
@@ -467,6 +493,10 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
             (route.componentIdentity == "forge-runtime" ? forgeDigests : epDigests)
                 .contains(route.artifactSHA256)
         }) else {
+            throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
+        }
+        guard installationRoutes.allSatisfy({ forgeDigests.contains($0.forgeArtifactSHA256)
+            && epDigests.contains($0.engineeringPlatformArtifactSHA256) }) else {
             throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
         }
         // Slot names must come from independently read-back helper-owned venv requests.
@@ -487,6 +517,7 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
         }
         self.routes = routes.sorted { $0.deploymentID < $1.deploymentID }
         self.singleRoutes = singleRoutes.sorted { $0.deploymentID < $1.deploymentID }
+        self.installationRoutes = installationRoutes.sorted { $0.deploymentID < $1.deploymentID }
         guard canonicalJSONData().count <= Self.maximumBytes else {
             throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
         }
@@ -495,9 +526,9 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
     func canonicalJSONData() -> Data {
         var fields: [String: StrictJSONResourceValue] = [
             "schema": .string(
-                usesVenvSlots
+                !installationRoutes.isEmpty ? Self.installationSchema : (usesNamedUser ? Self.namedUserSchema : (usesVenvSlots
                     ? Self.slotSchema
-                    : (singleRoutes.isEmpty ? Self.schema : Self.singleSchema)
+                    : (singleRoutes.isEmpty ? Self.schema : Self.singleSchema)))
             ),
             "installer_release": .object([
                 "version": .string(installerRelease.version.description),
@@ -508,11 +539,12 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
             ]),
             "candidate_manifests": .array(candidateManifests.map(Self.manifestValue)),
             "installed_manifests": .array(installedManifests.map(Self.manifestValue)),
-            "routes": .array(routes.map(Self.routeValue)),
+            "routes": .array(routes.map { Self.routeValue($0, namedUser: usesNamedUser) }),
         ]
         if !singleRoutes.isEmpty || usesVenvSlots {
-            fields["single_routes"] = .array(singleRoutes.map(Self.singleRouteValue))
+            fields["single_routes"] = .array(singleRoutes.map { Self.singleRouteValue($0, namedUser: usesNamedUser) })
         }
+        if !installationRoutes.isEmpty { fields["installation_routes"] = .array(installationRoutes.map(\.value)) }
         return StrictSignedJSON.canonicalPayload(from: .object(fields))
     }
 
@@ -523,7 +555,7 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
     }
 
     private static func routeValue(
-        _ route: ManagedInstallerProductWorkerRouteAuthority
+        _ route: ManagedInstallerProductWorkerRouteAuthority, namedUser: Bool
     ) -> StrictJSONResourceValue {
         var fields: [String: StrictJSONResourceValue] = [
             "deployment_id": .string(route.deploymentID),
@@ -553,11 +585,14 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
             fields["forge_venv_slot"] = .string(forgeSlot)
             fields["ep_venv_slot"] = .string(epSlot)
         }
+        if namedUser {
+            fields["forge_service_user_identity_sha256"] = route.forgeServiceUserIdentitySHA256.map { .string($0) } ?? .null
+        }
         return .object(fields)
     }
 
     private static func singleRouteValue(
-        _ route: ManagedInstallerProductWorkerSingleRouteAuthority
+        _ route: ManagedInstallerProductWorkerSingleRouteAuthority, namedUser: Bool
     ) -> StrictJSONResourceValue {
         var fields: [String: StrictJSONResourceValue] = [
             "deployment_id": .string(route.deploymentID),
@@ -576,6 +611,7 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
         if let slot = route.venvSlotName {
             fields["venv_slot"] = .string(slot)
         }
+        if namedUser { fields["service_user_identity_sha256"] = route.serviceUserIdentitySHA256.map { .string($0) } ?? .null }
         return .object(fields)
     }
 
@@ -584,6 +620,21 @@ struct ManagedInstallerProductWorkerAuthoritySnapshot: Equatable, Sendable {
     ) -> Bool {
         Set(values.map(\.digest)).count == values.count
             && Set(values.map(\.compositionIdentity)).count == values.count
+    }
+
+    private static func uniqueInstallationClaims(_ values: [ManagedInstallerInstallationRouteAuthority]) -> Bool {
+        let ids = values.flatMap { [$0.forgeInstanceID, $0.engineeringPlatformInstanceID] }
+        let accounts = values.flatMap { [$0.forgeServiceAccount, $0.engineeringPlatformServiceAccount] }
+        let ports = values.flatMap { [$0.forgeBindPort, $0.engineeringPlatformBindPort] }
+        let slots = values.flatMap { [$0.forgeVenvSlot, $0.epVenvSlot] }
+        return Set(values.map(\.deploymentID)).count == values.count
+            && Set(values.map(\.forgeInstallationID)).count == values.count
+            && Set(values.map(\.operationID)).count == values.count
+            && Set(values.map(\.bindingID)).count == values.count
+            && Set(values.map(\.consumerID)).count == values.count
+            && Set(values.map(\.credentialReference)).count == values.count
+            && Set(ids).count == ids.count && Set(accounts).count == accounts.count
+            && Set(ports).count == ports.count && Set(slots).count == slots.count
     }
 
     private static func uniqueRouteClaims(
@@ -662,6 +713,7 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
         ).readCanonicalAuthorityIfPresent()
     }
 
+
     private static func canonicalRoot(_ input: URL) -> URL {
         let standardized = input.standardizedFileURL
         guard standardized.isFileURL, standardized.baseURL == nil,
@@ -703,6 +755,87 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
         return publish(snapshot, expectedExistingSHA256: expectedExistingSHA256)
     }
 
+    /// Separate v7 mutation boundary. It borrows an already held real provider
+    /// lease and repeats physical admission inside the authority CAS lock.
+    /// Historical partial installations remain inadmissible to this fresh route.
+    func publishFreshInstallationProductWorkerAuthority(
+        plan: ManagedInstallerStablePlan, material: ManagedVerifiedCompositionMaterial,
+        snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
+        accounts: [ManagedInstallerProductServiceAccountReadback],
+        activation: ManagedPythonRuntimeActivationReceipt,
+        venvEvidence: [ManagedInstallerProductWorkerVenvPublicationEvidence],
+        priorVenvEvidence: [ManagedInstallerProductWorkerVenvPublicationEvidence] = [],
+        lease: any ManagedInstallerProviderOperationLock
+    ) async -> Result<ManagedInstallerProductWorkerAuthorityPublicationReceipt,
+                      ManagedInstallerProductWorkerAuthorityPublicationFailure> {
+        let productionRoot = FileManagedInstallerReleasedRouteXPCService.productionRoot
+        let state = productionRoot.appendingPathComponent("state", isDirectory: true)
+        guard expectedOwner == 0, Darwin.geteuid() == 0,
+              rootDirectory == Self.canonicalRoot(productionRoot),
+              let borrowed = borrowManagedInstallerProviderOperationLease(lease, rootDirectory: state),
+              let releaseAdmission = ManagedInstallerHelperCurrentReleaseAdmission.production(),
+              case .success(let release) = await releaseAdmission.admit(),
+              release.record.release == plan.reviewedOperation.currentInstallerRelease,
+              case .success(let wheel) = await ManagedInstallerPrepublicationWheelHelperAssembly
+                  .makeProduction(stablePlan: plan) else { return .failure(.invalidAuthority) }
+        defer { withExtendedLifetime(borrowed) {} }
+        let venvRoot = productionRoot.appendingPathComponent(
+            ManagedInstallerHelperStateRootBootstrap.productVenvsDirectoryName, isDirectory: true)
+        let reader = MacOSManagedPythonProductVenvReadback(
+            layout: MacOSManagedPythonProductVenvSlotLayout(root: venvRoot),
+            runtimeVerifier: MacOSManagedPythonCachedProductVenvRuntimeVerifier(
+                slotsRoot: productionRoot.appendingPathComponent(
+                    FileManagedInstallerProductWorkerInvocationResolver.runtimeSlotsDirectoryName,
+                    isDirectory: true), runtime: plan.session.managedPythonRuntime))
+        let data = snapshot.canonicalJSONData()
+        guard !data.isEmpty, data.count <= ManagedInstallerProductWorkerAuthoritySnapshot.maximumBytes
+        else { return .failure(.invalidAuthority) }
+        do {
+            let root = try openRoot()
+            defer { _ = Darwin.close(root) }
+            let lock = try acquireLock(in: root)
+            defer { _ = flock(lock, LOCK_UN); _ = Darwin.close(lock) }
+            let existing = try readExisting(in: root)
+            let prior = try existing.map { try Self.decodeCanonicalAuthority($0) }
+            var priorWheels: [ManagedInstallerPriorProductWheelRouteKey: any ManagedPythonProductVenvWheelInstalling] = [:]
+            for item in priorVenvEvidence {
+                guard let route = prior?.installationRoutes.first(where: {
+                          $0.deploymentID == item.request.deploymentID
+                      })?.wheelReadbackRoute(component: item.request.componentIdentity),
+                      let existing, let key = ManagedInstallerPriorProductWheelRouteKey(
+                          deploymentID: route.deploymentID, componentIdentity: route.componentIdentity),
+                      priorWheels[key] == nil,
+                      let oldWheel = await ManagedInstallerPrepublicationWheelHelperAssembly.makePriorProduction(
+                          stablePlan: plan, priorAuthoritySHA256: Self.receipt(for: existing).sha256,
+                          route: route, evidence: item) else { return .failure(.invalidAuthority) }
+                priorWheels[key] = oldWheel
+            }
+            guard let combinedWheel = ManagedInstallerFreshPriorProductWheelRouter(
+                freshDeploymentID: plan.deployment.id,
+                freshComponentIdentities: Set(venvEvidence.map(\.request.componentIdentity)),
+                fresh: wheel, priorEvidence: priorVenvEvidence, prior: priorWheels)
+            else { return .failure(.invalidAuthority) }
+            guard await ManagedInstallerInstallationProductWorkerPrepublicationAdmission.accepts(
+                plan: plan, material: material, snapshot: snapshot, prior: prior,
+                accounts: accounts, activation: activation, venvEvidence: venvEvidence,
+                priorVenvEvidence: priorVenvEvidence,
+                reviews: FileManagedInstallerHelperReviewedSelectionStore.production(),
+                parent: FileManagedPythonRuntimeRecoveryStore(rootDirectory: state),
+                registry: FileManagedInstallerManagedDeploymentRegistryReader(),
+                accountReader: MacOSManagedInstallerProductServiceAccountDirectoryMutation(
+                    directory: MacOSOpenDirectoryLocalAccountStore()),
+                venvReader: reader, wheel: combinedWheel, venvRoot: venvRoot),
+                case .success(let confirmed) = await releaseAdmission.admit(), confirmed == release,
+                try readExisting(in: root) == existing else { return .failure(.staleAuthority) }
+            try prepareForgeRuntimeRoots(for: snapshot, in: root)
+            if existing != data { try replace(data, in: root) }
+            guard try readExisting(in: root) == data else { return .failure(.unavailable) }
+            return .success(Self.receipt(for: data))
+        } catch let failure as ManagedInstallerProductWorkerAuthorityPublicationFailure {
+            return .failure(failure)
+        } catch { return .failure(.unavailable) }
+    }
+
     private func publish(
         _ snapshot: ManagedInstallerProductWorkerAuthoritySnapshot,
         expectedExistingSHA256: String?
@@ -710,6 +843,9 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
         ManagedInstallerProductWorkerAuthorityPublicationReceipt,
         ManagedInstallerProductWorkerAuthorityPublicationFailure
     > {
+        // v7 decoding is separate from admission. Legacy publication has no
+        // installation-only operator/recovery review and must never grant it.
+        guard snapshot.installationRoutes.isEmpty else { return .failure(.invalidAuthority) }
         let data = snapshot.canonicalJSONData()
         guard !data.isEmpty, data.count <= ManagedInstallerProductWorkerAuthoritySnapshot.maximumBytes,
               expectedExistingSHA256.map(CompositionCatalogValidation.isTaggedSHA256) ?? true
@@ -762,7 +898,7 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
     private func prepareForgeRuntimeRoots(
         for snapshot: ManagedInstallerProductWorkerAuthoritySnapshot, in root: Int32
     ) throws {
-        let ids = snapshot.routes.map(\.forgeInstanceID) + snapshot.singleRoutes.compactMap {
+        let ids = snapshot.routes.map(\.forgeInstanceID) + snapshot.installationRoutes.map(\.forgeInstanceID) + snapshot.singleRoutes.compactMap {
             $0.componentIdentity == "forge-runtime" ? $0.instanceID : nil
         }
         guard Set(ids).count == ids.count,
@@ -810,7 +946,9 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
                   let schema = fields["schema"]?.stringValue,
                   schema == ManagedInstallerProductWorkerAuthoritySnapshot.schema
                     || schema == ManagedInstallerProductWorkerAuthoritySnapshot.singleSchema
-                    || schema == ManagedInstallerProductWorkerAuthoritySnapshot.slotSchema,
+                    || schema == ManagedInstallerProductWorkerAuthoritySnapshot.slotSchema
+                    || schema == ManagedInstallerProductWorkerAuthoritySnapshot.namedUserSchema
+                    || schema == ManagedInstallerProductWorkerAuthoritySnapshot.installationSchema,
                   let release = fields["installer_release"]?.objectValue,
                   let version = release["version"]?.stringValue,
                   let releasePage = release["release_page"]?.stringValue,
@@ -824,8 +962,15 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
             }
             let singleValues = fields["single_routes"]?.arrayValue
             guard (schema == ManagedInstallerProductWorkerAuthoritySnapshot.singleSchema
-                || schema == ManagedInstallerProductWorkerAuthoritySnapshot.slotSchema)
+                || schema == ManagedInstallerProductWorkerAuthoritySnapshot.slotSchema
+                || schema == ManagedInstallerProductWorkerAuthoritySnapshot.namedUserSchema
+                || schema == ManagedInstallerProductWorkerAuthoritySnapshot.installationSchema)
                 ? singleValues != nil : fields["single_routes"] == nil else {
+                throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
+            }
+            let installationValues = fields["installation_routes"]?.arrayValue
+            guard schema == ManagedInstallerProductWorkerAuthoritySnapshot.installationSchema
+                ? installationValues?.isEmpty == false : fields["installation_routes"] == nil else {
                 throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
             }
             let snapshot = try ManagedInstallerProductWorkerAuthoritySnapshot(
@@ -839,11 +984,16 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
                 candidateManifests: candidates.map { try decodeManifest($0) },
                 installedManifests: installed.map { try decodeManifest($0) },
                 routes: routes.map { try decodeRoute($0, slots: schema
-                    == ManagedInstallerProductWorkerAuthoritySnapshot.slotSchema) },
+                    == ManagedInstallerProductWorkerAuthoritySnapshot.slotSchema
+                    || schema == ManagedInstallerProductWorkerAuthoritySnapshot.namedUserSchema,
+                    namedUser: schema == ManagedInstallerProductWorkerAuthoritySnapshot.namedUserSchema) },
                 singleRoutes: try (singleValues ?? []).map { try decodeSingleRoute(
                     $0, slots: schema
                         == ManagedInstallerProductWorkerAuthoritySnapshot.slotSchema
-                ) }
+                        || schema == ManagedInstallerProductWorkerAuthoritySnapshot.namedUserSchema,
+                    namedUser: schema == ManagedInstallerProductWorkerAuthoritySnapshot.namedUserSchema
+                ) },
+                installationRoutes: try (installationValues ?? []).map { try ManagedInstallerInstallationRouteAuthority($0) }
             )
             guard snapshot.canonicalJSONData() == data else {
                 throw ManagedInstallerProductWorkerAuthorityPublicationFailure.invalidAuthority
@@ -867,7 +1017,7 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
         )
     }
 
-    private static func decodeRoute(_ value: StrictJSONResourceValue, slots: Bool) throws
+    private static func decodeRoute(_ value: StrictJSONResourceValue, slots: Bool, namedUser: Bool) throws
         -> ManagedInstallerProductWorkerRouteAuthority {
         guard let fields = value.objectValue,
               Set(fields.keys) == Set([
@@ -875,7 +1025,8 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
                 "forge_service_account", "forge_bind_port", "forge_artifact_sha256",
                 "ep_artifact_sha256", "ep_instance_id", "ep_display_label",
                 "ep_service_account", "ep_bind_port", "pairing",
-              ]).union(slots ? ["forge_venv_slot", "ep_venv_slot"] : []),
+              ]).union(slots ? ["forge_venv_slot", "ep_venv_slot"] : [])
+                .union(namedUser ? ["forge_service_user_identity_sha256"] : []),
               let pairing = fields["pairing"]?.objectValue,
               let deploymentID = fields["deployment_id"]?.stringValue,
               let forgeInstanceID = fields["forge_instance_id"]?.stringValue,
@@ -922,18 +1073,21 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
             ),
             forgeVenvSlotName: slots ? fields["forge_venv_slot"]?.stringValue : nil,
             engineeringPlatformVenvSlotName: slots
-                ? fields["ep_venv_slot"]?.stringValue : nil
+                ? fields["ep_venv_slot"]?.stringValue : nil,
+            forgeServiceUserIdentitySHA256: namedUser
+                ? fields["forge_service_user_identity_sha256"]?.stringValue : nil
         )
     }
 
-    private static func decodeSingleRoute(_ value: StrictJSONResourceValue, slots: Bool) throws
+    private static func decodeSingleRoute(_ value: StrictJSONResourceValue, slots: Bool, namedUser: Bool) throws
         -> ManagedInstallerProductWorkerSingleRouteAuthority {
         guard let fields = value.objectValue,
               Set(fields.keys) == Set([
                 "deployment_id", "component_identity", "instance_id",
                 "service_account", "bind_port", "artifact_sha256",
                 "forge_installation_id", "ep_display_label",
-              ]).union(slots ? ["venv_slot"] : []),
+              ]).union(slots ? ["venv_slot"] : [])
+                .union(namedUser ? ["service_user_identity_sha256"] : []),
               let deploymentID = fields["deployment_id"]?.stringValue,
               let componentIdentity = fields["component_identity"]?.stringValue,
               let instanceID = fields["instance_id"]?.stringValue,
@@ -951,7 +1105,8 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
             artifactSHA256: artifactSHA256,
             forgeInstallationID: optionalString(fields["forge_installation_id"]),
             engineeringPlatformDisplayLabel: optionalString(fields["ep_display_label"]),
-            venvSlotName: slots ? fields["venv_slot"]?.stringValue : nil
+            venvSlotName: slots ? fields["venv_slot"]?.stringValue : nil,
+            serviceUserIdentitySHA256: namedUser ? fields["service_user_identity_sha256"]?.stringValue : nil
         )
     }
 
@@ -1008,7 +1163,11 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
     }
 
     private func readExisting(in root: Int32) throws -> Data? {
-        let descriptor = Self.fileName.withCString {
+        try readExisting(named: Self.fileName, in: root)
+    }
+
+    private func readExisting(named name: String, in root: Int32) throws -> Data? {
+        let descriptor = name.withCString {
             Darwin.openat(root, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY | O_NONBLOCK)
         }
         if descriptor < 0 {
@@ -1046,6 +1205,7 @@ struct FileManagedInstallerProductWorkerAuthorityPublisher:
         }
         return data
     }
+
 
     private func replace(_ data: Data, in root: Int32) throws {
         let temporary = ".product-worker-authority.tmp-" + UUID().uuidString.lowercased()

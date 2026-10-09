@@ -133,7 +133,8 @@ struct ManagedInstallerFreshInstallRuntimeAdmissionCoordinator:
         }
         switch await materialAdmission.admit(stablePlan: stablePlan) {
         case .success(let fresh) where fresh == material: break
-        case .success, .failure: return .failure(.rejected)
+        case .success, .failure:
+            return .failure(.rejected)
         }
         let beforeProviders: ManagedInstallerProductServiceAccountPreproviderReceipt
         switch await preprovider.prepare(stablePlan: stablePlan, material: material) {
@@ -142,35 +143,46 @@ struct ManagedInstallerFreshInstallRuntimeAdmissionCoordinator:
                 stablePlan: stablePlan, material: material,
                 parentJournalRecord: value.parentJournalRecord,
                 accounts: value.accounts
-            ), exact == value else { return .failure(.rejected) }
+            ), exact == value else {
+                return .failure(.rejected)
+            }
             beforeProviders = value
-        case .failure: return .failure(.rejected)
+        case .failure:
+            return .failure(.rejected)
         }
 
         let provider: any ManagedInstallerProviderRuntimePlanPreparing
         switch providers.build(stablePlan: stablePlan, material: material,
                                preprovider: beforeProviders) {
         case .success(let value): provider = value
-        case .failure: return .failure(.rejected)
+        case .failure:
+            return .failure(.rejected)
         }
         let providerReceipt: ManagedInstallerProviderRuntimePlanPreparationReceipt
         switch await provider.prepareProviderRuntimes(stablePlan: stablePlan) {
         case .success(let value):
             guard let exact = try? ManagedInstallerProviderRuntimePlanPreparationReceipt(
                 stablePlan: stablePlan, providerReceipts: value.providerReceipts
-            ), exact == value else { return .failure(.rejected) }
+            ), exact == value else {
+                return .failure(.rejected)
+            }
             providerReceipt = value
-        case .failure(let failure): return .failure(.providerPreparation(failure))
+        case .failure(let failure):
+            return .failure(.providerPreparation(failure))
         }
 
         guard case .success = providerProbeAccess.grant(
             stablePlan: stablePlan, material: material,
             preprovider: beforeProviders, providers: providerReceipt
-        ) else { return .failure(.rejected) }
+        ) else {
+            return .failure(.rejected)
+        }
         guard let stage = try? ManagedInstallerFreshProviderStageReceipt(
             stablePlan: stablePlan, material: material,
             preprovider: beforeProviders, providers: providerReceipt
-        ) else { return .failure(.rejected) }
+        ) else {
+            return .failure(.rejected)
+        }
         return .success(stage)
     }
 }
@@ -194,12 +206,13 @@ enum ManagedInstallerFreshInstallRuntimeAdmissionHelperAssembly {
         let journal = ManagedPythonRuntimeParentJournalSeeder(
             journal: FileManagedPythonRuntimeRecoveryStore(rootDirectory: stateRoot)
         )
+        let preprovider = ManagedInstallerProductServiceAccountPreproviderCoordinator(
+            journal: journal, accounts: accountCoordinator
+        )
         return .success(ManagedInstallerFreshInstallRuntimeAdmissionCoordinator(
             material: material,
             materialAdmission: materialAdmission,
-            preprovider: ManagedInstallerProductServiceAccountPreproviderCoordinator(
-                journal: journal, accounts: accountCoordinator
-            ),
+            preprovider: preprovider,
             providers: ManagedInstallerProductionFreshInstallProviderBuilder(),
             providerProbeAccess: MacOSManagedInstallerFreshProviderProbeAccess(),
             managedPython: ManagedPythonRuntimePreparationHelperAssembly.makeProduction(

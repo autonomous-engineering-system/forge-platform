@@ -15,7 +15,9 @@ struct MacOSManagedPythonRuntimeSlotPublisher: Sendable {
 
     /// Independently verify an already active runtime from its exact cached
     /// release archive and complete published tree. No staged operation or
-    /// caller-selected path is needed for this read-only host observation.
+    /// caller-selected path is needed. Derived bytecode is preserved outside
+    /// the slot before qualification; installed evidence always comes from
+    /// the ordinary complete, exact archive/tree verifier.
     func verifyPublishedRuntimeFromCache(
         _ runtime: ManagedPythonRuntimeIdentity
     ) -> Result<String, ManagedPythonRuntimeSlotMutationFailure> {
@@ -45,10 +47,16 @@ struct MacOSManagedPythonRuntimeSlotPublisher: Sendable {
                   details.st_mode & mode_t(0o7777) == mode_t(0o700) else {
                 return .failure(.rejected)
             }
-            return .success(try MacOSManagedPythonRuntimeExtractedTreeVerifier(
-                slotRoot: slotsRoot.appendingPathComponent(identity, isDirectory: true),
-                expectedOwner: expectedOwner
-            ).verify(members: inventory.members))
+            let slot = slotsRoot.appendingPathComponent(identity, isDirectory: true)
+            let verifier = MacOSManagedPythonRuntimeExtractedTreeVerifier(slotRoot: slot,
+                                                                         expectedOwner: expectedOwner)
+            do { return .success(try verifier.verify(members: inventory.members)) }
+            catch {
+                try MacOSManagedPythonRuntimeBytecodePreserver(slotRoot: slot,
+                    expectedOwner: expectedOwner).preserve(members: inventory.members,
+                                                          version: inventory.inspection.version)
+                return .success(try verifier.verify(members: inventory.members))
+            }
         } catch let failure as ManagedPythonRuntimeSlotMutationFailure {
             return .failure(failure)
         } catch { return .failure(.rejected) }

@@ -107,7 +107,9 @@ struct ManagedInstallerHelperTerminalRuntimeCompletion:
                     stablePlan: stablePlan,
                     activationRequest: request,
                     pythonReadback: pythonReadback
-                ) else { return .failure(.readbackFailed) }
+                ) else {
+                    return .failure(.readbackFailed)
+                }
             let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
             sourceReader = ManagedInstallerPostToolPublishingAtomicHostReader(
                 sourceReader: physical,

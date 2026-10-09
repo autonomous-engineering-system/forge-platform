@@ -12,8 +12,8 @@ enum ManagedArchiveTreeEvidenceDomain: Sendable {
 
     var referencePrefix: String {
         switch self {
-        case .python: "receipt:managed-python-tree-"
-        case .git: "receipt:managed-git-tree-"
+        case .python: "receipt:managed-python-tree-v2-"
+        case .git: "receipt:managed-git-tree-v2-"
         }
     }
 }
@@ -39,6 +39,20 @@ struct MacOSManagedPythonRuntimeExtractedTreeVerifier {
     func verify(
         members: [ManagedPythonRuntimeArchiveMember]
     ) throws -> String {
+        try verifyExact(members: members, bytecodeCachesForPreservation: [])
+    }
+
+    /// Preparation only. This route never returns installed/runtime evidence;
+    /// its caller must preserve the caches and then run ordinary exact verify.
+    func verifyBeforeBytecodePreservation(
+        members: [ManagedPythonRuntimeArchiveMember], caches: Set<String>
+    ) throws {
+        _ = try verifyExact(members: members, bytecodeCachesForPreservation: caches)
+    }
+
+    private func verifyExact(
+        members: [ManagedPythonRuntimeArchiveMember], bytecodeCachesForPreservation: Set<String>
+    ) throws -> String {
         let children = try expectedChildren(members)
         guard slotRoot.isFileURL, slotRoot.baseURL == nil,
               slotRoot.path.hasPrefix("/"), slotRoot.path != "/" else {
@@ -50,10 +64,15 @@ struct MacOSManagedPythonRuntimeExtractedTreeVerifier {
         guard root >= 0 else { throw ManagedPythonRuntimeExtractedTreeFailure.rejected }
         defer { _ = Darwin.close(root) }
         let rootDetails = try secureDirectory(root, mode: 0o700)
-        try requireEntries(in: root, equal: children[""] ?? [])
+        try requireEntries(in: root, equal: (children[""] ?? []).union(
+            bytecodeCachesForPreservation.contains("__pycache__/") ? ["__pycache__"] : []))
 
         var binding = SHA256()
-        append(String(UInt64(rootDetails.st_dev)), to: &binding)
+        // st_dev is a boot-local device number on macOS. A restart can change
+        // it while this exact directory and every archive member remain the
+        // same. Bind the fixed path and inode instead; the complete tree is
+        // independently reopened and hashed below.
+        append(slotRoot.path, to: &binding)
         append(String(UInt64(rootDetails.st_ino)), to: &binding)
         for member in members {
             let parent = try openParent(of: member.path, in: root)
@@ -73,7 +92,8 @@ struct MacOSManagedPythonRuntimeExtractedTreeVerifier {
             switch member.kind {
             case .directory:
                 _ = try secureDirectory(descriptor, mode: member.mode)
-                try requireEntries(in: descriptor, equal: children[member.path] ?? [])
+                try requireEntries(in: descriptor, equal: (children[member.path] ?? []).union(
+                    bytecodeCachesForPreservation.contains(member.path + "__pycache__/") ? ["__pycache__"] : []))
             case .file:
                 try secureFile(descriptor, matches: member)
             }
@@ -83,7 +103,8 @@ struct MacOSManagedPythonRuntimeExtractedTreeVerifier {
             append(String(member.byteCount), to: &binding)
             append(member.sha256 ?? "", to: &binding)
         }
-        try requireEntries(in: root, equal: children[""] ?? [])
+        try requireEntries(in: root, equal: (children[""] ?? []).union(
+            bytecodeCachesForPreservation.contains("__pycache__/") ? ["__pycache__"] : []))
         let digest = binding.finalize().map { String(format: "%02x", $0) }.joined()
         return evidenceDomain.referencePrefix + digest
     }

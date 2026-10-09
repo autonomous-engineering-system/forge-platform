@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import Mock
 from types import SimpleNamespace
+from dataclasses import replace
 
 from forge_platform.component_operations import ProductUpdateAssessment
 from forge_platform.ep_consumer_revocation import EPConsumerRevocationAdapter, EPConsumerScope
@@ -16,6 +18,7 @@ from forge_platform.forge_ep_pairing_executor import (
 from forge_platform.managed_deployments import ManagedDeploymentRegistry
 from forge_platform.managed_install_flow import ManagedForgeEPInstallationCoordinator
 from forge_platform.managed_product_operation_admission import (
+    ManagedProductOperationAdmissionError,
     admit_native_product_operation,
 )
 from forge_platform.managed_product_operation_dispatch import (
@@ -315,6 +318,50 @@ class ManagedProductOperationDispatchTests(unittest.TestCase):
                 stored.by_component["engineering-platform-server"].instance_id,
                 "ep-new",
             )
+
+    def test_completed_create_resumes_pairing_without_repeating_products(self):
+        _installed, candidate = manifests()
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve(); registry=ManagedDeploymentRegistry(root/"registry")
+            request=decoded(request_payload(candidate,installed=None,exists=False))
+            class InterruptedPairer(Pairer):
+                interrupted=True
+                def pair(self, **kwargs):
+                    if self.interrupted:
+                        self.interrupted=False
+                        raise RuntimeError("interrupted pairing")
+                    return super().pair(**kwargs)
+            original=route(); pairer=InterruptedPairer(forge=original.forge_instance_id, ep=original.engineering_platform_instance_id)
+            resolved=replace(original,pairing_executor=pairer)
+            engine=coordinator(root,registry);engine.expected_owner_uid=os.getuid()
+            dispatcher=ManagedProductOperationDispatcher(coordinator=engine,resolver=Resolver(resolved))
+            admitted=admit_native_product_operation(request,manifest=candidate,registry=registry,
+                current_installer_release=installer_release())
+            with self.assertRaisesRegex(RuntimeError,"interrupted pairing"):
+                dispatcher.dispatch(admitted)
+            current=registry.load(request.deployment_id)
+            self.assertIsNotNone(current);self.assertIsNone(current.peer_binding)
+            before={name:adapter.execute_calls for name,adapter in resolved.adapters.items()}
+            # A registry entry alone cannot authorize recovery. It must still
+            # match every receipt committed by the original completed saga.
+            registry_path=registry.root / (request.deployment_id + ".json")
+            original_bytes=registry_path.read_bytes()
+            altered=json.loads(original_bytes)
+            altered["components"][0]["receipt_reference"]="receipt:unrelated"
+            registry_path.write_text(json.dumps(altered))
+            with self.assertRaises(ManagedProductOperationAdmissionError):
+                admit_native_product_operation(request,manifest=candidate,registry=registry,
+                    current_installer_release=installer_release(),
+                    completed_create_plan_reader=dispatcher.completed_create_plan)
+            registry_path.write_bytes(original_bytes)
+            resumed=admit_native_product_operation(request,manifest=candidate,registry=registry,
+                current_installer_release=installer_release(),
+                completed_create_plan_reader=dispatcher.completed_create_plan)
+            self.assertEqual(resumed.current_deployment,current)
+            self.assertIsNotNone(resumed.completed_create_plan)
+            receipt=dispatcher.dispatch(resumed)
+            self.assertIsNotNone(receipt.pairing_receipt_reference)
+            self.assertEqual(before,{name:adapter.execute_calls for name,adapter in resolved.adapters.items()})
 
     def test_two_fresh_deployments_keep_exact_product_instances_isolated(self) -> None:
         candidate = composition_manifest(

@@ -34,6 +34,8 @@ struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, S
         subsystem: "com.autonomous-engineering-system.forge-platform-installer",
         category: "runtime-activation"
     )
+    private static func trace(_ value: String) {
+    }
     private let layout: MacOSManagedPythonProductVenvSlotLayout
     private let runtimeVerifier: any ManagedPythonProductVenvRuntimeVerifying
     private let readback: MacOSManagedPythonProductVenvReadback
@@ -59,7 +61,7 @@ struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, S
         case .success(let ready?): receipt = ready
         case .success(nil): return .success(nil)
         case .failure(let failure):
-            Self.diagnostic.error("gate=venv-probe-failed")
+            Self.diagnostic.notice("gate=venv-probe-failed")
             return .failure(failure)
         }
         let published: URL
@@ -73,10 +75,10 @@ struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, S
             where CompositionCatalogValidation.isTaggedSHA256(evidence):
             return .success(receipt)
         case .success:
-            Self.diagnostic.error("gate=venv-wheel-evidence-rejected")
+            Self.diagnostic.notice("gate=venv-wheel-evidence-rejected")
             return .failure(.rejected)
         case .failure(let failure):
-            Self.diagnostic.error("gate=venv-wheel-readback-failed")
+            Self.diagnostic.notice("gate=venv-wheel-readback-failed")
             return .failure(failure)
         }
     }
@@ -100,6 +102,7 @@ struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, S
         case .success(let directory): pending = directory
         case .failure(let failure): return .failure(failure)
         }
+        Self.trace("base_and_pending_verified")
         let process = Process()
         process.executableURL = baseInterpreter
         process.arguments = [
@@ -113,16 +116,25 @@ struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, S
         do {
             try process.run()
             process.waitUntilExit()
-        } catch { return .failure(.unavailable) }
-        guard process.terminationReason == .exit, process.terminationStatus == 0,
-              case .success = runtimeVerifier.verifiedInterpreter(for: request),
-              case .success = readback.probePending(pending, request: request) else {
+        } catch { Self.diagnostic.notice("gate=venv-process-launch"); return .failure(.unavailable) }
+        Self.trace("creation_process_returned")
+        guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+            Self.diagnostic.notice("gate=venv-creation-process")
+            return .failure(.rejected)
+        }
+        guard case .success = runtimeVerifier.verifiedInterpreter(for: request) else {
+            Self.diagnostic.notice("gate=venv-runtime-after-creation")
+            return .failure(.rejected)
+        }
+        guard case .success = readback.probePending(pending, request: request) else {
+            Self.diagnostic.notice("gate=venv-pending-probe")
             return .failure(.rejected)
         }
         let published = pending.url.deletingLastPathComponent().appendingPathComponent(
             MacOSManagedPythonProductVenvSlotLayout.slotName(for: request),
             isDirectory: true
         )
+        Self.trace("pending_probe_verified")
         let installedWheelEvidence: String
         switch await wheel.installIntoPending(
             pending.url, published: published, request: request
@@ -131,8 +143,11 @@ struct MacOSManagedPythonProductVenvCreator: ManagedPythonProductVenvCreating, S
             where CompositionCatalogValidation.isTaggedSHA256(evidence):
             installedWheelEvidence = evidence
         case .success: return .failure(.rejected)
-        case .failure(let failure): return .failure(failure)
+        case .failure(let failure):
+            Self.trace("wheel_install_failed")
+            return .failure(failure)
         }
+        Self.trace("wheel_install_verified")
         guard case .success = runtimeVerifier.verifiedInterpreter(for: request),
               case .success = readback.probePending(pending, request: request),
               synchronizeCriticalFiles(in: pending.url) else {

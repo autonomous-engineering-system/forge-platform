@@ -77,6 +77,82 @@ final class ManagedInstallerProductServiceAccountSetTests: XCTestCase {
         XCTAssertNotEqual(forgeSlot, epSlot)
     }
 
+    func testV6BindsReviewedHumanIdentityAndRejectsIdentityDrift() throws {
+        let original = try fixture()
+        let old = try XCTUnwrap(original.routes.first)
+        let user = try ManagedInstallerNamedOperator.resolve(uid: getuid())
+        func snapshot(identity: String) throws -> ManagedInstallerProductWorkerAuthoritySnapshot {
+            let route = try ManagedInstallerProductWorkerRouteAuthority(
+                deploymentID: old.deploymentID, forgeInstanceID: old.forgeInstanceID,
+                forgeInstallationID: old.forgeInstallationID, forgeServiceAccount: user.accountName,
+                forgeBindPort: old.forgeBindPort, forgeArtifactSHA256: old.forgeArtifactSHA256,
+                engineeringPlatformArtifactSHA256: old.engineeringPlatformArtifactSHA256,
+                engineeringPlatformInstanceID: old.engineeringPlatformInstanceID,
+                engineeringPlatformDisplayLabel: old.engineeringPlatformDisplayLabel,
+                engineeringPlatformServiceAccount: old.engineeringPlatformServiceAccount,
+                engineeringPlatformBindPort: old.engineeringPlatformBindPort, pairing: old.pairing,
+                forgeVenvSlotName: "venv-" + String(repeating: "a", count: 64),
+                engineeringPlatformVenvSlotName: "venv-" + String(repeating: "b", count: 64),
+                forgeServiceUserIdentitySHA256: identity
+            )
+            return try ManagedInstallerProductWorkerAuthoritySnapshot(
+                installerRelease: original.installerRelease,
+                candidateManifests: original.candidateManifests, routes: [route])
+        }
+        let authority = try snapshot(identity: "sha256:" + user.identitySHA256)
+        XCTAssertEqual(try FileManagedInstallerProductWorkerAuthorityPublisher.decodeCanonicalAuthority(
+            authority.canonicalJSONData()), authority)
+        let lookup = AccountSetLookup(records: [
+            user.accountName: .init(accountName: user.accountName, uid: user.uid, gid: user.gid),
+            old.engineeringPlatformServiceAccount: .init(accountName: old.engineeringPlatformServiceAccount,
+                                                        uid: user.uid + 1, gid: user.gid + 1),
+        ])
+        XCTAssertEqual(try ManagedInstallerProductServiceAccountSetResolver(
+            reader: AccountSetAuthorityReader(snapshot: authority), lookup: lookup)
+            .resolve(expectedInstallerRelease: authority.installerRelease).get().count, 2)
+        let changed = try snapshot(identity: "sha256:" + String(repeating: "0", count: 64))
+        XCTAssertEqual(ManagedInstallerProductServiceAccountSetResolver(
+            reader: AccountSetAuthorityReader(snapshot: changed), lookup: lookup)
+            .resolve(expectedInstallerRelease: changed.installerRelease).failure, .rejected)
+    }
+
+    func testV7BindsRealNamedAdminAndEPAccountAndRejectsIdentityOrGroupDrift() throws {
+        let original = try fixture()
+        let user = try ManagedInstallerNamedOperator.resolve(uid: getuid())
+        let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: original.canonicalJSONData()) as? [String: Any])
+        var fields = try XCTUnwrap((wire["routes"] as? [[String: Any]])?.first)
+        fields.removeValue(forKey: "pairing")
+        fields["forge_service_account"] = user.accountName
+        fields["forge_service_user_identity_sha256"] = "sha256:" + user.identitySHA256
+        fields["forge_venv_slot"] = "venv-" + String(repeating: "a", count: 64)
+        fields["ep_venv_slot"] = "venv-" + String(repeating: "b", count: 64)
+        fields["installation_pairing"] = ["operation_id": "installation-op", "binding_id": "installation-binding",
+            "consumer_id": "installation-consumer", "credential_reference": "keychain://installation/new"]
+        func snapshot(_ fields: [String: Any]) throws -> ManagedInstallerProductWorkerAuthoritySnapshot {
+            var reader = try StrictJSONResourceReader(data: JSONSerialization.data(withJSONObject: fields))
+            return try ManagedInstallerProductWorkerAuthoritySnapshot(installerRelease: original.installerRelease,
+                candidateManifests: original.candidateManifests, routes: [],
+                installationRoutes: [ManagedInstallerInstallationRouteAuthority(reader.parseDocument())])
+        }
+        let authority = try snapshot(fields)
+        let ep = try XCTUnwrap(authority.installationRoutes.first)
+        func result(_ authority: ManagedInstallerProductWorkerAuthoritySnapshot, gid: UInt32) ->
+            Result<[ManagedInstallerProductServiceAccountBinding], ManagedInstallerProductServiceAccountSetFailure> {
+            ManagedInstallerProductServiceAccountSetResolver(reader: AccountSetAuthorityReader(snapshot: authority),
+                lookup: AccountSetLookup(records: [
+                    user.accountName: .init(accountName: user.accountName, uid: user.uid, gid: gid),
+                    ep.engineeringPlatformServiceAccount: .init(accountName: ep.engineeringPlatformServiceAccount,
+                                                               uid: user.uid + 1, gid: user.gid + 1),
+                ])).resolve(expectedInstallerRelease: authority.installerRelease)
+        }
+        let bindings = try result(authority, gid: user.gid).get()
+        XCTAssertEqual(bindings.count, 2)
+        XCTAssertEqual(Set(bindings.compactMap(\.venvSlotName)), [ep.forgeVenvSlot, ep.epVenvSlot])
+        XCTAssertEqual(result(authority, gid: user.gid + 1).failure, .rejected)
+        fields["forge_service_user_identity_sha256"] = "sha256:" + String(repeating: "0", count: 64)
+        XCTAssertEqual(result(try snapshot(fields), gid: user.gid).failure, .rejected)
+    }
+
     func testBindsOneSingleProductRouteWithoutTouchingOtherAccounts() throws {
         let paired = try fixture()
         let route = try XCTUnwrap(paired.routes.first)

@@ -3,6 +3,7 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class InstallerCLITests: XCTestCase {
+
     func testParserSupportsFullWizardApplyAndAutomationFlags() throws {
         let invocation = try InstallerCLIParser.parse([
             "deployment", "apply",

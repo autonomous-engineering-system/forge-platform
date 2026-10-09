@@ -163,6 +163,7 @@ final class ManagedPythonRuntimeParentJournalAdapterTests: XCTestCase {
         XCTAssertFalse(String(decoding: bytes, as: UTF8.self).contains(root.path))
     }
 
+
     func testFileStoreRejectsConflictingPlanAdvanceAndIdempotentEvidence() async throws {
         let fixture = try ParentJournalFixture()
         let root = temporaryParentJournalRoot()

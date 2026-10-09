@@ -112,6 +112,9 @@ struct ManagedInstallerFreshSingleProductWorkerRouteBuilder: Sendable {
             instanceID: claim.instanceID, excluded: excluded,
             existing: priorTarget?.bindPort
         ) else { return nil }
+        let reviewedUser = (try? ManagedInstallerReviewedExecutionIntent(stablePlan: plan)).flatMap {
+            try? FileManagedInstallerHelperReviewedSelectionStore.production().loadOperator(for: $0)
+        }
         let route = try? ManagedInstallerProductWorkerSingleRouteAuthority(
             deploymentID: plan.deployment.id,
             componentIdentity: claim.componentIdentity,
@@ -126,7 +129,9 @@ struct ManagedInstallerFreshSingleProductWorkerRouteBuilder: Sendable {
                     ? (plan.deployment.label ?? plan.deployment.id) : nil,
             venvSlotName: MacOSManagedPythonProductVenvSlotLayout.slotName(
                 for: evidence.request
-            )
+            ),
+            serviceUserIdentitySHA256: claim.accountName.hasPrefix("_") ? nil
+                : reviewedUser.map { "sha256:" + $0.identitySHA256 }
         )
         guard let route else { return nil }
         let candidates = prior?.candidateManifests ?? []
@@ -212,13 +217,20 @@ struct ManagedInstallerFreshPairedProductWorkerRouteBuilder: Sendable {
             $0.deploymentID != plan.deployment.id
         }.flatMap { [$0.forgeBindPort, $0.engineeringPlatformBindPort] }
             + priorSingles.map(\.bindPort))
+        let retainedForgePort: Int?
+        let retainedEPPort: Int?
+        retainedForgePort = existing?.forgeBindPort
+        retainedEPPort = existing?.engineeringPlatformBindPort
         guard let forgePort = ports.allocate(
             instanceID: forge.instanceID, excluded: otherPorts,
-            existing: existing?.forgeBindPort
+            existing: retainedForgePort
         ), let epPort = ports.allocate(
             instanceID: ep.instanceID, excluded: otherPorts.union([forgePort]),
-            existing: existing?.engineeringPlatformBindPort
+            existing: retainedEPPort
         ) else { return nil }
+        let reviewedUser = (try? ManagedInstallerReviewedExecutionIntent(stablePlan: plan)).flatMap {
+            try? FileManagedInstallerHelperReviewedSelectionStore.production().loadOperator(for: $0)
+        }
         let route = try? ManagedInstallerProductWorkerRouteAuthority(
             deploymentID: plan.deployment.id,
             forgeInstanceID: forge.instanceID,
@@ -237,7 +249,9 @@ struct ManagedInstallerFreshPairedProductWorkerRouteBuilder: Sendable {
                 for: forgeVenv
             ),
             engineeringPlatformVenvSlotName:
-                MacOSManagedPythonProductVenvSlotLayout.slotName(for: epVenv)
+                MacOSManagedPythonProductVenvSlotLayout.slotName(for: epVenv),
+            forgeServiceUserIdentitySHA256: forge.accountName.hasPrefix("_") ? nil
+                : reviewedUser.map { "sha256:" + $0.identitySHA256 }
         )
         guard let route, existing == nil || existing == route else { return nil }
         let candidates = prior?.candidateManifests ?? []

@@ -66,7 +66,7 @@ from .managed_installer import ManagedDeploymentExecutionRecord
 from .managed_install_flow import EP_COMPONENT, ManagedForgeEPInstallationCoordinator
 from .released_product_routes import (
     ReleasedManagedProductRouteBuilder,
-    ReleasedManagedProductRouteConfiguration,
+    ReleasedManagedProductRouteConfiguration, ReleasedManagedInstallationRouteConfiguration,
     ReleasedManagedSingleProductRouteConfiguration,
 )
 from .released_pairing_repair_review import (
@@ -501,6 +501,7 @@ class ManagedProductOperationHelperService:
                 installed_manifest=authorities.installed_manifest,
                 registry=self.dispatcher.coordinator.registry,
                 current_installer_release=authorities.current_installer_release,
+                completed_create_plan_reader=self.dispatcher.completed_create_plan,
             )
             receipt = self.dispatcher.dispatch(admitted)
             response = receipt.canonical_json_bytes()
@@ -905,9 +906,12 @@ class ManagedProductOperationHelperBuilder:
             routes=routes,
             current_installer_release=authority_resolver.current_installer_release,
         )
+        # Installation connectivity grants no historical removal/restore authority.
+        legacy_configurations=tuple(config for config in route_configurations
+                                    if not isinstance(config,ReleasedManagedInstallationRouteConfiguration))
         preserved_dispatcher = ManagedPreservedLifecycleDispatcher(
-            coordinator=coordinator, configurations=route_configurations,
-        ) if route_configurations else None
+            coordinator=coordinator, configurations=legacy_configurations,
+        ) if legacy_configurations else None
         return ManagedProductOperationHelperService(
             authority_resolver=authority_resolver,
             dispatcher=dispatcher,

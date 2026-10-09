@@ -25,7 +25,7 @@ from .engineering_platform_system_adapter import (
 )
 from .forge_ep_pairing_executor import (
     ForgeEPProductPairingBinding,
-    ForgeEPProductPairingExecutor,
+    ForgeEPProductPairingExecutor, ForgeEPInstallationPairingBinding, ForgeEPInstallationPairingExecutor,
 )
 from .forge_server_adapter import (
     ForgeServerProductAdapter,
@@ -35,6 +35,10 @@ from .forge_server_adapter import (
     ForgeUpdateBindingProvider,
     MacOSForgeLaunchDaemonSupervisor,
 )
+from .managed_forge_instance_bootstrap import ManagedForgeInstanceBootstrap
+from .installation_credential_issuer import ManagedEPInstallationCredentialIssuer
+from .qualified_ep_lifecycle import qualified_ep_installation_pairing_artifact
+from .qualified_forge_lifecycle import qualified_forge_installation_pairing_artifact
 from .managed_deployments import ManagedComponentBinding
 from .managed_install_flow import EP_COMPONENT, FORGE_COMPONENT
 from .managed_product_operation_dispatch import ResolvedManagedProductRoute
@@ -63,6 +67,7 @@ class ReleasedManagedProductRouteConfiguration:
     forge_update_binding_provider: ForgeUpdateBindingProvider | None = None
     forge_lifecycle_executable: Path | None = None
     forge_uninstall_binding: ForgeUninstallBinding | None = None
+    forge_instance_bootstrap: ManagedForgeInstanceBootstrap | None = None
 
     def __post_init__(self) -> None:
         ManagedComponentBinding(FORGE_COMPONENT, self.deployment_id, "receipt:route")
@@ -129,6 +134,39 @@ class ReleasedManagedProductRouteConfiguration:
 
 
 @dataclass(frozen=True)
+class ReleasedManagedInstallationRouteConfiguration:
+    """Sealed concrete installation route, without historical project authority."""
+    deployment_id: str
+    forge: ForgeServerProductAdapter
+    ep: EngineeringPlatformSystemProvisionerAdapter
+    pairing_binding: ForgeEPInstallationPairingBinding
+    credential_issuer: ManagedEPInstallationCredentialIssuer
+
+    def __post_init__(self):
+        ManagedComponentBinding(FORGE_COMPONENT,self.deployment_id,"receipt:route")
+        if (not isinstance(self.forge,ForgeServerProductAdapter)
+                or not isinstance(self.ep,EngineeringPlatformSystemProvisionerAdapter)
+                or not isinstance(self.pairing_binding,ForgeEPInstallationPairingBinding)
+                or not isinstance(self.credential_issuer,ManagedEPInstallationCredentialIssuer)
+                or self.credential_issuer.forge is not self.forge
+                or self.credential_issuer.ep is not self.ep
+                or self.credential_issuer.binding != self.pairing_binding
+                or self.credential_issuer.deployment_id != self.deployment_id
+                or not qualified_forge_installation_pairing_artifact(self.forge.installed_artifact)
+                or not qualified_ep_installation_pairing_artifact(self.credential_issuer.ep_artifact)
+                or self.pairing_binding.expected_ep_instance_id != self.ep.target.instance_id):
+            raise ValueError("exact installation route authority required")
+        _require_local_ep_endpoint(self.pairing_binding.endpoint,self.ep.target.bind_port)
+
+    @property
+    def forge_target(self): return self.forge.target
+    @property
+    def engineering_platform_target(self): return self.ep.target
+    @property
+    def forge_uninstall_binding(self): return None
+
+
+@dataclass(frozen=True)
 class ReleasedManagedSingleProductRouteConfiguration:
     """Sealed route for exactly one product, with no pairing authority."""
 
@@ -144,6 +182,7 @@ class ReleasedManagedSingleProductRouteConfiguration:
     forge_update_binding_provider: ForgeUpdateBindingProvider | None = None
     forge_lifecycle_executable: Path | None = None
     forge_uninstall_binding: ForgeUninstallBinding | None = None
+    forge_instance_bootstrap: ManagedForgeInstanceBootstrap | None = None
 
     def __post_init__(self) -> None:
         ManagedComponentBinding(FORGE_COMPONENT, self.deployment_id, "receipt:route")
@@ -215,7 +254,7 @@ class ReleasedManagedProductRouteBuilder:
         candidates = tuple(candidate_selections)
         installed = tuple(installed_selections)
         if not configs or any(
-            not isinstance(value, (ReleasedManagedProductRouteConfiguration, ReleasedManagedSingleProductRouteConfiguration))
+            not isinstance(value, (ReleasedManagedProductRouteConfiguration, ReleasedManagedSingleProductRouteConfiguration, ReleasedManagedInstallationRouteConfiguration))
             for value in configs
         ):
             raise TypeError("released product route configurations are required")
@@ -248,7 +287,7 @@ class ReleasedManagedProductRouteBuilder:
         candidates = tuple(candidate_manifests)
         installed = tuple(installed_manifests)
         if not configs or any(
-            not isinstance(value, (ReleasedManagedProductRouteConfiguration, ReleasedManagedSingleProductRouteConfiguration))
+            not isinstance(value, (ReleasedManagedProductRouteConfiguration, ReleasedManagedSingleProductRouteConfiguration, ReleasedManagedInstallationRouteConfiguration))
             for value in configs
         ):
             raise TypeError("released product route configurations are required")
@@ -272,7 +311,28 @@ class ReleasedManagedProductRouteBuilder:
         }
         routes: dict[str, ResolvedManagedProductRoute] = {}
         claimed_scopes: set[EPConsumerScope] = set()
+        installation_claims = [set() for _ in range(4)]
         for config in configs:
+            if isinstance(config,ReleasedManagedInstallationRouteConfiguration):
+                binding=config.pairing_binding
+                claims=(binding.operation_id,binding.binding_id,binding.consumer_id,binding.credential_reference)
+                if any(value in installation_claims[i] for i,value in enumerate(claims)):
+                    raise ValueError("installation authority shared across deployments")
+                for i,value in enumerate(claims): installation_claims[i].add(value)
+                for component,artifact in ((FORGE_COMPONENT,config.forge.installed_artifact),
+                                           (EP_COMPONENT,config.credential_issuer.ep_artifact)):
+                    if authorized.get(artifact.digest)!=(component,artifact):
+                        raise ValueError("installation artifact lacks exact manifest authority")
+                for adapter in (config.forge,config.ep):
+                    if (not required.issubset(adapter.staged_artifacts)
+                            or not set(adapter.staged_artifacts).issubset(authorized)):
+                        raise ValueError("installation staging lacks exact catalog authority")
+                routes[config.deployment_id]=ResolvedManagedProductRoute(
+                    config.forge.target.instance_id,config.ep.target.instance_id,
+                    {FORGE_COMPONENT:config.forge,EP_COMPONENT:config.ep},
+                    ForgeEPInstallationPairingExecutor(binding),
+                    installation_credential_issuer=config.credential_issuer)
+                continue
             if isinstance(config, ReleasedManagedSingleProductRouteConfiguration):
                 routes[config.deployment_id] = _build_single_route(
                     config, candidates, authorized
@@ -313,6 +373,7 @@ class ReleasedManagedProductRouteBuilder:
                 update_binding_provider=config.forge_update_binding_provider,
                 lifecycle_executable=config.forge_lifecycle_executable,
                 uninstall_binding=config.forge_uninstall_binding,
+                instance_bootstrap=config.forge_instance_bootstrap,
             )
             ep = EngineeringPlatformSystemProvisionerAdapter(
                 provisioner_executable=config.engineering_platform_provisioner,
@@ -349,7 +410,7 @@ def _require_isolated_targets(
     service_accounts: set[str] = set()
     bind_ports: set[int] = set()
     for configuration in configurations:
-        if isinstance(configuration, ReleasedManagedProductRouteConfiguration):
+        if isinstance(configuration, (ReleasedManagedProductRouteConfiguration, ReleasedManagedInstallationRouteConfiguration)):
             targets = (configuration.forge_target, configuration.engineering_platform_target)
         else:
             targets = (configuration.target,)
@@ -432,6 +493,7 @@ def _build_single_route(
             update_binding_provider=config.forge_update_binding_provider,
             lifecycle_executable=config.forge_lifecycle_executable,
             uninstall_binding=config.forge_uninstall_binding,
+                instance_bootstrap=config.forge_instance_bootstrap,
         )
         return ResolvedManagedProductRoute(
             config.target.instance_id, None, {component: adapter}, None

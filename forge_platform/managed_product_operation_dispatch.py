@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import os
+import stat
 from types import MappingProxyType
 from typing import Mapping, Protocol
 
@@ -19,7 +21,8 @@ from .component_operations import ComponentOperationRequest, ProductOperationAda
 from .ep_consumer_revocation import EPConsumerRevocationAdapter
 from .ep_consumer_registration import EPInitialConsumerRegistrationAdapter
 from .ep_credential_recovery import EPCredentialRecoveryAdapter
-from .forge_ep_pairing_executor import ForgeEPProductPairingExecutor
+from .forge_ep_pairing_executor import ForgeEPProductPairingExecutor, ForgeEPInstallationPairingExecutor
+from .installation_credential_issuer import ManagedEPInstallationCredentialIssuer
 from .managed_ep_initial_credential import ManagedEPInitialCredentialCoordinator
 from .managed_deployments import (
     MANAGED_DEPLOYMENT_SCHEMA_V1,
@@ -71,6 +74,7 @@ class ResolvedManagedProductRoute:
     adapters: Mapping[str, ProductOperationAdapter]
     pairing_executor: ForgeEPPairingExecutor | None
     ep_consumer_revoker: EPConsumerRevocationAdapter | None = None
+    installation_credential_issuer: ManagedEPInstallationCredentialIssuer | None = None
 
     def __post_init__(self) -> None:
         adapters = MappingProxyType(dict(self.adapters))
@@ -95,6 +99,16 @@ class ResolvedManagedProductRoute:
                 raise ValueError("paired product route requires a pairing executor")
         elif self.pairing_executor is not None:
             raise ValueError("single-component route cannot carry pairing authority")
+        issuer = self.installation_credential_issuer
+        if isinstance(self.pairing_executor, ForgeEPInstallationPairingExecutor):
+            if (not isinstance(issuer, ManagedEPInstallationCredentialIssuer)
+                    or len(identities) != 2 or self.ep_consumer_revoker is not None
+                    or issuer.binding != self.pairing_executor.binding
+                    or issuer.forge is not adapters[FORGE_COMPONENT]
+                    or issuer.ep is not adapters[EP_COMPONENT]):
+                raise ValueError("installation pairing requires exact isolated credential authority")
+        elif issuer is not None:
+            raise ValueError("installation credential authority cannot enter a legacy route")
         if self.ep_consumer_revoker is not None:
             if len(identities) != 2:
                 raise ValueError("single-component route cannot carry EP consumer revocation")
@@ -151,6 +165,7 @@ class PinnedManagedProductRouteResolver:
                 raise ValueError("helper-owned product routes reuse a product instance")
             claimed_instances.update(claims)
         self._routes = MappingProxyType(snapshot)
+
 
     def resolve(
         self, admitted: AdmittedNativeProductOperation
@@ -250,6 +265,76 @@ class ManagedProductOperationDispatcher:
         )
         self.resolver = resolver
 
+    def completed_create_plan(self, request, manifest, current):
+        """Read-only recovery admission from this exact completed product saga.
+
+        The original absent preflight is factual journal evidence. The real
+        nonempty registry stays visible; no product delegate is repeated.
+        """
+        from .managed_installer import ManagedDeploymentOperationCoordinator
+        from .durable_component_operations import DurableComponentOperationCoordinator
+        if (request.deployment_exists or current.peer_binding is not None
+            or current.composition_binding is not None
+            or set(current.by_component) != {FORGE_COMPONENT, EP_COMPONENT}
+            or any(operation.change != "install" for operation in request.components)):
+            return None
+        route = self.resolver.resolve(AdmittedNativeProductOperation(request, manifest, current))
+        desired = ManagedDeployment(request.deployment_id, 1, None,
+            tuple(ManagedComponentBinding(component,
+                route.forge_instance_id if component == FORGE_COMPONENT else route.engineering_platform_instance_id,
+                f"receipt:planned-{component}") for component in sorted(route.adapters)))
+        original_plan = ManagedDeploymentPlanner.plan(None, desired,
+            product_actions={component: "ADD_COMPONENT" for component in route.adapters})
+        owner = self.coordinator.expected_owner_uid
+        def protected(path):
+            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW_ANY", 0x20000000))
+            try:
+                info = os.fstat(fd)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                    or not 0 < info.st_size <= 128 * 1024):
+                    raise ManagedProductOperationDispatchError("completed create journal metadata changed")
+                raw = b""
+                while len(raw) < info.st_size:
+                    chunk = os.read(fd, info.st_size-len(raw))
+                    if not chunk: raise ManagedProductOperationDispatchError("completed create journal truncated")
+                    raw += chunk
+                after = os.fstat(fd)
+                if (info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns) != (after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+                    raise ManagedProductOperationDispatchError("completed create journal changed")
+                return raw
+            finally: os.close(fd)
+        saga_path = self.coordinator.operations_root / "deployment-saga" / (request.operation_id + ".json")
+        try: raw = protected(saga_path)
+        except FileNotFoundError: return None
+        saga = ManagedDeploymentOperationCoordinator._read(saga_path)
+        if (saga is None or saga.state != "COMPLETE"
+            or saga.operation_id != request.operation_id or saga.deployment_id != request.deployment_id
+            or saga.expected_registry_revision is not None
+            or saga.registry_revision != current.revision
+            or saga.plan_fingerprint != ManagedDeploymentOperationCoordinator._plan_fingerprint(original_plan)
+            or set(item.component for item in saga.components) != set(route.adapters)):
+            return None
+        operations = {operation.identity:operation for operation in request.components}
+        artifacts = {component.identity:component for component in manifest.components}
+        for execution in saga.components:
+            component = artifacts[execution.component]
+            wanted = _component_request(request.request_fingerprint, operations[execution.component],
+                component.artifact, component.role, route, readback=False)
+            path = self.coordinator.component_operations_root / wanted.operation_id / "record.json"
+            component_raw = protected(path)
+            record = DurableComponentOperationCoordinator._read(path, wanted.operation_id)
+            if (record is None or record.request_fingerprint != wanted.fingerprint()
+                or record.artifact != wanted.artifact or record.product_receipt.state != "COMPLETED"
+                or execution.operation_id != wanted.operation_id or execution.state != "COMPLETE"
+                or execution.instance_id != wanted.installation_identity
+                or execution.receipt_reference != record.product_receipt.evidence_reference
+                or current.by_component[execution.component].instance_id != wanted.installation_identity
+                or current.by_component[execution.component].receipt_reference != ManagedDeploymentOperationCoordinator._opaque_receipt(execution.receipt_reference)
+                or protected(path) != component_raw): return None
+        if protected(saga_path) != raw or self.coordinator.registry.load(request.deployment_id) != current: return None
+        return original_plan
+
     def dispatch(
         self, admitted: AdmittedNativeProductOperation
     ) -> NativeProductOperationDispatchReceipt:
@@ -258,6 +343,15 @@ class ManagedProductOperationDispatcher:
         route = self.resolver.resolve(admitted)
         if not isinstance(route, ResolvedManagedProductRoute):
             raise ManagedProductOperationDispatchError("product resolver returned an invalid route")
+        issuer = route.installation_credential_issuer
+        if issuer is not None and (
+                issuer.registry is not self.coordinator.registry
+                or issuer.guard is not self.coordinator.currency_guard
+                or issuer.store is not self.coordinator.secure_store
+                or issuer.root != self.coordinator.operations_root / "installation-ep-credential"
+                or issuer.uid != self.coordinator.expected_owner_uid
+                or issuer.deployment_id != admitted.request.deployment_id):
+            raise ManagedProductOperationDispatchError("installation credential coordinator authority changed")
         request = admitted.request
         current = admitted.current_deployment
         observed = self.coordinator.registry.load(request.deployment_id)
@@ -265,7 +359,7 @@ class ManagedProductOperationDispatcher:
             raise ManagedProductOperationDispatchError(
                 "managed deployment changed after helper admission"
             )
-        if current is not None and (
+        if current is not None and admitted.completed_create_plan is None and (
             route.forge_instance_id != request.forge_instance_id
             or route.engineering_platform_instance_id
             != request.engineering_platform_instance_id
@@ -295,7 +389,7 @@ class ManagedProductOperationDispatcher:
                 None if current is None else current.composition_binding
             ),
         )
-        plan = ManagedDeploymentPlanner.plan(
+        plan = admitted.completed_create_plan or ManagedDeploymentPlanner.plan(
             current,
             desired,
             product_actions={
@@ -329,7 +423,10 @@ class ManagedProductOperationDispatcher:
         if len(components) == 2:
             credential_issuer = None
             credential_reference = None
-            if isinstance(route.pairing_executor, ForgeEPProductPairingExecutor):
+            if isinstance(route.pairing_executor, ForgeEPInstallationPairingExecutor):
+                credential_issuer = route.installation_credential_issuer
+                credential_reference = route.pairing_executor.binding.credential_reference
+            elif isinstance(route.pairing_executor, ForgeEPProductPairingExecutor):
                 binding = route.pairing_executor.binding
                 if route.ep_consumer_revoker is None or self.coordinator.secure_store is None:
                     raise ManagedProductOperationDispatchError(

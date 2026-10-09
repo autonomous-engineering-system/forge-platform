@@ -2,6 +2,27 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class InstallerDomainTests: XCTestCase {
+    func testPublishedInstallationPairingDoesNotRequestProjectScope() throws {
+        var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("0.3.30"))
+        state.composition.components = [
+            ComponentDiff(componentID: "forge-runtime", title: "Forge", change: .install,
+                candidateVersion: "2.8.1",
+                artifactDigest: "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0", detail: "Published product"),
+            ComponentDiff(componentID: "engineering-platform-server", title: "EP", change: .install,
+                candidateVersion: "2.3.113",
+                artifactDigest: "sha256:878e36323e37b29d97a188c02257283c3dc322c60755d57dc9017259f8ac386e", detail: "Published product"),
+        ]
+        XCTAssertTrue(state.usesInstallationPairing)
+        XCTAssertFalse(state.requiresPairingTarget)
+        XCTAssertTrue(state.pairingTargetIsReady)
+        XCTAssertNil(state.pairingTarget)
+        state.composition.components[0] = ComponentDiff(componentID: "forge-runtime", title: "Forge", change: .install,
+            candidateVersion: "2.8.1", artifactDigest: "sha256:" + String(repeating: "a", count: 64), detail: "Foreign artifact")
+        XCTAssertFalse(state.usesInstallationPairing)
+        XCTAssertTrue(state.requiresPairingTarget)
+        XCTAssertFalse(state.pairingTargetIsReady)
+    }
+
     func testNewerVerifiedReleaseRequiresSelfUpdateAndBlocksTheWizard() throws {
         var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
         let release = try makeRelease("1.2.4")

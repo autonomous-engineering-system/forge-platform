@@ -158,7 +158,7 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             installerRelease: stablePlan.reviewedOperation.currentInstallerRelease,
             components: operations,
             providerTargetIDs: providerTargets,
-            runtimeEvidenceReferences: references
+            runtimeEvidenceReferences: Self.canonicalRuntimeEvidenceReferences(references)
         )
     }
 
@@ -240,9 +240,7 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
               orderedProviders.allSatisfy({ ProviderTargetID(rawValue: $0) != nil }),
               !orderedEvidence.isEmpty,
               Set(orderedEvidence).count == orderedEvidence.count,
-              orderedEvidence.allSatisfy(
-                  ManagedPythonRuntimeInstalledReadback.isEvidenceReference
-              ) else {
+              orderedEvidence.allSatisfy(Self.isRuntimeEvidenceReference) else {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
         }
         let fingerprint = Self.fingerprint(
@@ -284,6 +282,22 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         self.providerTargetIDs = orderedProviders
         self.runtimeEvidenceReferences = orderedEvidence
         requestFingerprint = fingerprint
+    }
+
+    static func isRuntimeEvidenceReference(_ value: String) -> Bool {
+        if ManagedPythonRuntimeInstalledReadback.isEvidenceReference(value) {
+            return true
+        }
+        let prefix = "provider-archive-inspection-"
+        guard value.hasPrefix(prefix) else { return false }
+        let digest = value.dropFirst(prefix.count)
+        return digest.utf8.count == 64 && digest.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
+
+    static func canonicalRuntimeEvidenceReferences(_ values: [String]) -> [String] {
+        Array(Set(values)).sorted()
     }
 
     public func canonicalJSONData() -> Data {
@@ -466,7 +480,7 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             "version": .string(release.version.description),
             "release_page": .string(release.releasePage),
             "asset_name": .string(release.assetName),
-            "sha256": .string(release.sha256),
+            "sha256": .string("sha256:" + release.sha256),
             "signing_key_id": .string(release.signingKeyID),
         ])
     }
@@ -482,6 +496,7 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
               let releasePage = fields["release_page"]?.stringValue,
               let assetName = fields["asset_name"]?.stringValue,
               let sha256 = fields["sha256"]?.stringValue,
+              CompositionCatalogValidation.isTaggedSHA256(sha256),
               let signingKeyID = fields["signing_key_id"]?.stringValue else {
             throw ManagedInstallerProductOperationBridgeFailure.invalidRequest
         }
@@ -489,7 +504,7 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
             version: try InstallerVersion(version),
             releasePage: releasePage,
             assetName: assetName,
-            sha256: sha256,
+            sha256: String(sha256.dropFirst(7)),
             signingKeyID: signingKeyID
         )
     }

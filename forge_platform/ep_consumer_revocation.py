@@ -89,71 +89,7 @@ class EPConsumerRevocationAdapter:
         self.expected_owner_uid = expected_owner_uid
 
     def _authority(self) -> tuple[Path, Path, int, int]:
-        target = self.provisioner.target
-        root = self.provisioner.product_root
-        entry, inventory = self.provisioner._inventory_entry()
-        if entry is None or inventory.get("state") == "AMBIGUOUS":
-            raise EPConsumerRevocationError("exact EP instance inventory is unavailable")
-        status = self.provisioner._run("status", "--instance-id", target.instance_id)
-        descriptor = status.get("descriptor")
-        runtime = descriptor.get("selected_runtime") if isinstance(descriptor, Mapping) else None
-        if (
-            status.get("instance_id") != target.instance_id
-            or status.get("state") != "READY"
-            or status.get("ready") is not True
-            or not isinstance(descriptor, Mapping)
-            or descriptor.get("instance_id") != target.instance_id
-            or not isinstance(runtime, Mapping)
-            or not isinstance(entry, Mapping)
-            or entry.get("instance_id") != target.instance_id
-        ):
-            raise EPConsumerRevocationError("EP instance status is not exact and ready")
-        data = root / "instances" / target.instance_id / "data"
-        database = data / "epdata.sqlite"
-        interpreter = runtime.get("interpreter")
-        if (
-            descriptor.get("data_root") != str(data)
-            or descriptor.get("service_account") != target.service_account
-            or entry.get("status") != "READY"
-            or entry.get("data_root") != str(data)
-            or entry.get("service_account") != target.service_account
-            or entry.get("selected_runtime") != runtime
-            or not isinstance(interpreter, str)
-            or not Path(interpreter).is_absolute()
-            or Path(interpreter).name != "python"
-            or Path(interpreter).parent.name != "bin"
-            or not Path(interpreter).parent.resolve(strict=False).is_relative_to(root / "runtimes")
-            or runtime.get("version") != self.expected_artifact.version
-            or runtime.get("source_revision") != self.expected_artifact.source_revision
-            or runtime.get("artifact_digest") != self.expected_artifact.digest
-        ):
-            raise EPConsumerRevocationError("EP instance runtime authority is unsupported")
-        for directory in (root, root / "instances", root / "instances" / target.instance_id, data):
-            try:
-                info = os.lstat(directory)
-            except OSError as error:
-                raise EPConsumerRevocationError("EP instance-owned data root is unavailable") from error
-            if not stat.S_ISDIR(info.st_mode):
-                raise EPConsumerRevocationError("EP instance-owned data root is unsafe")
-            if directory != data and (
-                info.st_uid != self.expected_owner_uid
-                or stat.S_IMODE(info.st_mode) & 0o022
-            ):
-                raise EPConsumerRevocationError("EP product topology is not root controlled")
-        try:
-            info = os.lstat(database)
-        except OSError as error:
-            raise EPConsumerRevocationError("EP CENTRAL database is unavailable") from error
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise EPConsumerRevocationError("EP CENTRAL database is unsafe")
-        try:
-            account = pwd.getpwnam(target.service_account)
-        except KeyError as error:
-            raise EPConsumerRevocationError("EP service account is unavailable") from error
-        identity = (account.pw_uid, account.pw_gid)
-        if identity[0] == 0 or info.st_uid not in {0, identity[0]}:
-            raise EPConsumerRevocationError("EP CENTRAL database ownership is unsafe")
-        return Path(interpreter), database, *identity
+        return _exact_ep_instance_runtime(self.provisioner,self.expected_artifact,self.expected_owner_uid)
 
     def _command(self, action: str) -> object:
         interpreter, database, uid, gid = self._authority()
@@ -206,3 +142,72 @@ class EPConsumerRevocationAdapter:
         return "ep-consumer-revoke:sha256:" + sha256(
             json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
+
+
+def _exact_ep_instance_runtime(provisioner, expected_artifact, expected_owner_uid):
+    """Shared exact topology readback; each caller separately admits its release."""
+    target = provisioner.target
+    root = provisioner.product_root
+    entry, inventory = provisioner._inventory_entry()
+    if entry is None or inventory.get("state") == "AMBIGUOUS":
+        raise EPConsumerRevocationError("exact EP instance inventory is unavailable")
+    status = provisioner._run("status", "--instance-id", target.instance_id)
+    descriptor = status.get("descriptor")
+    runtime = descriptor.get("selected_runtime") if isinstance(descriptor, Mapping) else None
+    if (
+        status.get("instance_id") != target.instance_id
+        or status.get("state") != "READY"
+        or status.get("ready") is not True
+        or not isinstance(descriptor, Mapping)
+        or descriptor.get("instance_id") != target.instance_id
+        or not isinstance(runtime, Mapping)
+        or not isinstance(entry, Mapping)
+        or entry.get("instance_id") != target.instance_id
+    ):
+        raise EPConsumerRevocationError("EP instance status is not exact and ready")
+    data = root / "instances" / target.instance_id / "data"
+    database = data / "epdata.sqlite"
+    interpreter = runtime.get("interpreter")
+    if (
+        descriptor.get("data_root") != str(data)
+        or descriptor.get("service_account") != target.service_account
+        or entry.get("status") != "READY"
+        or entry.get("data_root") != str(data)
+        or entry.get("service_account") != target.service_account
+        or entry.get("selected_runtime") != runtime
+        or not isinstance(interpreter, str)
+        or not Path(interpreter).is_absolute()
+        or Path(interpreter).name != "python"
+        or Path(interpreter).parent.name != "bin"
+        or not Path(interpreter).parent.resolve(strict=False).is_relative_to(root / "runtimes")
+        or runtime.get("version") != expected_artifact.version
+        or runtime.get("source_revision") != expected_artifact.source_revision
+        or runtime.get("artifact_digest") != expected_artifact.digest
+    ):
+        raise EPConsumerRevocationError("EP instance runtime authority is unsupported")
+    for directory in (root, root / "instances", root / "instances" / target.instance_id, data):
+        try:
+            info = os.lstat(directory)
+        except OSError as error:
+            raise EPConsumerRevocationError("EP instance-owned data root is unavailable") from error
+        if not stat.S_ISDIR(info.st_mode):
+            raise EPConsumerRevocationError("EP instance-owned data root is unsafe")
+        if directory != data and (
+            info.st_uid != expected_owner_uid
+            or stat.S_IMODE(info.st_mode) & 0o022
+        ):
+            raise EPConsumerRevocationError("EP product topology is not root controlled")
+    try:
+        info = os.lstat(database)
+    except OSError as error:
+        raise EPConsumerRevocationError("EP CENTRAL database is unavailable") from error
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise EPConsumerRevocationError("EP CENTRAL database is unsafe")
+    try:
+        account = pwd.getpwnam(target.service_account)
+    except KeyError as error:
+        raise EPConsumerRevocationError("EP service account is unavailable") from error
+    identity = (account.pw_uid, account.pw_gid)
+    if identity[0] == 0 or info.st_uid not in {0, identity[0]}:
+        raise EPConsumerRevocationError("EP CENTRAL database ownership is unsafe")
+    return Path(interpreter), database, *identity

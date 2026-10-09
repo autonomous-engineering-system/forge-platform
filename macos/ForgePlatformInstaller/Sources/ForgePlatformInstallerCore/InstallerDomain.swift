@@ -1162,8 +1162,21 @@ public struct InstallerWizardState: Equatable, Sendable {
         enabledProvidersVerified
     }
 
+    /// Only the exact released installation-readback products use the new
+    /// project-free route. This UI projection grants no product authority.
+    public var usesInstallationPairing: Bool {
+        guard composition.components.count == 2,
+              let forge = composition.components.first(where: { $0.componentID == "forge-runtime" }),
+              let ep = composition.components.first(where: { $0.componentID == "engineering-platform-server" })
+        else { return false }
+        return forge.candidateVersion == "2.8.1"
+            && forge.artifactDigest == ManagedInstallerProductServiceAccountPlanner.installationForgeArtifactSHA256
+            && ep.candidateVersion == "2.3.113"
+            && ep.artifactDigest == "sha256:878e36323e37b29d97a188c02257283c3dc322c60755d57dc9017259f8ac386e"
+    }
+
     public var requiresPairingTarget: Bool {
-        composition.components.count == 2
+        !usesInstallationPairing && composition.components.count == 2
             && Set(composition.components.map(\.componentID))
                 == Set(["forge-runtime", "engineering-platform-server"])
     }
@@ -2022,4 +2035,14 @@ public struct UnavailableInstallerWizardCoordinator: InstallerWizardCoordinator 
     public func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult {
         .failed(.coordinatorUnavailable)
     }
+}
+
+
+/// Fixed published installer identity and state root.
+public enum InstallerBuildProfile {
+    public static let parentDirectoryName = "AutonomousEngineeringSystem"
+    public static let helperLabel =
+        "com.autonomous-engineering-system.forge-platform-installer.helper"
+    public static let stateDirectoryName = "ForgePlatformInstaller"
+    public static let isLocalDebug = false
 }

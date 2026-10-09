@@ -8,15 +8,18 @@ private struct FakeKeychainChildStore: ManagedInstallerKeychainChildStoring {
     let fingerprintResult: Result<String?, ManagedInstallerSystemKeychainFailure>
     let putResult: Result<Bool, ManagedInstallerSystemKeychainFailure>
     let clearResult: Result<Void, ManagedInstallerSystemKeychainFailure>
+    let installationReaderResult: Result<Void, ManagedInstallerSystemKeychainFailure>
 
     init(
         fingerprint: Result<String?, ManagedInstallerSystemKeychainFailure> = .success(nil),
         put: Result<Bool, ManagedInstallerSystemKeychainFailure> = .success(true),
-        clear: Result<Void, ManagedInstallerSystemKeychainFailure> = .success(())
+        clear: Result<Void, ManagedInstallerSystemKeychainFailure> = .success(()),
+        installationReader: Result<Void, ManagedInstallerSystemKeychainFailure> = .failure(.rejected)
     ) {
         fingerprintResult = fingerprint
         putResult = put
         clearResult = clear
+        installationReaderResult = installationReader
     }
 
     func fingerprint(
@@ -30,6 +33,9 @@ private struct FakeKeychainChildStore: ManagedInstallerKeychainChildStoring {
     ) -> Result<Bool, ManagedInstallerSystemKeychainFailure> {
         putResult
     }
+
+    func prepareInstallationServiceReader(reference: String, operationID: String)
+        -> Result<Void, ManagedInstallerSystemKeychainFailure> { installationReaderResult }
 
     func clearOwned(
         reference: String, operationID: String
@@ -180,6 +186,20 @@ final class ManagedInstallerKeychainStoreChildTests: XCTestCase {
         XCTAssertNil(ManagedInstallerKeychainStoreChild.execute(
             clear, store: FakeKeychainChildStore(clear: .failure(.unavailable))
         ))
+    }
+
+    func testInstallationReaderHasSeparateDispatchAndNoLegacyFallback() throws {
+        let installation = try XCTUnwrap(ManagedInstallerKeychainStoreChild.Request.decode(
+            request("prepare-installation-service-reader")))
+        XCTAssertNil(ManagedInstallerKeychainStoreChild.execute(installation, store: FakeKeychainChildStore()))
+        XCTAssertEqual(ManagedInstallerKeychainStoreChild.execute(installation,
+            store: FakeKeychainChildStore(installationReader: .success(()))),
+            Data(#"{"reader_ready":true}"#.utf8))
+        let legacy = try XCTUnwrap(ManagedInstallerKeychainStoreChild.Request.decode(request("prepare-service-reader")))
+        XCTAssertNil(ManagedInstallerKeychainStoreChild.execute(legacy,
+            store: FakeKeychainChildStore(installationReader: .success(()))))
+        XCTAssertNil(ManagedInstallerKeychainStoreChild.Request.decode(
+            try request("prepare-installation-service-reader", material: material)))
     }
 
     func testBoundedPrivatePipeIO() throws {
