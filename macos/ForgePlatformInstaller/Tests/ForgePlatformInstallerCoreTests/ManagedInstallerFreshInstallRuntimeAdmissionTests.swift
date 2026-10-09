@@ -5,6 +5,60 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
+    func testAccountCohortsAllowOnlySameNamedForgeAcrossDistinctInstances() {
+        let digest = "sha256:" + String(repeating: "a", count: 64)
+        func existing(_ component: String, _ name: String, _ instance: String = "old-instance")
+            -> ManagedInstallerProductServiceAccountBinding {
+            .init(deploymentID: "old", componentIdentity: component, instanceID: instance,
+                  serviceAccount: name, artifactSHA256: digest, uid: 501, gid: 20,
+                  authoritySHA256: digest)
+        }
+        func fresh(_ component: String, _ name: String, _ uid: UInt32 = 501, _ gid: UInt32 = 20,
+                   _ instance: String = "new-instance") -> ManagedInstallerProductServiceAccountReadback {
+            .init(claim: .init(stablePlanFingerprint: digest, operationID: "source-op", deploymentID: "new",
+                              componentIdentity: component, instanceID: instance,
+                              productArtifactSHA256: digest, accountName: name),
+                  uid: uid, gid: gid, evidenceReference: "receipt:source-account")
+        }
+        let old = existing("forge-runtime", "operator-example")
+        XCTAssertTrue(MacOSManagedInstallerFreshProviderProbeAccess.acceptsAccountCohorts(
+            installed: [old], fresh: [fresh("forge-runtime", "operator-example")]))
+        XCTAssertTrue(MacOSManagedInstallerFreshProviderProbeAccess.acceptsAccountCohorts(
+            installed: [old], fresh: [fresh("engineering-platform-server", "_fpi_aaaaaaaaaaaaaaaaaaaa", 502)]))
+        for invalid in [
+            fresh("engineering-platform-server", "operator-example"),
+            fresh("forge-runtime", "different-operator"),
+            fresh("forge-runtime", "operator-example", 501, 21),
+            fresh("forge-runtime", "operator-example", 501, 20, "old-instance")
+        ] {
+            XCTAssertFalse(MacOSManagedInstallerFreshProviderProbeAccess.acceptsAccountCohorts(installed: [old], fresh: [invalid]))
+        }
+        XCTAssertFalse(MacOSManagedInstallerFreshProviderProbeAccess.acceptsAccountCohorts(
+            installed: [existing("forge-runtime", "_fpi_aaaaaaaaaaaaaaaaaaaa")],
+            fresh: [fresh("forge-runtime", "_fpi_aaaaaaaaaaaaaaaaaaaa")]))
+    }
+
+    func testPhysicalPriorReaderDistinguishesEmptyMissingAndDamagedAuthority() throws {
+        let base = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(at: base.appendingPathComponent("state/deployments"),
+            withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let fixture = try FreshRuntimeFixture()
+        let release = try XCTUnwrap(ManagedInstallerProductWorkerReleaseBinding.workerRelease(
+            for: fixture.plan.reviewedOperation.currentInstallerRelease))
+        let reader = ManagedInstallerFreshProviderPriorAccounts(root: base, expectedOwner: getuid())
+        guard case .success(let empty) = reader.read(release: release, candidateDeploymentID: "source-candidate") else {
+            return XCTFail("empty physical registry rejected")
+        }
+        XCTAssertTrue(empty.installed.isEmpty)
+        let file = base.appendingPathComponent("product-worker-authority.json")
+        try Data("{\"schema\":\"damaged\"}".utf8).write(to: file)
+        chmod(file.path, 0o600)
+        XCTAssertEqual(reader.read(release: release, candidateDeploymentID: "source-candidate").failure, .unavailable)
+    }
+
     func testPriorAccountsSeparateExactUninstalledCandidateFromInstalledRoutes() {
         let installed = priorBinding(
             deployment: "deployment-installed", component: "forge-runtime",
@@ -183,6 +237,30 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             stablePlan: fixture.plan, material: fixture.material,
             preprovider: accounts, providers: provider
         ).get())
+        let candidateBindings = accounts.accounts.map { account in
+            ManagedInstallerProductServiceAccountBinding(
+                deploymentID: account.claim.deploymentID, componentIdentity: account.claim.componentIdentity,
+                instanceID: account.claim.instanceID, serviceAccount: account.claim.accountName,
+                artifactSHA256: account.claim.productArtifactSHA256, uid: account.uid, gid: account.gid,
+                authoritySHA256: "sha256:" + String(repeating: "e", count: 64))
+        }
+        let candidateAccess = MacOSManagedInstallerFreshProviderProbeAccess(
+            root: root, expectedOwner: geteuid(), requiredEffectiveUID: geteuid(),
+            accounts: FreshRuntimeAccountReader(readbacks: accounts.accounts),
+            prior: FreshRuntimePriorAccounts(expectedRelease: workerRelease,
+                candidateDeploymentID: fixture.plan.deployment.id,
+                readback: .init(installed: [], candidate: candidateBindings,
+                                candidateManifestDigests: [fixture.plan.session.manifestSHA256])))
+        XCTAssertNoThrow(try candidateAccess.grant(stablePlan: fixture.plan, material: fixture.material,
+                                                  preprovider: accounts, providers: provider).get())
+        let mismatchedCandidate = MacOSManagedInstallerFreshProviderProbeAccess(
+            root: root, expectedOwner: geteuid(), requiredEffectiveUID: geteuid(),
+            accounts: FreshRuntimeAccountReader(readbacks: accounts.accounts),
+            prior: FreshRuntimePriorAccounts(expectedRelease: workerRelease,
+                candidateDeploymentID: fixture.plan.deployment.id,
+                readback: .init(installed: [], candidate: candidateBindings, candidateManifestDigests: [])))
+        XCTAssertEqual(mismatchedCandidate.grant(stablePlan: fixture.plan, material: fixture.material,
+                                                 preprovider: accounts, providers: provider).failure, .rejected)
         let fileACL = try XCTUnwrap(acl_get_file(
             executable.path, ACL_TYPE_EXTENDED
         ))
@@ -2439,6 +2517,7 @@ private struct FreshRuntimePriorAccounts:
     ManagedInstallerFreshProviderPriorAccountReading {
     let expectedRelease: VerifiedInstallerRelease
     let candidateDeploymentID: String
+    var readback: ManagedInstallerFreshProviderPriorAccounts.Readback? = nil
 
     func read(
         release: VerifiedInstallerRelease,
@@ -2449,7 +2528,7 @@ private struct FreshRuntimePriorAccounts:
               candidateDeploymentID == self.candidateDeploymentID else {
             return .failure(.rejected)
         }
-        return .success(.init(
+        return .success(readback ?? .init(
             installed: [], candidate: [], candidateManifestDigests: []
         ))
     }

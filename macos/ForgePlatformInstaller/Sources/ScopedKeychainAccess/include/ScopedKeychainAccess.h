@@ -5,3 +5,7 @@ SecAccessRef FPIKeychainCreateUIDReadAccess(uid_t uid) CF_RETURNS_RETAINED;
 SecAccessRef FPIKeychainCreateUIDReadUpdate(SecAccessRef previous, uid_t uid) CF_RETURNS_RETAINED;
 bool FPIKeychainHasUIDReadAccess(SecAccessRef access, SecAccessRef previous, uid_t uid);
 bool FPIKeychainMarkAccessModified(SecAccessRef access);
+
+#if DEBUG
+SecAccessRef FPIKeychainCreateQualificationReadAccess(uid_t readerUID) CF_RETURNS_RETAINED;
+#endif

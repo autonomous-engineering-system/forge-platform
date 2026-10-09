@@ -29,7 +29,7 @@ protocol ManagedInstallerSystemKeychainItemAccessing {
 /// The only real backend targets the file-based System.keychain explicitly.
 /// Security output and OSStatus never enter product or installer diagnostics.
 struct FileManagedInstallerSystemKeychainItemAccess: ManagedInstallerSystemKeychainItemAccessing {
-    private let path: String
+    private let path: String?
     private let requiresRoot: Bool
 
     init() {
@@ -40,13 +40,16 @@ struct FileManagedInstallerSystemKeychainItemAccess: ManagedInstallerSystemKeych
     #if DEBUG
     /// Private test-only file keychain; never present in release builds or helper requests.
     init(qualificationKeychainPath: String) {
-        path = qualificationKeychainPath
+        let candidate = URL(fileURLWithPath: qualificationKeychainPath)
+        let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().path + "/"
+        let resolved = candidate.resolvingSymlinksInPath().path
+        path = candidate.path.hasPrefix("/") && resolved.hasPrefix(temporary) ? resolved : nil
         requiresRoot = false
     }
     #endif
 
     private func keychain() -> SecKeychain? {
-        guard !requiresRoot || geteuid() == 0 else { return nil }
+        guard let path, !requiresRoot || geteuid() == 0 else { return nil }
         var result: SecKeychain?
         guard SecKeychainOpen(path, &result) == errSecSuccess else { return nil }
         return result
@@ -123,17 +126,58 @@ struct FileManagedInstallerSystemKeychainItemAccess: ManagedInstallerSystemKeych
 
 /// Helper-only scope for a newly issued EP credential. The owner marker is
 /// fixed to one operation and checked before any delete or idempotent retry.
+/// Resource dependencies are fixed by the helper constructor. Test-only
+/// construction below never ships in the release helper or request decoder.
+struct ManagedInstallerKeychainReaderDependencies {
+    var effectiveUID: () -> uid_t
+    var root: URL
+    var authority: () -> Result<ManagedInstallerProductWorkerAuthoritySnapshot, ManagedInstallerProductWorkerAuthorityReadFailure>
+    var metadataData: (URL) throws -> Data
+    var metadataRecord: (URL) throws -> [String: Any]
+    var lookup: (String) -> Result<ManagedInstallerProviderOSAccountReadback, ManagedInstallerProviderServiceAccountAuthorityFailure>
+    var resolve: (UInt32) throws -> ManagedInstallerNamedOperator
+    var reviewer: (ManagedInstallerProductServiceAccountClaim) throws -> ManagedInstallerNamedOperator
+    var prepare: (FileManagedInstallerSystemKeychainItemAccess, String, String, String, UInt32, () -> Bool)
+        -> Result<Void, ManagedInstallerSystemKeychainFailure>
+}
+
 public struct ManagedInstallerSystemKeychainCredentialStore {
     private static let ownerPrefix = "forge-platform-installer:"
     private static let fingerprintDomain = Data("engineering-platform.local-api.fingerprint.v1\0".utf8)
     private let access: any ManagedInstallerSystemKeychainItemAccessing
+    private let reader: ManagedInstallerKeychainReaderDependencies
 
     public init() {
         access = FileManagedInstallerSystemKeychainItemAccess()
+        reader = Self.productionReader()
     }
 
     init(access: any ManagedInstallerSystemKeychainItemAccessing) {
         self.access = access
+        reader = Self.productionReader()
+    }
+
+    #if DEBUG
+    init(qualificationAccess: FileManagedInstallerSystemKeychainItemAccess,
+         reader: ManagedInstallerKeychainReaderDependencies) {
+        access = qualificationAccess
+        self.reader = reader
+    }
+    #endif
+
+    private static func productionReader() -> ManagedInstallerKeychainReaderDependencies {
+        .init(effectiveUID: { geteuid() },
+              root: FileManagedInstallerReleasedRouteXPCService.productionRoot,
+              authority: { FileManagedInstallerProductWorkerAuthorityReader().readCanonicalAuthority() },
+              metadataData: { try Self.metadataData($0) },
+              metadataRecord: { try Self.metadataRecord($0) },
+              lookup: { MacOSManagedInstallerProviderOSAccountLookup().lookup($0) },
+              resolve: { try ManagedInstallerNamedOperator.resolve(uid: $0) },
+              reviewer: { try FileManagedInstallerHelperReviewedSelectionStore.production().loadOperator(for: $0) },
+              prepare: { backend, service, account, owner, uid, current in
+                  backend.prepareUIDReader(service: service, account: account, owner: owner,
+                                           uid: uid, authorizationCurrent: current)
+              })
     }
 
     private func target(
@@ -227,16 +271,16 @@ extension ManagedInstallerSystemKeychainCredentialStore {
     public func prepareServiceReader(reference: String, operationID: String)
         -> Result<Void, ManagedInstallerSystemKeychainFailure> {
         do {
-            guard geteuid() == 0, let target = target(reference, operationID: operationID),
+            guard reader.effectiveUID() == 0, let target = target(reference, operationID: operationID),
                   let backend = access as? FileManagedInstallerSystemKeychainItemAccess,
-                  case .success(let authority) = FileManagedInstallerProductWorkerAuthorityReader().readCanonicalAuthority()
+                  case .success(let authority) = reader.authority()
             else { return .failure(.rejected) }
             let routes = authority.routes.filter { $0.pairing.credentialReference == reference }
             guard routes.count == 1, let route = routes.first,
                   !route.forgeServiceAccount.hasPrefix("_"),
                   let identity = route.forgeServiceUserIdentitySHA256 else { return .failure(.rejected) }
-            let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
-            let parent = try Self.metadataRecord(root.appendingPathComponent("state/active-installer-operation.json"))
+            let root = reader.root
+            let parent = try reader.metadataRecord(root.appendingPathComponent("state/active-installer-operation.json"))
             guard parent["operation_id"] as? String == operationID,
                   parent["state"] as? String == "MANAGED_TOOLS",
                   parent["deployment_id"] as? String == route.deploymentID,
@@ -246,13 +290,13 @@ extension ManagedInstallerSystemKeychainCredentialStore {
                 deploymentID: route.deploymentID, componentIdentity: "forge-runtime",
                 instanceID: route.forgeInstanceID, productArtifactSHA256: route.forgeArtifactSHA256,
                 accountName: route.forgeServiceAccount)
-            let reviewer = try FileManagedInstallerHelperReviewedSelectionStore.production().loadOperator(for: claim)
+            let reviewer = try reader.reviewer(claim)
             guard reviewer.isAdministrator,
-                  case .success(let account) = MacOSManagedInstallerProviderOSAccountLookup().lookup(route.forgeServiceAccount),
-                  let user = try? ManagedInstallerNamedOperator.resolve(uid: account.uid),
+                  case .success(let account) = reader.lookup(route.forgeServiceAccount),
+                  let user = try? reader.resolve(account.uid),
                   user.accountName == route.forgeServiceAccount, user.gid == account.gid,
                   "sha256:" + user.identitySHA256 == identity, user.isAdministrator else { return .failure(.rejected) }
-            let issuance = try Self.metadataRecord(root.appendingPathComponent(
+            let issuance = try reader.metadataRecord(root.appendingPathComponent(
                 "state/product-operations/initial-ep-credential/" + operationID + ".json"))
             guard issuance["operation_id"] as? String == operationID,
                   issuance["state"] as? String == "COMPLETE",
@@ -262,10 +306,9 @@ extension ManagedInstallerSystemKeychainCredentialStore {
                   issuance["ep_instance_id"] as? String == route.engineeringPlatformInstanceID,
                   issuance["consumer_id"] as? String == route.pairing.consumerID,
                   issuance["project_id"] as? String == route.pairing.projectID else { return .failure(.rejected) }
-            try backend.prepareUIDReader(service: target.service, account: target.account,
-                owner: target.owner, uid: user.uid).get()
-            guard try ManagedInstallerNamedOperator.resolve(uid: user.uid) == user,
-                  case .success(let after) = FileManagedInstallerProductWorkerAuthorityReader().readCanonicalAuthority(),
+            try reader.prepare(backend, target.service, target.account, target.owner, user.uid, { true }).get()
+            guard try reader.resolve(user.uid) == user,
+                  case .success(let after) = reader.authority(),
                   after == authority else { return .failure(.rejected) }
             return .success(())
         } catch let failure as ManagedInstallerSystemKeychainFailure {
@@ -277,27 +320,27 @@ extension ManagedInstallerSystemKeychainCredentialStore {
     public func prepareInstallationServiceReader(reference: String, operationID: String)
         -> Result<Void, ManagedInstallerSystemKeychainFailure> {
         do {
-            guard geteuid() == 0, let item = target(reference, operationID: operationID),
+            guard reader.effectiveUID() == 0, let item = target(reference, operationID: operationID),
                   let backend = access as? FileManagedInstallerSystemKeychainItemAccess,
-                  case .success(let authority) = FileManagedInstallerProductWorkerAuthorityReader().readCanonicalAuthority(),
+                  case .success(let authority) = reader.authority(),
                   !authority.installationRoutes.isEmpty else { return .failure(.rejected) }
             let routes = authority.installationRoutes.filter { $0.credentialReference == reference && $0.operationID == operationID }
             guard routes.count == 1, let route = routes.first,
                   route.forgeArtifactSHA256 == "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0",
                   route.engineeringPlatformArtifactSHA256 == "sha256:878e36323e37b29d97a188c02257283c3dc322c60755d57dc9017259f8ac386e"
             else { return .failure(.rejected) }
-            let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
+            let root = reader.root
             let parentURL = root.appendingPathComponent("state/active-installer-operation.json")
             let journalURL = root.appendingPathComponent("state/product-operations/installation-ep-credential/" + operationID + ".json")
             let runtimeURL = root.appendingPathComponent("state/forge-runtime-bindings/" + route.forgeInstanceID + ".json")
             let deploymentURL = root.appendingPathComponent("state/deployments/" + route.deploymentID + ".json")
-            let parentData = try Self.metadataData(parentURL)
+            let parentData = try reader.metadataData(parentURL)
             let parent = try Self.strictMetadata(parentData)
-            let journalData = try Self.metadataData(journalURL)
+            let journalData = try reader.metadataData(journalURL)
             let record = try ManagedInstallerInstallationCredentialJournal(data: journalData)
-            let runtimeData = try Self.metadataData(runtimeURL)
+            let runtimeData = try reader.metadataData(runtimeURL)
             let runtime = try Self.strictMetadata(runtimeData)
-            let deploymentData = try Self.metadataData(deploymentURL)
+            let deploymentData = try reader.metadataData(deploymentURL)
             let deployment = try Self.strictMetadata(deploymentData)
             guard parent["operation_id"]?.stringValue == operationID,
                   parent["state"]?.stringValue == "MANAGED_TOOLS",
@@ -333,33 +376,32 @@ extension ManagedInstallerSystemKeychainCredentialStore {
                   componentDigest == record.componentBindingsSHA256,
                   case .success(let stored?) = self.fingerprint(reference: reference, operationID: operationID),
                   stored == record.credentialFingerprint,
-                  case .success(let account) = MacOSManagedInstallerProviderOSAccountLookup().lookup(route.forgeServiceAccount),
-                  let user = try? ManagedInstallerNamedOperator.resolve(uid: account.uid),
+                  case .success(let account) = reader.lookup(route.forgeServiceAccount),
+                  let user = try? reader.resolve(account.uid),
                   user.accountName == route.forgeServiceAccount, user.gid == account.gid, user.isAdministrator,
                   "sha256:" + user.identitySHA256 == route.forgeServiceUserIdentitySHA256 else { return .failure(.rejected) }
             let claim = ManagedInstallerProductServiceAccountClaim(stablePlanFingerprint: fingerprint,
                 operationID: operationID, deploymentID: route.deploymentID, componentIdentity: "forge-runtime",
                 instanceID: route.forgeInstanceID, productArtifactSHA256: route.forgeArtifactSHA256,
                 accountName: route.forgeServiceAccount)
-            let reviewer = try FileManagedInstallerHelperReviewedSelectionStore.production().loadOperator(for: claim)
+            let reviewer = try reader.reviewer(claim)
             guard reviewer.isAdministrator, reviewer.uid == user.uid else { return .failure(.rejected) }
             func current() -> Bool {
-                guard (try? ManagedInstallerNamedOperator.resolve(uid: user.uid)) == user,
+                guard (try? reader.resolve(user.uid)) == user,
                       user.isAdministrator,
-                      (try? FileManagedInstallerHelperReviewedSelectionStore.production().loadOperator(for: claim)) == reviewer,
+                      (try? reader.reviewer(claim)) == reviewer,
                       case .success(let currentFingerprint?) = self.fingerprint(reference: reference, operationID: operationID),
                       currentFingerprint == record.credentialFingerprint,
-                      case .success(let after) = FileManagedInstallerProductWorkerAuthorityReader().readCanonicalAuthority(),
+                      case .success(let after) = reader.authority(),
                       after == authority,
-                      (try? Self.metadataData(parentURL)) == parentData,
-                      (try? Self.metadataData(journalURL)) == journalData,
-                      (try? Self.metadataData(runtimeURL)) == runtimeData,
-                      (try? Self.metadataData(deploymentURL)) == deploymentData else { return false }
+                      (try? reader.metadataData(parentURL)) == parentData,
+                      (try? reader.metadataData(journalURL)) == journalData,
+                      (try? reader.metadataData(runtimeURL)) == runtimeData,
+                      (try? reader.metadataData(deploymentURL)) == deploymentData else { return false }
                 return true
             }
             guard current() else { return .failure(.rejected) }
-            return backend.prepareUIDReader(service: item.service, account: item.account,
-                owner: item.owner, uid: user.uid, authorizationCurrent: current)
+            return reader.prepare(backend, item.service, item.account, item.owner, user.uid, current)
         } catch let failure as ManagedInstallerSystemKeychainFailure { return .failure(failure) }
         catch { return .failure(.rejected) }
     }
@@ -391,12 +433,12 @@ extension ManagedInstallerSystemKeychainCredentialStore {
         return fields
     }
 
-    private static func metadataData(_ url: URL) throws -> Data {
+    static func metadataData(_ url: URL, expectedOwner: uid_t = 0) throws -> Data {
         let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
         guard fd >= 0 else { throw ManagedInstallerSystemKeychainFailure.rejected }
         defer { close(fd) }
         var before = stat()
-        guard fstat(fd, &before) == 0, before.st_uid == 0, before.st_nlink == 1,
+        guard fstat(fd, &before) == 0, before.st_uid == expectedOwner, before.st_nlink == 1,
               before.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG), before.st_mode & 0o7777 == 0o600,
               before.st_size > 0, before.st_size <= 64 * 1024 else { throw ManagedInstallerSystemKeychainFailure.rejected }
         var bytes = [UInt8](repeating: 0, count: Int(before.st_size)); var offset = 0
@@ -414,35 +456,22 @@ extension ManagedInstallerSystemKeychainCredentialStore {
         return Data(bytes)
     }
 
-    private static func metadataRecord(_ url: URL) throws -> [String: Any] {
-        let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
-        guard fd >= 0 else { throw ManagedInstallerSystemKeychainFailure.rejected }
-        defer { close(fd) }
-        var metadata = stat()
-        guard fstat(fd, &metadata) == 0, metadata.st_uid == 0, metadata.st_nlink == 1,
-              metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
-              metadata.st_mode & 0o7777 == 0o600, metadata.st_size > 0,
-              metadata.st_size <= 64 * 1024 else { throw ManagedInstallerSystemKeychainFailure.rejected }
-        var bytes = [UInt8](repeating: 0, count: Int(metadata.st_size)); var offset = 0
-        while offset < bytes.count {
-            let remaining = bytes.count - offset
-            let count = bytes.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress!.advanced(by: offset), remaining) }
-            guard count > 0 else { throw ManagedInstallerSystemKeychainFailure.rejected }
-            offset += count
-        }
-        guard let value = try JSONSerialization.jsonObject(with: Data(bytes)) as? [String: Any] else {
+    static func metadataRecord(_ url: URL, expectedOwner: uid_t = 0) throws -> [String: Any] {
+        let raw = try metadataData(url, expectedOwner: expectedOwner)
+        guard let value = try JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
             throw ManagedInstallerSystemKeychainFailure.rejected
         }
         return value
     }
+
 }
 
 extension FileManagedInstallerSystemKeychainItemAccess {
     /// Metadata-only, exact service/account/owner query. Never requests data.
-    fileprivate func prepareUIDReader(service: String, account: String, owner: String, uid: UInt32,
+    func prepareUIDReader(service: String, account: String, owner: String, uid: UInt32,
                                       authorizationCurrent: () -> Bool = { true })
         -> Result<Void, ManagedInstallerSystemKeychainFailure> {
-        guard requiresRoot, geteuid() == 0, uid > 0, authorizationCurrent(), let keychain = keychain() else { return .failure(.rejected) }
+        guard (!requiresRoot || geteuid() == 0), uid > 0, authorizationCurrent(), let keychain = keychain() else { return .failure(.rejected) }
         var request = query(service: service, account: account, keychain: keychain)
         request[kSecReturnAttributes as String] = true
         request[kSecReturnRef as String] = true

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Security
 import XCTest
 import ScopedKeychainAccess
@@ -173,6 +174,84 @@ final class ManagedInstallerSystemKeychainCredentialStoreTests: XCTestCase {
         }
     }
 
+    func testSecureMetadataReaderChecksOwnerModeLinksAndBoundedObject() throws {
+        let temporary = try XCTUnwrap(realpath(FileManager.default.temporaryDirectory.path, nil))
+        defer { free(temporary) }
+        let root = URL(fileURLWithPath: String(cString: temporary)).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("record.json")
+        let raw = Data("{\"state\":\"COMPLETE\"}".utf8)
+        try raw.write(to: file)
+        chmod(file.path, 0o600)
+        XCTAssertEqual(try ManagedInstallerSystemKeychainCredentialStore.metadataData(file, expectedOwner: getuid()), raw)
+        XCTAssertEqual(try ManagedInstallerSystemKeychainCredentialStore.metadataRecord(file, expectedOwner: getuid())["state"] as? String, "COMPLETE")
+        XCTAssertThrowsError(try ManagedInstallerSystemKeychainCredentialStore.metadataData(file, expectedOwner: getuid() + 1))
+        chmod(file.path, 0o640)
+        XCTAssertThrowsError(try ManagedInstallerSystemKeychainCredentialStore.metadataData(file, expectedOwner: getuid()))
+        chmod(file.path, 0o600)
+        let alias = root.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: file)
+        XCTAssertThrowsError(try ManagedInstallerSystemKeychainCredentialStore.metadataData(alias, expectedOwner: getuid()))
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.linkItem(at: file, to: alias)
+        XCTAssertThrowsError(try ManagedInstallerSystemKeychainCredentialStore.metadataData(file, expectedOwner: getuid()))
+        try FileManager.default.removeItem(at: alias)
+        for bad in [Data(), Data(repeating: 32, count: 65537)] {
+            try bad.write(to: file)
+            chmod(file.path, 0o600)
+            XCTAssertThrowsError(try ManagedInstallerSystemKeychainCredentialStore.metadataData(file, expectedOwner: getuid()))
+        }
+        try Data("[]".utf8).write(to: file)
+        chmod(file.path, 0o600)
+        XCTAssertThrowsError(try ManagedInstallerSystemKeychainCredentialStore.metadataRecord(file, expectedOwner: getuid()))
+    }
+
+    func testDisposableNativeUIDGrantIsExactAndCurrencyFailurePreventsMutation() throws {
+        SecKeychainSetUserInteractionAllowed(false)
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("scope.keychain-db").path
+        var keychain: SecKeychain?
+        let password = "noncredential-source-test"
+        XCTAssertEqual(password.withCString {
+            SecKeychainCreate(path, UInt32(password.utf8.count), $0, false, nil, &keychain)
+        }, errSecSuccess)
+        let owned = try XCTUnwrap(FPIKeychainCreateQualificationReadAccess(getuid()))
+        let request: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "source.scope.qualifier",
+            kSecAttrAccount as String: "noncredential",
+            kSecAttrComment as String: "source-only-owner",
+            kSecValueData as String: Data("not-a-credential".utf8),
+            kSecUseKeychain as String: try XCTUnwrap(keychain),
+            kSecAttrAccess as String: owned]
+        XCTAssertEqual(SecItemAdd(request as CFDictionary, nil), errSecSuccess)
+        let backend = FileManagedInstallerSystemKeychainItemAccess(qualificationKeychainPath: path)
+        func grant(_ owner: String, _ uid: UInt32, _ current: () -> Bool = { true })
+            -> Result<Void, ManagedInstallerSystemKeychainFailure> {
+            backend.prepareUIDReader(service: "source.scope.qualifier", account: "noncredential",
+                                     owner: owner, uid: uid, authorizationCurrent: current)
+        }
+        assertSuccess(grant("source-only-owner", getuid()))
+        assertFailure(grant("source-only-owner", 0), .rejected)
+        assertFailure(grant("wrong-owner", getuid()), .occupied)
+        assertFailure(grant("source-only-owner", getuid() + 1, { false }), .rejected)
+        assertSuccess(grant("source-only-owner", getuid() + 1))
+        assertSuccess(grant("source-only-owner", getuid() + 1))
+        var calls = 0
+        assertFailure(grant("source-only-owner", getuid(), { calls += 1; return calls < 3 }),
+                      .accessReadbackRejected)
+        assertSuccess(grant("source-only-owner", getuid() + 1))
+        let invalid = FileManagedInstallerSystemKeychainItemAccess(
+            qualificationKeychainPath: "/Library/Keychains/System.keychain")
+        assertFailure(invalid.prepareUIDReader(service: "source.scope.qualifier", account: "noncredential",
+                                               owner: "source-only-owner", uid: getuid()), .rejected)
+    }
+
     func testNewRootOnlyAccessPreservesRootOwnerAndRequiresExactReaderGrant() throws {
         let initial = try XCTUnwrap(FPIKeychainCreateRootOnlyAccess())
         var uid: uid_t = 99
@@ -190,7 +269,7 @@ final class ManagedInstallerSystemKeychainCredentialStoreTests: XCTestCase {
     }
 
     func testFileKeychainBackendUsesOnlyExplicitDisposableKeychain() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("qualification.keychain-db").path

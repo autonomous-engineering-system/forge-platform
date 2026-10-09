@@ -65,4 +65,3 @@ final class ManagedInstallerUserBoundXPCService: NSObject, ManagedInstallerRelea
         service.registerReviewedSelection(data, withReply: reply)
     }
 }
-

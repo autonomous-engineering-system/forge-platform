@@ -203,9 +203,7 @@ struct MacOSManagedInstallerFreshProviderProbeAccess:
             return .failure(.rejected)
         }
         let old = priorReadback.installed
-        guard Set(old.map(\.uid)).isDisjoint(with: Set(fresh.map(\.uid))),
-              Set(old.map(\.instanceID)).isDisjoint(with:
-                Set(fresh.map { $0.claim.instanceID })) else {
+        guard Self.acceptsAccountCohorts(installed: old, fresh: fresh) else {
             return .failure(.rejected)
         }
         let cohort = "sha256:" + SHA256.hash(data: Data(
@@ -287,6 +285,26 @@ struct MacOSManagedInstallerFreshProviderProbeAccess:
             return .failure(.rejected)
         }
         return .success(())
+    }
+
+    /// Dedicated EP identities remain unique. The same already resolved
+    /// named Forge operator may own two distinct Forge instance namespaces.
+    static func acceptsAccountCohorts(
+        installed: [ManagedInstallerProductServiceAccountBinding],
+        fresh: [ManagedInstallerProductServiceAccountReadback]
+    ) -> Bool {
+        guard Set(installed.map(\.instanceID)).isDisjoint(with:
+                Set(fresh.map { $0.claim.instanceID })) else { return false }
+        for old in installed {
+            for new in fresh where old.uid == new.uid {
+                guard old.componentIdentity == "forge-runtime",
+                      new.claim.componentIdentity == "forge-runtime",
+                      !old.serviceAccount.hasPrefix("_"), old.serviceAccount != "root",
+                      old.serviceAccount == new.claim.accountName,
+                      old.gid == new.gid else { return false }
+            }
+        }
+        return true
     }
 
     private func readFresh(

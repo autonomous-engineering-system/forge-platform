@@ -4,6 +4,32 @@ import ForgePlatformInstallerCore
 @testable import ForgePlatformInstallerPrivilegedHelper
 
 final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
+    func testAccountProbeChecksRealNamedUserAndRejectsOtherScope() throws {
+        let user = try ManagedInstallerNamedOperator.resolve(uid: getuid())
+        let root = FileManagedInstallerReleasedRouteXPCService.productionRoot
+        let home = root.path + "/provider-contexts/deployments/source-qualification/providers/forge-runtime/source-qualification/codex/home"
+        var args = ["helper", ManagedInstallerProviderAccountProbeChild.flag, user.accountName,
+                    String(user.uid), String(user.gid), "codex", "authentication-status",
+                    home.replacingOccurrences(of: "/home", with: "/runtime/0.157.1/bin/codex"), home]
+        let good = try XCTUnwrap(ManagedInstallerProviderAccountProbeChild.parse(args, allowedRoot: root))
+        XCTAssertTrue(ManagedInstallerProviderAccountProbeChild.matchingLocalAccount(good))
+        args[4] = String(user.gid + 1)
+        XCTAssertFalse(ManagedInstallerProviderAccountProbeChild.matchingLocalAccount(
+            try XCTUnwrap(ManagedInstallerProviderAccountProbeChild.parse(args, allowedRoot: root))))
+        let other = URL(fileURLWithPath: "/private/tmp/source-qualification")
+        let outside = other.path + "/provider-contexts/deployments/source-qualification/providers/forge-runtime/source-qualification/codex"
+        args[4] = String(user.gid); args[7] = outside + "/runtime/0.157.1/bin/codex"; args[8] = outside + "/home"
+        XCTAssertFalse(ManagedInstallerProviderAccountProbeChild.matchingLocalAccount(
+            try XCTUnwrap(ManagedInstallerProviderAccountProbeChild.parse(args, allowedRoot: other))))
+        let ep = root.path + "/products/engineering-platform/instances/source-qualification/providers/codex"
+        args[2] = "_fpi_" + String(repeating: "f", count: 20)
+        args[7] = ep + "/runtime/bin/codex"; args[8] = ep + "/home"
+        XCTAssertFalse(ManagedInstallerProviderAccountProbeChild.matchingLocalAccount(
+            try XCTUnwrap(ManagedInstallerProviderAccountProbeChild.parse(args, allowedRoot: root))))
+        XCTAssertEqual(ManagedInstallerProviderAccountProbeChild.run(["invalid"]), 78)
+        _ = ManagedInstallerProviderAccountProbeChild.standardStreamsArePipes()
+    }
+
     func testNamedForgeProbeKeepsEPAndGitHubDedicated() throws {
         let root = URL(fileURLWithPath: "/private/tmp/reviewed-provider-root", isDirectory: true)
         let forge = root.path + "/provider-contexts/deployments/deployment-one/providers/forge-runtime/fpi-two/codex"

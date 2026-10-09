@@ -4,8 +4,9 @@
 #include <Security/cssmapple.h>
 #include <string.h>
 #include <stdlib.h>
-static SecAccessRef createRootOwnedReader(uid_t uid) {
-    CSSM_ACL_PROCESS_SUBJECT_SELECTOR ownerSelector = {CSSM_ACL_PROCESS_SELECTOR_CURRENT_VERSION, CSSM_ACL_MATCH_UID | CSSM_ACL_MATCH_HONOR_ROOT, 0, 0};
+#include <unistd.h>
+static SecAccessRef createUIDOwnedReader(uid_t ownerUID, uid_t uid) {
+    CSSM_ACL_PROCESS_SUBJECT_SELECTOR ownerSelector = {CSSM_ACL_PROCESS_SELECTOR_CURRENT_VERSION, CSSM_ACL_MATCH_UID | CSSM_ACL_MATCH_HONOR_ROOT, ownerUID, 0};
     CSSM_ACL_PROCESS_SUBJECT_SELECTOR readerSelector = {CSSM_ACL_PROCESS_SELECTOR_CURRENT_VERSION, CSSM_ACL_MATCH_UID | CSSM_ACL_MATCH_HONOR_ROOT, uid, 0};
     CSSM_LIST_ELEMENT ownerData = {0}, ownerType = {0}, readerData = {0}, readerType = {0};
     ownerData.ElementType = CSSM_LIST_ELEMENT_DATUM;
@@ -29,11 +30,20 @@ static SecAccessRef createRootOwnedReader(uid_t uid) {
 }
 
 SecAccessRef FPIKeychainCreateRootOnlyAccess(void) {
-    return createRootOwnedReader(0);
+    return createUIDOwnedReader(0, 0);
 }
 SecAccessRef FPIKeychainCreateUIDReadAccess(uid_t uid) {
-    return uid > 0 ? createRootOwnedReader(uid) : NULL;
+    return uid > 0 ? createUIDOwnedReader(0, uid) : NULL;
 }
+
+#if DEBUG
+// Only source qualification, on a process-owned disposable file keychain.
+// The release API still fixes its owner to root; no caller supplies an owner.
+SecAccessRef FPIKeychainCreateQualificationReadAccess(uid_t readerUID) {
+    uid_t ownerUID = geteuid();
+    return ownerUID > 0 && readerUID > 0 ? createUIDOwnedReader(ownerUID, readerUID) : NULL;
+}
+#endif
 
 static bool hasRight(const CSSM_ACL_ENTRY_INFO *entry, CSSM_ACL_AUTHORIZATION_TAG tag) {
     for (uint32 i = 0; i < entry->EntryPublicInfo.Authorization.NumberOfAuthTags; ++i)
