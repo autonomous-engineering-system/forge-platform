@@ -511,6 +511,79 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         }
     }
 
+
+    func testStandaloneEPRestoreUsesPreserveProofAndIndependentExactPostReadback() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let intent = try ManagedInstallerPreservedLifecycleReviewIntent(
+            operationID: "restore-ep", deploymentID: "deployment-one", operation: "RESTORE",
+            component: "engineering-platform-server", instanceID: "ep-one",
+            installedCompositionIdentity: "ep-qualified", installedManifestSHA256: "sha256:" + String(repeating: "a", count: 64),
+            installerRelease: record.release)
+        let proposal = try lifecycleProposal(intent)
+        let request = try ManagedInstallerPreservedLifecycleRequest(intent: intent, proposal: proposal)
+        let receipt = try ManagedInstallerPreservedLifecycleReceipt.decodeJSON(lifecycleReceipt(request), request: request)
+        let before = try epRestoreInventory(after: false)
+        let after = try epRestoreInventory(after: true)
+        let session = ManagedInstallerPreservedLifecycleReviewSession(inventory: before, target: before.existing[0],
+            inventoryEvidenceReference: before.evidenceReference, intent: intent, proposal: proposal)
+        for (prior, final, expected, expectedMutations) in [
+            (try epRestoreRegistry(after: false), try epRestoreRegistry(after: true), true, 1),
+            (try epRestoreRegistry(after: false, preserveID: "foreign-preserve"), try epRestoreRegistry(after: true), false, 0),
+            (try epRestoreRegistry(after: false, preserveDigest: "sha256:" + String(repeating: "e", count: 64)), try epRestoreRegistry(after: true), false, 0),
+            (try epRestoreRegistry(after: false), try epRestoreRegistry(after: true, restoredReference: "receipt:old-ep"), false, 1),
+            (try epRestoreRegistry(after: false), try epRestoreRegistry(after: true, revision: 4), false, 1),
+        ] {
+            let execution = LifecycleExecutionTransportSpy(reply: receipt.canonicalJSONData())
+            let registry = LifecycleRegistryReadSpy(records: [prior, final])
+            let coordinator = makeCoordinator(feed: FeedSpy(result: .success(record)),
+                inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+                staging: StagingSpy(result: .success(try makeStagedAsset())),
+                managedDeploymentRouteCoordinator: LifecycleInventoryRouteSpy(inventories: [before, before, after, after]),
+                preservedLifecycleReviewTransport: LifecycleReviewTransportSpy(reply: proposal.canonicalJSONData()),
+                preservedLifecycleTransport: execution, preservedRegistryReadTransport: registry)
+            _ = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+            let result = await coordinator.executeReviewedPreservedLifecycle(session)
+            XCTAssertEqual(result, expected ? .success(receipt) : .failure(.rejected))
+            let calls = await execution.calls()
+            XCTAssertEqual(calls.count, expectedMutations)
+        }
+    }
+
+    private func epRestoreInventory(after: Bool) throws -> ManagedDeploymentInventory {
+        try ManagedDeploymentInventory(existing: [ManagedDeploymentTarget(id: "deployment-one", exists: true,
+            engineeringPlatformInstanceID: after ? "ep-one" : nil,
+            preservedEngineeringPlatformInstanceID: after ? nil : "ep-one",
+            installedCompositionID: "ep-qualified", installedCompositionManifestSHA256: "sha256:" + String(repeating: "a", count: 64))],
+            createCandidate: ManagedDeploymentTarget(id: "new", exists: false), evidenceReference: after ? "registry:restored" : "registry:preserved")
+    }
+
+    private func epRestoreRegistry(after: Bool, preserveID: String = "preserve-ep",
+        preserveDigest: String = "sha256:" + String(repeating: "f", count: 64),
+        restoredReference: String = "receipt:restore-" + String(repeating: "d", count: 64), revision: Int? = nil
+    ) throws -> ManagedInstallerManagedDeploymentRegistryRecord {
+        var wire = try JSONSerialization.jsonObject(with: PreservedRegistryFixture.record()) as! [String: Any]
+        wire["revision"] = revision ?? (after ? 3 : 2)
+        var composition = wire["composition_binding"] as! [String: Any]
+        composition["composition_id"] = "ep-qualified"; wire["composition_binding"] = composition
+        if after {
+            wire["schema"] = "forge-platform.managed-deployment/v2"
+            wire.removeValue(forKey: "preserved_components"); wire.removeValue(forKey: "historical_peer_binding")
+            wire["components"] = [["component": "engineering-platform-server", "instance_id": "ep-one", "receipt_reference": restoredReference]]
+        } else {
+            var preserved = (wire["preserved_components"] as! [[String: Any]])[0]
+            preserved["component"] = "engineering-platform-server"; preserved["instance_id"] = "ep-one"
+            preserved["previous_receipt_reference"] = "receipt:ep-one"
+            preserved["preserve_operation_id"] = preserveID; preserved["preserve_receipt_digest"] = preserveDigest
+            preserved["version"] = "2.3.106"; preserved["source_revision"] = "7b99b578153ae5d72372a09db194306b49ec9f9c"
+            preserved["artifact_digest"] = "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694"
+            preserved["forge_runtime_id"] = NSNull(); preserved["forge_installation_id"] = NSNull()
+            wire["preserved_components"] = [preserved]
+        }
+        let bytes = try JSONSerialization.data(withJSONObject: wire, options: [.sortedKeys, .withoutEscapingSlashes]) + Data([0x0a])
+        return try ManagedInstallerManagedDeploymentRegistryRecord.decode(bytes, expectedDeploymentID: "deployment-one")
+    }
+
     private func lifecycleIntent(
         release: VerifiedInstallerRelease, operation: String = "PRESERVE"
     ) throws -> ManagedInstallerPreservedLifecycleReviewIntent {
@@ -544,21 +617,24 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
     ) throws -> ManagedInstallerPreservedLifecycleReviewProposal {
         var review: [String: StrictJSONResourceValue] = [
             "deployment_id": .string(intent.deploymentID),
-            "registry_revision": .integer("1"),
+            "registry_revision": .integer(intent.operation == "RESTORE" ? "2" : "1"),
             "registry_fingerprint": .string("sha256:" + String(repeating: "b", count: 64)),
             "composition_id": .string(intent.installedCompositionIdentity),
             "composition_digest": .string(intent.installedManifestSHA256),
             "operation": .string(intent.operation), "operation_id": .string(intent.operationID),
             "component": .string(intent.component), "instance_id": .string(intent.instanceID),
             "artifact": .object([
-                "version": .string("2.7.36"),
-                "source_revision": .string(String(repeating: "e", count: 40)),
-                "source": .string("https://example.invalid/forge.whl"),
-                "digest": .string("sha256:" + String(repeating: "c", count: 64)),
+                "version": .string(intent.component == "engineering-platform-server" ? "2.3.106" : "2.7.36"),
+                "source_revision": .string(intent.component == "engineering-platform-server"
+                    ? "7b99b578153ae5d72372a09db194306b49ec9f9c" : String(repeating: "e", count: 40)),
+                "source": .string(intent.component == "engineering-platform-server" ? "https://example.invalid/ep.whl" : "https://example.invalid/forge.whl"),
+                "digest": .string(intent.component == "engineering-platform-server"
+                    ? "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694" : "sha256:" + String(repeating: "c", count: 64)),
                 "qualification": .string("https://example.invalid/receipt"),
             ]),
             "previous_receipt_reference": .string("receipt:forge-one"),
-            "preserve_operation_id": .null, "preserve_receipt_digest": .null,
+            "preserve_operation_id": intent.operation == "RESTORE" ? .string("preserve-ep") : .null,
+            "preserve_receipt_digest": intent.operation == "RESTORE" ? .string("sha256:" + String(repeating: "f", count: 64)) : .null,
             "historical_peer_reference": .null,
             "destructive_confirmation_required": .boolean(intent.operation == "PURGE"),
         ]
@@ -585,7 +661,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             "instance_id": .string(request.intent.instanceID),
             "state": .string("COMPLETE"),
             "receipt_digest": .string("sha256:" + String(repeating: "d", count: 64)),
-            "registry_revision": .integer("2"),
+            "registry_revision": .integer(String(request.proposal.registryRevision + 1)),
         ]))
     }
 

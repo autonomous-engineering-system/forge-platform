@@ -4,6 +4,20 @@ import XCTest
 
 final class InstallerCLITests: XCTestCase {
 
+    func testRestoreParserRequiresExistingStandaloneEPAndReviewedAcknowledgement() throws {
+        let args = ["deployment", "lifecycle", "restore", "--deployment", "saved-ep",
+                    "--operation-id", "restore-one", "--component", "engineering-platform-server"]
+        let command = try InstallerCLIParser.parse(args + ["--yes", "--non-interactive",
+            "--review-fingerprint", "sha256:" + String(repeating: "a", count: 64)])
+        XCTAssertEqual(command.command, .deploymentLifecycleRestore("saved-ep", operationID: "restore-one", component: "engineering-platform-server"))
+        XCTAssertTrue(command.command.requiresAdministratorForMutation)
+        for changed in [args + ["--confirm-instance-id", "ep-one"],
+                        args.map { $0 == "saved-ep" ? "new" : $0 },
+                        args.map { $0 == "engineering-platform-server" ? "forge-runtime" : $0 }] {
+            XCTAssertThrowsError(try InstallerCLIParser.parse(changed))
+        }
+    }
+
     func testParserSupportsFullWizardApplyAndAutomationFlags() throws {
         let invocation = try InstallerCLIParser.parse([
             "deployment", "apply",

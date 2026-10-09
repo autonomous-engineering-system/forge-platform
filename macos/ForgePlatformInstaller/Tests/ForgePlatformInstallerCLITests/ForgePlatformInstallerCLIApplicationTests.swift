@@ -443,6 +443,24 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
+    func testLifecycleRestoreRequiresActualAdministratorAndFreshHelperReview() async throws {
+        let startup = CLIStartupSpy(outcome: .ready(
+            currentRelease: try release("1.2.3"),
+            coordinator: CLIReadyCoordinator()
+        ))
+        let result = await run(
+            [
+                "deployment", "lifecycle", "restore",
+                "--deployment", "production", "--operation-id", "restore-one",
+                "--component", "engineering-platform-server", "--yes", "--non-interactive", "--json",
+            ],
+            startup: startup, version: "1.2.3"
+        )
+        XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
+        XCTAssertTrue(result.stdout.joined().contains(mutationExpectation("lifecycle-review-blocked")))
+        XCTAssertTrue(result.stderr.isEmpty)
+    }
+
     func testLifecyclePurgeCommandUsesSharedReviewAndFailsClosedWithoutInstalledProvenance() async throws {
         let startup = CLIStartupSpy(outcome: .ready(
             currentRelease: try release("1.2.3"),

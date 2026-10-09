@@ -14,11 +14,12 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         )
     }
 
-    private func intent(_ operation: String = "PRESERVE") throws
+    private func intent(_ operation: String = "PRESERVE", component: String = "forge-runtime") throws
         -> ManagedInstallerPreservedLifecycleReviewIntent {
         try ManagedInstallerPreservedLifecycleReviewIntent(
             operationID: "preserve-a", deploymentID: "reviewed-pair",
-            operation: operation, component: "forge-runtime", instanceID: "forge-a",
+            operation: operation, component: component,
+            instanceID: component == "engineering-platform-server" ? "ep-a" : "forge-a",
             installedCompositionIdentity: "composition-a",
             installedManifestSHA256: "sha256:" + String(repeating: "d", count: 64),
             installerRelease: release()
@@ -42,10 +43,12 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
             "component": .string(intent.component),
             "instance_id": .string(intent.instanceID),
             "artifact": .object([
-                "version": .string("2.7.36"),
-                "source_revision": .string(String(repeating: "e", count: 40)),
-                "source": .string("https://example.invalid/forge.whl"),
-                "digest": .string("sha256:" + String(repeating: "c", count: 64)),
+                "version": .string(intent.component == "engineering-platform-server" ? "2.3.106" : "2.7.36"),
+                "source_revision": .string(intent.component == "engineering-platform-server"
+                    ? "7b99b578153ae5d72372a09db194306b49ec9f9c" : String(repeating: "e", count: 40)),
+                "source": .string(intent.component == "engineering-platform-server" ? "https://example.invalid/ep.whl" : "https://example.invalid/forge.whl"),
+                "digest": .string(intent.component == "engineering-platform-server"
+                    ? "sha256:9d25a53d75b61d43d665d9f8290a968dc3e63d12d2037eae8ef31ee810eb6694" : "sha256:" + String(repeating: "c", count: 64)),
                 "qualification": .string("https://example.invalid/receipt"),
             ]),
             "previous_receipt_reference": .string("receipt:forge-a"),
@@ -116,6 +119,42 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
                 "registry_revision": .integer("2"),
             ]),
         ]))
+    }
+
+    func testCLIRestoreRequiresExactReviewAndConfirmedPreservedEP() async throws {
+        let selected = try intent("RESTORE", component: "engineering-platform-server")
+        let proposal = try fixture(selected, historicalPeer: false)
+        let request = try ManagedInstallerPreservedLifecycleRequest(intent: selected, proposal: proposal)
+        let terminal = try ManagedInstallerPreservedLifecycleReceipt.decodeJSON(receipt(request), request: request)
+        for (options, expected, calls) in [
+            (InstallerCLIOptions(nonInteractive: true), InstallerCLIExitCode.confirmationRequired, 0),
+            (InstallerCLIOptions(nonInteractive: true, assumeYes: true), .confirmationRequired, 0),
+            (InstallerCLIOptions(nonInteractive: true, assumeYes: true, reviewFingerprint: "sha256:" + String(repeating: "e", count: 64)), .blocked, 0),
+            (InstallerCLIOptions(nonInteractive: true, assumeYes: true, reviewFingerprint: proposal.reviewFingerprint), .success, 1),
+        ] {
+            let coordinator = LifecycleReviewCoordinator(
+                inventory: try lifecycleInventory(preserved: true, component: "engineering-platform-server"),
+                proposal: proposal, executionReceipt: terminal)
+            let result = await InstallerCLIWorkflow(currentRelease: try release(), coordinator: coordinator)
+                .restoreComponent(deploymentID: selected.deploymentID, operationID: selected.operationID,
+                    component: selected.component, options: options, confirm: { _ in false })
+            XCTAssertEqual(result.exitCode, expected)
+            let count = await coordinator.executionCallCount()
+            XCTAssertEqual(count, calls)
+            if expected == .success { XCTAssertEqual(result.status, "lifecycle-restore-complete") }
+        }
+        let coordinator = LifecycleReviewCoordinator(
+            inventory: try lifecycleInventory(preserved: true, component: "engineering-platform-server"), proposal: proposal)
+        let workflow = InstallerCLIWorkflow(currentRelease: try release(), coordinator: coordinator)
+        let wrongComponent = await workflow.restoreComponent(deploymentID: selected.deploymentID,
+            operationID: selected.operationID, component: "forge-runtime", options: .init(assumeYes: true), confirm: { _ in true })
+        XCTAssertEqual(wrongComponent.exitCode, .blocked)
+        let noReads = await coordinator.inventoryReadCount()
+        XCTAssertEqual(noReads, 0)
+        let failed = await workflow.restoreComponent(deploymentID: selected.deploymentID,
+            operationID: selected.operationID, component: selected.component,
+            options: .init(nonInteractive: true, assumeYes: true, reviewFingerprint: proposal.reviewFingerprint), confirm: { _ in true })
+        XCTAssertEqual(failed.exitCode, .executionFailed)
     }
 
     func testNativePreserveRecoveryCodecBindsExactPublicTargetAndTerminalRecord() throws {
@@ -725,13 +764,14 @@ final class ManagedInstallerPreservedLifecycleBridgeTests: XCTestCase {
         XCTAssertEqual(invalidReads, 0)
     }
 
-    private func lifecycleInventory(preserved: Bool) throws -> ManagedDeploymentInventory {
+    private func lifecycleInventory(preserved: Bool, component: String = "forge-runtime") throws -> ManagedDeploymentInventory {
         try ManagedDeploymentInventory(
             existing: [ManagedDeploymentTarget(
                 id: "reviewed-pair", exists: true,
-                forgeInstanceID: preserved ? nil : "forge-a",
-                engineeringPlatformInstanceID: "ep-a",
-                preservedForgeInstanceID: preserved ? "forge-a" : nil,
+                forgeInstanceID: component == "forge-runtime" && !preserved ? "forge-a" : nil,
+                engineeringPlatformInstanceID: component == "forge-runtime" || !preserved ? "ep-a" : nil,
+                preservedForgeInstanceID: component == "forge-runtime" && preserved ? "forge-a" : nil,
+                preservedEngineeringPlatformInstanceID: component == "engineering-platform-server" && preserved ? "ep-a" : nil,
                 installedCompositionID: "composition-a",
                 installedCompositionManifestSHA256:
                     "sha256:" + String(repeating: "d", count: 64)
