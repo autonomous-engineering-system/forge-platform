@@ -1156,16 +1156,22 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         let transport = MacOSManagedInstallerReleasedRouteXPCTransport(
             endpoint: listener.endpoint
         )
-        let transported = try await transport.registerReviewedEPProvider(
-            intent, providerTargetID: requirement.id
-        )
-        XCTAssertEqual(transported, expectedProduct)
-        do {
-            _ = try await transport.registerReviewedEPProvider(
-                intent, providerTargetID: wrongTarget
+        if !(try ManagedInstallerNamedOperator.resolve(uid: getuid())).isAdministrator {
+            await assertNonAdminTransportRejected {
+                try await transport.registerReviewedEPProvider(intent, providerTargetID: requirement.id)
+            }
+        } else {
+            let transported = try await transport.registerReviewedEPProvider(
+                intent, providerTargetID: requirement.id
             )
-            XCTFail("wrong EP target must be rejected")
-        } catch {}
+            XCTAssertEqual(transported, expectedProduct)
+            do {
+                _ = try await transport.registerReviewedEPProvider(
+                    intent, providerTargetID: wrongTarget
+                )
+                XCTFail("wrong EP target must be rejected")
+            } catch {}
+        }
         await transport.invalidate()
         let wrongXPC: Data? = await withCheckedContinuation { continuation in
             service.registerReviewedEPProvider(

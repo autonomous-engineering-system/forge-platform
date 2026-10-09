@@ -275,10 +275,16 @@ final class ManagedInstallerHelperReviewedSelectionAdmissionTests: XCTestCase {
         listener.activate()
         defer { listener.invalidate() }
         let transport = MacOSManagedInstallerReleasedRouteXPCTransport(endpoint: listener.endpoint)
-        try await transport.registerReviewedSelection(selection)
-        XCTAssertEqual(try store.load(for: selection.intent), selection)
-        XCTAssertEqual(try store.loadOperator(for: selection.intent),
-                       try ManagedInstallerNamedOperator.resolve(uid: getuid()))
+        if !(try ManagedInstallerNamedOperator.resolve(uid: getuid())).isAdministrator {
+            do { try await transport.registerReviewedSelection(selection); XCTFail("non-admin selection admitted") }
+            catch { XCTAssertEqual(error as? ManagedInstallerReleasedRouteXPCFailure, .administratorRequired) }
+            XCTAssertThrowsError(try store.loadOperator(for: selection.intent))
+        } else {
+            try await transport.registerReviewedSelection(selection)
+            XCTAssertEqual(try store.load(for: selection.intent), selection)
+            XCTAssertEqual(try store.loadOperator(for: selection.intent),
+                           try ManagedInstallerNamedOperator.resolve(uid: getuid()))
+        }
         await transport.invalidate()
 
         let unavailable = FileManagedInstallerReleasedRouteXPCService(

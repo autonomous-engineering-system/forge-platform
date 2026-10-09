@@ -151,11 +151,15 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         }
         try operatorStore.registerOperator(ManagedInstallerNamedOperator.resolve(uid: getuid()),
             selection: ManagedInstallerReviewedSelection(stablePlan: plan))
-        let transported = try await transport.executeReviewedIntent(intent)
-        XCTAssertEqual(
-            transported,
-            .failed(.executionFailed, stages: [])
-        )
+        if !(try ManagedInstallerNamedOperator.resolve(uid: getuid())).isAdministrator {
+            await assertNonAdminTransportRejected { try await transport.executeReviewedIntent(intent) }
+        } else {
+            let transported = try await transport.executeReviewedIntent(intent)
+            XCTAssertEqual(
+                transported,
+                .failed(.executionFailed, stages: [])
+            )
+        }
         await transport.invalidate()
 
         let unavailable = ManagedInstallerReleasedRouteXPCServiceHandler(
@@ -232,10 +236,14 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         listener.activate()
         defer { listener.invalidate() }
         let transport = MacOSManagedInstallerReleasedRouteXPCTransport(endpoint: listener.endpoint)
-        let transported = try await transport.stageReviewedProviders(intent)
-        XCTAssertEqual(transported, receipt)
-        let transportedReadback = try await transport.readReviewedProviders(intent)
-        XCTAssertEqual(transportedReadback, physical)
+        if !(try ManagedInstallerNamedOperator.resolve(uid: getuid())).isAdministrator {
+            await assertNonAdminTransportRejected { try await transport.stageReviewedProviders(intent) }
+        } else {
+            let transported = try await transport.stageReviewedProviders(intent)
+            XCTAssertEqual(transported, receipt)
+            let transportedReadback = try await transport.readReviewedProviders(intent)
+            XCTAssertEqual(transportedReadback, physical)
+        }
         await transport.invalidate()
         let unavailable = ManagedInstallerReleasedRouteXPCServiceHandler(
             service: ReleasedRouteHelperService(snapshot: fixture.snapshot)
@@ -393,14 +401,18 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         let transport = MacOSManagedInstallerReleasedRouteXPCTransport(
             endpoint: listener.endpoint
         )
-        let forwarded = try await transport.beginReviewedProviderAuthentication(
-            intent, providerTargetID: target
-        )
-        XCTAssertEqual(forwarded, response)
-        let finished = try await transport.finishReviewedProviderAuthentication(
-            intent, providerTargetID: target
-        )
-        XCTAssertEqual(finished, completed)
+        if !(try ManagedInstallerNamedOperator.resolve(uid: getuid())).isAdministrator {
+            await assertNonAdminTransportRejected { try await transport.beginReviewedProviderAuthentication(intent, providerTargetID: target) }
+        } else {
+            let forwarded = try await transport.beginReviewedProviderAuthentication(
+                intent, providerTargetID: target
+            )
+            XCTAssertEqual(forwarded, response)
+            let finished = try await transport.finishReviewedProviderAuthentication(
+                intent, providerTargetID: target
+            )
+            XCTAssertEqual(finished, completed)
+        }
         await transport.invalidate()
     }
 

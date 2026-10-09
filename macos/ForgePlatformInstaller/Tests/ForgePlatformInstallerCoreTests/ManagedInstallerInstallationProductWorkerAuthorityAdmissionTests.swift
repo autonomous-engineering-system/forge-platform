@@ -159,7 +159,7 @@ final class ManagedInstallerInstallationProductWorkerAuthorityAdmissionTests: XC
         let fields: [String: StrictJSONResourceValue]
 
         init() throws {
-            user = try ManagedInstallerNamedOperator.resolve(uid: getuid())
+            user = try qualificationNamedAdministrator()
             let original = try PrepublicationWheelFixture(includeProductVenvs: true)
             var parser = try StrictJSONResourceReader(data: original.material.manifestBytes)
             var root = try XCTUnwrap(parser.parseDocument().objectValue)

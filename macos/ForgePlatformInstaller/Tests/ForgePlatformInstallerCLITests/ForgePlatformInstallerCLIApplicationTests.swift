@@ -308,7 +308,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             version: "1.2.3"
         )
         XCTAssertEqual(applied.code, InstallerCLIExitCode.blocked.rawValue)
-        XCTAssertTrue(applied.stderr.joined().contains("compositiesessie"))
+        XCTAssertTrue(applied.stderr.joined().contains(mutationExpectation("compositiesessie")))
     }
 
     func testHumanRendererEmitsDetailsRecordsAndFailureToCorrectStream() {
@@ -439,7 +439,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             startup: startup, version: "1.2.3"
         )
         XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
-        XCTAssertTrue(result.stdout.joined().contains("lifecycle-review-blocked"))
+        XCTAssertTrue(result.stdout.joined().contains(mutationExpectation("lifecycle-review-blocked")))
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
@@ -458,8 +458,8 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             startup: startup, version: "1.2.3"
         )
         XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
-        XCTAssertTrue(result.stdout.joined().contains("lifecycle-review-blocked"))
-        XCTAssertTrue(result.stdout.joined().contains("PURGE-voorstel"))
+        XCTAssertTrue(result.stdout.joined().contains(mutationExpectation("lifecycle-review-blocked")))
+        XCTAssertTrue(result.stdout.joined().contains(mutationExpectation("PURGE-voorstel")))
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
@@ -477,7 +477,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             startup: startup, version: "1.2.3"
         )
         XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
-        XCTAssertTrue(result.stdout.joined().contains("lifecycle-recovery-blocked"))
+        XCTAssertTrue(result.stdout.joined().contains(mutationExpectation("lifecycle-recovery-blocked")))
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
@@ -495,7 +495,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             startup: startup, version: "1.2.3"
         )
         XCTAssertEqual(result.code, InstallerCLIExitCode.blocked.rawValue)
-        XCTAssertTrue(result.stdout.joined().contains("lifecycle-purge-recovery-blocked"))
+        XCTAssertTrue(result.stdout.joined().contains(mutationExpectation("lifecycle-purge-recovery-blocked")))
         XCTAssertTrue(result.stderr.isEmpty)
     }
 
@@ -529,7 +529,7 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
             version: "1.2.3"
         )
         XCTAssertEqual(reviewedRoute.code, InstallerCLIExitCode.blocked.rawValue)
-        XCTAssertTrue(reviewedRoute.stdout.joined().contains("removal-review-blocked"))
+        XCTAssertTrue(reviewedRoute.stdout.joined().contains(mutationExpectation("removal-review-blocked")))
     }
 
     func testHelperRegistrationRequiresConsentAndFreshCurrency() async throws {
@@ -1346,6 +1346,11 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertEqual(driftCalls, 1)
     }
 
+
+    private func mutationExpectation(_ admitted: String) -> String {
+        (try? ManagedInstallerNamedOperator.resolve(uid: getuid()).isAdministrator) == true
+            ? admitted : "administrator-required"
+    }
 
     private func run(
         _ arguments: [String],

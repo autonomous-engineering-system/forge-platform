@@ -30,7 +30,7 @@ private final class ReaderAuthorizationFixture {
         "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: try bytes(value))
     }
     init(installation: Bool = true) throws {
-        user = try ManagedInstallerNamedOperator.resolve(uid: getuid())
+        user = try qualificationNamedAdministrator()
         temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])

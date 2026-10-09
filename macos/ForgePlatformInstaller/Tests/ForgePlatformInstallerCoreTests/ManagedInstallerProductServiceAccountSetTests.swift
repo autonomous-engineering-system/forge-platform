@@ -80,7 +80,7 @@ final class ManagedInstallerProductServiceAccountSetTests: XCTestCase {
     func testV6BindsReviewedHumanIdentityAndRejectsIdentityDrift() throws {
         let original = try fixture()
         let old = try XCTUnwrap(original.routes.first)
-        let user = try ManagedInstallerNamedOperator.resolve(uid: getuid())
+        let user = try qualificationNamedAdministrator()
         func snapshot(identity: String) throws -> ManagedInstallerProductWorkerAuthoritySnapshot {
             let route = try ManagedInstallerProductWorkerRouteAuthority(
                 deploymentID: old.deploymentID, forgeInstanceID: old.forgeInstanceID,
@@ -118,7 +118,7 @@ final class ManagedInstallerProductServiceAccountSetTests: XCTestCase {
 
     func testV7BindsRealNamedAdminAndEPAccountAndRejectsIdentityOrGroupDrift() throws {
         let original = try fixture()
-        let user = try ManagedInstallerNamedOperator.resolve(uid: getuid())
+        let user = try qualificationNamedAdministrator()
         let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: original.canonicalJSONData()) as? [String: Any])
         var fields = try XCTUnwrap((wire["routes"] as? [[String: Any]])?.first)
         fields.removeValue(forKey: "pairing")
