@@ -12,6 +12,7 @@ let package = Package(
             name: "forge-platform-installer-helper",
             targets: ["ForgePlatformInstallerPrivilegedHelper"]
         ),
+        .executable(name: "forge-platform-installer-bootstrap", targets: ["ForgePlatformInstallerBootstrap"]),
     ],
     targets: [
         .target(name: "ScopedKeychainAccess", publicHeadersPath: "include",
@@ -29,11 +30,13 @@ let package = Package(
             name: "ForgePlatformInstallerPrivilegedHelper",
             dependencies: ["ForgePlatformInstallerCore"]
         ),
+        .executableTarget(name: "ForgePlatformInstallerBootstrap", dependencies: ["ForgePlatformInstallerCore"]),
         .testTarget(
             name: "ForgePlatformInstallerCoreTests",
             dependencies: [
                 "ForgePlatformInstallerCore",
                 "ForgePlatformInstallerPrivilegedHelper",
+                "ForgePlatformInstallerBootstrap",
             ]
         ),
         .testTarget(

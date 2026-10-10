@@ -87,17 +87,19 @@ struct MacOSInstallerHelperBootstrapAuthorization: Sendable {
     }
 
     static func cleanNamespace() -> Bool {
-        for label in [MacOSInstallerHelperBootstrapContract.label, ManagedInstallerPrivilegedHelperContract.label] {
-            for directory in ["/Library/LaunchDaemons", "/Library/PrivilegedHelperTools"] {
-                let suffix = directory.hasSuffix("LaunchDaemons") ? ".plist" : ""
-                var info = stat()
-                errno = 0
-                guard lstat(directory + "/" + label + suffix, &info) == -1, errno == ENOENT else { return false }
-            }
-            guard let response = MacOSInstallerHelperPackageVerifier.observe("/bin/launchctl",
-                ["print", "system/" + label], expectedExitStatus: 113),
-                response == "Bad request.\nCould not find service \"" + label + "\" in domain for system\n" else { return false }
+        [MacOSInstallerHelperBootstrapContract.label, ManagedInstallerPrivilegedHelperContract.label].allSatisfy(namespaceAbsent)
+    }
+    static func namespaceAbsent(_ label: String) -> Bool {
+        guard [MacOSInstallerHelperBootstrapContract.label, ManagedInstallerPrivilegedHelperContract.label].contains(label) else { return false }
+        for directory in ["/Library/LaunchDaemons", "/Library/PrivilegedHelperTools"] {
+            let suffix = directory.hasSuffix("LaunchDaemons") ? ".plist" : ""
+            var info = stat()
+            errno = 0
+            guard lstat(directory + "/" + label + suffix, &info) == -1, errno == ENOENT else { return false }
         }
+        guard let response = MacOSInstallerHelperPackageVerifier.observe("/bin/launchctl",
+            ["print", "system/" + label], expectedExitStatus: 113),
+            response == "Bad request.\nCould not find service \"" + label + "\" in domain for system\n" else { return false }
         return true
     }
 
@@ -118,7 +120,7 @@ struct MacOSInstallerHelperBootstrapAuthorization: Sendable {
         return true
     }
 
-    private static func signedInfo(_ url: URL, identifier: String) -> [String: Any]? {
+    static func signedInfo(_ url: URL, identifier: String) -> [String: Any]? {
         var code: SecStaticCode?, requirement: SecRequirement?, information: CFDictionary?
         guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code,
               SecRequirementCreateWithString(MacOSInstallerHelperBootstrapContract.requirement(identifier: identifier) as CFString,

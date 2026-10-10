@@ -284,3 +284,45 @@ This still lacks the standalone executable/root factory: actual root-process
 and embedded signed metadata verification, root durable lock/feed assembly and
 admitted production activation. Neither installation nor a live trusted
 connection to an installed bootstrap helper is proven by these source gates.
+
+## Standalone root entry and production assembly (local source)
+
+A separate `forge-platform-installer-bootstrap` executable target now has no
+configuration switches. Its entry prepares the qualified root runtime, retains
+it for process lifetime and then activates the import listener. Invalid arguments
+exit 64; missing authority/metadata exits 78. A real unqualified compiled child
+was launched unprivileged and refused startup; this is negative admission proof.
+
+The production metadata reader accepts only the fixed installed standalone
+binary under `/Library/PrivilegedHelperTools`, root EUID/ownership, restrictive
+no-follow filesystem/ACL/link/architecture evidence, and actual root process
+identity matching statically validated Developer ID code before and after reading
+its signed Info. Seven closed fields bind canonical bounded embedded public trust
+and provenance, fixed bundle/team/repository, mutual clients and matching versions.
+
+Production preparation holds the root-private cross-process lock across the
+independent GitHub signed-feed verification and namespace recheck. Durable
+acceptance is outside product stores. Every provenance field and the package-bearing
+release must match the helper's own policy. The listener exports the existing
+connection-bound coordinator with root importer, package reverifier and actual
+administrator readback. The mainhelper namespace and fixed package shelf must be
+absent; this import-only assembly grants no existing-helper transition.
+
+Five focused checks and complete native suite 1,590 tests passed. All tracked
+production Swift files, including the new executable target, exceed 80.2 percent:
+entry 95.652174, metadata 95.402299, runtime 84.375000. Scoped rootassembly source
+review PASS. Positive root/factory fixtures are source-only, not installed evidence.
+The production constructor/listener was never activated on a host.
+
+An actual standalone Swift link with the retained public 0.4.9 metadata inputs
+preserved both embedded sections byte-for-byte. The local receipt explicitly
+says `LOCAL_LINK_PROTOTYPE_NOT_DEVELOPER_ID`, `production_admitted=false`, not
+installed and not executed as root. Old 0.4.9 input bytes do not authorize the new
+source as a 0.4.9 release; protected publication must regenerate current provenance.
+
+Next required assembly: app bootstrap packaging/embedded metadata/signing and
+normal administrator handoff/readback, signed package producer/public descriptor
+V2, actual package effects and initial mainhelper activation, plus frontend and
+mainhelper package-backend integration. Current public V1/0.4.9 cannot qualify
+this root runtime's package-bearing release gate. No live CLI/GUI first-run,
+package installation, helper readiness or protected-history recovery is claimed.
