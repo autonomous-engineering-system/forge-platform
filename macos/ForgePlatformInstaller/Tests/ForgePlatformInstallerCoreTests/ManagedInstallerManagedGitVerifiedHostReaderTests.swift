@@ -165,6 +165,57 @@ final class ManagedInstallerManagedGitVerifiedHostReaderTests: XCTestCase {
         XCTAssertEqual(missingCache.failureValue, .rejected)
     }
 
+    func testLegacyReadbackRequalifiesExactTreeWithoutRewritingHistoricalMarker() async throws {
+        let fixture = try GitArchiveFixture()
+        let roots = try privateRoots()
+        defer { try? FileManager.default.removeItem(at: roots.parent) }
+        let slot = try MacOSManagedInstallerManagedGitSlotPublisher(
+            slotsRoot: roots.slots, expectedOwner: geteuid()
+        ).publish(archive: fixture.archive, requirement: fixture.requirement,
+                  operationID: "legacy-git-readback").get()
+        let store = FileManagedInstallerManagedGitHostStateStore(rootDirectory: roots.state)
+        let legacy = try activeReadback(fixture.requirement,
+            evidence: "receipt:managed-git-tree-" + String(repeating: "a", count: 64))
+        try store.persistManagedGitHostState(legacy).get()
+        let marker = roots.state.appendingPathComponent(FileManagedInstallerManagedGitHostReader.fileName)
+        let historical = try Data(contentsOf: marker)
+        let reader = MacOSManagedInstallerManagedGitVerifiedHostReader(
+            stateRoot: roots.state, slotsRoot: roots.slots, expectedOwner: geteuid())
+        let current = try await reader.readManagedTool(fixture.requirement).get()
+        XCTAssertEqual(current, try activeReadback(fixture.requirement,
+                                                  evidence: slot.treeEvidenceReference))
+        XCTAssertEqual(try Data(contentsOf: marker), historical)
+        let repeated = try await reader.readManagedTool(fixture.requirement).get()
+        XCTAssertEqual(repeated, current)
+        let binary = roots.slots.appendingPathComponent(slot.slotIdentity).appendingPathComponent("bin/git")
+        let handle = try FileHandle(forWritingTo: binary)
+        try handle.write(contentsOf: Data([0]))
+        try handle.close()
+        let corrupt = await reader.readManagedTool(fixture.requirement)
+        XCTAssertEqual(corrupt.failureValue, .rejected)
+        XCTAssertEqual(try Data(contentsOf: marker), historical)
+    }
+
+    func testModernMismatchedAndMalformedLegacyTreeReceiptsRemainRejected() async throws {
+        let fixture = try GitArchiveFixture()
+        let roots = try privateRoots()
+        defer { try? FileManager.default.removeItem(at: roots.parent) }
+        _ = try MacOSManagedInstallerManagedGitSlotPublisher(
+            slotsRoot: roots.slots, expectedOwner: geteuid()
+        ).publish(archive: fixture.archive, requirement: fixture.requirement,
+                  operationID: "legacy-git-invalid").get()
+        let store = FileManagedInstallerManagedGitHostStateStore(rootDirectory: roots.state)
+        let reader = MacOSManagedInstallerManagedGitVerifiedHostReader(
+            stateRoot: roots.state, slotsRoot: roots.slots, expectedOwner: geteuid())
+        for evidence in ["receipt:managed-git-tree-v2-" + String(repeating: "a", count: 64),
+                         "receipt:managed-git-tree-" + String(repeating: "a", count: 63),
+                         "receipt:managed-git-tree-" + String(repeating: "z", count: 64)] {
+            try store.persistManagedGitHostState(activeReadback(fixture.requirement, evidence: evidence)).get()
+            let result = await reader.readManagedTool(fixture.requirement)
+            XCTAssertEqual(result.failureValue, .rejected)
+        }
+    }
+
     private func activeReadback(
         _ requirement: ManagedToolRequirement,
         evidence: String
