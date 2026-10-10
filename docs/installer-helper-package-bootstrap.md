@@ -189,3 +189,36 @@ effect serialization and installed-bootstrap readback remain to be assembled.
 No administrator prompt or SMJobBless installation has been invoked by these
 checks. Neither CLI nor GUI has this route connected yet; no live first-run
 PASS or helper replacement authority follows from the source result.
+
+## Embedded bootstrap link inputs (local source)
+
+`prepare_macos_installer_bootstrap_metadata.py` captures bounded, strict public
+release trust/provenance resources, requires this product's fixed bundle/team/
+repository and matching canonical policy digest, then emits three closed plists:
+embedded tool Info, embedded launchd configuration, and the app's mutual signing
+requirements. Exact public resource bytes are base64 encoded inside tool Info;
+no paths, providers, credentials or authorization forms are embedded. The daemon
+publishes only its fixed bootstrap Mach service. These inputs must be linked as
+`__TEXT,__info_plist` and `__TEXT,__launchd_plist` before signing the standalone
+tool; adding plists to the app afterwards is not an equivalent sealed boundary.
+
+Private staging is checked by held FD/path identity, UID/mode and absence of
+ACL. Files are exclusive, private and synchronized. Native exclusive directory
+rename prevents replacement of an existing destination; parent synchronization,
+final directory binding and every file identity are checked before acknowledgment.
+Failure retains unacknowledged output and never deletes a shared destination.
+The shared public resource reader uses O_NONBLOCK so a FIFO substituted before
+open cannot hang the regular-file check.
+
+Ten producer checks passed, including an actual Apple arm64 compile/link of a
+harmless test executable and exact inspection of both embedded section bytes.
+That executable is never executed or signed. The existing app packager's 26
+checks passed; scoped source review PASS after fixing directory-publication
+identity. Native production source is unchanged since its 1,574-test gate.
+
+An actual input set from public 0.4.9 resources was retained locally with status
+`UNSIGNED_LINK_INPUT_ONLY` and `production_admitted=false`. It is not a new
+0.4.9 release, signed bootstrap executable, service or installer artifact.
+Next assembly remains the standalone runtime, authenticated IPC and independent
+root release verification, packaging/signing of the tool, and the admitted
+installer/runtime integration. No live administrator or first-run PASS follows.

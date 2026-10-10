@@ -270,7 +270,7 @@ def _read_regular_non_symlink_file(value: str, *, description: str, maximum_byte
     """
 
     source = _normalized_non_symlink_leaf(value, description=description)
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = -1
