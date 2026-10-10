@@ -198,8 +198,61 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         XCTAssertTrue(try effects.readRequired().get().hasUnresolvedEffects)
     }
 
+    func testHistoricalUncertaintyRejectsBeforeLaunchWithoutRewritingEvidence() throws {
+        let root = try makePrivateEffectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let effects = FileManagedInstallerProductWorkerEffectJournal(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        try effects.markUncertain().get()
+        let record = root.appendingPathComponent("product-worker-effects.json")
+        let before = try Data(contentsOf: record)
+        let marker = root.appendingPathComponent("unexpected-child")
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let session = makeSession(
+            .codex, shell: "touch '\(marker.path)'; printf '\(codexPrompt)'",
+            exitRegistry: registry, effectJournal: effects
+        )
+        XCTAssertNil(session.begin(challengeTimeout: 1, sessionTimeout: 2))
+        XCTAssertEqual(session.status(), .rejected)
+        XCTAssertEqual(registry.activeCount(), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertEqual(try Data(contentsOf: record), before)
+    }
+
+    func testActiveDurableChildRejectsAuthenticationWithoutChangingItsReservation() throws {
+        let root = try makePrivateEffectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let effects = FileManagedInstallerProductWorkerEffectJournal(
+            stateRoot: root, expectedOwner: geteuid()
+        )
+        let prior = UUID()
+        try effects.begin(prior).get()
+        let session = makeSession(
+            .codex, shell: "printf '\(codexPrompt)'", effectJournal: effects
+        )
+        XCTAssertNil(session.begin(challengeTimeout: 1, sessionTimeout: 2))
+        XCTAssertEqual(try effects.readRequired().get().activeIDs, [prior])
+        XCTAssertFalse(try effects.readRequired().get().uncertain)
+    }
+
+    func testProcessLocalUncertaintyRejectsBeforeAnyDurableReservation() {
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        registry.markChildEffectsUncertain()
+        let effects = TestManagedInstallerProductWorkerEffectJournal()
+        let session = makeSession(
+            .codex, shell: "printf '\(codexPrompt)'",
+            exitRegistry: registry, effectJournal: effects
+        )
+        XCTAssertNil(session.begin(challengeTimeout: 1, sessionTimeout: 2))
+        XCTAssertEqual(session.status(), .rejected)
+        XCTAssertEqual(registry.activeCount(), 0)
+        XCTAssertFalse(effects.snapshot().hasUnresolvedEffects)
+        XCTAssertTrue(registry.hasUncertainChildEffects())
+    }
+
     private func makeSession(_ provider: ProviderID, shell: String,
-                             exitRegistry: ManagedInstallerHelperChildExitRegistry = .processWide,
+                             exitRegistry: ManagedInstallerHelperChildExitRegistry = ManagedInstallerHelperChildExitRegistry(),
                              effectJournal: any ManagedInstallerProductWorkerEffectJournaling =
                                 TestManagedInstallerProductWorkerEffectJournal())
         -> ManagedInstallerProviderAuthenticationSession {
