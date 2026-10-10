@@ -76,7 +76,7 @@ struct MacOSInstallerHelperPackageVerifier: Sendable {
                               packageSHA256: digest, bytes: package.bytes))
     }
 
-    private static func same(_ first: stat, _ second: stat) -> Bool {
+    static func same(_ first: stat, _ second: stat) -> Bool {
         first.st_dev == second.st_dev && first.st_ino == second.st_ino &&
         first.st_uid == second.st_uid && first.st_gid == second.st_gid &&
         first.st_mode == second.st_mode && first.st_nlink == second.st_nlink &&
@@ -87,7 +87,7 @@ struct MacOSInstallerHelperPackageVerifier: Sendable {
         first.st_ctimespec.tv_nsec == second.st_ctimespec.tv_nsec
     }
 
-    private static func noACL(_ descriptor: Int32) -> Bool {
+    static func noACL(_ descriptor: Int32) -> Bool {
         errno = 0
         guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else { return errno == ENOENT }
         defer { _ = acl_free(UnsafeMutableRawPointer(acl)) }

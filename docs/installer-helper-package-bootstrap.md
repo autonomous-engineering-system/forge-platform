@@ -127,3 +127,34 @@ This is not connected to registration, replacement, XPC or installation.
 The source-positive tests use isolated filesystem and inspector seams; they
 are not live installed-helper evidence. A real package bootstrap, normal
 administrator authorization and clean-VM positive readback remain required.
+
+## Protected transfer implementation (local source)
+
+The chosen administrator bridge is a separate, narrowly scoped signed
+SMJobBless bootstrap service. Apple's installed SDK confirms the required
+mutual signing requirements, embedded launchd metadata and normal system
+administrator authorization. SMJobBless is deprecated; qualification on the
+supported macOS version remains mandatory. Opening a user-owned package in
+Installer is insufficient: installed readback could detect substitution only
+after that package has already performed privileged effects.
+
+The new root importer implements the transfer portion only. Production requires
+root and a protected `/private/var/root` parent. It opens the admitted user's
+private package directory and exact package leaf without following links,
+requires the expected owner, restrictive modes, no ACL, a regular single-link
+file and exact bounded size, and copies from the held descriptor into a freshly
+created root-private directory. Copies are bounded, synchronized and checked
+for source drift. Exact descriptor digest, Developer ID Installer, stapling and
+Gatekeeper are checked again on the protected copy. A failed import removes
+only its newly created private staging; the source is preserved.
+
+The UID must come from the authenticated connection and the release record must
+be independently verified by the bootstrap service. Neither is a caller claim.
+Those IPC and administrator admission steps are not yet assembled. The importer
+performs no installation, activation or replacement and grants none of those
+authorities. Its source tests do not prove a live signed bootstrap route.
+
+Local transfer qualification: five targeted checks, independent scoped source
+review PASS, complete native suite 1,562 tests PASS. Every tracked production
+Swift file exceeds 80.2 percent; root importer coverage is 98.076923 percent.
+These are source gates, not a live administrator or package-installation PASS.
