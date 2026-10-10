@@ -6,7 +6,7 @@ enum InstallerCLIHelperRegistration {
     typealias Registrar = @Sendable (InstallerVersion) async -> ManagedInstallerPrivilegedHelperRegistrationResult
 
     enum Action: Sendable {
-        case register, qualification, idle, debugSpawnFailed, debugRunning, mvp0314, mvp0316, mvp0318, mvp0319, mvp0320, mvp0322, mvp0323, mvp0324, mvp0325, mvp0326, mvp0327, mvp0328, mvp0329
+        case register, qualification, idle, debugSpawnFailed, debugRunning, mvp0314, mvp0316, mvp0318, mvp0319, mvp0320, mvp0322, mvp0323, mvp0324, mvp0325, mvp0326, mvp0327, mvp0328, mvp0329, cleanVM045
     }
 
     static func makeRegistrar(
@@ -52,6 +52,8 @@ enum InstallerCLIHelperRegistration {
                 return await instance.replaceMVP0328ForCleanInstall(expectedVersion: expectedVersion)
             case .mvp0329:
                 return await instance.replaceMVP0329ForCleanInstall(expectedVersion: expectedVersion)
+            case .cleanVM045:
+                return await instance.replaceCleanVM045ForInstall(expectedVersion: expectedVersion)
             }
         }
     }
@@ -78,6 +80,8 @@ enum InstallerCLIHelperRegistration {
     static let liveMVP0327Replacer = makeRegistrar(for: .mvp0327, coordinator: liveCoordinator)
     static let liveMVP0328Replacer = makeRegistrar(for: .mvp0328, coordinator: liveCoordinator)
     static let liveMVP0329Replacer = makeRegistrar(for: .mvp0329, coordinator: liveCoordinator)
+
+    static let liveCleanVM045Replacer = makeRegistrar(for: .cleanVM045, coordinator: liveCoordinator)
 
     private static func liveCoordinator() -> ManagedInstallerPrivilegedHelperRegistrationCoordinator? {
         let service = MacOSManagedInstallerPrivilegedHelperServiceController()
@@ -107,7 +111,8 @@ enum InstallerCLIHelperRegistration {
         replacingMVP0326: Bool = false,
         replacingMVP0327: Bool = false,
         replacingMVP0328: Bool = false,
-        replacingMVP0329: Bool = false
+        replacingMVP0329: Bool = false,
+        replacingCleanVM045: Bool = false
     ) async -> InstallerCLIResult {
         if !options.assumeYes {
             let accepted = options.nonInteractive ? false : await confirm(
@@ -135,6 +140,8 @@ enum InstallerCLIHelperRegistration {
                         ? "Beëindig de actieve 0.3.27-helper na bewezen veilige herstelstatus en registreer de geverifieerde 0.3.28-helper?"
                     : replacingMVP0328
                         ? "Beëindig de actieve 0.3.28-helper na bewezen veilige herstelstatus en registreer de geverifieerde 0.3.29-helper?"
+                    : replacingCleanVM045
+                        ? "Vervang de exacte 0.4.5-helper via macOS na fysieke controle van deze schone VM door de geverifieerde 0.4.9-helper?"
                     : replacingMVP0329
                         ? "Beëindig de actieve 0.3.29-helper na bewezen veilige herstelstatus en registreer de geverifieerde 0.3.30-helper?"
                     : replacingMVP0318
