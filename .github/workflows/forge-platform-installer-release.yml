@@ -151,10 +151,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Select supported build Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: '3.14'
-          architecture: arm64
+        run: |
+          set -euo pipefail
+          python_bin=/opt/homebrew/opt/python@3.14/libexec/bin
+          test -x "$python_bin/python3"
+          "$python_bin/python3" -I -c 'import sys, platform; assert sys.version_info[:2] == (3, 14); assert platform.machine() == "arm64"'
+          python_executable="$("$python_bin/python3" -I -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          /usr/bin/codesign --verify --strict "$python_executable"
+          printf '%s\n' "$python_bin" >> "$GITHUB_PATH"
       - id: candidate
         env:
           COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
