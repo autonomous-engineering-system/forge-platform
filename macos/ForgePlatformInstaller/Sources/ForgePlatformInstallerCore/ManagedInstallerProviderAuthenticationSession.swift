@@ -191,6 +191,16 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
         return true
     }
 
+    /// A failed bootstrap after possible publication is sticky negative
+    /// evidence. The historical journal and reservation remain unresolved.
+    func rejectUncertainBootstrap() {
+        lock.lock()
+        defer { lock.unlock() }
+        terminal = .rejected
+        exitRegistry.markChildEffectsUncertain()
+        _ = effectJournal.markUncertain()
+    }
+
     func cancel() {
         lock.lock()
         let shouldStop = started && terminal == .running

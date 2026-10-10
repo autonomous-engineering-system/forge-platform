@@ -251,6 +251,23 @@ final class ManagedInstallerProviderAuthenticationSessionTests: XCTestCase {
         XCTAssertTrue(registry.hasUncertainChildEffects())
     }
 
+    func testUncertainBootstrapCannotCloseSuccessfulHumanCeremony() throws {
+        let effects = TestManagedInstallerProductWorkerEffectJournal()
+        let registry = ManagedInstallerHelperChildExitRegistry()
+        let session = makeSession(.codex,
+            shell: "printf '\(codexPrompt)'; exec /bin/sleep 0.1",
+            exitRegistry: registry, effectJournal: effects)
+        XCTAssertNotNil(session.begin(challengeTimeout: 1, sessionTimeout: 2))
+        XCTAssertTrue(waitForExit(registry))
+        XCTAssertEqual(session.status(), .exited(0))
+        session.rejectUncertainBootstrap()
+        XCTAssertFalse(session.completeVerifiedReadback())
+        XCTAssertEqual(session.status(), .rejected)
+        XCTAssertTrue(effects.snapshot().uncertain)
+        XCTAssertEqual(effects.snapshot().activeIDs.count, 1)
+        XCTAssertTrue(registry.hasUncertainChildEffects())
+    }
+
     private func makeSession(_ provider: ProviderID, shell: String,
                              exitRegistry: ManagedInstallerHelperChildExitRegistry = ManagedInstallerHelperChildExitRegistry(),
                              effectJournal: any ManagedInstallerProductWorkerEffectJournaling =

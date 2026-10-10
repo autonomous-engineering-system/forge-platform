@@ -276,7 +276,7 @@ public actor ManagedInstallerReleasedRouteCoordinator:
         case .prepared(let plan) where plan.reviewedOperation == operation:
             do {
                 let intent = try ManagedInstallerReviewedExecutionIntent(stablePlan: plan)
-                let receipt = try await sender.readReviewedProviders(intent)
+                var receipt = try await sender.readReviewedProviders(intent)
                 guard receipt.matches(plan) else { return .unavailable(.staleSession) }
                 // A successful device child keeps its durable effect ID until
                 // exact credential readback completes the helper ceremony.
@@ -288,8 +288,14 @@ public actor ManagedInstallerReleasedRouteCoordinator:
                         if let completed = try? await finisher
                             .finishReviewedProviderAuthentication(
                                 intent, providerTargetID: target.id
-                            ), !completed.matches(plan) {
-                            return .unavailable(.staleSession)
+                            ) {
+                            guard completed.matches(plan) else {
+                                return .unavailable(.staleSession)
+                            }
+                            // Fanout can verify a second target during finish.
+                            // Return that actual readback, not the pre-bootstrap
+                            // snapshot that would request another human login.
+                            receipt = completed
                         }
                     }
                 }

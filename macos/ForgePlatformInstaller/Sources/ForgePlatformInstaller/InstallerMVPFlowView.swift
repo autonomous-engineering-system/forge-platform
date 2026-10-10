@@ -238,17 +238,25 @@ struct InstallerMVPFlowView: View {
             case .prepared:
                 ProgressView("Providerstatus controleren…")
             case .observed(let readback):
-                ForEach(readback.targets, id: \.id) { target in
-                    HStack {
-                        Text(viewModel.state.providers.first(where: { $0.id == target.id })?
-                            .requirement.provider.displayName ?? "Provider")
-                        Spacer()
-                        if target.state == .verified {
-                            Text("Verbonden").foregroundStyle(.green)
-                        } else {
-                            Button("Aanmelden") {
-                                viewModel.beginReviewedProviderAuthentication(target.id)
+                ForEach(InstallerMVPProviderAuthenticationGroup.groups(
+                    targets: readback.targets,
+                    requirements: viewModel.state.providers.map(\.requirement)
+                )) { group in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(group.title)
+                            Spacer()
+                            if let pending = group.actionTarget {
+                                Button("Aanmelden") {
+                                    viewModel.beginReviewedProviderAuthentication(pending.id)
+                                }
+                            } else {
+                                Text("Verbonden").foregroundStyle(.green)
                             }
+                        }
+                        if group.pairedCodex {
+                            Text("Eén aanmelding. Beide verbindingen worden afzonderlijk gecontroleerd.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -433,6 +441,37 @@ private enum Phase {
         case .ready: "Klaar voor installatie"
         case .installing: "Installeren"
         case .done: "Gereed"
+        }
+    }
+}
+
+
+// Presentation only: readiness remains independently owned by each target.
+struct InstallerMVPProviderAuthenticationGroup: Identifiable {
+    let provider: ProviderID
+    let targets: [ManagedInstallerReviewedProviderReadback.Target]
+    let pairedCodex: Bool
+
+    var id: ProviderID { provider }
+    var title: String { pairedCodex ? "Codex voor EP en Forge" : provider.displayName }
+    var actionTarget: ManagedInstallerReviewedProviderReadback.Target? {
+        targets.first { $0.state != .verified }
+    }
+
+    static func groups(
+        targets: [ManagedInstallerReviewedProviderReadback.Target],
+        requirements: [ProviderRequirement]
+    ) -> [Self] {
+        ProviderID.allCases.compactMap { provider in
+            let selected = requirements.filter { $0.provider == provider }
+            let observed = targets.filter { target in selected.contains { $0.id == target.id } }
+            guard !observed.isEmpty else { return nil }
+            let owners = Set(selected.filter { requirement in
+                observed.contains { $0.id == requirement.id }
+            }.map(\.ownerComponent))
+            return Self(provider: provider, targets: observed,
+                        pairedCodex: provider == .codex && observed.count == 2 &&
+                            owners == Set([.engineeringPlatformServer, .forgeRuntime]))
         }
     }
 }

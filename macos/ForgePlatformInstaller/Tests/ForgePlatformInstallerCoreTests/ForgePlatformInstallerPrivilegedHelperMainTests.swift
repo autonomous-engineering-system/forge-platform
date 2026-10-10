@@ -113,7 +113,7 @@ final class ForgePlatformInstallerPrivilegedHelperMainTests: XCTestCase {
                 codexAuthentication, allowedRoot: root
             )
         )
-        XCTAssertEqual(codexRequest.arguments, ["login", "--device-auth"])
+        XCTAssertEqual(codexRequest.arguments, ["-c", "cli_auth_credentials_store=\"file\"", "login", "--device-auth"])
         XCTAssertEqual(codexRequest.environment["CODEX_HOME"],
                        codexAuthentication[8])
         XCTAssertNil(codexRequest.environment["GH_CONFIG_DIR"])
