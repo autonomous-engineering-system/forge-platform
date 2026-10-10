@@ -150,6 +150,11 @@ jobs:
           ref: ${{ needs.release-context.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Select supported build Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.14'
+          architecture: arm64
       - id: candidate
         env:
           COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
@@ -174,6 +179,7 @@ jobs:
             exit 1
           fi
           test -z "${FORGE_PLATFORM_NOTARYTOOL_PROFILE:-}"
+          python3 -c 'import sys; assert sys.version_info[:2] == (3, 14), "supported build Python was not selected"'
           sh scripts/validate.sh
           test "$(uname -m)" = "arm64"
           test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
