@@ -82,9 +82,25 @@ struct MacOSManagedInstallerManagedGitVerifiedHostReader:
         case .success(let slot?)
             where slot.version == admitted.version
                 && slot.archiveSHA256 == admitted.artifact.sha256
-                && slot.managedRootIdentity == ManagedToolRequirement.managedRootIdentity
-                && slot.treeEvidenceReference == observed.evidenceReference:
-            return .success(observed)
+                && slot.managedRootIdentity == ManagedToolRequirement.managedRootIdentity:
+            if slot.treeEvidenceReference == observed.evidenceReference {
+                return .success(observed)
+            }
+            // Historical v1 tree receipts bound boot-local filesystem identity.
+            // Read-only requalification uses the exact signed archive and the
+            // complete secure tree verifier above; preserve the historical marker.
+            let legacyPrefix = "receipt:managed-git-tree-"
+            guard observed.evidenceReference.hasPrefix(legacyPrefix),
+                  CompositionCatalogValidation.isTaggedSHA256(
+                    "sha256:" + observed.evidenceReference.dropFirst(legacyPrefix.count)
+                  ),
+                  let requalified = try? ManagedToolInstalledReadback(
+                    identity: observed.identity, state: observed.state,
+                    version: observed.version, artifactSHA256: observed.artifactSHA256,
+                    managedRootIdentity: observed.managedRootIdentity,
+                    evidenceReference: slot.treeEvidenceReference
+                  ) else { return .failure(.rejected) }
+            return .success(requalified)
         case .success, .failure(.rejected), .failure(.invalidRequest):
             return .failure(.rejected)
         case .failure(.unavailable):
