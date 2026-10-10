@@ -180,7 +180,8 @@ struct MacOSInstallerPackageHelperInstalledReader: Sendable {
     }
 
     static func inspectProcess(_ pid: Int32, executable: URL, team: String,
-                               expectedOwner: uid_t = 0) -> MacOSInstallerPackageHelperProcess? {
+                               expectedOwner: uid_t = 0,
+                               expectedIdentifier: String = ManagedInstallerPrivilegedHelperContract.label) -> MacOSInstallerPackageHelperProcess? {
         func identity() -> MacOSInstallerPackageHelperProcess? {
             var bsd = proc_bsdinfo()
             guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size,
@@ -191,8 +192,10 @@ struct MacOSInstallerPackageHelperInstalledReader: Sendable {
             return .init(processID: pid, startSeconds: bsd.pbi_start_tvsec, startMicroseconds: bsd.pbi_start_tvusec)
         }
         guard pid > 0, InstallerSelfUpdateValidation.isTeamIdentifier(team),
+              [ManagedInstallerPrivilegedHelperContract.label, MacOSInstallerHelperBootstrapContract.label,
+               MacOSInstallerHelperBootstrapContract.appIdentifier].contains(expectedIdentifier),
               let first = identity() else { return nil }
-        let requirementText = "anchor apple generic and identifier \"" + ManagedInstallerPrivilegedHelperContract.label +
+        let requirementText = "anchor apple generic and identifier \"" + expectedIdentifier +
             "\" and certificate leaf[subject.OU] = \"" + team +
             "\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
         var requirement: SecRequirement?

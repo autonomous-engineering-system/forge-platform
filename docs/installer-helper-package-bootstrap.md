@@ -255,3 +255,32 @@ mutation lock and independent feed, and expose only the closed interface.
 No executable/listener or package installation is assembled by this coordinator.
 Historical operation reconciliation, helper transition, activation and readiness
 remain separate qualification gates.
+
+## Connection-bound peer and closed XPC interface (local source)
+
+The peer reader observes the connection PID/UID, actual GUI or CLI executable
+inside `Contents/MacOS`, dynamic/static Developer ID signing, executable owner,
+PID/start time, and the enclosing sealed app's exact release/team/CodeDirectory.
+The published CLI uses the same installer signing identifier; its enclosing app
+must still match the selected release. Process path and identity are repeated
+after the asynchronous app inspection. The reusable process inspector permits
+only the three closed installer/mainhelper/bootstrap identifiers; its existing
+mainhelper default is unchanged.
+
+One service object is exported per connection. Foundation installs the fixed
+Developer ID requirement before delegating admission; UID/PID are captured from
+connection metadata. Only the bounded import selector is exported. The peer is
+checked before and after the coordinator await; drift blocks the reply. No UID,
+trust policy, protected pathname or execution selector is supplied on the wire.
+
+Five focused source checks and complete native suite 1,585 tests passed. Every
+tracked production Swift file exceeds 80.2 percent: peer reader 80.769231 percent,
+XPC interface 94.915254 percent. Scoped review PASS. Anonymous listener and
+injected inspector checks are source-only interface evidence. The named
+production constructor was constructed and invalidated without activation;
+no registered helper, signing policy or host lifecycle was changed.
+
+This still lacks the standalone executable/root factory: actual root-process
+and embedded signed metadata verification, root durable lock/feed assembly and
+admitted production activation. Neither installation nor a live trusted
+connection to an installed bootstrap helper is proven by these source gates.
