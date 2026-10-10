@@ -20,7 +20,7 @@ Apple reference: https://developer.apple.com/documentation/servicemanagement/sma
 - Do not infer Forge authentication from the EP receipt. Do not hide a second ceremony behind a single UI row.
 - EP GitHub has its own one-time provider ceremony. Forge has no GitHub provider.
 - No manual credential copying, caller-supplied credentials, credential contents in journals/logs or fixture-backed installation proof.
-- The existing Python fanout coordinator is not evidence of released native fanout: current native authentication is keyed by operation and provider target and launches separate sessions.
+- The native source now admits the complete selected Codex group before one ceremony, bootstraps only through the user-approved same-host helper route, and independently verifies each target. Local tests and source review pass; this is not yet a published or live authentication qualification.
 
 ## Device code usability
 
@@ -28,3 +28,21 @@ Apple reference: https://developer.apple.com/documentation/servicemanagement/sma
 - Provide a clearly labelled **Kopieer code** action adjacent to the code, writing only that displayed code on an explicit user click.
 - Retain the official verification-page link and explicit verification after user authentication.
 - The clipboard action is present in source in both GUI authentication screens and the GUI product compiles. This is not yet a published-build or live GUI qualification claim.
+
+## Local source qualification (2026-10-10)
+
+The bounded bootstrap implementation passed 1,542 native tests and the strict
+per-file production Swift coverage gate. Independent source review passed.
+The customer view groups selected EP/Forge Codex into one action while keeping
+readiness per target and EP GitHub separate. Synthetic rendering and presentation
+contract checks are source assurance only; their native button rasterization is
+not accepted as a published GUI usability receipt.
+
+Historical uncertain effects still block new authentication. There is no
+implemented general reconciliation route. Keep their journal and uncertainty
+intact until a supported recovery is separately qualified.
+
+An unsigned helper-package prototype was generated from the exact public 0.4.9
+app. It is not deployable and proves no first-run onboarding. Package trust,
+normal administrator authorization, registration/readback and lifecycle
+integration remain required before a package route is used.
