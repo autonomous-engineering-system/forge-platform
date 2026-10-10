@@ -620,6 +620,27 @@ public actor ManagedInstallerPrivilegedHelperRegistrationCoordinator {
         }
     }
 
+    /// Owner-authorized recovery for the clean CLI qualification VM whose
+    /// verified 0.4.8 app handoff left the running 0.4.5 helper registered.
+    /// Before invocation the operator must independently prove an empty
+    /// inventory, absent operation/effect journals and no product/worker
+    /// services. This is not a migration for an installed host. Only the
+    /// signed 0.4.9 successor and exact signed 0.4.5 parent are admitted.
+    public func replaceCleanVM045ForInstall(
+        expectedVersion: InstallerVersion
+    ) -> ManagedInstallerPrivilegedHelperRegistrationResult {
+        withRegistrationLock {
+            guard let target = try? InstallerVersion("0.4.9"),
+                  let prior = try? InstallerVersion("0.4.5"),
+                  expectedVersion == target else {
+                return .failed(.registeredParentMismatch)
+            }
+            return replaceBoundedRunningParentWhileLocked(
+                expectedVersion: expectedVersion, priorVersion: prior
+            )
+        }
+    }
+
     private func replaceBoundedRunningParentWhileLocked(
         expectedVersion: InstallerVersion,
         priorVersion: InstallerVersion

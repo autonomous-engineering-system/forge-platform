@@ -111,6 +111,13 @@ final class InstallerCLITests: XCTestCase {
             .helperReplaceQualification
         )
         XCTAssertEqual(
+            try InstallerCLIParser.parse(["helper", "replace-clean-vm-045", "--yes"]).command,
+            .helperReplaceCleanVM045
+        )
+        XCTAssertThrowsError(try InstallerCLIParser.parse([
+            "helper", "replace-clean-vm-045", "--deployment", "new",
+        ]))
+        XCTAssertEqual(
             try InstallerCLIParser.parse(["helper", "replace-idle", "--yes"]).command,
             .helperReplaceIdle
         )
