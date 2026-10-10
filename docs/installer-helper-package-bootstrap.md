@@ -76,3 +76,29 @@ the historical operation therefore requires explicit, independently qualified
 release migration as well as effect reconciliation. Neither the unsigned
 package nor a matching version permits clearing uncertainty, rewriting an old
 stable fingerprint, starting a new operation, or replacing the helper blindly.
+
+## Signed package metadata and read-only verifier (local source)
+
+The native and Python consumers now recognize an explicit
+`forge-platform.installer-release/v2` descriptor. Every arm64 asset must carry
+exact `helper_package` fields: the one fixed package name, tagged SHA-256,
+positive bounded byte count and notarization reference. V1 remains strict and
+rejects package fields. Both payloads stay under the existing signature threshold;
+the native descriptor acceptance anchor still binds the complete descriptor bytes.
+
+A local native artifact verifier checks a private physical package path,
+same-owner 0700 parent and 0600 regular single-link file, no extended ACL,
+exact descriptor size/digest, Developer ID Installer team, stapler and package
+Gatekeeper. It rechecks descriptor/leaf and directory identity after inspection.
+Output is bounded and never enters receipts or logs. Inspection deadlines are
+confined to the verifier's own children.
+
+This verifier returns read-only artifact evidence, not installation authority.
+It is not assembled into a download/admin/registration/XPC path. Release
+production and publication qualification still support V1 only; do not publish
+V2 until exact package signing/notary/stapling and producer evidence are added.
+
+Local qualification: 1,551 native tests, strict >80.2 per-file production Swift
+coverage PASS, 39 Python consumer tests, independent scoped source review PASS.
+A real unsigned package is rejected by the production platform checker.
+This supplies no signed-package positive, clean-host helper or live GUI PASS.

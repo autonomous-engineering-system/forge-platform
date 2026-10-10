@@ -204,6 +204,26 @@ public struct InstallerReleaseProvenanceExpectation: Equatable, Sendable {
     }
 }
 
+/// Digest-pinned companion package carried by the same signed release
+/// descriptor. This metadata grants no installation or helper readiness.
+public struct VerifiedInstallerHelperPackage: Equatable, Sendable {
+    public static let assetName = "forge-platform-installer-helper-arm64.pkg"
+    public let sha256: String
+    public let bytes: UInt64
+    public let notarizationReference: String
+
+    init(sha256: String, bytes: UInt64, notarizationReference: String) throws {
+        guard InstallerSelfUpdateValidation.isSHA256(sha256),
+              bytes > 0, bytes <= 512 * 1024 * 1024,
+              InstallerSelfUpdateValidation.isNotarizationReceiptReference(notarizationReference) else {
+            throw InstallerSelfUpdateMetadataError.invalidRecoveryRecord
+        }
+        self.sha256 = sha256
+        self.bytes = bytes
+        self.notarizationReference = notarizationReference
+    }
+}
+
 public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     public let release: VerifiedInstallerRelease
     public let sequence: UInt64
@@ -228,6 +248,7 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     public let compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator
     public let notarizationReference: String
     public let githubAsset: GitHubInstallerReleaseAsset
+    public let helperPackage: VerifiedInstallerHelperPackage?
 
     public init(
         release: VerifiedInstallerRelease,
@@ -243,7 +264,8 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         expectedReleaseTrustConfigurationSHA256: String,
         compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator,
         notarizationReference: String,
-        githubAsset: GitHubInstallerReleaseAsset
+        githubAsset: GitHubInstallerReleaseAsset,
+        helperPackage: VerifiedInstallerHelperPackage? = nil
     ) throws {
         guard sequence > 0 else {
             throw InstallerSelfUpdateMetadataError.invalidReleaseSequence
@@ -295,6 +317,7 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         self.compositionCatalogFeed = compositionCatalogFeed
         self.notarizationReference = notarizationReference
         self.githubAsset = githubAsset
+        self.helperPackage = helperPackage
     }
 }
 

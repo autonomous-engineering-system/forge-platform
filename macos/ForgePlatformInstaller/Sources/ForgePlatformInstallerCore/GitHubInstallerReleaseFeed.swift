@@ -514,6 +514,7 @@ public actor GitHubSignedInstallerReleaseFeed: SignedInstallerReleaseFeedVerifyi
 /// release-side Python canonicalization.
 struct GitHubInstallerReleaseDescriptor: Sendable {
     static let schema = "forge-platform.installer-release/v1"
+    static let packageSchema = "forge-platform.installer-release/v2"
     static let maximumDescriptorBytes = 128 * 1024
     private static let maximumFuturePublicationSkew: TimeInterval = 5 * 60
 
@@ -541,6 +542,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
         let teamIdentifier: String
         let codeDirectorySHA256: String
         let notarizationReceiptReference: String
+        let helperPackage: VerifiedInstallerHelperPackage?
     }
 
     static func decode(
@@ -562,7 +564,8 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
                   "schema", "sequence", "channel", "published_at", "expires_at", "github_release",
                   "installer", "composition_catalog", "signatures",
               ]),
-              fields["schema"]?.stringValue == schema,
+              let descriptorSchema = fields["schema"]?.stringValue,
+              descriptorSchema == schema || descriptorSchema == packageSchema,
               let sequence = fields["sequence"]?.positiveUInt64Value,
               let channelRaw = fields["channel"]?.stringValue,
               let channel = InstallerReleaseChannel(rawValue: channelRaw),
@@ -629,7 +632,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
             throw GitHubInstallerReleaseDescriptorError.invalid
         }
 
-        let parsedAssets = try assets.map(parseAsset)
+        let parsedAssets = try assets.map { try parseAsset($0, withHelperPackage: descriptorSchema == packageSchema) }
         guard parsedAssets.count == 1,
               parsedAssets[0].architecture == "arm64",
               Set(parsedAssets.map { $0.architecture }).count == parsedAssets.count,
@@ -702,7 +705,8 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
                 expectedReleaseTrustConfigurationSHA256: expectedReleaseTrustConfigurationSHA256,
                 compositionCatalogFeed: compositionCatalogFeed,
                 notarizationReference: asset.notarizationReceiptReference,
-                githubAsset: githubAsset
+                githubAsset: githubAsset,
+                helperPackage: asset.helperPackage
             )
         } catch {
             return nil
@@ -717,12 +721,14 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
         value == "arm64"
     }
 
-    private static func parseAsset(_ value: StrictJSONResourceValue) throws -> Asset {
+    private static func parseAsset(_ value: StrictJSONResourceValue, withHelperPackage: Bool) throws -> Asset {
+        let requiredFields: Set<String> = [
+            "operating_system", "architecture", "minimum_macos_version", "asset_name",
+            "digest", "bundle_identifier", "team_identifier", "code_directory_sha256",
+            "notarization_receipt_reference",
+        ]
         guard let fields = value.objectValue,
-              Set(fields.keys) == Set([
-                  "operating_system", "architecture", "minimum_macos_version", "asset_name", "digest", "bundle_identifier",
-                  "team_identifier", "code_directory_sha256", "notarization_receipt_reference",
-              ]),
+              Set(fields.keys) == requiredFields.union(withHelperPackage ? ["helper_package"] : []),
               fields["operating_system"]?.stringValue == "macos",
               let architecture = fields["architecture"]?.stringValue,
               isSupportedArchitecture(architecture),
@@ -742,6 +748,22 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
               InstallerSelfUpdateValidation.isNotarizationReceiptReference(notarizationReceiptReference) else {
             throw GitHubInstallerReleaseDescriptorError.invalid
         }
+        let helperPackage: VerifiedInstallerHelperPackage?
+        if withHelperPackage {
+            guard let package = fields["helper_package"]?.objectValue,
+                  Set(package.keys) == Set(["asset_name", "digest", "bytes", "notarization_receipt_reference"]),
+                  package["asset_name"]?.stringValue == VerifiedInstallerHelperPackage.assetName,
+                  let taggedDigest = package["digest"]?.stringValue,
+                  let digest = GitHubInstallerReleaseDescriptorValidation.rawDigest(fromTaggedDigest: taggedDigest),
+                  let bytes = package["bytes"]?.positiveUInt64Value,
+                  let reference = package["notarization_receipt_reference"]?.stringValue else {
+                throw GitHubInstallerReleaseDescriptorError.invalid
+            }
+            helperPackage = try VerifiedInstallerHelperPackage(
+                sha256: digest, bytes: bytes, notarizationReference: reference)
+        } else {
+            helperPackage = nil
+        }
         return Asset(
             architecture: architecture,
             minimumMacOSVersion: minimumMacOSVersion,
@@ -750,7 +772,8 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
             bundleIdentifier: bundleIdentifier,
             teamIdentifier: teamIdentifier,
             codeDirectorySHA256: codeDirectorySHA256,
-            notarizationReceiptReference: notarizationReceiptReference
+            notarizationReceiptReference: notarizationReceiptReference,
+            helperPackage: helperPackage
         )
     }
 

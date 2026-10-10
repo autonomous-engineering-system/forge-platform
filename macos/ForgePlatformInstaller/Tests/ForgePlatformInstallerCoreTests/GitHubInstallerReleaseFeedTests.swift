@@ -4,6 +4,59 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class GitHubInstallerReleaseFeedTests: XCTestCase {
+    func testThresholdSignedPackageIsBoundToTheSameAcceptedRelease() throws {
+        let fixture = try makeFixture()
+        let package = "{\"asset_name\":\"forge-platform-installer-helper-arm64.pkg\",\"bytes\":1048576,\"digest\":\"sha256:" + String(repeating: "a", count: 64) + "\",\"notarization_receipt_reference\":\"receipt:helper-package-v1\"}"
+        let bytes = try fixture.signedDescriptorBytes(version: "0.2.0", sequence: 2,
+            helperPackageJSON: package, descriptorSchema: GitHubInstallerReleaseDescriptor.packageSchema)
+        let descriptor = try GitHubInstallerReleaseDescriptor.decode(bytes: bytes,
+            trustConfiguration: fixture.configuration, expectedChannel: .stable,
+            expectedTag: fixture.tag, observedAt: fixture.observedAt)
+        let record = try XCTUnwrap(descriptor.verifiedReleaseRecord(for: "arm64"))
+        XCTAssertEqual(record.helperPackage?.sha256, String(repeating: "a", count: 64))
+        XCTAssertEqual(record.helperPackage?.bytes, 1048576)
+        XCTAssertEqual(record.helperPackage?.notarizationReference, "receipt:helper-package-v1")
+        let tampered = Data(String(decoding: bytes, as: UTF8.self).replacingOccurrences(of:
+            "1048576", with: "1048577").utf8)
+        XCTAssertThrowsError(try GitHubInstallerReleaseDescriptor.decode(bytes: tampered,
+            trustConfiguration: fixture.configuration, expectedChannel: .stable,
+            expectedTag: fixture.tag, observedAt: fixture.observedAt))
+    }
+
+    func testPackageSchemaAndHostilePackageFieldsFailClosed() throws {
+        let fixture = try makeFixture()
+        let valid = "{\"asset_name\":\"forge-platform-installer-helper-arm64.pkg\",\"bytes\":1048576,\"digest\":\"sha256:" + String(repeating: "a", count: 64) + "\",\"notarization_receipt_reference\":\"receipt:helper-package-v1\"}"
+        let invalid = [
+            valid.replacingOccurrences(of: "forge-platform-installer-helper-arm64.pkg", with: "../other.pkg"),
+            valid.replacingOccurrences(of: "1048576", with: "0"),
+            valid.replacingOccurrences(of: "1048576", with: "536870913"),
+            valid.replacingOccurrences(of: "1048576", with: "1.5"),
+            valid.replacingOccurrences(of: "sha256:", with: "md5:"),
+            valid.replacingOccurrences(of: "receipt:helper-package-v1", with: "secret-token"),
+            String(valid.dropLast()) + ",\"unknown\":true}",
+            "null",
+        ]
+        for package in invalid {
+            let bytes = try fixture.signedDescriptorBytes(version: "0.2.0", sequence: 2,
+                helperPackageJSON: package, descriptorSchema: GitHubInstallerReleaseDescriptor.packageSchema)
+            XCTAssertThrowsError(try GitHubInstallerReleaseDescriptor.decode(bytes: bytes,
+                trustConfiguration: fixture.configuration, expectedChannel: .stable,
+                expectedTag: fixture.tag, observedAt: fixture.observedAt))
+        }
+        for (package, schema) in [(nil, GitHubInstallerReleaseDescriptor.packageSchema),
+                                  (Optional(valid), GitHubInstallerReleaseDescriptor.schema)] {
+            let bytes = try fixture.signedDescriptorBytes(version: "0.2.0", sequence: 2,
+                helperPackageJSON: package, descriptorSchema: schema)
+            XCTAssertThrowsError(try GitHubInstallerReleaseDescriptor.decode(bytes: bytes,
+                trustConfiguration: fixture.configuration, expectedChannel: .stable,
+                expectedTag: fixture.tag, observedAt: fixture.observedAt))
+        }
+        XCTAssertThrowsError(try VerifiedInstallerHelperPackage(
+            sha256: "invalid", bytes: 1, notarizationReference: "receipt:valid"))
+        XCTAssertThrowsError(try VerifiedInstallerHelperPackage(
+            sha256: String(repeating: "a", count: 64), bytes: 0, notarizationReference: "receipt:valid"))
+    }
+
     func testThresholdSignedGitHubDescriptorProducesExactRecordAndPersistsSequence() async throws {
         let fixture = try makeFixture()
         let bytes = try fixture.signedDescriptorBytes(version: "0.2.0", sequence: 2)
@@ -560,15 +613,18 @@ private struct DescriptorFixture {
         notarizationReceiptReference: String = "receipt:installer-arm64-v2",
         architectures: [String] = ["arm64"],
         minimumMacOSVersion: String = "26.0.0",
-        signingKeyIndexes: [Int] = [0, 1]
+        signingKeyIndexes: [Int] = [0, 1],
+        helperPackageJSON: String? = nil,
+        descriptorSchema: String = "forge-platform.installer-release/v1"
     ) throws -> Data {
         let capabilitiesJSON = capabilities.map { "\"\($0)\"" }.joined(separator: ",")
         let archiveDigest = String(repeating: "f", count: 64)
+        let packageField = helperPackageJSON.map { ",\"helper_package\":" + $0 } ?? ""
         let assetsJSON = architectures.map { architecture in
-            "{\"architecture\":\"\(architecture)\",\"asset_name\":\"forge-platform-installer-\(architecture).zip\",\"bundle_identifier\":\"\(configuration.expectedBundleIdentifier)\",\"code_directory_sha256\":\"\(codeDirectorySHA256)\",\"digest\":\"sha256:\(archiveDigest)\",\"minimum_macos_version\":\"\(minimumMacOSVersion)\",\"notarization_receipt_reference\":\"\(notarizationReceiptReference)\",\"operating_system\":\"macos\",\"team_identifier\":\"\(configuration.expectedTeamIdentifier)\"}"
+            "{\"architecture\":\"\(architecture)\",\"asset_name\":\"forge-platform-installer-\(architecture).zip\",\"bundle_identifier\":\"\(configuration.expectedBundleIdentifier)\",\"code_directory_sha256\":\"\(codeDirectorySHA256)\",\"digest\":\"sha256:\(archiveDigest)\"\(packageField),\"minimum_macos_version\":\"\(minimumMacOSVersion)\",\"notarization_receipt_reference\":\"\(notarizationReceiptReference)\",\"operating_system\":\"macos\",\"team_identifier\":\"\(configuration.expectedTeamIdentifier)\"}"
         }.joined(separator: ",")
         let unsigned = """
-        {"channel":"stable","composition_catalog":{"url":"https://catalog.example.test/feed.json"},"expires_at":"\(expiresAt)","github_release":{"descriptor_asset_name":"\(configuration.releaseDescriptorAssetName)","repository":"\(configuration.repository)","tag":"\(tag)"},"installer":{"assets":[\(assetsJSON)],"capabilities":[\(capabilitiesJSON)],"policy_revision":"release/v2","provenance_sha256":"\(descriptorProvenanceSHA256)","release_trust_configuration_sha256":"\(targetTrustConfigurationSHA256 ?? configuration.configurationSHA256)","source_revision":"\(sourceRevision)","version":"\(version)"},"published_at":"2026-09-09T18:00:00Z","schema":"forge-platform.installer-release/v1","sequence":\(sequence)}
+        {"channel":"stable","composition_catalog":{"url":"https://catalog.example.test/feed.json"},"expires_at":"\(expiresAt)","github_release":{"descriptor_asset_name":"\(configuration.releaseDescriptorAssetName)","repository":"\(configuration.repository)","tag":"\(tag)"},"installer":{"assets":[\(assetsJSON)],"capabilities":[\(capabilitiesJSON)],"policy_revision":"release/v2","provenance_sha256":"\(descriptorProvenanceSHA256)","release_trust_configuration_sha256":"\(targetTrustConfigurationSHA256 ?? configuration.configurationSHA256)","source_revision":"\(sourceRevision)","version":"\(version)"},"published_at":"2026-09-09T18:00:00Z","schema":"\(descriptorSchema)","sequence":\(sequence)}
         """
         let canonicalUnsigned = unsigned.trimmingCharacters(in: .newlines)
         let signatures = try signingKeyIndexes.map { index -> String in
