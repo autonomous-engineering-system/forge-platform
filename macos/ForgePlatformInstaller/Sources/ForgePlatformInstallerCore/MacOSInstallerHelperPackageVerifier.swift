@@ -116,7 +116,7 @@ struct MacOSInstallerHelperPackageVerifier: Sendable {
 
     /// Inspection children only. No command output enters a receipt or log.
     static func observe(_ tool: String, _ arguments: [String],
-                        timeout: DispatchTimeInterval = .seconds(20)) -> String? {
+                        timeout: DispatchTimeInterval = .seconds(20), expectedExitStatus: Int32 = 0) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
         process.arguments = arguments
@@ -143,7 +143,7 @@ struct MacOSInstallerHelperPackageVerifier: Sendable {
             return nil
         }
         guard drained.wait(timeout: .now() + .seconds(2)) == .success,
-              process.terminationReason == .exit, process.terminationStatus == 0,
+              process.terminationReason == .exit, process.terminationStatus == expectedExitStatus,
               let data = collector.collectedData() else { return nil }
         return String(data: data, encoding: .utf8)
     }

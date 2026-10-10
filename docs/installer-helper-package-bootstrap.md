@@ -158,3 +158,34 @@ Local transfer qualification: five targeted checks, independent scoped source
 review PASS, complete native suite 1,562 tests PASS. Every tracked production
 Swift file exceeds 80.2 percent; root importer coverage is 98.076923 percent.
 These are source gates, not a live administrator or package-installation PASS.
+
+## Normal administrator authorization (local source)
+
+The new authorization module binds its production request to `Bundle.main`,
+requires the exact trusted release version/team/bundle/CodeDirectory, and reads
+mutual Developer ID requirements from statically validated app/tool signing
+metadata. Both bootstrap and main helper namespaces must be absent, including
+filesystem occupants and launchd jobs. Unknown probe errors fail closed.
+
+A required cross-process installer mutation lease spans the checks, human
+prompt, fresh checks and blessing. Only the fixed system bless-helper right is
+requested with interactionAllowed/extendRights. No password or external
+Authorization form is read or transported. Rights are destroyed on every path.
+After successful administrator authorization, exact app/helper declarations
+and both namespaces are checked again before the fixed SMJobBless submission.
+A lease release failure cannot return success. Submission is not readiness.
+
+Twelve targeted source tests cover mismatches, occupied namespaces, cancellation,
+mutation during the prompt, the native right/flags/domain/label construction,
+lease ownership and failures. A real unprivileged Authorization reference is
+created/destroyed without requesting rights; namespace probes are read-only.
+Complete native suite: 1,574 tests PASS. All tracked production Swift files
+exceed 80.2 percent; this module measures 85.555556 percent. Scoped source review
+PASS after fixing the missing post-prompt currency check.
+
+The signed bootstrap executable/embedded metadata, authenticated IPC, root
+release verification, correct runtime mutation-lock binding, root package
+effect serialization and installed-bootstrap readback remain to be assembled.
+No administrator prompt or SMJobBless installation has been invoked by these
+checks. Neither CLI nor GUI has this route connected yet; no live first-run
+PASS or helper replacement authority follows from the source result.
