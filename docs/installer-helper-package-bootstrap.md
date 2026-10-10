@@ -222,3 +222,36 @@ An actual input set from public 0.4.9 resources was retained locally with status
 Next assembly remains the standalone runtime, authenticated IPC and independent
 root release verification, packaging/signing of the tool, and the admitted
 installer/runtime integration. No live administrator or first-run PASS follows.
+
+## Closed import service coordinator (local source)
+
+The import coordinator now accepts only a bounded four-field request: schema,
+physical package source, requested sequence and public package digest. Duplicate
+or extra keys, caller UID/trust/command fields, noninteger sequence, wrong
+package name, relative/control-character/empty/dot paths are rejected. Explicit
+segment checks preserve valid macOS `/private/var` paths; Foundation's path
+standardization is not filesystem admission. The root importer still performs
+all no-follow owner/mode/ACL/size checks.
+
+A required root mutation lease and actor busy guard span the independent signed
+release-feed lookup. The returned record must match every sealed anchor identity
+and the requested package. Peer and namespace observations are repeated before
+copy and acknowledgment. One retained copy stays with one admitted user; retries
+reverify that protected copy and never create an additional copy. The protected
+pathname never enters the reply, which says `PACKAGE_IMPORTED_ONLY` and
+`installation_ready=false`. Lease-release failures never acknowledge success.
+
+Six focused source checks passed, including real isolated private copying,
+protected-copy reverification, overlapping requests while the independent feed
+awaits, denied/busy/failed leases, hostile wire values and cross-user retry.
+Full native suite 1,580 tests PASS; all tracked production Swift files exceed
+80.2 percent and this coordinator measures 100 percent. Final scoped review PASS.
+Source seams use synthetic public release records and platform inspection only
+for isolated tests; they are not signed/live installation evidence.
+
+The runtime must still load its anchor from its own signed embedded metadata,
+verify the XPC connection and obtain the UID from it, connect the actual root
+mutation lock and independent feed, and expose only the closed interface.
+No executable/listener or package installation is assembled by this coordinator.
+Historical operation reconciliation, helper transition, activation and readiness
+remain separate qualification gates.
