@@ -356,6 +356,46 @@ and [Apple notarization](https://developer.apple.com/documentation/security/nota
 
 ## IUR-RELEASE and IUR-INSTALL-Q: finish lines
 
+### Used-helper upgrade gate in the existing installer delivery
+
+The helper/product-adapter, GUI/CLI parity, release and live-install nodes below
+also carry `L1-HELPER-UPGRADE-WITHOUT-REBOOT-V1-20261002` in the same #141
+assignment and PR #75 lineage. The first deliverable is a previously used
+signed helper replaced within the same boot, with admission closed across every
+mutating entry, active effects completed or product-owned checkpointed, one
+durable exclusive transition, supported macOS service action, and independent
+new-helper/XPC readback. Duplicate/retry, a subsequent supported upgrade,
+active work, concurrent updaters, admission races, crash/response loss and
+partial registration must be qualified. Native PASS requires real signed
+macOS candidates and unchanged boot identity; source fixtures remain separate.
+
+Merged source increments from PR #575 through PR #600 supply admission,
+durable identity/journal, worker/ceremony tracking and a sealed negative
+child-exit barrier. Complete
+product/credential/System Keychain/host quiescence, the production upgrade
+coordinator, supported service handoff and native same-boot qualification are
+still open. Source coverage and green CI do not satisfy native qualification.
+
+After the externally observed host boot change, the owner-authorized idle
+0.3.13 → 0.3.14 bootstrap completed, including ordinary registration recovery
+from a proven absent-job state. The fixed helper now runs signed 0.3.14 with
+`runs = 1`, current CLI status and readable empty deployment inventory on the
+same boot. That bootstrap does not prove an upgrade after a helper had run on
+that boot. The live 0.3.14 provenance predates the new admission/drain source,
+and its own idle replacement requires `runs = 0`. The next used-helper
+transition remains `BLOCKED_LEGACY_TRANSITION` until a reviewed route closes
+that released helper's mutation ingress and proves effect quiescence. No reboot,
+kill, global launchd/BTM reset, credential replay or weaker product/signing
+admission is authorized. This state is not a general macOS reboot requirement.
+
+Preserve the original installer DoD: independent Quality/Security on exact
+head, strict >80.2% executable-line coverage per changed production file,
+protected checks/merge, signed/notarized release, remote byte readback,
+EP/Forge installation, provider/pairing, full lifecycle and cold-boot/no-login
+acceptance. The latter needs its own explicit reboot approval. After a native
+same-boot helper PASS, #141 must give LANE_2 an exact signed candidate/service
+identity and conflict-free resource handoff before r30 credential tests resume.
+
 Extend the existing installer release operation, not a second release script:
 exact reviewed source/toolchain -> unsigned candidate -> applicable tests and
 coverage -> protected Developer ID signing -> notarization/stapling and signature
