@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import ForgePlatformInstallerCore
 
@@ -253,9 +254,16 @@ struct InstallerMVPFlowView: View {
                 }
             case .challenge(let challenge):
                 Text("Open de aanmeldpagina en voer deze eenmalige code zelf in:")
-                Text(challenge.userCode)
-                    .font(.title3.monospaced().weight(.semibold))
-                    .textSelection(.enabled)
+                HStack(spacing: 12) {
+                    Text(challenge.userCode)
+                        .font(.title3.monospaced().weight(.semibold))
+                        .textSelection(.enabled)
+                    Button("Kopieer code", systemImage: "doc.on.doc") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(challenge.userCode, forType: .string)
+                    }
+                    .help("Kopieer de eenmalige aanmeldcode")
+                }
                 Link("Open aanmeldpagina", destination: challenge.verificationURL)
                 Button("Ik ben aangemeld; controleer verbinding") {
                     viewModel.advance()

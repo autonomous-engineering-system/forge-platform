@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 import ForgePlatformInstallerCore
@@ -1860,9 +1861,16 @@ private struct CompositionReviewScreen: View {
             case .challenge(let challenge):
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Meld \(challenge.providerTargetID) aan met deze eenmalige code:")
-                    Text(challenge.userCode)
-                        .font(.title3.monospaced().weight(.semibold))
-                        .textSelection(.enabled)
+                    HStack(spacing: 12) {
+                        Text(challenge.userCode)
+                            .font(.title3.monospaced().weight(.semibold))
+                            .textSelection(.enabled)
+                        Button("Kopieer code", systemImage: "doc.on.doc") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(challenge.userCode, forType: .string)
+                        }
+                        .help("Kopieer de eenmalige aanmeldcode")
+                    }
                     Link("Open provider-aanmeldpagina",
                          destination: challenge.verificationURL)
                     Text("Kies daarna opnieuw Verder voor onafhankelijke verificatie.")
