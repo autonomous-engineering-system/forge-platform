@@ -102,3 +102,28 @@ Local qualification: 1,551 native tests, strict >80.2 per-file production Swift
 coverage PASS, 39 Python consumer tests, independent scoped source review PASS.
 A real unsigned package is rejected by the production platform checker.
 This supplies no signed-package positive, clean-host helper or live GUI PASS.
+
+## Installed-state observation (local source)
+
+A separate native installed-state reader now checks the fixed root-owned shelf,
+complete app tree and daemon before and after sealed-app inspection. It matches
+the exact release version, bundle/team and full app CodeDirectory identity.
+The daemon must expose only the three fixed boolean Mach services and one fixed
+absolute helper program; extra environment/argument/configuration fields fail.
+
+The fixed launchd job must be running from that program and daemon, with one
+canonical positive PID and no ServiceManagement backend. Its actual process
+must be root-owned, have the exact executable path and a stable PID/start time,
+pass Developer ID Application requirements, and match independently read static
+code signing. Dynamic validity is checked before and after signing-information
+translation; Apple's SecCodeCopyStaticCode relationship alone is not a security
+proof.
+
+Six targeted source checks and the complete 1,557-test native suite passed.
+Every tracked production Swift file passed the strict >80.2 coverage gate;
+the installed reader measured 82.926829 percent. Independent source review passed.
+
+This is not connected to registration, replacement, XPC or installation.
+The source-positive tests use isolated filesystem and inspector seams; they
+are not live installed-helper evidence. A real package bootstrap, normal
+administrator authorization and clean-VM positive readback remain required.
