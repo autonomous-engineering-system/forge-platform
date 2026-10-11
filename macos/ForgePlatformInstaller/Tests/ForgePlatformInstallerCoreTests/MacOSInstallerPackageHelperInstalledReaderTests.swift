@@ -198,6 +198,65 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
         XCTAssertNil(MacOSInstallerPackageHelperInstalledReader.inspectProcess(current, executable: path, team: "ZEML4LPXH4", expectedOwner: getuid()))
     }
 
+    func testProductionAssemblyUsesOnlyFixedInstallerAndInitialLaunchctlActions() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let (package, release, _, _) = try installFixture(f)
+        let calls = InstallProbe()
+        let actions = MacOSInstallerHelperPackageProductionActions(admitted: { _, _ in true },
+            namespaceClean: { true }, verifier: .init(check: { _, _ in true }), reader: f.reader(),
+            activationNamespaceClean: { true }, run: { tool, args in calls.add(tool + " " + args.joined(separator: "|")); return 0 }).assemble()
+        XCTAssertTrue(actions.admitted(getuid(), release)); XCTAssertTrue(actions.namespaceClean())
+        XCTAssertTrue(actions.activationNamespaceClean()); XCTAssertTrue(actions.verifyPackage(package, release))
+        XCTAssertFalse(actions.verifyPackage(package, try f.record()))
+        let exit = await actions.install(package); XCTAssertEqual(exit, 0)
+        let files = await actions.readFiles(release); XCTAssertEqual(files?.releaseSequence, 12)
+        let activated = await actions.activate(); XCTAssertEqual(activated, 0)
+        let running = await actions.readRunning(release); XCTAssertEqual(running?.processID, 42)
+        XCTAssertEqual(calls.items, ["/usr/sbin/installer -pkg|" + package.url.path + "|-target|/",
+            "/bin/launchctl bootstrap|system|" + MacOSInstallerPackageHelperInstalledReader.daemon.path,
+            "/bin/launchctl kickstart|system/" + ManagedInstallerPrivilegedHelperContract.label])
+        for exit in [Int32(1), nil] {
+            let refused = InstallProbe()
+            let failed = MacOSInstallerHelperPackageProductionActions(admitted: { _, _ in true }, namespaceClean: { true },
+                verifier: .init(check: { _, _ in true }), reader: f.reader(), activationNamespaceClean: { true },
+                run: { tool, args in refused.add(tool + " " + args.joined(separator: "|")); return exit }).assemble()
+            let result = await failed.activate(); XCTAssertNil(result)
+            XCTAssertEqual(refused.items.count, 1)
+            XCTAssertTrue(refused.items[0].contains(" bootstrap|"))
+        }
+        let production = MacOSInstallerHelperPackageProductionActions().assemble()
+        // Source test is not the fixed installed, signed root bootstrap process.
+        XCTAssertFalse(production.admitted(0, release)); XCTAssertFalse(production.admitted(getuid(), release))
+    }
+    func testInitialActivationRefusesLegacySMPathAndAnythingExceptExactAbsentJob() throws {
+        let f = try Fixture(); defer { f.remove() }
+        let legacy = f.base.appendingPathComponent("legacy-helper")
+        let absent = "Bad request.\nCould not find service \"" + ManagedInstallerPrivilegedHelperContract.label + "\" in domain for system\n"
+        XCTAssertTrue(MacOSInstallerHelperPackageProductionActions.initialActivationNamespaceClean(legacyTool: legacy, job: { absent }))
+        for text in [nil, "", "service running", absent + "extra", absent.replacingOccurrences(of: "system", with: "user")] {
+            XCTAssertFalse(MacOSInstallerHelperPackageProductionActions.initialActivationNamespaceClean(legacyTool: legacy, job: { text }))
+        }
+        for kind in ["regular", "fifo", "dangling-link", "directory"] {
+            switch kind {
+            case "regular": try Data().write(to: legacy)
+            case "fifo": XCTAssertEqual(mkfifo(legacy.path, 0o600), 0)
+            case "dangling-link": try FileManager.default.createSymbolicLink(atPath: legacy.path, withDestinationPath: "/source-only-missing")
+            default: try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: false)
+            }
+            XCTAssertFalse(MacOSInstallerHelperPackageProductionActions.initialActivationNamespaceClean(legacyTool: legacy, job: { XCTFail("Legacy namespace must fail before job inspection"); return absent }))
+            try FileManager.default.removeItem(at: legacy)
+        }
+    }
+    func testEffectChildObservesExitAndLaunchFailureWithoutOutputOrForcedTermination() {
+        XCTAssertEqual(MacOSInstallerHelperPackageEffectChild.run("/usr/bin/true", []), 0)
+        XCTAssertEqual(MacOSInstallerHelperPackageEffectChild.run("/usr/bin/false", []), 1)
+        XCTAssertNil(MacOSInstallerHelperPackageEffectChild.run("/source-only/nonexistent-tool", []))
+        XCTAssertNil(MacOSInstallerHelperPackageEffectChild.run("/bin/sleep", ["0.2"], timeout: .milliseconds(1)))
+        // Let this source-test child end naturally; no helper/installer/launchctl
+        // is launched and no kill, bootout or reboot is used by the test.
+        Thread.sleep(forTimeInterval: 0.3)
+    }
+
     // Source action seams only: no installer or launchctl process is run here.
     func testInstallCoordinatorRequiresDurableOrderAndFreshIndependentReadback() async throws {
         let f = try Fixture(); defer { f.remove() }

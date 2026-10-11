@@ -552,3 +552,27 @@ Production action assembly, audited XPC install admission and frontend/backend
 selection remain open. Existing root runtime still serves import only. This
 coordinator has not performed a root installation, qualified a signed package
 or established installed/readiness or public CLI/GUI PASS.
+
+
+## Fixed production action assembly (2026-10-11, source only)
+
+The new production assembly binds root selfmetadata and administrator admission,
+protected package re-verification and independent installed readers to fixed OS
+commands: installer with the typed protected package and target /; initial
+launchctl bootstrap with the fixed daemon and kickstart with the fixed system
+label. No shell, caller-supplied tool/argument/environment, -k, bootout or helper
+kill is used. After file installation, activation requires absent legacy SM helper
+and the exact absent-job observation; preinstall plist absence is not reused.
+
+Child input/output is discarded, environment fixed and observation bounded. A
+timeout leaves the child outcome unconfirmed and attempted journal unchanged;
+it does not kill the child, retry, activate or claim ready. Historical recovery
+of this outcome remains a separate gate.
+
+Sixteen targeted native reader/coordinator/assembly checks passed. Production
+commands were observed through source seams only; the actual child runner was
+checked with harmless true/false/missing-tool and a short naturally ending sleep.
+No installer or launchctl effect was executed. Changed new file coverage is
+83.132530 percent under the strict 80.2 gate; read-only review found no findings.
+Runtime/XPC installation admission, same-connection revocation checks and frontend
+selection remain open; no installed or public CLI/GUI PASS is claimed.
