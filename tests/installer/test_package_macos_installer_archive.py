@@ -26,6 +26,30 @@ from forge_platform.macos_platform_contract import thin_arm64_macho_test_bytes  
 
 
 class PackageMacOSInstallerArchiveTests(unittest.TestCase):
+    def test_optional_bootstrap_archive_preserves_arm64_code_and_rejects_invalid_code(self) -> None:
+        for kind in ("valid", "invalid", "not-executable"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                app = self._app_bundle(root)
+                directory = app / "Contents/Library/LaunchServices"
+                directory.mkdir(mode=0o755)
+                bootstrap = directory / "com.autonomous-engineering-system.forge-platform-installer.bootstrap"
+                contents = thin_arm64_macho_test_bytes(b"bootstrap candidate") if kind != "invalid" else b"not executable code"
+                bootstrap.write_bytes(contents)
+                bootstrap.chmod(0o644 if kind == "not-executable" else 0o755)
+                output = root / "archive.zip"
+                result = self._run(app, output)
+                if kind == "valid":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    with zipfile.ZipFile(output) as archive:
+                        name = app.name + "/Contents/Library/LaunchServices/" + bootstrap.name
+                        self.assertEqual(archive.read(name), contents)
+                        self.assertEqual((archive.getinfo(name).external_attr >> 16) & 0o777, 0o755)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
+                self.assertEqual(bootstrap.read_bytes(), contents)
+
     def test_produces_a_deterministic_stored_profile_from_paths_with_spaces(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary) / "workspace with spaces"

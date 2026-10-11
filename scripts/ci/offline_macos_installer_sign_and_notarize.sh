@@ -106,11 +106,32 @@ python3 scripts/prepare_offline_installer_resources.py \
   --output "$provenance" >"$private/provenance.log" 2>&1 \
   || fail provenance-preparation-failed
 
+# Link the bootstrap only after exact release provenance has been prepared.
+# These are public sealed metadata bytes, never caller credentials or options.
+bootstrap_metadata="$private/bootstrap-link-inputs"
+python3 scripts/prepare_macos_installer_bootstrap_metadata.py \
+  --release-trust "$FORGE_PLATFORM_RELEASE_TRUST_RESOURCE" \
+  --release-provenance "$provenance" \
+  --output "$bootstrap_metadata" >"$private/bootstrap-metadata.log" 2>&1 \
+  || fail bootstrap-metadata-preparation-failed
+(
+  cd macos/ForgePlatformInstaller
+  swift build -c release --product forge-platform-installer-bootstrap \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+    -Xlinker "$bootstrap_metadata/bootstrap-info.plist" \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __launchd_plist \
+    -Xlinker "$bootstrap_metadata/bootstrap-launchd.plist" \
+    >"$private/swift-build-bootstrap.log" 2>&1
+) || fail bootstrap-link-failed
+bootstrap="$bin_dir/forge-platform-installer-bootstrap"
+[[ -x "$bootstrap" ]] || fail bootstrap-binary-missing
+
 app="$work/ForgePlatformInstaller.app"
 python3 scripts/package_macos_installer_app.py \
   --executable "$gui" \
   --cli-executable "$cli" \
   --helper-executable "$helper" \
+  --bootstrap-executable "$bootstrap" \
   --product-worker "$product_worker" \
   --forge-update-controller "$FORGE_PLATFORM_FORGE_UPDATE_CONTROLLER" \
   --forge-release-complete-receipt "$FORGE_PLATFORM_FORGE_RELEASE_COMPLETE_RECEIPT" \
@@ -176,7 +197,11 @@ raise SystemExit(0 if completed.returncode == 0 else 1)
 PY
 }
 
+bootstrap_label="com.autonomous-engineering-system.forge-platform-installer.bootstrap"
+bootstrap_candidate="$app/Contents/Library/LaunchServices/$bootstrap_label"
+[[ -x "$bootstrap_candidate" ]] || fail bootstrap-not-packaged
 # Sign every executable code object explicitly, then seal the app bundle.
+bounded "$private/codesign-bootstrap.log" codesign --force --options runtime --timestamp --identifier "$bootstrap_label" --sign "$selected_hash" "$bootstrap_candidate" || fail bootstrap-signing-failed
 bounded "$private/codesign-helper.log" codesign --force --options runtime --timestamp --identifier "com.autonomous-engineering-system.forge-platform-installer.helper" --sign "$selected_hash" "$app/Contents/Resources/forge-platform-installer-helper" || fail helper-signing-failed
 # The helper admits the exact sealed app identifier. Sign the separately
 # executable CLI with that identifier instead of codesign's basename default.
@@ -184,6 +209,8 @@ bounded "$private/codesign-cli.log" codesign --force --options runtime --timesta
 bounded "$private/codesign-gui.log" codesign --force --options runtime --timestamp --sign "$selected_hash" "$app/Contents/MacOS/ForgePlatformInstaller" || fail gui-signing-failed
 bounded "$private/codesign-app.log" codesign --force --options runtime --timestamp --sign "$selected_hash" "$app" || fail app-signing-failed
 bounded "$private/codesign-verify.log" codesign --verify --strict --deep "$app" || fail signed-app-verification-failed
+bootstrap_requirement="anchor apple generic and identifier \"$bootstrap_label\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\""
+bounded "$private/codesign-bootstrap-requirement.log" codesign --verify --strict "-R=$bootstrap_requirement" "$bootstrap_candidate" || fail signed-bootstrap-identity-failed
 helper_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"com.autonomous-engineering-system.forge-platform-installer.helper\""
 bounded "$private/codesign-helper-requirement.log" codesign --verify --strict "-R=$helper_requirement" "$app/Contents/Resources/forge-platform-installer-helper" || fail signed-helper-identity-failed
 requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"$bundle_identifier\""
@@ -255,6 +282,7 @@ bounded "$private/carrier-staple-validate.log" xcrun stapler validate -v "$extra
 bounded "$private/carrier-gatekeeper.log" spctl --assess --type execute --verbose=4 "$extracted_app" || fail final-archive-gatekeeper-rejected
 bounded "$private/carrier-gui-caller.log" codesign --verify --strict "-R=$caller_requirement" "$extracted_app/Contents/MacOS/ForgePlatformInstaller" || fail final-archive-gui-caller-identity-failed
 bounded "$private/carrier-cli-caller.log" codesign --verify --strict "-R=$caller_requirement" "$extracted_app/Contents/MacOS/forge-platform-installer" || fail final-archive-cli-caller-identity-failed
+bounded "$private/carrier-bootstrap.log" codesign --verify --strict "-R=$bootstrap_requirement" "$extracted_app/Contents/Library/LaunchServices/$bootstrap_label" || fail final-archive-bootstrap-identity-failed
 
 codesign -d --verbose=4 "$app" >"$private/codesign-display.txt" 2>&1 || fail codedirectory-readback-failed
 code_directory="$(python3 - "$private/codesign-display.txt" <<'PY'

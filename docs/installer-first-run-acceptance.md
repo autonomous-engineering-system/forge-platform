@@ -59,8 +59,10 @@ metadata is rejected. Existing packaging without this optional input is retained
 
 The scoped packaging qualification passed 42 checks, the existing strict Python
 coverage threshold and a read-only inspection of the retained real local link
-prototype. This is unsigned source assembly only. The official signing pipeline
-has not adopted this input; signing, notarization, administrator handoff,
+prototype. This is unsigned source assembly only. The official offline signing source now prepares the exact metadata, links and
+packages the bootstrap, signs it before the app, and verifies its fixed Developer
+ID requirement before notarization and after carrier extraction. The signer has
+not run for this source. Signing, notarization, administrator handoff,
 installed-bootstrap readback and package installation remain unqualified.
 
 The historical effect record cannot be retired from process absence alone: its
