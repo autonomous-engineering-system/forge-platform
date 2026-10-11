@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import XCTest
@@ -197,6 +198,138 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
         XCTAssertNil(MacOSInstallerPackageHelperInstalledReader.inspectProcess(current, executable: path, team: "ZEML4LPXH4", expectedOwner: getuid()))
     }
 
+    // Source action seams only: no installer or launchctl process is run here.
+    func testInstallCoordinatorRequiresDurableOrderAndFreshIndependentReadback() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let (package, release, store, lock) = try installFixture(f)
+        let probe = InstallProbe()
+        let service = installCoordinator(f, probe: probe, store: store, lock: lock)
+        let result = await service.install(package, release: release, admittedClientUID: getuid())
+        XCTAssertEqual(result?.processID, 42)
+        XCTAssertEqual(probe.items, ["install", "files", "activate", "running"])
+        XCTAssertEqual(try store.read().get().map(\.phase), MacOSInstallerHelperPackageEffectPhase.allCases)
+        let repeatResult = await service.install(package, release: release, admittedClientUID: getuid())
+        XCTAssertNil(repeatResult)
+        XCTAssertEqual(probe.items, ["install", "files", "activate", "running"])
+    }
+    func testInstallCoordinatorFailurePreservesAttemptWithoutRetryOrFalseReadiness() async throws {
+        for failure in ["admission", "namespace", "package", "launch", "exit", "files", "activation-namespace", "activation", "running", "foreign-running"] {
+            let f = try Fixture(); defer { f.remove() }
+            let (package, release, store, lock) = try installFixture(f)
+            let probe = InstallProbe()
+            let service = installCoordinator(f, probe: probe, store: store, lock: lock, failure: failure)
+            let result = await service.install(package, release: release, admittedClientUID: getuid())
+            XCTAssertNil(result, failure)
+            let history = try store.read().get()
+            let expected: MacOSInstallerHelperPackageEffectPhase?
+            switch failure {
+            case "admission", "namespace", "package": expected = nil
+            case "launch": expected = .installAttempted
+            case "exit", "files", "activation-namespace": expected = .installExited
+            default: expected = .activationAttempted
+            }
+            XCTAssertEqual(history.last?.phase, expected, failure)
+            if failure == "exit" { XCTAssertEqual(history.last?.installerExitCode, 42) }
+            let before = probe.items
+            let repeated = await service.install(package, release: release, admittedClientUID: getuid())
+            XCTAssertNil(repeated)
+            XCTAssertEqual(probe.items, before, failure)
+        }
+    }
+    func testInstallCoordinatorBlocksRootPeerForeignReleaseAndBusyMutationLease() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let (package, release, store, lock) = try installFixture(f)
+        let probe = InstallProbe()
+        let service = installCoordinator(f, probe: probe, store: store, lock: lock)
+        let root = await service.install(package, release: release, admittedClientUID: 0)
+        XCTAssertNil(root)
+        let foreign = await service.install(package, release: try f.record(), admittedClientUID: getuid())
+        XCTAssertNil(foreign)
+        let lease = try lock.acquireExclusiveSelfUpdateOperationLock().get()
+        let busy = await service.install(package, release: release, admittedClientUID: getuid())
+        XCTAssertNil(busy)
+        _ = try lease.releaseExclusiveSelfUpdateOperationLock().get()
+        XCTAssertEqual(probe.items, [])
+        XCTAssertEqual(try store.read().get(), [])
+    }
+    func testInstallCoordinatorSerializesAcrossSuspendedChildAndChecksRevocationBeforeActivation() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let (package, release, store, lock) = try installFixture(f)
+        let entered = expectation(description: "source action suspended")
+        let gate = InstallGate(entered: entered)
+        let probe = InstallProbe()
+        let service = installCoordinator(f, probe: probe, store: store, lock: lock, suspended: gate)
+        let first = Task { await service.install(package, release: release, admittedClientUID: getuid()) }
+        await fulfillment(of: [entered], timeout: 3)
+        let second = await service.install(package, release: release, admittedClientUID: getuid())
+        XCTAssertNil(second)
+        XCTAssertEqual(try store.read().get().last?.phase, .installAttempted)
+        await gate.finish()
+        let result = await first.value
+        XCTAssertEqual(result?.processID, 42)
+        XCTAssertEqual(probe.items.filter { $0 == "install" }.count, 1)
+        let other = try Fixture(); defer { other.remove() }
+        let (p2, r2, j2, l2) = try installFixture(other)
+        let revoked = InstallProbe()
+        let denied = installCoordinator(other, probe: revoked, store: j2, lock: l2, failure: "revoke-after-files")
+        let nilResult = await denied.install(p2, release: r2, admittedClientUID: getuid())
+        XCTAssertNil(nilResult)
+        XCTAssertEqual(revoked.items, ["install", "files"])
+        XCTAssertEqual(try j2.read().get().last?.phase, .installExited)
+    }
+    private func installFixture(_ f: Fixture) throws -> (MacOSInstallerImportedHelperPackage, VerifiedInstallerReleaseRecord,
+        MacOSInstallerHelperPackageEffectJournal, FileInstallerSelfUpdateOperationLock) {
+        let source = f.base.appendingPathComponent("source"), stage = f.base.appendingPathComponent("stage"), journal = f.base.appendingPathComponent("journal")
+        for url in [source, stage, journal] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            let fd = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY)
+            guard fd >= 0, let acl = acl_init(0) else { throw CocoaError(.fileWriteUnknown) }
+            defer { _ = close(fd); _ = acl_free(UnsafeMutableRawPointer(acl)) }
+            guard acl_set_fd_np(fd, acl, ACL_TYPE_EXTENDED) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        }
+        let bytes = Data("source-only-package".utf8)
+        let path = source.appendingPathComponent(VerifiedInstallerHelperPackage.assetName)
+        try bytes.write(to: path); XCTAssertEqual(chmod(path.path, 0o600), 0)
+        let fd = open(path.path, O_RDONLY | O_NOFOLLOW_ANY)
+        guard fd >= 0, let acl = acl_init(0) else { throw CocoaError(.fileWriteUnknown) }
+        defer { _ = close(fd); _ = acl_free(UnsafeMutableRawPointer(acl)) }
+        guard acl_set_fd_np(fd, acl, ACL_TYPE_EXTENDED) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let release = try f.record(packageSHA: digest, packageBytes: UInt64(bytes.count))
+        let importer = MacOSInstallerHelperPackageRootImporter(root: stage, owner: getuid(), verifier: .init(check: { _, _ in true }))
+        return (try XCTUnwrap(importer.importPackage(from: path, admittedClientUID: getuid(), release: release)), release,
+            .init(root: journal, owner: getuid()), .init(rootDirectory: journal))
+    }
+    private func installCoordinator(_ f: Fixture, probe: InstallProbe, store: MacOSInstallerHelperPackageEffectJournal,
+        lock: any InstallerSelfUpdateOperationLocking, failure: String = "", suspended: InstallGate? = nil)
+        -> MacOSInstallerHelperPackageInstallCoordinator {
+        .init(lock: lock, journal: store, actions: .init(
+            admitted: { _, _ in failure != "admission" && !(failure == "revoke-after-files" && probe.items.contains("files")) },
+            namespaceClean: { failure != "namespace" }, verifyPackage: { _, _ in failure != "package" },
+            install: { _ in XCTAssertEqual(try? store.read().get().last?.phase, .installAttempted); probe.add("install"); if let suspended { await suspended.wait() }; return failure == "launch" ? nil : (failure == "exit" ? 42 : 0) },
+            readFiles: { release in probe.add("files"); return failure == "files" ? nil : await f.reader().readFiles(release: release) },
+            activationNamespaceClean: { failure != "activation-namespace" },
+            activate: { XCTAssertEqual(try? store.read().get().last?.phase, .activationAttempted); probe.add("activate"); return failure == "activation" ? 1 : 0 },
+            readRunning: { release in
+                probe.add("running")
+                if failure == "running" { return nil }
+                if failure == "foreign-running" { return .init(releaseSequence: 99, appCodeDirectorySHA256: release.expectedCodeDirectorySHA256, processID: 42) }
+                return await f.reader().read(release: release)
+            }))
+    }
+    private final class InstallProbe: @unchecked Sendable {
+        private let lock = NSLock(); private var storage: [String] = []
+        var items: [String] { lock.lock(); defer { lock.unlock() }; return storage }
+        func add(_ value: String) { lock.lock(); defer { lock.unlock() }; storage.append(value) }
+    }
+    private actor InstallGate {
+        let entered: XCTestExpectation
+        var continuation: CheckedContinuation<Void, Never>?
+        init(entered: XCTestExpectation) { self.entered = entered }
+        func wait() async { await withCheckedContinuation { continuation = $0; entered.fulfill() } }
+        func finish() { continuation?.resume(); continuation = nil }
+    }
+
     private final class ProbeCounter: @unchecked Sendable {
         private let lock = NSLock()
         private var count: UInt64 = 0
@@ -260,7 +393,7 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
                 readBundle: bundle ?? { _ in bundleValue }, readJob: { jobValue },
                 readProcess: processRead ?? { _, _, _ in processValue })
         }
-        func record(package: Bool = true) throws -> VerifiedInstallerReleaseRecord {
+        func record(package: Bool = true, packageSHA: String = String(repeating: "e", count: 64), packageBytes: UInt64 = 1024) throws -> VerifiedInstallerReleaseRecord {
             let asset = try GitHubInstallerReleaseAsset(repository: "pcvantol/forge-platform", tag: "installer-v1.2.3", assetName: "Installer.app.zip")
             let release = VerifiedInstallerRelease(version: try InstallerVersion("1.2.3"), releasePage: asset.releasePage,
                 assetName: asset.assetName, sha256: String(repeating: "f", count: 64), signingKeyID: "release-key")
@@ -273,7 +406,7 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
                 expectedReleaseTrustConfigurationSHA256: String(repeating: "d", count: 64),
                 compositionCatalogFeed: try .init(url: "https://catalog.example.invalid/stable.json"),
                 notarizationReference: "receipt:app-notarization", githubAsset: asset,
-                helperPackage: package ? try .init(sha256: String(repeating: "e", count: 64), bytes: 1024, notarizationReference: "receipt:package-notarization") : nil)
+                helperPackage: package ? try .init(sha256: packageSHA, bytes: packageBytes, notarizationReference: "receipt:package-notarization") : nil)
         }
     }
 }

@@ -525,3 +525,30 @@ existing FIFO/namespace/running-reader checks. Changed-reader coverage is
 passed. The future root coordinator must hold its mutation lease across these
 checks and require fresh full running readback; these source checks did not
 install a package or activate a service.
+
+
+## Serialized first-install coordinator (2026-10-11, source only)
+
+The source-internal first-install coordinator now holds the existing host-wide
+mutation lease across protected package verification, durable intent and attempt,
+installer exit observation, independent file proof, initial activation and fresh
+running-helper readback. Imported digest, byte count and sequence must match the
+selected release and admitted client UID. Admission is repeated across async
+boundaries. Unknown launch/exit retains attempted history; nonzero installer
+exit prevents activation. Neither an installer exit nor a completed ledger can
+substitute for fresh running-helper evidence. Lease-release failure cannot return
+success. Any existing attempt refuses a new install; no recovery/replacement or
+historical uncertainty retirement is introduced.
+
+Thirteen targeted reader/coordinator checks passed, including failure boundaries,
+real private append-only history, actual kernel lease contention, suspended-action
+overlap and admission revocation before activation. Four coordinator checks were
+then scoped to assert the durable attempted record already exists at both action
+entry boundaries. Source action seams did not execute installer or launchctl.
+Coordinator file coverage is 100 percent under the unchanged strict 80.2 gate;
+read-only source review found no concrete findings.
+
+Production action assembly, audited XPC install admission and frontend/backend
+selection remain open. Existing root runtime still serves import only. This
+coordinator has not performed a root installation, qualified a signed package
+or established installed/readiness or public CLI/GUI PASS.
