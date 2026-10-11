@@ -91,10 +91,14 @@ struct MacOSInstallerPackageHelperInstalledReader: Sendable {
 
     private func secure(_ url: URL, directory: Bool) -> Identity? {
         let descriptor = url.path.withCString {
-            Darwin.open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY | (directory ? O_DIRECTORY : 0))
+            Darwin.open($0, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW_ANY | (directory ? O_DIRECTORY : 0))
         }
         guard descriptor >= 0 else { return nil }
         defer { _ = Darwin.close(descriptor) }
+        return secure(descriptor, directory: directory)
+    }
+
+    private func secure(_ descriptor: Int32, directory: Bool) -> Identity? {
         var s = stat()
         guard Darwin.fstat(descriptor, &s) == 0, s.st_uid == owner,
               s.st_mode & mode_t(S_IFMT) == (directory ? mode_t(S_IFDIR) : mode_t(S_IFREG)),
@@ -128,10 +132,19 @@ struct MacOSInstallerPackageHelperInstalledReader: Sendable {
 
     private struct Daemon: Equatable, Sendable { let identity: Identity; let data: Data }
     private func readDaemon() -> Daemon? {
-        guard let before = secure(daemon.deletingLastPathComponent(), directory: true),
-              let identity = secure(daemon, directory: false),
-              identity.mode & 0o7777 == 0o644, identity.size > 0, identity.size <= 16 * 1024,
-              let data = try? Data(contentsOf: daemon), data.count == identity.size,
+        guard let before = secure(daemon.deletingLastPathComponent(), directory: true) else { return nil }
+        let descriptor = daemon.path.withCString {
+            Darwin.open($0, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard descriptor >= 0 else { return nil }
+        defer { _ = Darwin.close(descriptor) }
+        guard let identity = secure(descriptor, directory: false),
+              identity.mode & 0o7777 == 0o644, identity.size > 0, identity.size <= 16 * 1024 else { return nil }
+        // Keep the admitted file open. Reopening its name could block on a FIFO
+        // introduced between regular-file admission and the contents read.
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        guard let data = try? handle.read(upToCount: 16 * 1024 + 1), data.count == identity.size,
+              secure(descriptor, directory: false) == identity,
               secure(daemon, directory: false) == identity,
               secure(daemon.deletingLastPathComponent(), directory: true) == before else { return nil }
         return .init(identity: identity, data: data)

@@ -449,3 +449,27 @@ carrier checks and the scoped re-review passed. These checks did not run the
 publisher, contact GitHub/Apple for delivery, sign an artifact or prove installation.
 Actual protected publication, root installation/activation, frontend installed
 readback and historical recovery remain open.
+
+
+## Independent installed-reader blocking/race gate (2026-10-11)
+
+Before adding root installation effects, the existing installed-helper reader
+was checked for bounded refusal. Its helper, app metadata and daemon-file opens
+now use nonblocking no-follow admission. The daemon data is read from that same
+admitted regular file descriptor, with a 16 KiB bound and unchanged owner, mode,
+link and ACL constraints; descriptor, named-leaf and parent identities are checked
+again afterward. No named-file reopen occurs between admission and contents read.
+
+Seven targeted native checks passed, including three actual no-writer FIFOs
+(helper, Info and daemon) and the existing root-tree/identity/mutation contracts.
+Delayed test writers bound a regressed blocking open and finish before private
+fixture cleanup. Changed-reader coverage is 84.234234 percent, strictly above
+80.2; scoped read-only review passed. This is source negative/readback assurance,
+not an installed helper, root activation or first-run proof. No production path
+was mutated or service started/stopped by these checks.
+
+Root installation still requires its own durable effect evidence and verified
+activation/readiness. The product/provider effect journal intentionally cannot
+be reused as proof of package state: empty child IDs or installer exit zero do
+not prove installed files, namespace ownership, credential quiescence or readiness.
+Historical authentication uncertainty remains unchanged.

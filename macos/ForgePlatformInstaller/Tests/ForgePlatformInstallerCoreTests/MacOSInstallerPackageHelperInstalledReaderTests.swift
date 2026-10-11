@@ -4,6 +4,39 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
+    func testInstalledHelperAndMetadataFIFOsFailBeforeTrustWithoutBlocking() async throws {
+        for kind in ["helper", "info", "daemon"] {
+            let f = try Fixture()
+            defer { f.remove() }
+            let path: URL
+            switch kind {
+            case "helper": path = f.helper
+            case "info": path = f.app.appendingPathComponent("Contents/Info.plist")
+            default: path = f.daemon
+            }
+            try FileManager.default.removeItem(at: path)
+            XCTAssertEqual(mkfifo(path.path, 0o600), 0)
+            // A delayed writer bounds a regressed blocking open. The source
+            // fixture is never an installed/trusted helper or service.
+            let releaseBlockedReader = DispatchGroup()
+            releaseBlockedReader.enter()
+            DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(2)) {
+                let writer = open(path.path, O_WRONLY | O_NONBLOCK | O_NOFOLLOW)
+                if writer >= 0 { _ = close(writer) }
+                releaseBlockedReader.leave()
+            }
+            let reader = f.reader(bundle: { _ in
+                XCTFail("Nonregular installed evidence must not reach sealed trust inspection")
+                return nil
+            })
+            let start = Date()
+            let result = await reader.read(release: try f.record())
+            XCTAssertNil(result, kind)
+            XCTAssertLessThan(Date().timeIntervalSince(start), 1, kind)
+            XCTAssertEqual(releaseBlockedReader.wait(timeout: .now() + .seconds(5)), .success)
+        }
+    }
+
     func testIndependentLayoutJobProcessAndReleaseReadback() async throws {
         let f = try Fixture()
         defer { f.remove() }
