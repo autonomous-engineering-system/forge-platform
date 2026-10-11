@@ -48,8 +48,12 @@ def _xar(fd):
     if root.tag!='xar' or toc is None or len(root.findall('toc'))!=1:raise ValueError('helper package XAR TOC invalid')
     entries={};ranges=[]
     for node in toc.findall('file'):
-        name=node.findtext('name');data=node.find('data')
-        if name not in {'PackageInfo','Bom','Payload'} or name in entries or node.findtext('type')!='file' or node.findall('.//file') or data is None or any(len(node.findall(key))!=1 for key in ['name','type','data']):
+        name=node.findtext('name');data=node.find('data');names=node.findall('name')
+        # Apple's real signed package can repeat the same plain name. Admit
+        # only that bounded representation, without ambiguous member identity.
+        if (len(names) not in {1,2} or any(value.attrib or len(value) or value.text!=name for value in names)
+            or name not in {'PackageInfo','Bom','Payload'} or name in entries or node.findtext('type')!='file'
+            or node.findall('.//file') or data is None or any(len(node.findall(key))!=1 for key in ['type','data'])):
             raise ValueError('helper package contains unexpected member or scripts')
         values=[]
         for key in ['offset','length','size']:
