@@ -481,9 +481,10 @@ public actor MacOSManagedInstallerPostToolXPCTransport:
 
     public init(
         helperIdentity: ManagedInstallerPostToolXPCHelperIdentity,
-        expectedParentVersion: InstallerVersion? = nil
+        expectedParentVersion: InstallerVersion? = nil,
+        packageRelease: VerifiedInstallerReleaseRecord? = nil
     ) {
-        parentAdmission = .production(expectedVersion: expectedParentVersion)
+        parentAdmission = .production(expectedVersion: expectedParentVersion, packageRelease: packageRelease)
         resumed = false
         connection = NSXPCConnection(
             machServiceName: Self.machServiceName,
@@ -509,8 +510,8 @@ public actor MacOSManagedInstallerPostToolXPCTransport:
         connection.invalidate()
     }
 
-    private func admitConnection() -> Bool {
-        if let parentAdmission, !parentAdmission.admits() { return false }
+    private func admitConnection() async -> Bool {
+        if let parentAdmission, !(await parentAdmission.admitsCurrentParent()) { return false }
         if !resumed {
             connection.resume()
             resumed = true
@@ -528,10 +529,10 @@ public actor MacOSManagedInstallerPostToolXPCTransport:
             return .failure(.rejected)
         }
 
+        guard await admitConnection() else { return .failure(.receiptUnavailable) }
         return await withCheckedContinuation { continuation in
             let gate = ManagedInstallerPostToolXPCReplyGate(continuation: continuation)
-            guard admitConnection(),
-                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.receiptUnavailable))
             }) as? ManagedInstallerPostToolObservationXPCService else {
                 gate.complete(.failure(.receiptUnavailable))

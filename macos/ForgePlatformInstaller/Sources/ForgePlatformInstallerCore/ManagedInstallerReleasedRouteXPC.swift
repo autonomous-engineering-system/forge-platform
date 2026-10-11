@@ -1117,10 +1117,11 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
 
     public init(
         helperIdentity: ManagedInstallerPostToolXPCHelperIdentity,
-        expectedParentVersion: InstallerVersion? = nil
+        expectedParentVersion: InstallerVersion? = nil,
+        packageRelease: VerifiedInstallerReleaseRecord? = nil
     ) {
         readOnlyReplyTimeout = 30
-        parentAdmission = .production(expectedVersion: expectedParentVersion)
+        parentAdmission = .production(expectedVersion: expectedParentVersion, packageRelease: packageRelease)
         resumed = false
         connection = NSXPCConnection(machServiceName: Self.machServiceName, options: .privileged)
         connection.setCodeSigningRequirement(helperIdentity.codeSigningRequirement)
@@ -1147,8 +1148,8 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
 
     public func invalidate() { connection.invalidate() }
 
-    private func admitConnection() -> Bool {
-        if let parentAdmission, !parentAdmission.admits() { return false }
+    private func admitConnection() async -> Bool {
+        if let parentAdmission, !(await parentAdmission.admitsCurrentParent()) { return false }
         if !resumed {
             connection.resume()
             resumed = true
@@ -1317,7 +1318,8 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
             @escaping (Data?) -> Void
         ) -> Void
     ) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
+        guard await admitConnection() else { throw ManagedInstallerReleasedRouteXPCFailure.unavailable }
+        return try await withCheckedThrowingContinuation { continuation in
             let gate = ManagedInstallerReleasedRouteXPCReplyGate(continuation: continuation)
             // A failed helper launch can leave a Mach read queued indefinitely.
             // Bound observation only: mutation completion remains journal-owned.
@@ -1326,8 +1328,7 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
                     gate.complete(.failure(.unavailable))
                 }
             }
-            guard admitConnection(),
-                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
             }) as? ManagedInstallerReleasedRouteXPCService else {
                 gate.complete(.failure(.unavailable))

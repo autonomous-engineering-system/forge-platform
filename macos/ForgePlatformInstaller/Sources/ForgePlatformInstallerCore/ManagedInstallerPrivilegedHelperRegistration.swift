@@ -243,14 +243,24 @@ struct RegisteredInstallerHelperParentReader: Sendable {
 struct ManagedInstallerHelperXPCParentAdmission: Sendable {
     let expectedVersion: InstallerVersion?
     let readVersion: @Sendable () -> InstallerVersion?
+    var packageAdmission: ManagedInstallerPackageHelperXPCAdmission? = nil
 
-    static func production(expectedVersion: InstallerVersion?) -> Self {
-        Self(expectedVersion: expectedVersion,
+    static func production(expectedVersion: InstallerVersion?, packageRelease: VerifiedInstallerReleaseRecord? = nil) -> Self {
+        if let packageRelease {
+            return Self(expectedVersion: expectedVersion, readVersion: { nil },
+                packageAdmission: .init(release: packageRelease))
+        }
+        return Self(expectedVersion: expectedVersion,
              readVersion: { RegisteredInstallerHelperParentReader().readVersion() })
     }
 
+    func admitsCurrentParent() async -> Bool {
+        if let packageAdmission { return await packageAdmission.admits(expectedVersion: expectedVersion) }
+        return admits()
+    }
+
     func admits() -> Bool {
-        guard let expectedVersion else { return false }
+        guard packageAdmission == nil, let expectedVersion else { return false }
         return readVersion() == expectedVersion
     }
 }

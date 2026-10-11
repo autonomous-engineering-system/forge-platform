@@ -649,3 +649,35 @@ verified package staging, package versus historical SM backend admission and
 supported historical recovery remain open; existing published V1 is unchanged.
 The GUI/CLI must independently qualify the main helper protocol after installed
 readback before product work, and public CLI/GUI MVP proof remains open.
+
+
+## Package-backed main helper admission (2026-10-11, source only)
+
+The three existing main helper transports (post-tool observation, product
+operations and released route) now accept an explicit independently verified
+package-bearing release alongside the sealed expected parent version. Selecting
+that backend requires a fresh full installed readback before every RPC/resume:
+exact expected version, sequence, app CodeDirectory and positive process ID. A
+missing package, unsafe/missing files, foreign evidence or changed process closes
+admission. It never falls back to a matching historical ServiceManagement version.
+Legacy synchronous admission cannot grant the package route; existing legacy
+ServiceManagement selection remains independently version-checked. Actor resume
+state changes synchronously after the asynchronous admission, preventing duplicate
+resume while requests interleave. Existing signing requirements remain unchanged.
+
+New checks prove fresh file mutation refusal, no ServiceManagement fallback, V1/
+missing version/foreign sequence or digest/invalid process rejection and blocked
+main-helper RPC before anonymous connection activation. Scoped read-only review
+passed. Initial 212 direct regression checks passed but did not cover enough of
+two large existing XPC files; only tests actually referencing those transports/
+services were added to the dependency group. Final 343 focused checks passed in
+approximately ten seconds; all five changed production files exceed strict 80.2
+coverage (85.850556 to 94.674556 percent for existing files; new policy93.75).
+No full unrelated installer matrix or live product/helper action was performed.
+
+Frontend package selection/staging and normal administrator authorization are
+still not wired into wizard/CLI production composition. The verified-release
+argument is a source API, not an alternate CLI/backend/trust override. These
+source tests do not qualify an actual package-backed helper protocol, historical
+recovery or public CLI/GUI installation. Published V1 and original journals remain
+unchanged; end-to-end first-run/install proof is still required.

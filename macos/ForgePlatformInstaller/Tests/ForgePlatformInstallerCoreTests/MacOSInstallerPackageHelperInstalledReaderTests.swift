@@ -454,6 +454,50 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
             "installation_ready": true], options: [.sortedKeys])
     }
 
+    func testPackageParentAdmissionRequiresFreshExactReadbackAndCannotFallBackToSM() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let release = try f.record(), probes = InstallProbe()
+        let package = ManagedInstallerPackageHelperXPCAdmission(release: release, read: { record in
+            probes.add("package"); return await f.reader().read(release: record)
+        })
+        let wrong = await package.admits(expectedVersion: try InstallerVersion("1.2.4"))
+        let missing = await package.admits(expectedVersion: nil)
+        XCTAssertFalse(wrong); XCTAssertFalse(missing); XCTAssertEqual(probes.items, [])
+        let parent = ManagedInstallerHelperXPCParentAdmission(expectedVersion: release.release.version,
+            readVersion: { XCTFail("Selected package backend must never use ServiceManagement fallback"); return release.release.version },
+            packageAdmission: package)
+        XCTAssertFalse(parent.admits()) // Synchronous legacy admission cannot admit package backend.
+        let first = await parent.admitsCurrentParent(); XCTAssertTrue(first)
+        XCTAssertEqual(chmod(f.helper.path, 0o777), 0)
+        let changed = await parent.admitsCurrentParent(); XCTAssertFalse(changed)
+        XCTAssertEqual(probes.items, ["package", "package"])
+        for failure in ["missing", "sequence", "digest", "pid"] {
+            let denied = ManagedInstallerPackageHelperXPCAdmission(release: release, read: { record in
+                if failure == "missing" { return nil }
+                return .init(releaseSequence: failure == "sequence" ? 99 : record.sequence,
+                    appCodeDirectorySHA256: failure == "digest" ? String(repeating: "f", count: 64) : record.expectedCodeDirectorySHA256,
+                    processID: failure == "pid" ? 0 : 42)
+            })
+            let result = await denied.admits(expectedVersion: release.release.version); XCTAssertFalse(result, failure)
+        }
+        let v1 = ManagedInstallerHelperXPCParentAdmission.production(expectedVersion: release.release.version, packageRelease: try f.record(package: false))
+        let refused = await v1.admitsCurrentParent(); XCTAssertFalse(refused)
+    }
+    func testSelectedPackageBackendBlocksMainHelperXPCBeforeConnectionOnUnsafeFiles() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let release = try f.record()
+        XCTAssertEqual(chmod(f.helper.path, 0o777), 0)
+        let parent = ManagedInstallerHelperXPCParentAdmission(expectedVersion: release.release.version, readVersion: { release.release.version },
+            packageAdmission: .init(release: release, read: { record in await f.reader().read(release: record) }))
+        let listener = NSXPCListener.anonymous() // No server activation or helper side effect.
+        let transport = MacOSManagedInstallerReleasedRouteXPCTransport(endpoint: listener.endpoint, parentAdmission: parent)
+        do {
+            _ = try await transport.loadManagedDeploymentInventory()
+            XCTFail("Unsafe selected package must block before any XPC request")
+        } catch { XCTAssertEqual(error as? ManagedInstallerReleasedRouteXPCFailure, .unavailable) }
+        await transport.invalidate()
+    }
+
     private func installFixture(_ f: Fixture) throws -> (MacOSInstallerImportedHelperPackage, VerifiedInstallerReleaseRecord,
         MacOSInstallerHelperPackageEffectJournal, FileInstallerSelfUpdateOperationLock) {
         let source = f.base.appendingPathComponent("source"), stage = f.base.appendingPathComponent("stage"), journal = f.base.appendingPathComponent("journal")
