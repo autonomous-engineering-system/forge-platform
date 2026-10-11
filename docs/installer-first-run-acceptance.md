@@ -216,3 +216,36 @@ activation/readiness. The product/provider effect journal intentionally cannot
 be reused as proof of package state: empty child IDs or installer exit zero do
 not prove installed files, namespace ownership, credential quiescence or readiness.
 Historical authentication uncertainty remains unchanged.
+
+
+## Durable root package-effect ledger (2026-10-11, source only)
+
+A separate root-private journal now records package install intent, attempted
+installation, actual installer exit code, attempted activation and recorded
+readback. It binds one server-generated attempt ID to the selected package digest,
+size, release sequence, source, provenance, trust, app CodeDirectory and admitted
+client UID. The fixed production root is the bootstrap's private root; root EUID,
+0700 directory, 0600 regular single-link files and empty ACL are required. Test
+root/owner seams are internal and absent from CLI/IPC/environment configuration.
+
+History is append-only, ordered and canonical, with an exclusive lock and
+synchronized file/directory publication. Partial pending files, gaps, unknown
+records, unsafe links/modes, foreign attempts and changed bindings close admission.
+There is no delete, clear, automatic retry or historical-auth retirement API.
+Unknown or nonzero installer exit cannot admit activation; durable readback
+rechecks the same exitcode continuity, so a failed exit followed by a success-like
+activation record is corrupt rather than a recovered success.
+
+Seven focused native checks passed, including private real filesystem and lock
+hazards, restart readback, immutable history and a canonical inconsistent outcome
+chain. Coverage of the new file is 99.509804 percent under the unchanged strict
+80.2 gate. Read-only review identified the initially missing durable exitcode
+continuity; it was fixed and scoped re-review passed. Initial source-test temporary
+path resolution failed before ledger checks; physical realpath corrected that
+fixture without relaxing the production no-follow rule.
+
+This ledger is not wired to root runtime execution. It grants no installation
+permission, does not claim readiness and leaves the product/provider effect
+journal untouched. Actual package installation, independent installed-file
+verification, initial activation, fresh readiness, frontend/backend integration
+and qualified historical recovery remain separate open gates.
