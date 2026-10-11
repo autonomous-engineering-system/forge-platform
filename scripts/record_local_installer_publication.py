@@ -40,6 +40,8 @@ def record(
     run_id: int,
     journal_root: Path,
     output_path: Path,
+    helper_package_path: Path | None = None,
+    helper_package_readback_path: Path | None = None,
 ) -> InstallerReleaseOperation:
     try:
         operation = InstallerReleaseOperation.parse(json.loads(operation_path.read_text(encoding="utf-8")))
@@ -58,6 +60,22 @@ def record(
         or archive_readback_digest != archive_digest
     ):
         raise ValueError("GitHub Release readback bytes do not bind qualified evidence")
+    from scripts.installer_helper_package_release import package_metadata, require_readback
+    from scripts.verify_installer_release_evidence import _strict_object
+    descriptor_raw = descriptor_path.read_bytes()
+    if "sha256:" + sha256(descriptor_raw).hexdigest() != descriptor_digest:
+        raise ValueError("publication descriptor changed before companion readback")
+    metadata = package_metadata(_strict_object(descriptor_raw, "installer release descriptor"))
+    if metadata is None:
+        if helper_package_path is not None or helper_package_readback_path is not None:
+            raise ValueError("V1 publication cannot contain helper package readback")
+    else:
+        if helper_package_path is None or helper_package_readback_path is None:
+            raise ValueError("V2 publication requires exact helper package and independent readback")
+        original_identity = require_readback(helper_package_path, metadata)
+        readback_identity = require_readback(helper_package_readback_path, metadata)
+        if original_identity == readback_identity:
+            raise ValueError("helper package publication requires an independent readback file")
     evidence = InstallerPublicationEvidence(
         github_repository=operation.release_identity.github_repository,
         release_tag=operation.release_tag,
@@ -96,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--descriptor-readback", required=True)
     parser.add_argument("--archive", required=True)
     parser.add_argument("--archive-readback", required=True)
+    parser.add_argument("--helper-package")
+    parser.add_argument("--helper-package-readback")
     parser.add_argument("--run-id", required=True, type=int)
     parser.add_argument("--journal-root", required=True)
     parser.add_argument("--output", required=True)
@@ -103,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         published = record(
             operation_path=Path(args.operation),
+            helper_package_path=Path(args.helper_package) if args.helper_package else None,
+            helper_package_readback_path=Path(args.helper_package_readback) if args.helper_package_readback else None,
             descriptor_path=Path(args.descriptor),
             descriptor_readback_path=Path(args.descriptor_readback),
             archive_path=Path(args.archive),

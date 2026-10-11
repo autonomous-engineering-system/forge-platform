@@ -101,3 +101,35 @@ Remaining delivery gates include V2 structural publication/readback and actual
 signed-package production, root installation/effect journaling and activation,
 frontend installed-helper readback, supported historical recovery, protected
 publication and real public CLI/GUI qualification. Public 0.4.9 remains unchanged.
+
+
+## V2 structural handoff and companion publication readback (2026-10-11)
+
+The structural release gate now accepts the native V2 companion shape only with
+an explicitly supplied helper package. It reruns the actual fixed platform and
+exact archive/payload inspector and compares all helper metadata with the
+operation-bound descriptor. V1 rejects an unbound companion input.
+
+The publication recorder requires both original companion bytes and a separate
+readback matching the descriptor's fixed filename, digest and size. Stable
+regular single-link file identities are captured; identical device/inode pairs,
+including ancestor-path aliases, are rejected before journal mutation. The
+existing publication receipt binds the complete descriptor digest, which includes
+the companion metadata; historical journal schemas are unchanged. Missing or
+wrong companion bytes cannot produce a new PUBLISHED record. The CLI evidence
+reader now refuses FIFO input without blocking.
+
+Twenty-seven scoped checks passed, including actual private test journals and
+actual CLI subprocess tests. The existing coverage measurement additionally ran
+those same verifier CLI checks in-process so their child lines could be traced:
+package identity/readback 100 percent, publication recorder 92.920354 percent,
+structural verifier 80.677966 percent, all strictly above 80.2. The new readback
+module and its tests join the unchanged canonical coverage gate. Initial expanded
+coverage measurements and the review's same-file-readback finding are retained;
+the finding was fixed and scoped read-only re-review passed.
+
+These are source gates only. No GitHub release was uploaded or downloaded by
+these tests, no signer ran and no real operation became PUBLISHED. Production
+signer/upload/download orchestration still needs the companion package wired in;
+root installation, activation, first-run readback and historical recovery remain
+open. Public 0.4.9 and its original product pins are unchanged.
