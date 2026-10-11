@@ -21,6 +21,7 @@ import plistlib
 import re
 import shutil
 import stat
+import struct
 import sys
 import zipfile
 
@@ -566,6 +567,64 @@ def _validated_sealed_release_provenance_resource(
     )
 
 
+def _bootstrap_sections(contents: bytes) -> dict[bytes, bytes]:
+    """Read bounded embedded metadata; never execute the candidate."""
+    require_thin_arm64_macho_header(contents[:32], "installer bootstrap")
+    count, command_bytes = struct.unpack_from("<II", contents, 16)
+    end = 32 + command_bytes
+    if count > 4096 or end > len(contents):
+        raise ValueError("bootstrap load commands exceed bounds")
+    offset = 32
+    sections = {}
+    ranges = []
+    for _ in range(count):
+        if offset + 8 > end:
+            raise ValueError("bootstrap load command is truncated")
+        command, size = struct.unpack_from("<II", contents, offset)
+        if size < 8 or size % 8 or offset + size > end:
+            raise ValueError("bootstrap load command size is invalid")
+        if command == 0x19:  # LC_SEGMENT_64
+            if size < 72:
+                raise ValueError("bootstrap segment is truncated")
+            segment = contents[offset + 8:offset + 24].rstrip(b"\0")
+            number = struct.unpack_from("<I", contents, offset + 64)[0]
+            if size != 72 + 80 * number:
+                raise ValueError("bootstrap section table is invalid")
+            for index in range(number):
+                position = offset + 72 + 80 * index
+                name, owner, _, length, start = struct.unpack_from("<16s16sQQI", contents, position)
+                name, owner = name.rstrip(b"\0"), owner.rstrip(b"\0")
+                if name not in {b"__info_plist", b"__launchd_plist"}:
+                    continue
+                flags = struct.unpack_from("<I", contents, position + 64)[0]
+                if (segment != b"__TEXT" or owner != segment or name in sections
+                    or flags & 0xff != 0 or length == 0 or length > 128 * 1024
+                    or start < end or start + length > len(contents)
+                    or any(start < finish and beginning < start + length for beginning, finish in ranges)):
+                    raise ValueError("bootstrap metadata section is invalid")
+                sections[name] = contents[start:start + length]
+                ranges.append((start, start + length))
+        offset += size
+    if offset != end or set(sections) != {b"__info_plist", b"__launchd_plist"}:
+        raise ValueError("bootstrap embedded metadata is incomplete")
+    return sections
+
+
+def _sealed_bootstrap_executable(path: Path, trust, provenance) -> bytes:
+    from prepare_macos_installer_bootstrap_metadata import link_payloads
+    path = _source_executable(str(path), description="installer bootstrap executable")
+    _, contents = _read_regular_non_symlink_file(
+        str(path), description="installer bootstrap executable", maximum_bytes=128 * 1024 * 1024
+    )
+    expected = link_payloads(trust, provenance)
+    if _bootstrap_sections(contents) != {
+        b"__info_plist": expected["bootstrap-info.plist"],
+        b"__launchd_plist": expected["bootstrap-launchd.plist"],
+    }:
+        raise ValueError("bootstrap embedded metadata differs from packaged release resources")
+    return contents
+
+
 def _output_bundle(value: str) -> Path:
     supplied = Path(value).expanduser()
     if supplied.is_symlink():
@@ -591,6 +650,7 @@ def package(
     executable: Path,
     cli_executable: Path,
     helper_executable: Path | None = None,
+    bootstrap_executable: Path | None = None,
     product_worker: SealedProductWorkerResource | None = None,
     forge_update_controller: SealedForgeUpdateControllerResource | None = None,
     forge_release_receipt: SealedForgeReleaseCompleteReceiptResource | None = None,
@@ -625,6 +685,9 @@ def package(
     executables = [executable, cli_executable]
     if helper_executable is not None:
         executables.append(helper_executable)
+    if bootstrap_executable is not None:
+        bootstrap_executable = _source_executable(str(bootstrap_executable), description="installer bootstrap executable")
+        executables.append(bootstrap_executable)
     identities = {(item.stat().st_dev, item.stat().st_ino) for item in executables}
     if len(identities) != len(executables):
         raise ValueError("installer GUI, CLI and helper executables must be distinct files")
@@ -742,6 +805,14 @@ def package(
                 "sealed release provenance capabilities do not match the packaged app"
             )
 
+    bootstrap_contents = None
+    if bootstrap_executable is not None:
+        if helper_executable is None or sealed_release_trust is None or sealed_release_provenance is None:
+            raise ValueError("bootstrap packaging requires helper and sealed release resources")
+        bootstrap_contents = _sealed_bootstrap_executable(
+            bootstrap_executable, sealed_release_trust, sealed_release_provenance
+        )
+
     contents = output / "Contents"
     macos = contents / "MacOS"
     resources = contents / "Resources"
@@ -805,6 +876,15 @@ def package(
             "LSMinimumSystemVersion": _MINIMUM_MACOS,
             "NSHighResolutionCapable": True,
         }
+        if bootstrap_contents is not None:
+            from prepare_macos_installer_bootstrap_metadata import LABEL, requirement
+            metadata["SMPrivilegedExecutables"] = {LABEL: requirement(LABEL)}
+            bootstrap_directory = contents / "Library" / "LaunchServices"
+            bootstrap_directory.mkdir(parents=True, mode=0o755)
+            bootstrap_destination = bootstrap_directory / LABEL
+            with bootstrap_destination.open("xb") as stream:
+                stream.write(bootstrap_contents)
+            bootstrap_destination.chmod(0o755)
         if product_worker is not None:
             metadata[_PRODUCT_WORKER_DIGEST_INFO_KEY] = product_worker.sha256
         if forge_update_controller is not None:
@@ -886,6 +966,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", required=True)
     parser.add_argument("--cli-executable", required=True)
+    parser.add_argument("--bootstrap-executable", help="optional release-bound SMJobBless bootstrap candidate")
     parser.add_argument(
         "--helper-executable",
         help=(
@@ -1013,6 +1094,7 @@ def main() -> None:
             executable=executable,
             cli_executable=cli_executable,
             helper_executable=helper_executable,
+            bootstrap_executable=Path(args.bootstrap_executable) if args.bootstrap_executable else None,
             product_worker=product_worker,
             forge_update_controller=forge_update_controller,
             forge_release_receipt=forge_release_receipt,
@@ -1036,6 +1118,7 @@ def main() -> None:
             f" bundle_identifier={bundle_identifier}"
             " cli=PACKAGED"
             f" privileged_helper={'PACKAGED' if helper_executable is not None else 'ABSENT_FAIL_CLOSED'}"
+            f" bootstrap={'PACKAGED_UNSIGNED' if args.bootstrap_executable else 'ABSENT'}"
             f" product_worker={'PACKAGED' if product_worker is not None else 'ABSENT_FAIL_CLOSED'}"
             f" forge_update_controller={'PACKAGED' if forge_update_controller is not None else 'ABSENT_FAIL_CLOSED'}"
             f" forge_release_receipt={'PACKAGED' if forge_release_receipt is not None else 'ABSENT_FAIL_CLOSED'}"

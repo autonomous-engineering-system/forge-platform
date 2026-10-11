@@ -46,3 +46,24 @@ An unsigned helper-package prototype was generated from the exact public 0.4.9
 app. It is not deployable and proves no first-run onboarding. Package trust,
 normal administrator authorization, registration/readback and lifecycle
 integration remain required before a package route is used.
+
+## Bootstrap app assembly (2026-10-11)
+
+The unsigned app packager can now include the separately linked bootstrap in
+`Contents/Library/LaunchServices` and set the fixed mutual Developer ID
+requirement. Before producing the bundle it checks bounded thin-arm64 Mach-O
+sections against the exact parsed release trust and provenance bytes. It copies
+those captured binary bytes, so replacing the input afterward cannot change the
+admitted payload. Missing, duplicate, overlapping, truncated or mismatched
+metadata is rejected. Existing packaging without this optional input is retained.
+
+The scoped packaging qualification passed 42 checks, the existing strict Python
+coverage threshold and a read-only inspection of the retained real local link
+prototype. This is unsigned source assembly only. The official signing pipeline
+has not adopted this input; signing, notarization, administrator handoff,
+installed-bootstrap readback and package installation remain unqualified.
+
+The historical effect record cannot be retired from process absence alone: its
+schema does not identify a credential effect or establish completed ownership
+readback. Its sticky uncertainty remains preserved; no reset, new operation or
+authentication retry is authorized by this assembly qualification.

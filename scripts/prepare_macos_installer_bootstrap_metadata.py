@@ -88,9 +88,8 @@ def _publish_exclusively(source: Path, destination: Path) -> None:
         raise OSError(code, "exclusive bootstrap output publication failed")
 
 
-def prepare(*, trust: Path, provenance: Path, output: Path) -> dict[str, object]:
-    policy = _sealed_release_trust_resource(str(trust))
-    release = _sealed_release_provenance_resource(str(provenance))
+def link_payloads(policy, release) -> dict[str, bytes]:
+    """Derive exact public metadata from already parsed release resources."""
     if (policy.expected_bundle_identifier != APP_IDENTIFIER
         or policy.expected_team_identifier != TEAM
         or policy.repository != "autonomous-engineering-system/forge-platform"
@@ -112,6 +111,13 @@ def prepare(*, trust: Path, provenance: Path, output: Path) -> dict[str, object]
         "bootstrap-launchd.plist": plistlib.dumps(launchd, fmt=plistlib.FMT_XML, sort_keys=True),
         "application-requirements.plist": plistlib.dumps(application, fmt=plistlib.FMT_XML, sort_keys=True),
     }
+    return files
+
+
+def prepare(*, trust: Path, provenance: Path, output: Path) -> dict[str, object]:
+    policy = _sealed_release_trust_resource(str(trust))
+    release = _sealed_release_provenance_resource(str(provenance))
+    files = link_payloads(policy, release)
     if any(len(data) > 128 * 1024 for data in files.values()):
         raise ValueError("bootstrap metadata exceeds bound")
     # New private output only; retain incomplete output after a write failure.
