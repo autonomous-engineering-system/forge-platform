@@ -261,7 +261,8 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 sealedReleaseProvenance: sealedReleaseProvenance,
                 architecture: architecture,
                 fetcher: releaseDescriptorFetcher,
-                acceptanceStore: acceptanceStore
+                acceptanceStore: acceptanceStore,
+                helperAcceptanceStore: FileInstallerReleaseAcceptanceStore(rootDirectory: stateRoot.appendingPathComponent("helper-companion-acceptance-v1", isDirectory: true))
             )
 
             let staging = try MacOSInstallerArchiveStaging(

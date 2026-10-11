@@ -48,7 +48,8 @@ struct BootstrapRuntimeSources: Sendable {
             namespaceClean: mainNamespaceClean, lock: FileInstallerSelfUpdateOperationLock(rootDirectory: root),
             makeFeed: { metadata in try? GitHubSignedInstallerReleaseFeed(trustConfiguration: metadata.trust,
                 sealedReleaseProvenance: metadata.provenance, architecture: "arm64", fetcher: GitHubReleaseDescriptorTransport(),
-                acceptanceStore: FileInstallerReleaseAcceptanceStore(rootDirectory: root.appendingPathComponent("release-acceptance", isDirectory: true))) },
+                acceptanceStore: FileInstallerReleaseAcceptanceStore(rootDirectory: root.appendingPathComponent("release-acceptance", isDirectory: true)),
+                helperAcceptanceStore: FileInstallerReleaseAcceptanceStore(rootDirectory: root.appendingPathComponent("helper-companion-acceptance-v1", isDirectory: true))) },
             makeListener: assembleListener)
     }
     static func mainNamespaceClean() -> Bool {

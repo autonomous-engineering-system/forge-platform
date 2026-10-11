@@ -249,3 +249,34 @@ permission, does not claim readiness and leaves the product/provider effect
 journal untouched. Actual package installation, independent installed-file
 verification, initial activation, fresh readiness, frontend/backend integration
 and qualified historical recovery remain separate open gates.
+
+
+## V1 update compatibility and separately signed helper descriptor (2026-10-11)
+
+This supersedes the earlier proposed sole-public-V2 descriptor route. The
+immutable public 0.4.9 updater requires the canonical V1 descriptor. The producer
+therefore preserves `ForgePlatformInstallerReleaseDescriptor.json` as V1 and
+adds `helper-package-companion/v1` to its signed capabilities. The fixed
+`ForgePlatformInstallerHelperDescriptor.json` carries the V2 package metadata,
+independent threshold signatures under the existing keys, and the digest of the
+exact signed V1 bytes. All other release fields must match. Public primary
+entrypoints require V1 and refuse a missing or invalid required companion.
+
+The original primary replay anchor remains intact. Native production consumers
+and the Python bytes consumer additionally require a separate durable companion
+anchor before exposing the joined release. Replay files/directories reject ACLs,
+unsafe modes, links and nonregular files; native reads do not block on FIFOs.
+The original qualification receipt binds the full companion digest without a
+journal schema change. Publication requires independent exact companion and
+package readback before writing publication evidence. The finite release set is
+five assets: app archive, helper package, V1 descriptor, helper descriptor and
+operation receipt. Existing journals, trust keys and release limits are retained.
+
+Source-only qualification: the complete native test suite and every production
+Swift file pass the strict >80.2% coverage gate. The Python owning coverage suite
+passes the same per-file threshold. Producer qualification uses real temporary
+Ed25519 test signatures for both descriptors and tests that a changed helper
+package digest invalidates the signature. Independent scoped Quality/Security
+review found no remaining compatibility findings; committed-head attestation
+and protected CI remain delivery gates. No new signed public artifact or
+installed CLI/GUI acceptance is claimed by these source results.

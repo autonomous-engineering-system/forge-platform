@@ -277,29 +277,45 @@ def qualify(
     }
     if (signed_helper_package is None) != (helper_package_notarization_receipt_reference is None):
         raise ValueError("helper package and its notarization reference must be paired")
+    from forge_platform.installer_helper_companion import CAPABILITY, ASSET_NAME
+    if (CAPABILITY in preparation.capabilities) != (signed_helper_package is not None):
+        raise ValueError("signed helper companion capability requires exact package")
+    helper_metadata = None
     if signed_helper_package is not None:
         from scripts.verified_installer_helper_package import read_descriptor
-        descriptor["schema"] = "forge-platform.installer-release/v2"
-        descriptor["installer"]["assets"][0]["helper_package"] = read_descriptor(
+        helper_metadata = read_descriptor(
             signed_helper_package, team=identity.team_identifier,
             notarization_reference=helper_package_notarization_receipt_reference,
             archive=signed_archive, preparation=preparation, archive_digest=archive_digest,
         )
-    payload = _canonical(descriptor)
     tool = _descriptor_key_tool(descriptor_key_tool)
     expected_public = dict(trust.ed25519_public_keys)
-    signatures: list[dict[str, str]] = []
-    for key_id in sorted(identity.signature_key_ids):
-        raw_public = _tool_public_key(tool, key_id)
-        if base64.b64encode(raw_public).decode("ascii") != expected_public[key_id]:
-            raise ValueError("descriptor Keychain key does not match embedded public trust")
-        envelope, raw_signature = _tool_signature(tool, key_id, payload)
-        _verify_signature(raw_public, payload, raw_signature)
-        signatures.append(envelope)
-    if len(signatures) < identity.signature_threshold:
-        raise ValueError("descriptor signature threshold was not met")
-    descriptor["signatures"] = signatures
-    descriptor_raw, descriptor_digest = _descriptor_document(descriptor)
+    def seal(document):
+        payload = _canonical(document)
+        signatures = []
+        for key_id in sorted(identity.signature_key_ids):
+            raw_public = _tool_public_key(tool, key_id)
+            if base64.b64encode(raw_public).decode("ascii") != expected_public[key_id]:
+                raise ValueError("descriptor Keychain key does not match embedded public trust")
+            envelope, raw_signature = _tool_signature(tool, key_id, payload)
+            _verify_signature(raw_public, payload, raw_signature)
+            signatures.append(envelope)
+        if len(signatures) < identity.signature_threshold:
+            raise ValueError("descriptor signature threshold was not met")
+        document["signatures"] = signatures
+        return _descriptor_document(document)
+    descriptor_raw, descriptor_digest = seal(descriptor)
+    companion_raw = None
+    qualification_reference = f"receipt:local-signing-qualification-{run_id}"
+    if helper_metadata is not None:
+        from copy import deepcopy
+        companion = deepcopy(descriptor)
+        companion.pop("signatures")
+        companion["schema"] = "forge-platform.installer-release/v2"
+        companion["primary_descriptor_digest"] = descriptor_digest
+        companion["installer"]["assets"][0]["helper_package"] = helper_metadata
+        companion_raw, companion_digest = seal(companion)
+        qualification_reference += "-helper-" + companion_digest.removeprefix("sha256:")
 
     qualification = InstallerQualificationEvidence(
         source_revision=preparation.source_revision,
@@ -313,7 +329,7 @@ def qualify(
         archives={"arm64": archive_digest},
         archive_code_directory_sha256={"arm64": code_directory_sha256},
         archive_notarization_receipt_references={"arm64": notarization_receipt_reference},
-        qualification_receipt_reference=f"receipt:local-signing-qualification-{run_id}",
+        qualification_receipt_reference=qualification_reference,
     )
     operation = InstallerReleaseOperation.create(
         operation_id=preparation.operation_id,
@@ -341,10 +357,10 @@ def qualify(
     output_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     descriptor_path = output_directory / identity.release_descriptor_asset_name
     operation_path = output_directory / "installer-release-operation.json"
-    for path, raw in (
-        (descriptor_path, descriptor_raw),
-        (operation_path, _canonical(asdict(stored)) + b"\n"),
-    ):
+    outputs = [(descriptor_path, descriptor_raw), (operation_path, _canonical(asdict(stored)) + b"\n")]
+    if companion_raw is not None:
+        outputs.append((output_directory / ASSET_NAME, companion_raw))
+    for path, raw in outputs:
         if path.exists() and path.read_bytes() != raw:
             raise ValueError(f"{path.name} already contains different release evidence")
         if not path.exists():

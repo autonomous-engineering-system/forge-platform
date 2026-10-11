@@ -75,6 +75,7 @@ python3 -m unittest tests.installer.test_production_compositions
 python3 tests/installer/test_composition_producer_observer.py
 python3 tests/installer/test_local_signing_authorization.py
 python3 tests/installer/test_qualify_local_installer_release.py
+python3 -m unittest tests.installer.test_installer_helper_companion
 python3 scripts/validate_installer_version.py
 python3 scripts/validate_installer_release_identity.py
 python3 scripts/advance_installer_version.py --check

@@ -149,15 +149,18 @@ class HelperPackageDescriptorTests(unittest.TestCase):
             digest=canonical_release_trust_configuration_sha256(**policy);identity=replace(identity,release_trust_configuration_sha256=digest)
             policy['ed25519_public_keys']=[dict(key_id='release-key-001',public_key_base64=public64)];policy.update(schema_version=2,configuration_sha256=digest)
             trust=root/'trust.json';trust.write_text(json.dumps(policy))
-            p,archive,source_preparation=create(root/'package-input',trust=digest)
-            preparation=root/'preparation.json';preparation.write_text(json.dumps(asdict(operations.prepared_candidate(operations.operation(release_identity=identity,provenance_sha256=source_preparation.provenance_sha256)))))
             signed=[]
             def sign(tool,keyid,payload):
                 message=root/'message';signature=root/'signature';message.write_bytes(payload)
                 subprocess.run(['openssl','pkeyutl','-sign','-rawin','-inkey',str(key),'-in',str(message),'-out',str(signature)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                 raw=signature.read_bytes();signed.append((payload,raw))
                 return dict(algorithm='ed25519',key_id=keyid,signature=base64.urlsafe_b64encode(raw).decode().rstrip('=')),raw
+            from forge_platform import installer_helper_companion as companion
             for version in [1,2]:
+                caps=tuple(sorted((*operations.CAPABILITIES,companion.CAPABILITY))) if version==2 else operations.CAPABILITIES
+                p,archive,source_preparation=create(root/('package-input'+str(version)),trust=digest,capabilities=list(caps))
+                preparation=root/('preparation'+str(version)+'.json')
+                preparation.write_text(json.dumps(asdict(operations.prepared_candidate(operations.operation(release_identity=identity,provenance_sha256=source_preparation.provenance_sha256,capabilities=caps)))))
                 kwargs=dict(preparation_path=preparation,signed_archive=archive,release_trust_path=trust,descriptor_key_tool=root/'unused-test-key-tool',code_directory_sha256='4'*64,notarization_receipt_reference='receipt:source-test',catalog_url='https://catalog.example.invalid/catalog.json',published_at='2026-10-10T00:00:00Z',expires_at='2026-10-20T00:00:00Z',run_id=123,journal_root=root/('journal'+str(version)),output_directory=root/('output'+str(version)))
                 if version==2:kwargs.update(signed_helper_package=p,helper_package_notarization_receipt_reference='receipt:source-test')
                 with patch.object(qualifier,'_descriptor_key_tool',return_value=root/'source-only-tool'),patch.object(qualifier,'_tool_public_key',return_value=public),patch.object(qualifier,'_tool_signature',side_effect=sign),patch.object(verifier,'_observe',side_effect=lambda tool,args:GOOD if tool.endswith('pkgutil') else ''):
@@ -171,3 +174,12 @@ class HelperPackageDescriptorTests(unittest.TestCase):
                     with self.assertRaises(ValueError):qualifier._verify_signature(public,qualifier._canonical(body),signed[-1][1])
                 descriptor=kwargs['output_directory']/identity.release_descriptor_asset_name
                 self.assertEqual(operation.descriptor_digest,'sha256:'+sha256(descriptor.read_bytes()).hexdigest())
+                self.assertEqual(json.loads(descriptor.read_bytes())['schema'],'forge-platform.installer-release/v1')
+                if version==2:
+                    child=kwargs['output_directory']/companion.ASSET_NAME
+                    expected='sha256:'+sha256(child.read_bytes()).hexdigest()
+                    self.assertEqual(companion.qualification_binding(operation),expected)
+                    self.assertEqual(companion.bound_metadata(descriptor.read_bytes(),child.read_bytes(),expected)['digest'],'sha256:'+sha256(p.read_bytes()).hexdigest())
+                    payloads=[json.loads(raw) for raw,_ in signed[-2:]]
+                    self.assertEqual([v['schema'] for v in payloads],['forge-platform.installer-release/v1','forge-platform.installer-release/v2'])
+                    self.assertEqual(payloads[1]['primary_descriptor_digest'],operation.descriptor_digest)

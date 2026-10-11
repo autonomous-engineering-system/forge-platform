@@ -97,6 +97,7 @@ test -f "$APP/Contents/Library/LaunchDaemons/com.autonomous-engineering-system.f
 # Preserve V1 candidates; a candidate carrying the release-bound bootstrap
 # must publish its signed companion and independently prove every readback.
 HELPER_PACKAGE_NAME="forge-platform-installer-helper-arm64.pkg"
+HELPER_DESCRIPTOR_NAME="ForgePlatformInstallerHelperDescriptor.json"
 BOOTSTRAP_LABEL="com.autonomous-engineering-system.forge-platform-installer.bootstrap"
 BOOTSTRAP="$APP/Contents/Library/LaunchServices/$BOOTSTRAP_LABEL"
 QUALIFIER_PACKAGE_ARGS=()
@@ -225,10 +226,10 @@ print(json.load(open(sys.argv[1],encoding="utf-8"))["notarization_receipt_refere
 PYCODE
 )" || fail helper-package-receipt-invalid
   QUALIFIER_PACKAGE_ARGS=(--signed-helper-package "$WORK/release/$HELPER_PACKAGE_NAME" --helper-package-notarization-receipt-reference "$HELPER_PACKAGE_NOTARY_REFERENCE")
-  STRUCTURE_PACKAGE_ARGS=(--helper-package "$WORK/release/$HELPER_PACKAGE_NAME")
-  PUBLICATION_PACKAGE_ARGS=(--helper-package "$WORK/release/$HELPER_PACKAGE_NAME" --helper-package-readback "$WORK/readback/$HELPER_PACKAGE_NAME")
-  PACKAGE_UPLOAD_ASSETS=("$WORK/release/$HELPER_PACKAGE_NAME")
-  PACKAGE_DOWNLOAD_ARGS=(--pattern "$HELPER_PACKAGE_NAME")
+  STRUCTURE_PACKAGE_ARGS=(--helper-package "$WORK/release/$HELPER_PACKAGE_NAME" --helper-companion "$WORK/release/$HELPER_DESCRIPTOR_NAME")
+  PUBLICATION_PACKAGE_ARGS=(--helper-package "$WORK/release/$HELPER_PACKAGE_NAME" --helper-package-readback "$WORK/readback/$HELPER_PACKAGE_NAME" --helper-companion "$WORK/release/$HELPER_DESCRIPTOR_NAME" --helper-companion-readback "$WORK/readback/$HELPER_DESCRIPTOR_NAME")
+  PACKAGE_UPLOAD_ASSETS=("$WORK/release/$HELPER_PACKAGE_NAME" "$WORK/release/$HELPER_DESCRIPTOR_NAME")
+  PACKAGE_DOWNLOAD_ARGS=(--pattern "$HELPER_PACKAGE_NAME" --pattern "$HELPER_DESCRIPTOR_NAME")
 fi
 
 codesign --display --verbose=6 "$APP" >"$WORK/metadata/codesign-final.txt" 2>&1
@@ -285,6 +286,7 @@ cmp "$WORK/release/$ARCHIVE_NAME" "$WORK/readback/$ARCHIVE_NAME"
 cmp "$WORK/release/$DESCRIPTOR_NAME" "$WORK/readback/$DESCRIPTOR_NAME"
 if [[ "$HAS_BOOTSTRAP" == true ]]; then
   cmp "$WORK/release/$HELPER_PACKAGE_NAME" "$WORK/readback/$HELPER_PACKAGE_NAME"
+  cmp "$WORK/release/$HELPER_DESCRIPTOR_NAME" "$WORK/readback/$HELPER_DESCRIPTOR_NAME"
 fi
 
 python3 scripts/record_local_installer_publication.py "${PUBLICATION_PACKAGE_ARGS[@]}"   --operation "$WORK/release/installer-release-operation.json"   --descriptor "$WORK/release/$DESCRIPTOR_NAME"   --descriptor-readback "$WORK/readback/$DESCRIPTOR_NAME"   --archive "$WORK/release/$ARCHIVE_NAME"   --archive-readback "$WORK/readback/$ARCHIVE_NAME"   --run-id "$RUN_ID"   --journal-root "$STATE_ROOT/journal"   --output "$WORK/release/installer-release-operation-published.json"
@@ -302,6 +304,7 @@ cmp "$WORK/release/$ARCHIVE_NAME" "$WORK/public-readback/$ARCHIVE_NAME"
 cmp "$WORK/release/$DESCRIPTOR_NAME" "$WORK/public-readback/$DESCRIPTOR_NAME"
 if [[ "$HAS_BOOTSTRAP" == true ]]; then
   cmp "$WORK/release/$HELPER_PACKAGE_NAME" "$WORK/public-readback/$HELPER_PACKAGE_NAME"
+  cmp "$WORK/release/$HELPER_DESCRIPTOR_NAME" "$WORK/public-readback/$HELPER_DESCRIPTOR_NAME"
 fi
 cmp "$WORK/release/installer-release-operation-published.json"   "$WORK/public-readback/installer-release-operation.json"
 

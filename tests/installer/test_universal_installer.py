@@ -755,19 +755,15 @@ class UniversalInstallerTests(unittest.TestCase):
             {"é".encode("utf-8"), "e\u0301".encode("utf-8")},
         )
 
-    def test_helper_package_metadata_joins_the_existing_signature_payload(self) -> None:
+    def test_standalone_v2_cannot_bypass_canonical_companion_contract(self) -> None:
         payload = release_metadata()
         payload["schema"] = "forge-platform.installer-release/v2"
-        package = {"asset_name": "forge-platform-installer-helper-arm64.pkg",
-                   "digest": "sha256:" + "a" * 64, "bytes": 1048576,
-                   "notarization_receipt_reference": "receipt:helper-package-v1"}
-        payload["installer"]["assets"][0]["helper_package"] = package
-        verifier = FixtureVerifier()
-        release = InstallerRelease.from_signed_metadata(payload, verifier,
-            signature_policy=FIXTURE_SIGNATURE_POLICY, sealed_release_trust=SEALED_RELEASE_TRUST)
-        self.assertEqual(release.assets[0].helper_package.bytes, 1048576)
-        self.assertEqual(release.assets[0].helper_package.digest, package["digest"])
-        self.assertEqual(json.loads(verifier.payloads[0])["installer"]["assets"][0]["helper_package"], package)
+        payload["installer"]["assets"][0]["helper_package"] = dict(asset_name="forge-platform-installer-helper-arm64.pkg", bytes=1048576,
+            digest="sha256:"+"a"*64, notarization_receipt_reference="receipt:helper-package-v1")
+        with self.assertRaises(UniversalInstallerError):
+            InstallerRelease.from_signed_metadata(payload, FixtureVerifier(), signature_policy=FIXTURE_SIGNATURE_POLICY, sealed_release_trust=SEALED_RELEASE_TRUST)
+        with self.assertRaises(UniversalInstallerError):
+            InstallerRelease.from_signed_bytes(json.dumps(payload).encode(), FixtureVerifier(), signature_policy=FIXTURE_SIGNATURE_POLICY, sealed_release_trust=SEALED_RELEASE_TRUST)
 
     def test_helper_package_schema_and_hostile_fields_are_rejected(self) -> None:
         valid = {"asset_name": "forge-platform-installer-helper-arm64.pkg",

@@ -981,7 +981,16 @@ class InstallerRelease:
             raise ValueError("installer release signature key IDs must be unique")
 
     @classmethod
-    def from_signed_metadata(
+    def from_signed_metadata(cls, value, verifier, *, signature_policy, sealed_release_trust):
+        from forge_platform.installer_helper_companion import requires_companion
+        if not isinstance(value, dict) or value.get("schema") != INSTALLER_RELEASE_SCHEMA:
+            raise UniversalInstallerError("canonical installer descriptor must preserve V1")
+        if requires_companion(value):
+            raise UniversalInstallerError("companion release requires exact primary bytes and durable companion admission")
+        return cls._from_signed_metadata(value, verifier, signature_policy=signature_policy, sealed_release_trust=sealed_release_trust)
+
+    @classmethod
+    def _from_signed_metadata(
         cls,
         value: object,
         verifier: InstallerMetadataVerifier,
@@ -1066,6 +1075,8 @@ class InstallerRelease:
         *,
         signature_policy: SignatureThresholdPolicy,
         sealed_release_trust: SealedInstallerReleaseTrustExpectation,
+        helper_companion_bytes: bytes | None = None,
+        helper_companion_acceptance_store: object | None = None,
     ) -> "InstallerRelease":
         """Parse exactly the signed descriptor bytes fetched from a release."""
 
@@ -1075,12 +1086,26 @@ class InstallerRelease:
             or len(raw_bytes) > MAXIMUM_INSTALLER_RELEASE_DESCRIPTOR_BYTES
         ):
             raise UniversalInstallerError("installer release descriptor exceeds the accepted byte bound")
-        return cls.from_signed_metadata(
-            _strict_json_mapping(raw_bytes, "installer release metadata"),
-            verifier,
-            signature_policy=signature_policy,
-            sealed_release_trust=sealed_release_trust,
-        )
+        from forge_platform.installer_helper_companion import requires_companion, bound_metadata, strict_object, FileHelperCompanionAcceptanceStore
+        payload = _strict_json_mapping(raw_bytes, "installer release metadata")
+        if payload.get("schema") != INSTALLER_RELEASE_SCHEMA:
+            raise UniversalInstallerError("canonical installer descriptor must preserve V1")
+        primary = cls._from_signed_metadata(payload, verifier, signature_policy=signature_policy, sealed_release_trust=sealed_release_trust)
+        if not requires_companion(payload):
+            if helper_companion_bytes is not None or helper_companion_acceptance_store is not None:
+                raise UniversalInstallerError("unbound helper companion")
+            return primary
+        if not isinstance(helper_companion_bytes, bytes) or not isinstance(helper_companion_acceptance_store, FileHelperCompanionAcceptanceStore):
+            raise UniversalInstallerError("companion bytes and durable acceptance store are required")
+        companion = strict_object(helper_companion_bytes)
+        digest = "sha256:" + sha256(helper_companion_bytes).hexdigest()
+        metadata = bound_metadata(raw_bytes, helper_companion_bytes, digest)
+        signatures = parse_public_signature_envelopes(companion["signatures"], label="installer helper companion")
+        _verify_metadata_signatures(_canonical_json({k:v for k,v in companion.items() if k != "signatures"}), signatures,
+            verifier, signature_policy, label="installer helper companion")
+        helper_companion_acceptance_store.accept(primary.sequence, digest)
+        from dataclasses import replace
+        return replace(primary, assets=tuple(replace(asset, helper_package=InstallerHelperPackage.from_mapping(metadata)) for asset in primary.assets))
 
     def asset_for(self, architecture: str) -> InstallerAsset | None:
         return next(

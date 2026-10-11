@@ -11,7 +11,7 @@ from scripts.prepare_macos_helper_package import APP_RELATIVE, PLIST_RELATIVE, B
 from scripts.verified_installer_helper_package import ASSET_NAME
 
 
-def create(root: Path, *, version='1.1.0', source='a'*40, trust='3'*64, extra_script=False):
+def create(root: Path, *, version='1.1.0', source='a'*40, trust='3'*64, extra_script=False, capabilities=None):
     root.mkdir(mode=0o700,parents=True,exist_ok=True);root.chmod(0o700)
     payload=root/'payload';payload.mkdir(mode=0o755)
     app=payload/APP_RELATIVE
@@ -20,7 +20,7 @@ def create(root: Path, *, version='1.1.0', source='a'*40, trust='3'*64, extra_sc
     info=dict(CFBundleIdentifier=BUNDLE_ID,CFBundleShortVersionString=version,CFBundleVersion=version,CFBundlePackageType='APPL',CFBundleExecutable='ForgePlatformInstaller')
     (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     executable=app/'Contents/MacOS/ForgePlatformInstaller';executable.write_bytes(b'source-only nonexecuted bytes');executable.chmod(0o755)
-    fields=dict(installer_version=version,channel='stable',release_sequence=7,source_revision=source,policy_revision='forge-platform-installer-release-v1',capabilities=['composition/v1','provider-gate/v1','system-launchdaemon/v1'],release_trust_configuration_sha256=trust)
+    fields=dict(installer_version=version,channel='stable',release_sequence=7,source_revision=source,policy_revision='forge-platform-installer-release-v1',capabilities=capabilities or ['composition/v1','provider-gate/v1','system-launchdaemon/v1'],release_trust_configuration_sha256=trust)
     digest=canonical_release_provenance_sha256(**fields)
     provenance=dict(fields,schema_version=1,provenance_sha256=digest)
     (app/'Contents/Resources'/INSTALLER_RELEASE_PROVENANCE_RESOURCE_NAME).write_text(json.dumps(provenance))

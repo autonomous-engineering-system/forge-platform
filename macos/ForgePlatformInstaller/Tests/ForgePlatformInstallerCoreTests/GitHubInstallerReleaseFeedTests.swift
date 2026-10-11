@@ -536,6 +536,102 @@ final class GitHubInstallerReleaseFeedTests: XCTestCase {
         )
     }
 
+    func testCompanionPreservesV1AndDurableIndependentAnchor() async throws {
+        let fixture = try makeFixture()
+        let primary = try fixture.signedDescriptorBytes(version: "0.2.0", sequence: 2,
+            capabilities: ["composition/v1", "helper-package-companion/v1", "provider-gate/v1"])
+        let companion = try fixture.signedCompanionBytes(primary: primary)
+        let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("helper-companion-feed-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mainRoot = root.appendingPathComponent("primary")
+        let helperRoot = root.appendingPathComponent("companion")
+        func feed(_ bytes: Data) throws -> GitHubSignedInstallerReleaseFeed {
+            try .init(trustConfiguration: fixture.configuration, sealedReleaseProvenance: fixture.provenance,
+                architecture: "arm64", fetcher: CompanionDescriptorFetcher(fixture: fixture, primary: primary, companion: bytes),
+                acceptanceStore: FileInstallerReleaseAcceptanceStore(rootDirectory: mainRoot),
+                helperAcceptanceStore: FileInstallerReleaseAcceptanceStore(rootDirectory: helperRoot))
+        }
+        guard case .success(let record) = await (try feed(companion)).latestVerifiedInstallerRelease() else { return XCTFail("Expected verified joined release") }
+        XCTAssertEqual(record.helperPackage?.bytes, 1048576)
+        let main = await FileInstallerReleaseAcceptanceStore(rootDirectory: mainRoot).loadHighestAcceptedInstallerRelease()
+        let helper = await FileInstallerReleaseAcceptanceStore(rootDirectory: helperRoot).loadHighestAcceptedInstallerRelease()
+        guard case .success(let p) = main, case .success(let h) = helper else { return XCTFail("Expected durable anchors") }
+        XCTAssertEqual(p?.descriptorSHA256, GitHubInstallerReleaseDescriptor.sha256(of: primary))
+        XCTAssertEqual(h?.descriptorSHA256, GitHubInstallerReleaseDescriptor.sha256(of: companion))
+        let changed = try fixture.signedCompanionBytes(primary: primary, packageDigest: String(repeating: "b", count: 64))
+        guard case .failure = await (try feed(changed)).latestVerifiedInstallerRelease() else { return XCTFail("Same-sequence companion equivocation must fail") }
+    }
+
+    func testCompanionMissingInvalidUnboundOrUnavailablePersistenceFailsClosed() async throws {
+        let fixture = try makeFixture()
+        let primary = try fixture.signedDescriptorBytes(version: "0.2.0", sequence: 2,
+            capabilities: ["composition/v1", "helper-package-companion/v1", "provider-gate/v1"])
+        let good = try fixture.signedCompanionBytes(primary: primary)
+        let foreignPrimary = try fixture.signedDescriptorBytes(version: "0.2.0", sequence: 2,
+            sourceRevision: String(repeating: "a", count: 40), capabilities: ["composition/v1", "helper-package-companion/v1", "provider-gate/v1"])
+        let foreign = try fixture.signedCompanionBytes(primary: foreignPrimary)
+        for bytes in [nil, Data("{}".utf8), foreign] as [Data?] {
+            let feed = try GitHubSignedInstallerReleaseFeed(trustConfiguration: fixture.configuration,
+                sealedReleaseProvenance: fixture.provenance, architecture: "arm64",
+                fetcher: CompanionDescriptorFetcher(fixture: fixture, primary: primary, companion: bytes),
+                acceptanceStore: InMemoryInstallerReleaseAcceptanceStore(), helperAcceptanceStore: InMemoryInstallerReleaseAcceptanceStore())
+            guard case .failure = await feed.latestVerifiedInstallerRelease() else { XCTFail("Missing/invalid/unbound companion must fail"); continue }
+        }
+        let noStore = try GitHubSignedInstallerReleaseFeed(trustConfiguration: fixture.configuration,
+            sealedReleaseProvenance: fixture.provenance, architecture: "arm64",
+            fetcher: CompanionDescriptorFetcher(fixture: fixture, primary: primary, companion: good),
+            acceptanceStore: InMemoryInstallerReleaseAcceptanceStore())
+        guard case .failure = await noStore.latestVerifiedInstallerRelease() else { return XCTFail("Missing second acceptance store must fail") }
+    }
+
+    func testCanonicalPrimaryV2CannotBypassRequiredCompanion() async throws {
+        let fixture = try makeFixture()
+        let package = "{\"asset_name\":\"forge-platform-installer-helper-arm64.pkg\",\"bytes\":1048576,\"digest\":\"sha256:" + String(repeating: "a", count: 64) + "\",\"notarization_receipt_reference\":\"receipt:helper-package-v1\"}"
+        let bytes = try fixture.signedDescriptorBytes(version: "0.2.0", sequence: 2, helperPackageJSON: package,
+            descriptorSchema: GitHubInstallerReleaseDescriptor.packageSchema)
+        let feed = try GitHubSignedInstallerReleaseFeed(trustConfiguration: fixture.configuration,
+            sealedReleaseProvenance: fixture.provenance, architecture: "arm64",
+            fetcher: CompanionDescriptorFetcher(fixture: fixture, primary: bytes, companion: nil),
+            acceptanceStore: InMemoryInstallerReleaseAcceptanceStore())
+        guard case .failure = await feed.latestVerifiedInstallerRelease() else { return XCTFail("Canonical V2 must never bypass second anchor") }
+    }
+
+    func testRealAcceptanceACLAndFIFOFailClosed() async throws {
+        for kind in ["root-acl", "anchor-acl", "read-fifo", "write-fifo"] {
+            let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("companion-private-anchor-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: root) }
+            let anchor = root.appendingPathComponent("highest-accepted-installer-release.json")
+            if kind.hasSuffix("acl") {
+                if kind == "anchor-acl" { try Data("{}".utf8).write(to: anchor); XCTAssertEqual(chmod(anchor.path, 0o600), 0) }
+                let grant = Process(); grant.executableURL = URL(fileURLWithPath: "/bin/chmod")
+                grant.arguments = ["+a", kind == "root-acl" ? "everyone allow search,add_file,delete_child" : "everyone allow read,write", kind == "root-acl" ? root.path : anchor.path]
+                grant.standardOutput = FileHandle.nullDevice; grant.standardError = FileHandle.nullDevice
+                try grant.run(); grant.waitUntilExit(); XCTAssertEqual(grant.terminationStatus, 0)
+            } else { XCTAssertEqual(mkfifo(anchor.path, 0o600), 0) }
+            var completed: XCTestExpectation?
+            if kind.hasSuffix("fifo") {
+                let done = expectation(description: "bounded regression FIFO writer completed")
+                completed = done; let path = anchor.path
+                DispatchQueue.global().async {
+                    usleep(300_000)
+                    let fd = open(path, O_WRONLY | O_NONBLOCK)
+                    if fd >= 0 { _ = close(fd) }
+                    done.fulfill()
+                }
+            }
+            let store = FileInstallerReleaseAcceptanceStore(rootDirectory: root)
+            let started = Date()
+            if kind == "write-fifo" {
+                guard case .failure = await store.saveHighestAcceptedInstallerRelease(try validAcceptance()) else { XCTFail("FIFO must refuse write"); continue }
+            } else {
+                guard case .failure = await store.loadHighestAcceptedInstallerRelease() else { XCTFail("Unsafe anchor must refuse read"); continue }
+            }
+            if let completed { XCTAssertLessThan(Date().timeIntervalSince(started), 0.2); await fulfillment(of: [completed], timeout: 2) }
+        }
+    }
+
     private func makeFixture() throws -> DescriptorFixture {
         let privateKeys = [Curve25519.Signing.PrivateKey(), Curve25519.Signing.PrivateKey()]
         let publicKeys = try zip(["key-alpha", "key-bravo"], privateKeys).map { keyID, privateKey in
@@ -602,6 +698,26 @@ private struct DescriptorFixture {
     let observedAt: Date
     let descriptorProvenanceSHA256: String
     let codeDirectorySHA256: String
+
+    func signedCompanionBytes(primary: Data, packageDigest: String = String(repeating: "a", count: 64)) throws -> Data {
+        var document = try JSONSerialization.jsonObject(with: primary) as! [String: Any]
+        document.removeValue(forKey: "signatures")
+        document["schema"] = GitHubInstallerReleaseDescriptor.packageSchema
+        document["primary_descriptor_digest"] = "sha256:" + GitHubInstallerReleaseDescriptor.sha256(of: primary)
+        var installer = document["installer"] as! [String: Any]
+        var assets = installer["assets"] as! [[String: Any]]
+        assets[0]["helper_package"] = ["asset_name": "forge-platform-installer-helper-arm64.pkg", "bytes": 1048576,
+            "digest": "sha256:" + packageDigest, "notarization_receipt_reference": "receipt:helper-package-v1"]
+        installer["assets"] = assets; document["installer"] = installer
+        let bytes = try JSONSerialization.data(withJSONObject: document)
+        var reader = try StrictJSONResourceReader(data: bytes)
+        let payload = StrictSignedJSON.canonicalPayload(from: try reader.parseDocument())
+        document["signatures"] = try privateKeys.enumerated().map { index, key in
+            ["algorithm": "ed25519", "key_id": index == 0 ? "key-alpha" : "key-bravo",
+             "signature": try key.signature(for: payload).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")]
+        }
+        return try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+    }
 
     func signedDescriptorBytes(
         version: String,
@@ -672,5 +788,23 @@ private actor DescriptorFetcher: GitHubInstallerReleaseDescriptorFetching {
         } catch {
             return .failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable))
         }
+    }
+}
+
+private actor CompanionDescriptorFetcher: GitHubInstallerReleaseDescriptorFetching {
+    let fixture: DescriptorFixture
+    let primary: Data
+    let companion: Data?
+    init(fixture: DescriptorFixture, primary: Data, companion: Data?) { self.fixture = fixture; self.primary = primary; self.companion = companion }
+    func latestReleaseTag(for repository: String) async -> Result<GitHubInstallerReleaseTagReadback, InstallerSelfUpdateFailure> {
+        do { return .success(try .init(tag: fixture.tag, observedAt: fixture.observedAt)) }
+        catch { return .failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable)) }
+    }
+    func releaseDescriptor(repository: String, tag: String, descriptorAssetName: String) async -> Result<GitHubInstallerReleaseDescriptorReadback, InstallerSelfUpdateFailure> {
+        let selected = descriptorAssetName == fixture.configuration.releaseDescriptorAssetName ? primary :
+            (descriptorAssetName == GitHubInstallerReleaseDescriptor.helperCompanionAssetName ? companion : nil)
+        guard let selected else { return .failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable)) }
+        do { return .success(try .init(bytes: selected, observedAt: fixture.observedAt)) }
+        catch { return .failure(InstallerSelfUpdateFailure(.releaseMetadataRejected)) }
     }
 }

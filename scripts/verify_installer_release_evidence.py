@@ -662,6 +662,7 @@ def verify(
     expected_team_identifier: str,
     expected_asset_prefix: str,
     helper_package_path: Path | None = None,
+    helper_companion_path: Path | None = None,
 ) -> InstallerReleaseEvidenceVerification:
     if _REVISION.fullmatch(source_revision) is None:
         raise ValueError("candidate source revision is invalid")
@@ -726,6 +727,16 @@ def verify(
     )
     from scripts.installer_helper_package_release import package_metadata
     helper_metadata = package_metadata(descriptor)
+    from forge_platform.installer_helper_companion import requires_companion, bound_metadata, read_document, qualification_binding
+    if requires_companion(descriptor):
+        if helper_companion_path is None:
+            raise ValueError("signed helper companion is required")
+        companion_raw, _ = read_document(helper_companion_path)
+        helper_metadata = bound_metadata(descriptor_raw, companion_raw, qualification_binding(operation))
+        companion = _strict_object(companion_raw, "helper companion")
+        _descriptor_signature_envelopes(companion["signatures"], operation)
+    elif helper_companion_path is not None:
+        raise ValueError("unbound helper companion is not admitted")
     if (helper_metadata is None) != (helper_package_path is None):
         raise ValueError("helper package input does not match descriptor schema")
     if isinstance(descriptor["sequence"], bool) or not isinstance(descriptor["sequence"], int) or descriptor["sequence"] <= 0:
@@ -780,6 +791,7 @@ def main() -> None:
     parser.add_argument("--descriptor", required=True)
     parser.add_argument("--archive", action="append", default=[], metavar="ARCHITECTURE=PATH")
     parser.add_argument("--helper-package")
+    parser.add_argument("--helper-companion")
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--operation-id", required=True)
     parser.add_argument("--installer-version", required=True)
@@ -813,6 +825,7 @@ def main() -> None:
             descriptor_raw=descriptor_raw,
             archive_paths=_archive_arguments(args.archive),
             helper_package_path=Path(args.helper_package) if args.helper_package else None,
+            helper_companion_path=Path(args.helper_companion) if args.helper_companion else None,
             source_revision=args.source_sha,
             expected_operation_id=args.operation_id,
             expected_version=args.installer_version,
