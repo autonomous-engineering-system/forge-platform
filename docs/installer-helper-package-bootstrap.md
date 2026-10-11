@@ -576,3 +576,44 @@ No installer or launchctl effect was executed. Changed new file coverage is
 83.132530 percent under the strict 80.2 gate; read-only review found no findings.
 Runtime/XPC installation admission, same-connection revocation checks and frontend
 selection remain open; no installed or public CLI/GUI PASS is claimed.
+
+
+## Explicit authenticated installation/runtime integration (2026-10-11, source only)
+
+The bootstrap now exports separate import and installation methods. The import
+method keeps its PACKAGE_IMPORTED_ONLY receipt and cannot silently install. The
+explicit installation method reuses strict import-request decoding, then obtains
+a fresh independent signed feed record bound to the sealed app anchor and passes
+the protected typed copy to the first-install coordinator. That coordinator holds
+the root mutation lease and durable package history across all effect boundaries.
+Runtime assembly now supplies fixed production actions and the private journal.
+No peer UID, admission callback, root package path or command can be supplied by
+the request. Actor busy state is rechecked after asynchronous initial admission.
+
+Every coordinator admission also requires the original authenticated connection's
+current PID/start/CD evidence. Per-connection interruption and invalidation hooks
+stickily revoke authority; wrapped peer inspection checks this state before and
+after its asynchronous work. A client process that survives a closed connection
+cannot restore admission. Source review found this missing lifetime boundary; the
+fix and regression tests passed scoped re-review.
+
+The explicit helper-install receipt can report HELPER_RUNNING_VERIFIED only after
+independent running readback and durable recording. Its installation_ready field
+applies to this helper-install protocol, not EP/Forge/product readiness or usable
+frontend/backend qualification. The frontend must independently read installed
+state and qualify the actual helper protocol before continuing product work.
+
+Thirty-six focused direct-dependency tests passed, covering fresh-feed change,
+missing running evidence, immutable recorded attempts, authenticated callback
+revocation after installer exit, sticky revocation with unchanged peer identity,
+anonymous listener lifetime hooks and runtime assembly without activation.
+Changed production file coverage ranges from 83.132530 to 100 percent, all strictly
+above 80.2. An initial Swift closure-inference build failure was fixed with an
+explicit typed handler. An initial filter omitted the actual BootstrapRootTests
+class, producing zero runtime coverage; the corrected dependency group passed.
+
+These are source/isolated interface tests. No signed root installer package was
+installed, bootstrap registered, helper started/stopped or historical product/auth
+journal changed. Frontend/backend package-route selection, supported historical
+recovery, actual package publication/qualification and public CLI/GUI proof remain
+open. Current published 0.4.9 V1 cannot supply this package-bearing route.

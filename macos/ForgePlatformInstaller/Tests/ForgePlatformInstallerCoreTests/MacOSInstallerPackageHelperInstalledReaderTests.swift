@@ -263,11 +263,11 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
         let (package, release, store, lock) = try installFixture(f)
         let probe = InstallProbe()
         let service = installCoordinator(f, probe: probe, store: store, lock: lock)
-        let result = await service.install(package, release: release, admittedClientUID: getuid())
+        let result = await service.install(package, release: release, admission: .init(isCurrent: { true }), admittedClientUID: getuid())
         XCTAssertEqual(result?.processID, 42)
         XCTAssertEqual(probe.items, ["install", "files", "activate", "running"])
         XCTAssertEqual(try store.read().get().map(\.phase), MacOSInstallerHelperPackageEffectPhase.allCases)
-        let repeatResult = await service.install(package, release: release, admittedClientUID: getuid())
+        let repeatResult = await service.install(package, release: release, admission: .init(isCurrent: { true }), admittedClientUID: getuid())
         XCTAssertNil(repeatResult)
         XCTAssertEqual(probe.items, ["install", "files", "activate", "running"])
     }
@@ -277,7 +277,7 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
             let (package, release, store, lock) = try installFixture(f)
             let probe = InstallProbe()
             let service = installCoordinator(f, probe: probe, store: store, lock: lock, failure: failure)
-            let result = await service.install(package, release: release, admittedClientUID: getuid())
+            let result = await service.install(package, release: release, admission: .init(isCurrent: { true }), admittedClientUID: getuid())
             XCTAssertNil(result, failure)
             let history = try store.read().get()
             let expected: MacOSInstallerHelperPackageEffectPhase?
@@ -290,7 +290,7 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
             XCTAssertEqual(history.last?.phase, expected, failure)
             if failure == "exit" { XCTAssertEqual(history.last?.installerExitCode, 42) }
             let before = probe.items
-            let repeated = await service.install(package, release: release, admittedClientUID: getuid())
+            let repeated = await service.install(package, release: release, admission: .init(isCurrent: { true }), admittedClientUID: getuid())
             XCTAssertNil(repeated)
             XCTAssertEqual(probe.items, before, failure)
         }
@@ -300,12 +300,12 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
         let (package, release, store, lock) = try installFixture(f)
         let probe = InstallProbe()
         let service = installCoordinator(f, probe: probe, store: store, lock: lock)
-        let root = await service.install(package, release: release, admittedClientUID: 0)
+        let root = await service.install(package, release: release, admission: .init(isCurrent: { true }), admittedClientUID: 0)
         XCTAssertNil(root)
-        let foreign = await service.install(package, release: try f.record(), admittedClientUID: getuid())
+        let foreign = await service.install(package, release: try f.record(), admission: .init(isCurrent: { true }), admittedClientUID: getuid())
         XCTAssertNil(foreign)
         let lease = try lock.acquireExclusiveSelfUpdateOperationLock().get()
-        let busy = await service.install(package, release: release, admittedClientUID: getuid())
+        let busy = await service.install(package, release: release, admission: .init(isCurrent: { true }), admittedClientUID: getuid())
         XCTAssertNil(busy)
         _ = try lease.releaseExclusiveSelfUpdateOperationLock().get()
         XCTAssertEqual(probe.items, [])
@@ -318,9 +318,9 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
         let gate = InstallGate(entered: entered)
         let probe = InstallProbe()
         let service = installCoordinator(f, probe: probe, store: store, lock: lock, suspended: gate)
-        let first = Task { await service.install(package, release: release, admittedClientUID: getuid()) }
+        let first = Task { await service.install(package, release: release, admission: .init(isCurrent: { true }), admittedClientUID: getuid()) }
         await fulfillment(of: [entered], timeout: 3)
-        let second = await service.install(package, release: release, admittedClientUID: getuid())
+        let second = await service.install(package, release: release, admission: .init(isCurrent: { true }), admittedClientUID: getuid())
         XCTAssertNil(second)
         XCTAssertEqual(try store.read().get().last?.phase, .installAttempted)
         await gate.finish()
@@ -331,11 +331,64 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
         let (p2, r2, j2, l2) = try installFixture(other)
         let revoked = InstallProbe()
         let denied = installCoordinator(other, probe: revoked, store: j2, lock: l2, failure: "revoke-after-files")
-        let nilResult = await denied.install(p2, release: r2, admittedClientUID: getuid())
+        let nilResult = await denied.install(p2, release: r2, admission: .init(isCurrent: { true }), admittedClientUID: getuid())
         XCTAssertNil(nilResult)
         XCTAssertEqual(revoked.items, ["install", "files"])
         XCTAssertEqual(try j2.read().get().last?.phase, .installExited)
     }
+    func testExplicitImportToInstallationNeedsFreshReleaseAndConnectionEvidence() async throws {
+        for failure in ["", "peer", "changed-feed", "lost-running"] {
+            let f = try Fixture(); defer { f.remove() }
+            let (package, release, store, lock) = try installFixture(f)
+            let anchor = try CurrentInstallerBundleIdentity(version: release.release.version, acceptedReleaseSequence: release.sequence,
+                channel: release.channel, sourceRevision: release.sourceRevision, bundleIdentifier: release.expectedBundleIdentifier,
+                teamIdentifier: release.expectedTeamIdentifier, codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+                provenanceSHA256: release.provenanceSHA256, releaseTrustConfigurationSHA256: release.expectedReleaseTrustConfigurationSHA256)
+            let feed = InstallFeed(first: release, later: failure == "changed-feed" ? try f.record(package: false) : release)
+            let importer = MacOSInstallerHelperBootstrapImportCoordinator(anchor: anchor, feed: feed, lock: lock,
+                peerAdmitted: { _ in true }, namespaceClean: { true }, importPackage: { _, _, _ in package }, reverify: { _, _ in true })
+            let probe = InstallProbe()
+            let installer = installCoordinator(f, probe: probe, store: store, lock: lock, failure: failure == "lost-running" ? "running" : "")
+            let request = try JSONSerialization.data(withJSONObject: ["schema": "forge-platform.bootstrap-import/v1",
+                "source": f.base.appendingPathComponent("source").appendingPathComponent(VerifiedInstallerHelperPackage.assetName).path,
+                "release_sequence": release.sequence, "package_sha256": release.helperPackage!.sha256])
+            let result = await importer.handleInstallation(request, connectionUID: getuid(),
+                admission: .init(isCurrent: { failure != "peer" }), installer: installer)
+            if failure.isEmpty {
+                let receipt = try XCTUnwrap(result)
+                let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: receipt) as? [String: Any])
+                XCTAssertEqual(fields["status"] as? String, "HELPER_RUNNING_VERIFIED")
+                XCTAssertEqual(fields["installation_ready"] as? Bool, true)
+                XCTAssertEqual(fields["process_id"] as? Int, 42)
+                XCTAssertNil(fields["source"]); XCTAssertNil(fields["uid"])
+                XCTAssertEqual(try store.read().get().last?.phase, .readbackRecorded)
+                let repeated = await importer.handleInstallation(request, connectionUID: getuid(), admission: .init(isCurrent: { true }), installer: installer)
+                XCTAssertNil(repeated) // No blind retry of the recorded attempt.
+            } else {
+                XCTAssertNil(result, failure)
+                XCTAssertEqual(try store.read().get().last?.phase, failure == "lost-running" ? .activationAttempted : nil)
+            }
+        }
+    }
+    func testCurrentConnectionRevocationAfterInstallerExitBlocksFilesAndActivation() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let (package, release, store, lock) = try installFixture(f)
+        let probe = InstallProbe(), service = installCoordinator(f, probe: probe, store: store, lock: lock)
+        let result = await service.install(package, release: release,
+            admission: .init(isCurrent: { !probe.items.contains("install") }), admittedClientUID: getuid())
+        XCTAssertNil(result)
+        XCTAssertEqual(probe.items, ["install"])
+        XCTAssertEqual(try store.read().get().last?.phase, .installExited)
+    }
+    private actor InstallFeed: SignedInstallerReleaseFeedVerifying {
+        let first: VerifiedInstallerReleaseRecord; let later: VerifiedInstallerReleaseRecord
+        var count = 0
+        init(first: VerifiedInstallerReleaseRecord, later: VerifiedInstallerReleaseRecord) { self.first = first; self.later = later }
+        func latestVerifiedInstallerRelease() async -> Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure> {
+            count += 1; return .success(count == 1 ? first : later)
+        }
+    }
+
     private func installFixture(_ f: Fixture) throws -> (MacOSInstallerImportedHelperPackage, VerifiedInstallerReleaseRecord,
         MacOSInstallerHelperPackageEffectJournal, FileInstallerSelfUpdateOperationLock) {
         let source = f.base.appendingPathComponent("source"), stage = f.base.appendingPathComponent("stage"), journal = f.base.appendingPathComponent("journal")

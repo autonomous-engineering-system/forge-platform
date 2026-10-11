@@ -75,11 +75,67 @@ final class MacOSInstallerHelperBootstrapPeerAndXPCTests: XCTestCase {
             XCTAssertEqual(calls.items.filter { $0 == "handle" }.count, ["valid", "changed"].contains(kind) ? 1 : 0)
         }
     }
+    func testExplicitInstallationMethodBindsCurrentPeerAndFailsWhenUnavailable() async {
+        for kind in ["valid", "missing", "changed", "root", "oversize", "unavailable"] {
+            let done = expectation(description: "install " + kind), calls = Calls(), expected = peer
+            let handler: MacOSInstallerHelperBootstrapConnectionService.InstallHandle = { _, uid, admission in
+                calls.add("install"); XCTAssertEqual(uid, expected.uid)
+                guard await admission.isCurrent() else { return nil }
+                return Data("source-running-receipt".utf8)
+            }
+            let service = MacOSInstallerHelperBootstrapConnectionService(readPeer: {
+                calls.add("peer")
+                if kind == "missing" { return nil }
+                if kind == "root" { return .init(uid: 0, process: expected.process, appCodeDirectorySHA256: expected.appCodeDirectorySHA256) }
+                if kind == "changed" && calls.items.filter({ $0 == "peer" }).count > 1 {
+                    return .init(uid: expected.uid, process: .init(processID: 123, startSeconds: 101, startMicroseconds: 3), appCodeDirectorySHA256: expected.appCodeDirectorySHA256)
+                }
+                return expected
+            }, handle: { _, _ in XCTFail("Installation must not dispatch via import-only method"); return nil },
+                install: kind == "unavailable" ? nil : handler)
+            service.installVerifiedHelperPackage(kind == "oversize" ? Data(repeating: 0, count: 8193) : Data([1])) { reply in
+                XCTAssertEqual(reply, kind == "valid" ? Data("source-running-receipt".utf8) : nil); done.fulfill()
+            }
+            await fulfillment(of: [done], timeout: 2)
+            XCTAssertEqual(calls.items.filter { $0 == "install" }.count, ["valid", "changed"].contains(kind) ? 1 : 0)
+        }
+    }
+    func testSameProcessCannotRestoreInterruptedOrInvalidatedConnectionAuthority() async {
+        let expected = peer, state = MacOSInstallerHelperBootstrapConnectionState()
+        let entered = expectation(description: "installation admission paused")
+        let done = expectation(description: "revoked receipt refused")
+        let gate = ConnectionGate(entered: entered), calls = Calls()
+        let service = MacOSInstallerHelperBootstrapConnectionService(readPeer: { expected }, handle: { _, _ in nil },
+            install: { _, _, admission in
+                await gate.wait()
+                guard await admission.isCurrent() else { return nil }
+                calls.add("effect"); return Data([9])
+            }, connectionState: state)
+        service.installVerifiedHelperPackage(Data([1])) { reply in XCTAssertNil(reply); done.fulfill() }
+        await fulfillment(of: [entered], timeout: 2)
+        state.revoke(); state.revoke()
+        XCTAssertFalse(state.isCurrent)
+        await gate.finish()
+        await fulfillment(of: [done], timeout: 2)
+        XCTAssertEqual(calls.items, [])
+        let refused = expectation(description: "sticky subsequent request")
+        service.installVerifiedHelperPackage(Data([1])) { reply in XCTAssertNil(reply); refused.fulfill() }
+        await fulfillment(of: [refused], timeout: 2)
+        XCTAssertEqual(calls.items, [])
+    }
+    private actor ConnectionGate {
+        let entered: XCTestExpectation; var continuation: CheckedContinuation<Void, Never>?
+        init(entered: XCTestExpectation) { self.entered = entered }
+        func wait() async { await withCheckedContinuation { continuation = $0; entered.fulfill() } }
+        func finish() { continuation?.resume(); continuation = nil }
+    }
     func testAnonymousListenerInstallsOnlyClosedSigningAndInterfaceAndFreezesConnectionIdentity() async {
         let native = NSXPCListener.anonymous(), done = expectation(description: "bound interface"), expected = peer
+        done.expectedFulfillmentCount = 2
         let wrapper = MacOSInstallerHelperBootstrapXPCListener(listener: native,
             readPeer: { pid, uid in XCTAssertEqual(pid, expected.process.processID); XCTAssertEqual(uid, expected.uid); return expected },
             handle: { _, uid in XCTAssertEqual(uid, expected.uid); return Data([7]) },
+            install: { _, uid, admission in XCTAssertEqual(uid, expected.uid); return await admission.isCurrent() ? Data([9]) : nil },
             identity: { _ in (expected.process.processID, expected.uid) },
             installRequirement: { _, requirement in
                 XCTAssertEqual(requirement, MacOSInstallerHelperBootstrapContract.requirement(identifier: MacOSInstallerHelperBootstrapContract.appIdentifier))
@@ -91,7 +147,15 @@ final class MacOSInstallerHelperBootstrapPeerAndXPCTests: XCTestCase {
         let service = connection.exportedObject as? MacOSInstallerHelperBootstrapImportXPCService
         XCTAssertNotNil(service)
         service?.importVerifiedHelperPackage(Data([1])) { reply in XCTAssertEqual(reply, Data([7])); done.fulfill() }
+        service?.installVerifiedHelperPackage(Data([1])) { reply in XCTAssertEqual(reply, Data([9])); done.fulfill() }
         await fulfillment(of: [done], timeout: 2)
+        // Invoke the actual attached lifetime hooks while the observed process is
+        // unchanged, then prove the same exported service loses authority.
+        connection.interruptionHandler?()
+        connection.invalidationHandler?()
+        let revoked = expectation(description: "actual connection handlers")
+        service?.installVerifiedHelperPackage(Data([1])) { reply in XCTAssertNil(reply); revoked.fulfill() }
+        await fulfillment(of: [revoked], timeout: 2)
         connection.invalidate(); wrapper.invalidate()
         let denied = MacOSInstallerHelperBootstrapXPCListener(listener: .anonymous(), readPeer: { _, _ in nil },
             handle: { _, _ in nil }, identity: { _ in (0, 0) }, installRequirement: { _, _ in })
@@ -109,7 +173,9 @@ final class MacOSInstallerHelperBootstrapPeerAndXPCTests: XCTestCase {
         let coordinator = MacOSInstallerHelperBootstrapImportCoordinator(anchor: anchor,
             feed: DeniedFeed(), lock: DeniedLock(), peerAdmitted: { _ in false }, namespaceClean: { false },
             importPackage: { _, _, _ in nil }, reverify: { _, _ in false })
-        let listener = MacOSInstallerHelperBootstrapXPCListener(release: release, coordinator: coordinator)
+        let installer = MacOSInstallerHelperPackageInstallCoordinator(lock: DeniedLock(), journal: .init(),
+            actions: MacOSInstallerHelperPackageProductionActions().assemble())
+        let listener = MacOSInstallerHelperBootstrapXPCListener(release: release, coordinator: coordinator, installer: installer)
         listener.invalidate() // No activate(), blessing, registration or root effects.
     }
     private struct DeniedFeed: SignedInstallerReleaseFeedVerifying {

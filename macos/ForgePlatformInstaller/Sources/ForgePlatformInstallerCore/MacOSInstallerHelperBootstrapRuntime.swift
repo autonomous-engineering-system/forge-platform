@@ -2,7 +2,8 @@ import Darwin
 import Foundation
 
 /// Constructed only after root self-admission, independent signed release
-/// verification and a protected mutation lease. It still serves import only.
+/// verification and a protected mutation lease. Import and first installation
+/// remain separate explicit XPC methods; installation has its own durable gate.
 public final class MacOSInstallerHelperBootstrapRuntime: @unchecked Sendable {
     private let hooks: BootstrapRuntimeHooks
     private init(hooks: BootstrapRuntimeHooks) { self.hooks = hooks }
@@ -70,7 +71,9 @@ struct BootstrapRuntimeSources: Sendable {
                 guard case .success(let evidence) = verifier.verify(at: copied.url, release: release) else { return false }
                 return evidence == copied.evidence
             })
-        let listener = MacOSInstallerHelperBootstrapXPCListener(release: record, coordinator: coordinator)
+        let installation = MacOSInstallerHelperPackageInstallCoordinator(lock: lock, journal: .init(),
+            actions: MacOSInstallerHelperPackageProductionActions().assemble())
+        let listener = MacOSInstallerHelperBootstrapXPCListener(release: record, coordinator: coordinator, installer: installation)
         return .init(activate: { listener.activate() }, invalidate: { listener.invalidate() })
     }
 }

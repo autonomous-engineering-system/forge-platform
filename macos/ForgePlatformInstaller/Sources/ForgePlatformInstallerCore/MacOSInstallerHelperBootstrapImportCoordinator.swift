@@ -37,6 +37,7 @@ actor MacOSInstallerHelperBootstrapImportCoordinator {
     private let importPackage: Import
     private let reverify: @Sendable (MacOSInstallerImportedHelperPackage, VerifiedInstallerReleaseRecord) -> Bool
     private var busy = false
+    private var installing = false
     private var retained: (uid_t, MacOSInstallerImportedHelperPackage)?
 
     init(anchor: CurrentInstallerBundleIdentity, feed: any SignedInstallerReleaseFeedVerifying,
@@ -56,6 +57,38 @@ actor MacOSInstallerHelperBootstrapImportCoordinator {
         busy = false
         guard case .success = lease.releaseExclusiveSelfUpdateOperationLock() else { return nil }
         return result
+    }
+
+    /// Explicit installation entry. The old import method remains import-only.
+    /// Its request cannot supply a peer callback, installer action or root path.
+    func handleInstallation(_ bytes: Data, connectionUID uid: uid_t,
+        admission: MacOSInstallerHelperPackagePeerAdmission,
+        installer: MacOSInstallerHelperPackageInstallCoordinator) async -> Data? {
+        guard !installing, await admission.isCurrent(), !installing else { return nil }
+        installing = true
+        defer { installing = false }
+        guard await handle(bytes, connectionUID: uid) != nil,
+              let copied = retained, copied.0 == uid,
+              await admission.isCurrent(),
+              case .success(let release) = await feed.latestVerifiedInstallerRelease(),
+              releaseMatchesAnchor(release),
+              let request = MacOSInstallerHelperBootstrapImportRequest.decode(bytes),
+              request.sequence == release.sequence, request.packageSHA256 == release.helperPackage?.sha256,
+              let running = await installer.install(copied.1, release: release, admission: admission, admittedClientUID: uid),
+              await admission.isCurrent() else { return nil }
+        return try? JSONSerialization.data(withJSONObject: [
+            "schema": "forge-platform.bootstrap-install-receipt/v1", "status": "HELPER_RUNNING_VERIFIED",
+            "release_sequence": running.releaseSequence, "app_code_directory_sha256": running.appCodeDirectorySHA256,
+            "process_id": running.processID, "installation_ready": true,
+        ], options: [.sortedKeys])
+    }
+
+    private func releaseMatchesAnchor(_ release: VerifiedInstallerReleaseRecord) -> Bool {
+        release.sequence == anchor.acceptedReleaseSequence && release.release.version == anchor.version &&
+        release.channel == anchor.channel && release.sourceRevision == anchor.sourceRevision &&
+        release.expectedBundleIdentifier == anchor.bundleIdentifier && release.expectedTeamIdentifier == anchor.teamIdentifier &&
+        release.expectedCodeDirectorySHA256 == anchor.codeDirectorySHA256 && release.provenanceSHA256 == anchor.provenanceSHA256 &&
+        release.expectedReleaseTrustConfigurationSHA256 == anchor.releaseTrustConfigurationSHA256 && release.helperPackage != nil
     }
 
     private func handleLocked(_ request: MacOSInstallerHelperBootstrapImportRequest, uid: uid_t) async -> Data? {
