@@ -37,7 +37,7 @@ struct MacOSInstallerHelperPackageVerifier: Sendable {
               directoryBefore.st_mode & 0o7777 == 0o700,
               Self.noACL(directory) else { return .failure(.rejected) }
         let descriptor = url.lastPathComponent.withCString {
-            Darwin.openat(directory, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            Darwin.openat(directory, $0, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
         }
         guard descriptor >= 0 else { return .failure(.unavailable) }
         defer { _ = Darwin.close(descriptor) }

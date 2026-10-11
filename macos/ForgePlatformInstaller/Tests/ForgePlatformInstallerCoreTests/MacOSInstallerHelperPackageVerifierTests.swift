@@ -5,6 +5,32 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class MacOSInstallerHelperPackageVerifierTests: XCTestCase {
+    func testFIFOWithoutWriterIsRejectedWithoutBlockingOrPlatformInspection() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let record = try fixture.record()
+        try FileManager.default.removeItem(at: fixture.package)
+        XCTAssertEqual(mkfifo(fixture.package.path, 0o600), 0)
+        // Bound a regressed blocking open: a delayed writer releases it, but
+        // cannot turn a nonregular file into admitted package evidence.
+        let releaseBlockedReader = DispatchGroup()
+        releaseBlockedReader.enter()
+        let path = fixture.package.path
+        DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(2)) {
+            let writer = open(path, O_WRONLY | O_NONBLOCK | O_NOFOLLOW)
+            if writer >= 0 { _ = close(writer) }
+            releaseBlockedReader.leave()
+        }
+        let start = Date()
+        let verifier = MacOSInstallerHelperPackageVerifier { _, _ in
+            XCTFail("FIFO must never reach package trust inspection")
+            return false
+        }
+        XCTAssertEqual(verifier.verify(at: fixture.package, release: record), .failure(.rejected))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+        XCTAssertEqual(releaseBlockedReader.wait(timeout: .now() + .seconds(5)), .success)
+    }
+
     func testExactBytesAndEveryTrustCheckAreNecessary() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
