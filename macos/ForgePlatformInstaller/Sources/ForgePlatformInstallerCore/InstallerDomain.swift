@@ -1684,7 +1684,17 @@ public struct InstallerWizardState: Equatable, Sendable {
 /// The shell can only request fixed, non-secret actions. Implementations that
 /// actually download an installer or launch a provider flow belong to a later
 /// trusted coordinator and must verify immutable artifacts before execution.
+public struct InstallerHelperPreparationAdmission: Sendable {
+    let isCurrent: @Sendable () async -> Bool
+}
+
+public enum InstallerHelperPreparationOutcome: Equatable, Sendable {
+    case notRequired, ready, cancelled, blocked, unresolved
+}
+
 public protocol InstallerWizardCoordinator: Sendable {
+    /// Explicit operator installation intent; never called by status-only reads.
+    func prepareCurrentInstallerHelper(allowAuthorization: Bool) async -> InstallerHelperPreparationOutcome
     func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult
     func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult
     /// Inventory existing managed deployments plus one coordinator-generated
@@ -1814,6 +1824,10 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func prepareCurrentInstallerHelper(allowAuthorization: Bool) async -> InstallerHelperPreparationOutcome { .blocked }
+    func prepareCurrentInstallerHelper() async -> InstallerHelperPreparationOutcome {
+        await prepareCurrentInstallerHelper(allowAuthorization: true)
+    }
     /// A legacy coordinator may serve only its original two-product route.
     /// It cannot treat a narrower caller choice as permission to install both.
     func prepareVerifiedCompositionSession(

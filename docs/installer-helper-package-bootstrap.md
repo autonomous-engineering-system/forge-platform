@@ -681,3 +681,37 @@ argument is a source API, not an alternate CLI/backend/trust override. These
 source tests do not qualify an actual package-backed helper protocol, historical
 recovery or public CLI/GUI installation. Published V1 and original journals remain
 unchanged; end-to-end first-run/install proof is still required.
+
+
+## Production frontend preparation (2026-10-11, source qualification)
+
+The trusted runtime now binds helper admission to the exact verified current
+release. The wizard prepares installation help after the user begins installation;
+the explicit CLI helper-register route uses the same preparation. Read-only
+status does not prompt, and non-interactive registration permits existing
+independently verified installation only. V1 retains its original registration
+route; a selected V2 never falls back to the historical ServiceManagement helper.
+
+The download uses the verified repository/tag and fixed companion asset name,
+with exact bounded byte count. A fresh private no-follow stage is fsynced and
+verified for hash, Developer ID Installer signature, notarization, staple and
+Gatekeeper before ordinary administrator authorization. Existing failed stages
+remain evidence and do not become a cache prerequisite. The preparation actor
+serializes attempts and latches submission before authorization; an unresolved
+attempt permits subsequent independent readback, not another installation.
+
+Currency admission is checked around asynchronous inspection, administrator
+consent, bootstrap registration and immediately before package submission.
+Rechecking currency invalidates the preparation even when the physical app
+identity remains unchanged. Each main-helper RPC independently selects the exact
+current V1 or V2 backend and repeats installed admission before connection use.
+Two review findings concerning stale currency during staging/inspection were
+fixed and covered by paused asynchronous regressions. Final scoped review passed.
+
+The completed cohesive frontend change passed 44 GUI, 1541 Core and 45 CLI
+native tests. All sixteen changed production files passed unchanged strict
+coverage greater than 80.2 percent (82.475224 to 100 percent). No real package
+download, administrator prompt, helper registration, installation, signing,
+notarization, publication, product lifecycle or credential action occurred in
+these tests. Historical SM-helper migration and public clean CLI/GUI evidence
+remain open; the published V1 release and historical journals are unchanged.

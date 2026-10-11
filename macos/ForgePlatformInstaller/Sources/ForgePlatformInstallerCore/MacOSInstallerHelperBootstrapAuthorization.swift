@@ -53,17 +53,17 @@ struct MacOSInstallerHelperBootstrapAuthorization: Sendable {
         self.namespaceAbsent = namespaceAbsent; self.api = api; self.mutationLock = mutationLock
     }
 
-    func request(for release: VerifiedInstallerReleaseRecord)
+    func request(for release: VerifiedInstallerReleaseRecord, admission: InstallerHelperPreparationAdmission)
         async -> MacOSInstallerHelperBootstrapAuthorizationResult {
         guard case .success(let lease) = mutationLock.acquireExclusiveSelfUpdateOperationLock() else { return .rejected }
-        let result = await requestWhileLocked(for: release)
+        let result = await requestWhileLocked(for: release, admission: admission)
         guard case .success = lease.releaseExclusiveSelfUpdateOperationLock() else { return .unavailable }
         return result
     }
 
-    private func requestWhileLocked(for release: VerifiedInstallerReleaseRecord) async
+    private func requestWhileLocked(for release: VerifiedInstallerReleaseRecord, admission: InstallerHelperPreparationAdmission) async
         -> MacOSInstallerHelperBootstrapAuthorizationResult {
-        guard release.helperPackage != nil,
+        guard await admission.isCurrent(), release.helperPackage != nil,
               release.expectedBundleIdentifier == MacOSInstallerHelperBootstrapContract.appIdentifier,
               release.expectedTeamIdentifier == MacOSInstallerHelperBootstrapContract.team,
               currentApp.isFileURL, currentApp.baseURL == nil,
@@ -74,13 +74,13 @@ struct MacOSInstallerHelperBootstrapAuthorization: Sendable {
               evidence.codeDirectorySHA256 == release.expectedCodeDirectorySHA256,
               declarations(currentApp), namespaceAbsent(),
               // Freeze release identity again after inspecting the declarations.
-              await inspect(currentApp) == evidence else { return .rejected }
+              await inspect(currentApp) == evidence, await admission.isCurrent() else { return .rejected }
         let result = await Self.authorizeAndSubmit(using: api, stillCurrent: {
             // Admin authorization can take arbitrarily long. Recheck the sealed
             // current app, helper declarations and namespaces after it completes.
-            guard self.namespaceAbsent(), await self.inspect(self.currentApp) == evidence,
+            guard await admission.isCurrent(), self.namespaceAbsent(), await self.inspect(self.currentApp) == evidence,
                   self.declarations(self.currentApp), self.namespaceAbsent(),
-                  await self.inspect(self.currentApp) == evidence else { return false }
+                  await self.inspect(self.currentApp) == evidence, await admission.isCurrent() else { return false }
             return true
         })
         return result

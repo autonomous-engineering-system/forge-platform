@@ -1118,10 +1118,11 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     public init(
         helperIdentity: ManagedInstallerPostToolXPCHelperIdentity,
         expectedParentVersion: InstallerVersion? = nil,
-        packageRelease: VerifiedInstallerReleaseRecord? = nil
+        packageRelease: VerifiedInstallerReleaseRecord? = nil,
+        currentHelperRelease: (@Sendable () -> VerifiedInstallerReleaseRecord?)? = nil
     ) {
         readOnlyReplyTimeout = 30
-        parentAdmission = .production(expectedVersion: expectedParentVersion, packageRelease: packageRelease)
+        parentAdmission = .production(expectedVersion: expectedParentVersion, packageRelease: packageRelease, currentRelease: currentHelperRelease)
         resumed = false
         connection = NSXPCConnection(machServiceName: Self.machServiceName, options: .privileged)
         connection.setCodeSigningRequirement(helperIdentity.codeSigningRequirement)

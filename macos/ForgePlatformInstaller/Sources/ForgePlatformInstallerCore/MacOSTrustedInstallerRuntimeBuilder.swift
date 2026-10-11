@@ -147,7 +147,7 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
     private let stateRoot: URL
     private let architecture: String
     private let routeLoaderFactory: @Sendable (
-        ManagedInstallerPostToolXPCHelperIdentity, InstallerVersion
+        ManagedInstallerPostToolXPCHelperIdentity, InstallerVersion, ManagedInstallerHelperBackendReleaseReader
     ) -> any ManagedInstallerReleasedRouteSnapshotLoading
 
     /// Creates a builder only for an existing private installer-owned root.
@@ -168,9 +168,9 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
         try self.init(
             stateRoot: stateRoot,
             platformFacts: platformFacts,
-            routeLoaderFactory: {
+            routeLoaderFactory: { identity, version, reader in
                 MacOSManagedInstallerReleasedRouteXPCTransport(
-                    helperIdentity: $0, expectedParentVersion: $1
+                    helperIdentity: identity, expectedParentVersion: version, currentHelperRelease: reader.read
                 )
             }
         )
@@ -183,6 +183,14 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
             ManagedInstallerPostToolXPCHelperIdentity, InstallerVersion
         ) -> any ManagedInstallerReleasedRouteSnapshotLoading
     ) throws {
+        try self.init(stateRoot: stateRoot, platformFacts: platformFacts, routeLoaderFactory: { identity, version, _ in
+            routeLoaderFactory(identity, version)
+        })
+    }
+
+    init(stateRoot: URL, platformFacts: MacOSInstallerPlatformFacts,
+         routeLoaderFactory: @escaping @Sendable (ManagedInstallerPostToolXPCHelperIdentity, InstallerVersion,
+             ManagedInstallerHelperBackendReleaseReader) -> any ManagedInstallerReleasedRouteSnapshotLoading) throws {
         try MacOSInstallerPlatformContract.requireSupported(platformFacts)
         self.stateRoot = try MacOSInstallerOwnedStateRoot.validatedCanonicalURL(from: stateRoot)
         self.architecture = MacOSInstallerPlatformContract.architecture
@@ -233,14 +241,18 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
             let helperIdentity = try ManagedInstallerPostToolXPCHelperIdentity(
                 releaseTrust: sealedTrustConfiguration
             )
+            let helperSelection = ManagedInstallerHelperBackendReleaseSelection()
+            let helperReader = ManagedInstallerHelperBackendReleaseReader(read: { helperSelection.read() })
+            let helperPreparation = MacOSInstallerHelperPackagePreparation(root: stateRoot)
             let routeCoordinator = ManagedInstallerReleasedRouteCoordinator(
                 loader: routeLoaderFactory(
-                    helperIdentity, sealedReleaseProvenance.installerVersion
+                    helperIdentity, sealedReleaseProvenance.installerVersion, helperReader
                 )
             )
             let productTransport = MacOSManagedInstallerProductOperationXPCTransport(
                 helperIdentity: helperIdentity,
-                expectedParentVersion: sealedReleaseProvenance.installerVersion
+                expectedParentVersion: sealedReleaseProvenance.installerVersion,
+                currentHelperRelease: helperReader.read
             )
             let releaseDescriptorFetcher: any GitHubInstallerReleaseDescriptorFetching =
                 GitHubReleaseDescriptorTransport()
@@ -301,8 +313,18 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                 preservedRegistryReadTransport:
                     MacOSManagedInstallerReleasedRouteXPCTransport(
                         helperIdentity: helperIdentity,
-                        expectedParentVersion: sealedReleaseProvenance.installerVersion
-                    )
+                        expectedParentVersion: sealedReleaseProvenance.installerVersion,
+                currentHelperRelease: helperReader.read
+                    ),
+                helperReleaseBinding: { helperSelection.bind($0) },
+                helperPreparation: { release, allowAuthorization, admission in
+                    switch await helperPreparation.prepare(release: release, allowAuthorization: allowAuthorization, admission: admission) {
+                    case .ready: return .ready
+                    case .cancelled: return .cancelled
+                    case .blocked: return .blocked
+                    case .unresolved: return .unresolved
+                    }
+                }
             ))
         } catch {
             // Do not leak a filesystem location, architecture detail, network

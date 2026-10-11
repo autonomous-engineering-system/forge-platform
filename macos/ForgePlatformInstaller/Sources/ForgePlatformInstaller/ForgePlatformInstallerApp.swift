@@ -82,6 +82,9 @@ final class InstallerWizardViewModel: ObservableObject {
         return false
     }
 
+    @Published private(set) var helperPreparation: InstallerHelperPreparationOutcome?
+    @Published private(set) var isHelperPreparationInFlight = false
+    var helperIsReady: Bool { helperPreparation == .ready || helperPreparation == .notRequired }
     private let coordinator: any InstallerWizardCoordinator
     @Published private(set) var isPreflightRequestInFlight = false
     @Published private(set) var isReviewRequestInFlight = false
@@ -121,6 +124,18 @@ final class InstallerWizardViewModel: ObservableObject {
         Task { @MainActor [weak self] in
             let result = await coordinator.handOffSelfUpdate(release)
             self?.state.recordSelfUpdateHandoff(result, for: release)
+        }
+    }
+
+    func prepareInstallerHelper(recheck: Bool = false) {
+        guard state.selfUpdate.isCurrent, !isHelperPreparationInFlight,
+              recheck || helperPreparation == nil else { return }
+        isHelperPreparationInFlight = true
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.prepareCurrentInstallerHelper(allowAuthorization: true)
+            self?.helperPreparation = result
+            self?.isHelperPreparationInFlight = false
         }
     }
 

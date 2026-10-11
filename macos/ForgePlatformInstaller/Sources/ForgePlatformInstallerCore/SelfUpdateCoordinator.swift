@@ -590,6 +590,9 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     /// A release record observed during an update check is not yet authority
     /// for composition.  It becomes current only after `enforceCurrentInstaller`
     /// has completed its mandatory self-update path.
+    private var helperAdmissionEpoch: UInt64 = 0
+    private let helperReleaseBinding: (@Sendable (VerifiedInstallerReleaseRecord?) -> Void)?
+    private let helperPreparation: (@Sendable (VerifiedInstallerReleaseRecord, Bool, InstallerHelperPreparationAdmission) async -> InstallerHelperPreparationOutcome)?
     private var checkedCurrentReleaseRecord: VerifiedInstallerReleaseRecord?
     private var currentVerifiedReleaseRecord: VerifiedInstallerReleaseRecord?
     private var preparedCompositionSession: VerifiedCompositionSessionPlan?
@@ -635,8 +638,12 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         purgeRecoveryStore:
             (any ManagedInstallerPurgeRecoveryStoring)? = nil,
         preservedRegistryReadTransport:
-            (any ManagedInstallerPreservedRegistryReading)? = nil
+            (any ManagedInstallerPreservedRegistryReading)? = nil,
+        helperReleaseBinding: (@Sendable (VerifiedInstallerReleaseRecord?) -> Void)? = nil,
+        helperPreparation: (@Sendable (VerifiedInstallerReleaseRecord, Bool, InstallerHelperPreparationAdmission) async -> InstallerHelperPreparationOutcome)? = nil
     ) {
+        self.helperReleaseBinding = helperReleaseBinding
+        self.helperPreparation = helperPreparation
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
         self.staging = staging
@@ -670,6 +677,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         currentVersion: InstallerVersion,
         invalidateCompositionSession: Bool = true
     ) async -> SelfUpdateCheckResult {
+        helperAdmissionEpoch &+= 1
+        helperReleaseBinding?(nil)
         pendingUpdate = nil
         if invalidateCompositionSession {
             invalidateVerifiedCompositionSession()
@@ -722,6 +731,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                         )
                     }
                     self.currentVerifiedReleaseRecord = checked
+                    self.helperReleaseBinding?(checked)
                     self.checkedCurrentReleaseRecord = nil
                     return .current(release)
                 }
@@ -753,6 +763,22 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         ) {
             await self.enforceCurrentInstallerWhileLocked(currentVersion: currentVersion)
         }
+    }
+
+    public func prepareCurrentInstallerHelper(allowAuthorization: Bool = true) async -> InstallerHelperPreparationOutcome {
+        guard let record = currentVerifiedReleaseRecord else { return .blocked }
+        guard record.helperPackage != nil else { return .notRequired }
+        guard let helperPreparation else { return .blocked }
+        let generation = compositionSessionGeneration
+        let epoch = helperAdmissionEpoch
+        let admission = InstallerHelperPreparationAdmission(isCurrent: { await self.helperContextIsCurrent(record, epoch: epoch) })
+        let result = await helperPreparation(record, allowAuthorization, admission)
+        guard generation == compositionSessionGeneration, helperAdmissionEpoch == epoch, currentVerifiedReleaseRecord == record else { return .unresolved }
+        return result
+    }
+
+    private func helperContextIsCurrent(_ record: VerifiedInstallerReleaseRecord, epoch: UInt64) -> Bool {
+        helperAdmissionEpoch == epoch && currentVerifiedReleaseRecord == record
     }
 
     public func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
@@ -1492,6 +1518,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                     return .failed(InstallerSelfUpdateFailureCode.releaseMetadataRejected.userFacingMessage)
                 }
                 currentVerifiedReleaseRecord = checkedCurrentReleaseRecord
+                helperReleaseBinding?(checkedCurrentReleaseRecord)
                 self.checkedCurrentReleaseRecord = nil
                 return .current(release)
             }
@@ -1848,8 +1875,10 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     }
 
     private func invalidateVerifiedCompositionSession() {
+        helperAdmissionEpoch &+= 1
         checkedCurrentReleaseRecord = nil
         currentVerifiedReleaseRecord = nil
+        helperReleaseBinding?(nil)
         preparedCompositionSession = nil
         preparedCompositionSessionTarget = nil
         preparedCompositionSessionComponents = nil

@@ -82,6 +82,9 @@ struct InstallerMVPFlowView: View {
             }
         }
         .padding(32)
+        .onChange(of: viewModel.helperPreparation) { _, _ in
+            Task { @MainActor in continuePreparation() }
+        }
         .onChange(of: viewModel.state) { _, _ in
             Task { @MainActor in continuePreparation() }
         }
@@ -102,6 +105,27 @@ struct InstallerMVPFlowView: View {
 
     @ViewBuilder
     private var preparing: some View {
+        if viewModel.state.step == .deployment && !viewModel.helperIsReady {
+            if viewModel.isHelperPreparationInFlight {
+                ProgressView("macOS-installatiehulp voorbereiden…")
+            } else {
+                switch viewModel.helperPreparation {
+                case .cancelled:
+                    retryMessage("De macOS-autorisatie is geannuleerd.")
+                case .blocked:
+                    retryMessage("De installatiehulp is niet beschikbaar. Gebruik een beheerdersaccount en controleer de installer.")
+                case .unresolved:
+                    retryMessage("De vorige helperpoging is nog niet bevestigd. Er wordt geen nieuwe poging gestart.")
+                    Button("Controleer installatiehulp") { viewModel.prepareInstallerHelper(recheck: true) }
+                default:
+                    ProgressView("macOS-installatiehulp controleren…")
+                }
+            }
+        } else { preparingContent }
+    }
+
+    @ViewBuilder
+    private var preparingContent: some View {
         Text("Installatie voorbereiden")
             .font(.title2.weight(.semibold))
         switch viewModel.state.step {
@@ -394,6 +418,10 @@ struct InstallerMVPPreparationProgress {
         case .deployment:
             switch viewModel.state.deploymentSelection {
             case .pending:
+                if !viewModel.helperIsReady {
+                    viewModel.prepareInstallerHelper()
+                    return
+                }
                 viewModel.prepareManagedDeploymentInventory()
             case .available(let inventory) where inventory.existing.isEmpty:
                 viewModel.selectManagedDeployment(inventory.createCandidate.id)

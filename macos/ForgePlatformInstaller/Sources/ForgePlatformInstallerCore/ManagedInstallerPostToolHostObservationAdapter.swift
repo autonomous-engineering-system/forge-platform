@@ -482,9 +482,10 @@ public actor MacOSManagedInstallerPostToolXPCTransport:
     public init(
         helperIdentity: ManagedInstallerPostToolXPCHelperIdentity,
         expectedParentVersion: InstallerVersion? = nil,
-        packageRelease: VerifiedInstallerReleaseRecord? = nil
+        packageRelease: VerifiedInstallerReleaseRecord? = nil,
+        currentHelperRelease: (@Sendable () -> VerifiedInstallerReleaseRecord?)? = nil
     ) {
-        parentAdmission = .production(expectedVersion: expectedParentVersion, packageRelease: packageRelease)
+        parentAdmission = .production(expectedVersion: expectedParentVersion, packageRelease: packageRelease, currentRelease: currentHelperRelease)
         resumed = false
         connection = NSXPCConnection(
             machServiceName: Self.machServiceName,

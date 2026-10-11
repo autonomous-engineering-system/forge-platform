@@ -498,6 +498,164 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
         await transport.invalidate()
     }
 
+    func testPrivatePackageStagingReverifiesBytesAndRetainsBadCacheWithoutBlockingFreshStage() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let (package, release, _, _) = try installFixture(f)
+        let bytes = try Data(contentsOf: package.url), root = f.base.appendingPathComponent("journal")
+        let bad = MacOSInstallerHelperPackageStaging(root: root, download: { _ in Data(repeating: 0, count: bytes.count) },
+            verifier: .init(check: { _, _ in true }))
+        let refused = await bad.stage(release: release); XCTAssertNil(refused)
+        let retained = Set(try FileManager.default.contentsOfDirectory(atPath: root.path))
+        XCTAssertEqual(retained.count, 1)
+        let good = MacOSInstallerHelperPackageStaging(root: root, download: { _ in bytes }, verifier: .init(check: { _, _ in true }))
+        let result = await good.stage(release: release)
+        let staged = try XCTUnwrap(result)
+        XCTAssertEqual(staged.evidence, package.evidence)
+        XCTAssertEqual(try Data(contentsOf: staged.url), bytes)
+        XCTAssertTrue(retained.isSubset(of: Set(try FileManager.default.contentsOfDirectory(atPath: root.path))))
+        XCTAssertEqual(staged.url.lastPathComponent, VerifiedInstallerHelperPackage.assetName)
+        let deniedTrust = MacOSInstallerHelperPackageStaging(root: root, download: { _ in bytes }, verifier: .init(check: { _, _ in false }))
+        let rejected = await deniedTrust.stage(release: release); XCTAssertNil(rejected)
+        _ = MacOSInstallerHelperPackageStaging(root: root) // Construction makes no network request.
+    }
+    func testPackageStagingRefusesUnsafeRootDownloadFailureLengthOrRootChange() async throws {
+        for kind in ["mode", "link", "missing", "download", "short", "changed-root"] {
+            let f = try Fixture(); defer { f.remove() }
+            let (package, release, _, _) = try installFixture(f)
+            let bytes = try Data(contentsOf: package.url), root = f.base.appendingPathComponent("journal")
+            if kind == "mode" { XCTAssertEqual(chmod(root.path, 0o755), 0) }
+            if kind == "link" {
+                try FileManager.default.moveItem(at: root, to: f.base.appendingPathComponent("retained"))
+                try FileManager.default.createSymbolicLink(at: root, withDestinationURL: f.base.appendingPathComponent("retained"))
+            }
+            let source = kind == "missing" ? f.base.appendingPathComponent("absent") : root
+            let staging = MacOSInstallerHelperPackageStaging(root: source, download: { _ in
+                if ["mode", "link", "missing"].contains(kind) { XCTFail("Unsafe root must precede download") }
+                if kind == "download" { return nil }
+                if kind == "short" { return Data([1]) }
+                if kind == "changed-root" { try? Data([1]).write(to: root.appendingPathComponent("raced")) }
+                return bytes
+            }, verifier: .init(check: { _, _ in XCTFail("Rejected staging must not reach trust"); return false }))
+            let result = await staging.stage(release: release); XCTAssertNil(result, kind)
+            let v1 = await staging.stage(release: try f.record(package: false)); XCTAssertNil(v1)
+        }
+    }
+
+    func testPreparationStagesBeforeAuthorizationAndNeverRetriesSubmittedOutcome() async throws {
+        for failure in ["", "operator", "current", "namespace", "stage", "cancelled", "rejected", "unavailable", "install", "drift"] {
+            let f = try Fixture(); defer { f.remove() }
+            let (package, release, _, _) = try installFixture(f)
+            let bytes = try Data(contentsOf: package.url), root = f.base.appendingPathComponent("journal"), probe = InstallProbe()
+            let identity = try CurrentInstallerBundleIdentity(version: release.release.version, acceptedReleaseSequence: release.sequence,
+                channel: release.channel, sourceRevision: release.sourceRevision, bundleIdentifier: release.expectedBundleIdentifier,
+                teamIdentifier: release.expectedTeamIdentifier, codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+                provenanceSHA256: release.provenanceSHA256, releaseTrustConfigurationSHA256: release.expectedReleaseTrustConfigurationSHA256)
+            let staging = MacOSInstallerHelperPackageStaging(root: root, download: { _ in bytes }, verifier: .init(check: { _, _ in true }))
+            let preparation = MacOSInstallerHelperPackagePreparation(actions: .init(operatorAdmitted: { failure != "operator" }, current: {
+                if failure == "operator" { XCTFail("Operator refusal precedes app/credential/authorization work") }
+                return failure == "current" || (failure == "drift" && probe.items.contains("authorize")) ? nil : identity
+            }, installed: { _ in nil }, namespaceClean: { failure != "namespace" }, stage: { record in
+                probe.add("stage"); return failure == "stage" ? nil : await staging.stage(release: record)
+            }, authorize: { _, _ in
+                probe.add("authorize")
+                switch failure { case "cancelled": return .cancelled; case "rejected": return .rejected; case "unavailable": return .unavailable; default: return .submitted }
+            }, install: { _, record in
+                probe.add("install"); return failure == "install" ? nil : await f.reader().read(release: record)
+            }))
+            let result = await preparation.prepare(release: release, admission: .init(isCurrent: { true }))
+            if failure.isEmpty {
+                let expected = await f.reader().read(release: release)
+                XCTAssertEqual(result, .ready(try XCTUnwrap(expected)))
+                XCTAssertEqual(probe.items, ["stage", "authorize", "install"])
+            } else if failure == "cancelled" { XCTAssertEqual(result, .cancelled) }
+            else if ["operator", "current", "namespace", "stage"].contains(failure) { XCTAssertEqual(result, .blocked) }
+            else { XCTAssertEqual(result, .unresolved) }
+            if probe.items.contains("authorize") {
+                let before = probe.items
+                let repeated = await preparation.prepare(release: release, admission: .init(isCurrent: { true }))
+                XCTAssertEqual(repeated, failure == "drift" ? .blocked : .unresolved)
+                XCTAssertEqual(probe.items, before)
+            }
+            let v1 = await preparation.prepare(release: try f.record(package: false), admission: .init(isCurrent: { true })); XCTAssertEqual(v1, .blocked)
+            let production = MacOSInstallerHelperPackagePreparation(root: root)
+            let sourceRefused = await production.prepare(release: release, admission: .init(isCurrent: { true }))
+            XCTAssertEqual(sourceRefused, .blocked) // Unsigned XCTest cannot prompt or install.
+        }
+    }
+    func testPreparationFreshExistingReadbackAvoidsAuthorizationAndRefusesForeignHelper() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let release = try f.record()
+        let identity = try CurrentInstallerBundleIdentity(version: release.release.version, acceptedReleaseSequence: release.sequence,
+            channel: release.channel, sourceRevision: release.sourceRevision, bundleIdentifier: release.expectedBundleIdentifier,
+            teamIdentifier: release.expectedTeamIdentifier, codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256, releaseTrustConfigurationSHA256: release.expectedReleaseTrustConfigurationSHA256)
+        for foreign in [false, true] {
+            let preparation = MacOSInstallerHelperPackagePreparation(actions: .init(operatorAdmitted: { true }, current: { identity }, installed: { record in
+                foreign ? .init(releaseSequence: 99, appCodeDirectorySHA256: record.expectedCodeDirectorySHA256, processID: 42) : await f.reader().read(release: record)
+            }, namespaceClean: { XCTFail("Existing readback is not installation admission"); return false },
+            stage: { _ in XCTFail("No new stage"); return nil }, authorize: { _, _ in XCTFail("No new prompt"); return .unavailable },
+            install: { _, _ in XCTFail("No retry"); return nil }))
+            let result = await preparation.prepare(release: release, admission: .init(isCurrent: { true }))
+            if foreign { XCTAssertEqual(result, .blocked) }
+            else { let ready = await f.reader().read(release: release); XCTAssertEqual(result, .ready(try XCTUnwrap(ready))) }
+        }
+    }
+
+    func testRuntimeHelperSelectionBindsOnlyCurrentReleaseAndClosesOnDrift() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let v1 = try f.record(package: false), store = ManagedInstallerHelperBackendReleaseSelection()
+        XCTAssertNil(store.read())
+        let admission = ManagedInstallerHelperXPCParentAdmission(expectedVersion: v1.release.version,
+            readVersion: { v1.release.version }, currentRelease: { store.read() })
+        let missing = await admission.admitsCurrentParent(); XCTAssertFalse(missing)
+        store.bind(v1)
+        let validLegacy = await admission.admitsCurrentParent(); XCTAssertTrue(validLegacy)
+        XCTAssertFalse(admission.admits())
+        let drift = ManagedInstallerHelperXPCParentAdmission(expectedVersion: v1.release.version,
+            readVersion: { store.bind(nil); return v1.release.version }, currentRelease: { store.read() })
+        let revoked = await drift.admitsCurrentParent(); XCTAssertFalse(revoked); XCTAssertNil(store.read())
+        store.bind(try f.record())
+        let package = await admission.admitsCurrentParent(); XCTAssertFalse(package) // Actual production shelf absent; no SM fallback.
+        let blocked = ManagedInstallerHelperXPCParentAdmission.production(expectedVersion: nil, currentRelease: { store.read() })
+        let nilVersion = await blocked.admitsCurrentParent(); XCTAssertFalse(nilVersion)
+    }
+    func testReadOnlyHelperPreparationNeverStagesOrAuthorizesMissingHelper() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let release = try f.record()
+        let identity = try CurrentInstallerBundleIdentity(version: release.release.version, acceptedReleaseSequence: release.sequence,
+            channel: release.channel, sourceRevision: release.sourceRevision, bundleIdentifier: release.expectedBundleIdentifier,
+            teamIdentifier: release.expectedTeamIdentifier, codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256, releaseTrustConfigurationSHA256: release.expectedReleaseTrustConfigurationSHA256)
+        let preparation = MacOSInstallerHelperPackagePreparation(actions: .init(operatorAdmitted: { true }, current: { identity },
+            installed: { _ in nil }, namespaceClean: { true }, stage: { _ in XCTFail("Read-only cannot stage"); return nil },
+            authorize: { _, _ in XCTFail("Read-only cannot prompt"); return .unavailable }, install: { _, _ in XCTFail("Read-only cannot install"); return nil }))
+        let result = await preparation.prepare(release: release, allowAuthorization: false, admission: .init(isCurrent: { true }))
+        XCTAssertEqual(result, .blocked)
+    }
+
+    func testPostAuthorizationInspectionCannotInstallAfterRuntimeRevocation() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let (package, release, _, _) = try installFixture(f)
+        let bytes = try Data(contentsOf: package.url), root = f.base.appendingPathComponent("journal")
+        let identity = try CurrentInstallerBundleIdentity(version: release.release.version, acceptedReleaseSequence: release.sequence,
+            channel: release.channel, sourceRevision: release.sourceRevision, bundleIdentifier: release.expectedBundleIdentifier,
+            teamIdentifier: release.expectedTeamIdentifier, codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256, releaseTrustConfigurationSHA256: release.expectedReleaseTrustConfigurationSHA256)
+        let staging = MacOSInstallerHelperPackageStaging(root: root, download: { _ in bytes }, verifier: .init(check: { _, _ in true }))
+        let entered = expectation(description: "post-auth current-app inspection suspended"), gate = InstallGate(entered: entered), probe = InstallProbe()
+        let preparation = MacOSInstallerHelperPackagePreparation(actions: .init(operatorAdmitted: { true }, current: {
+            if probe.items.contains("authorized") { await gate.wait() }
+            return identity
+        }, installed: { _ in nil }, namespaceClean: { true }, stage: { record in await staging.stage(release: record) },
+            authorize: { _, _ in probe.add("authorized"); return .submitted },
+            install: { _, _ in XCTFail("Revoked runtime must not install after current-app await"); return nil }))
+        let first = Task { await preparation.prepare(release: release, admission: .init(isCurrent: { !probe.items.contains("revoked") })) }
+        await fulfillment(of: [entered], timeout: 3)
+        probe.add("revoked"); await gate.finish()
+        let result = await first.value; XCTAssertEqual(result, .unresolved)
+        XCTAssertEqual(probe.items, ["authorized", "revoked"])
+    }
+
     private func installFixture(_ f: Fixture) throws -> (MacOSInstallerImportedHelperPackage, VerifiedInstallerReleaseRecord,
         MacOSInstallerHelperPackageEffectJournal, FileInstallerSelfUpdateOperationLock) {
         let source = f.base.appendingPathComponent("source"), stage = f.base.appendingPathComponent("stage"), journal = f.base.appendingPathComponent("journal")

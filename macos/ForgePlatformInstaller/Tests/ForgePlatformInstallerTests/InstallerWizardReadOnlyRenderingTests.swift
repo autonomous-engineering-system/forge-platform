@@ -291,7 +291,7 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         let pending = model(current.state)
         prepare(pending)
         if case .loading = pending.state.deploymentSelection {} else {
-            XCTFail("inventory must be read before a clean target is selected")
+            XCTAssertTrue(pending.isHelperPreparationInFlight, "helper admission must precede inventory read")
         }
 
         var clean = try selfUpdateCurrent()

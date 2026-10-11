@@ -23,7 +23,7 @@ final class MacOSInstallerHelperBootstrapAuthorizationTests: XCTestCase {
                 declarations: { _ in calls.add("declarations"); return true },
                 namespaceAbsent: { calls.add("namespace"); return true },
                 api: Self.api(calls: calls, result: result), mutationLock: Lock())
-            let actual = await route.request(for: try Fixture().record())
+            let actual = await route.request(for: try Fixture().record(), admission: .init(isCurrent: { true }))
             XCTAssertEqual(actual, result)
             if result == .submitted || result == .rejected {
                 XCTAssertTrue(calls.items.contains("destroy-rights"))
@@ -52,7 +52,7 @@ final class MacOSInstallerHelperBootstrapAuthorizationTests: XCTestCase {
                     calls.add("namespace")
                     return kind != "occupied" && !(kind == "changed-after-inspect" && calls.items.filter { $0 == "namespace" }.count > 1)
                 }, api: Self.api(calls: calls, result: .submitted), mutationLock: Lock())
-            let result = await route.request(for: try Fixture().record())
+            let result = await route.request(for: try Fixture().record(), admission: .init(isCurrent: { true }))
             XCTAssertEqual(result, .rejected, kind)
             XCTAssertFalse(calls.items.contains("create"))
         }
@@ -65,10 +65,10 @@ final class MacOSInstallerHelperBootstrapAuthorizationTests: XCTestCase {
             inspect: { _ in calls.add("inspect"); return calls.items.count == 1 ? expected : different },
             declarations: { _ in true }, namespaceAbsent: { true },
             api: Self.api(calls: calls, result: .submitted), mutationLock: Lock())
-        let changed = await route.request(for: try Fixture().record())
+        let changed = await route.request(for: try Fixture().record(), admission: .init(isCurrent: { true }))
         XCTAssertEqual(changed, .rejected)
         for record in [try Fixture().record(includePackage: false), try Fixture().record(team: "OTHERTEAM1")] {
-            let result = await route.request(for: record)
+            let result = await route.request(for: record, admission: .init(isCurrent: { true }))
             XCTAssertEqual(result, .rejected)
         }
         XCTAssertEqual(calls.items.count, 2)
@@ -165,7 +165,7 @@ final class MacOSInstallerHelperBootstrapAuthorizationTests: XCTestCase {
 
     func testProductionInitializerRefusesReleaseWithoutPackageBeforeAnyPrompt() async throws {
         let route = MacOSInstallerHelperBootstrapAuthorization(mutationLock: Lock())
-        let result = await route.request(for: try Fixture().record(includePackage: false))
+        let result = await route.request(for: try Fixture().record(includePackage: false), admission: .init(isCurrent: { true }))
         XCTAssertEqual(result, .rejected)
     }
 
@@ -175,6 +175,19 @@ final class MacOSInstallerHelperBootstrapAuthorizationTests: XCTestCase {
             rights: { _ in calls.add("rights"); return result == .cancelled ? errAuthorizationCanceled :
                 result == .rejected ? errAuthorizationDenied : errAuthorizationSuccess },
             bless: { _ in calls.add("bless"); return true }, free: { _ in calls.add("destroy-rights") })
+    }
+
+    func testCurrencyRevocationDuringAdministratorPromptCannotReachBless() async throws {
+        let expected = try evidence(), calls = Calls()
+        let api = MacOSInstallerHelperBootstrapAuthorizationAPI(create: { OpaquePointer(bitPattern: 1) },
+            rights: { _ in calls.add("currency-invalidated"); return errAuthorizationSuccess },
+            bless: { _ in XCTFail("Revoked runtime authority must not bless even with unchanged app"); return true },
+            free: { _ in calls.add("destroy-rights") })
+        let route = MacOSInstallerHelperBootstrapAuthorization(currentApp: app, inspect: { _ in expected },
+            declarations: { _ in true }, namespaceAbsent: { true }, api: api, mutationLock: Lock())
+        let result = await route.request(for: try Fixture().record(), admission: .init(isCurrent: { !calls.items.contains("currency-invalidated") }))
+        XCTAssertEqual(result, .rejected)
+        XCTAssertEqual(calls.items, ["currency-invalidated", "destroy-rights"])
     }
 
     func testDriftDuringHumanPromptCannotReachBless() async throws {
@@ -187,7 +200,7 @@ final class MacOSInstallerHelperBootstrapAuthorizationTests: XCTestCase {
         let route = MacOSInstallerHelperBootstrapAuthorization(currentApp: app,
             inspect: { _ in expected }, declarations: { _ in true },
             namespaceAbsent: { !calls.items.contains("changed-during-prompt") }, api: api, mutationLock: Lock())
-        let result = await route.request(for: try Fixture().record())
+        let result = await route.request(for: try Fixture().record(), admission: .init(isCurrent: { true }))
         XCTAssertEqual(result, .rejected)
         XCTAssertEqual(calls.items, ["changed-during-prompt", "destroy-rights"])
     }
@@ -205,7 +218,7 @@ final class MacOSInstallerHelperBootstrapAuthorizationTests: XCTestCase {
                 inspect: { _ in XCTAssertEqual(calls.items, ["locked"]); return expected },
                 declarations: { _ in true }, namespaceAbsent: { true }, api: api,
                 mutationLock: ObservedLock(calls: calls, kind: kind))
-            let result = await route.request(for: try Fixture().record())
+            let result = await route.request(for: try Fixture().record(), admission: .init(isCurrent: { true }))
             XCTAssertEqual(result, kind == "busy" ? .rejected : kind == "release-fails" ? .unavailable : .submitted)
             XCTAssertEqual(calls.items, kind == "busy" ? [] : ["locked", "released"])
         }
