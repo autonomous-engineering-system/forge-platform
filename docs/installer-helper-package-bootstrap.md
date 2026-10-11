@@ -715,3 +715,24 @@ download, administrator prompt, helper registration, installation, signing,
 notarization, publication, product lifecycle or credential action occurred in
 these tests. Historical SM-helper migration and public clean CLI/GUI evidence
 remain open; the published V1 release and historical journals are unchanged.
+
+
+## Official candidate route and complete review corrections (2026-10-11)
+
+The protected unsigned-candidate workflow now builds the bootstrap after its
+exact release provenance check, using public metadata sections and absolute
+link input paths. It passes that executable into app packaging and requires its
+fixed embedded path. This closes a concrete gap where the alternative offline
+build supported bootstrap linking but the regular release candidate omitted it.
+Twenty owning workflow/runner/publisher checks passed; this is source assurance,
+not a runner build or public V2 package.
+
+Complete candidate review also found that the bounded Codex cache bootstrap
+opened its source before regular-file admission without nonblocking mode.
+O_NONBLOCK now rejects an actual no-writer FIFO promptly before cache staging
+or publication. Ten owning checks passed, including the new real FIFO negative;
+changed-file coverage is 98.239436 percent. No real cache was read or transferred.
+The required Python/Foundation/workflow validation passed 1522 checks across
+69 suites and its unchanged strict coverage gate. Complete exact-head independent
+review, protected delivery, actual signing/publication and live acceptance remain
+separate required gates. Original authentication uncertainty is unchanged.

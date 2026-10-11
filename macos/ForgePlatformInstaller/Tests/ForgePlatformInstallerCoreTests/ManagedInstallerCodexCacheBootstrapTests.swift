@@ -19,6 +19,17 @@ final class ManagedInstallerCodexCacheBootstrapTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.target.providerHomeURL.path), ["auth.json"])
     }
 
+    func testSourceFIFORejectsWithoutWaitingForWriter() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try FileManager.default.removeItem(at: fixture.original)
+        XCTAssertEqual(mkfifo(fixture.original.path, 0o600), 0)
+        let start = Date()
+        XCTAssertEqual(fixture.bootstrap.bootstrap(source: fixture.source, target: fixture.target), .rejected)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
+    }
+
     func testExistingCacheAndSymlinkAreNeverOverwritten() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

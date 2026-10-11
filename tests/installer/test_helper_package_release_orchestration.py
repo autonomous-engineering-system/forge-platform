@@ -27,6 +27,23 @@ class PackageOrchestrationTests(unittest.TestCase):
         self.assertEqual(positions,sorted(positions))
         self.assertEqual(source.count('sign_helper_package "$CARRIER_APP"'),1)
 
+    def test_public_unsigned_candidate_contains_release_bound_bootstrap(self):
+        source=(ROOT/'.github/workflows/forge-platform-installer-release.yml').read_text()
+        stages=[
+            'test "$ACTUAL_PROVENANCE_SHA256" = "$PROVENANCE_SHA256"',
+            'python3 scripts/prepare_macos_installer_bootstrap_metadata.py',
+            'swift build -c release --product forge-platform-installer-bootstrap',
+            'test -x "$BINARY_DIRECTORY/forge-platform-installer-bootstrap"',
+            'python3 scripts/package_macos_installer_app.py',
+            '--bootstrap-executable "$BINARY_DIRECTORY/forge-platform-installer-bootstrap"',
+            'test -x release-input/ForgePlatformInstaller.app/Contents/Library/LaunchServices/com.autonomous-engineering-system.forge-platform-installer.bootstrap',
+        ]
+        positions=[source.index(stage) for stage in stages]
+        self.assertEqual(positions,sorted(positions))
+        for section in ['__info_plist','__launchd_plist']:
+            self.assertIn('-Xlinker -sectcreate -Xlinker __TEXT -Xlinker '+section,source)
+        self.assertIn('BOOTSTRAP_METADATA="$PWD/release-input/bootstrap-link-inputs"',source)
+
     def test_unauthorized_contexts_refused_before_checkout_or_artifact_effects(self):
         cases=[([],{},'usage-run-id-source-sha'),(['0','a'*40],{},'invalid-run-id'),(['1','bad'],{},'invalid-source-sha'),(['1','a'*40],{},'composition-catalog-url-required'),(['1','a'*40],{'FORGE_PLATFORM_COMPOSITION_CATALOG_URL':'https://source-only.invalid/catalog.json','GITHUB_ACTIONS':'true'},'actions-context-prohibited'),(['1','a'*40],{'FORGE_PLATFORM_COMPOSITION_CATALOG_URL':'https://source-only.invalid/catalog.json','RUNNER_NAME':'source-only'},'actions-context-prohibited')]
         for args,extra,reason in cases:

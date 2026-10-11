@@ -35,7 +35,7 @@ struct ManagedInstallerCodexCacheBootstrap: Sendable {
         defer { _ = close(sourceHome) }
         guard let targetHome = openHome(target) else { return .rejected }
         defer { _ = close(targetHome) }
-        let input = openat(sourceHome, "auth.json", O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        let input = openat(sourceHome, "auth.json", O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW_ANY)
         guard input >= 0 else { return .rejected }
         defer { _ = close(input) }
         var before = stat()

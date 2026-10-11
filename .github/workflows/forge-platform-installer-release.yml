@@ -224,10 +224,25 @@ jobs:
             --output release-input/ForgePlatformInstallerReleaseProvenance.json
           ACTUAL_PROVENANCE_SHA256="$(python3 -c 'import json; print(json.load(open("release-input/ForgePlatformInstallerReleaseProvenance.json"))["provenance_sha256"])')"
           test "$ACTUAL_PROVENANCE_SHA256" = "$PROVENANCE_SHA256"
+          BOOTSTRAP_METADATA="$PWD/release-input/bootstrap-link-inputs"
+          python3 scripts/prepare_macos_installer_bootstrap_metadata.py \
+            --release-trust release-trust/ForgePlatformInstallerReleaseTrust.json \
+            --release-provenance release-input/ForgePlatformInstallerReleaseProvenance.json \
+            --output "$BOOTSTRAP_METADATA"
+          (
+            cd macos/ForgePlatformInstaller
+            swift build -c release --product forge-platform-installer-bootstrap \
+              -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+              -Xlinker "$BOOTSTRAP_METADATA/bootstrap-info.plist" \
+              -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __launchd_plist \
+              -Xlinker "$BOOTSTRAP_METADATA/bootstrap-launchd.plist"
+          )
+          test -x "$BINARY_DIRECTORY/forge-platform-installer-bootstrap"
           python3 scripts/package_macos_installer_app.py \
             --executable "$BINARY_DIRECTORY/ForgePlatformInstaller" \
             --cli-executable "$BINARY_DIRECTORY/forge-platform-installer" \
             --helper-executable "$BINARY_DIRECTORY/forge-platform-installer-helper" \
+            --bootstrap-executable "$BINARY_DIRECTORY/forge-platform-installer-bootstrap" \
             --product-worker release-input/forge-platform-product-worker.pyz \
             --forge-update-controller release-input/forge-update-controller.py \
             --forge-release-complete-receipt release-input/forge-release-complete-2.7.38.json \
@@ -242,6 +257,7 @@ jobs:
           test -x release-input/ForgePlatformInstaller.app/Contents/MacOS/ForgePlatformInstaller
           test -x release-input/ForgePlatformInstaller.app/Contents/MacOS/forge-platform-installer
           test -x release-input/ForgePlatformInstaller.app/Contents/Resources/forge-platform-installer-helper
+          test -x release-input/ForgePlatformInstaller.app/Contents/Library/LaunchServices/com.autonomous-engineering-system.forge-platform-installer.bootstrap
           test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-platform-product-worker.pyz
           test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-update-controller.py
           test -f release-input/ForgePlatformInstaller.app/Contents/Resources/forge-release-complete-2.7.38.json
