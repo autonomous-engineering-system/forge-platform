@@ -390,3 +390,34 @@ these tests, no signer ran and no real operation became PUBLISHED. Production
 signer/upload/download orchestration still needs the companion package wired in;
 root installation, activation, first-run readback and historical recovery remain
 open. Public 0.4.9 and its original product pins are unchanged.
+
+
+## Offline signed companion orchestration (2026-10-11, source only)
+
+The protected offline signer now selects exactly one existing Developer ID
+Installer identity of the same team, from private bounded public certificate
+metadata. The selection is separate from the app's Developer ID Application
+identity; no identity is created, exported or displayed. The required selector
+must be configured in the existing bounded signing route before any actual run.
+No certificate inventory or signing authority was exercised in this qualification.
+
+A source-only library cannot execute as a standalone signer. Its protected
+caller builds the script-free candidate from the actually verified app and
+checks the exact previously captured archive digest and full payload before
+productsign. It then uses the existing private notary profile, requires an
+accepted canonical submission UUID, staples the package, and independently
+reruns the existing actual platform/payload verifier before emitting the private
+companion receipt. Offline evidence is explicitly V2 and contains the closed
+companion metadata; publication remains NOT_PERFORMED.
+
+Nine scoped source checks passed, including execution of the actual shell/Python
+argument handoffs, real unsigned candidate format/digest checks, refusal of
+standalone execution and inert sourcing. The final handoff's substituted
+inspector is only a wire check and proves no Apple trust. The new parser has
+100 percent coverage under the unchanged strict gate. Shell syntax and scoped
+read-only review passed after an argument-index finding was corrected. No signer
+script, Keychain operation, notary submission or installed-helper action ran.
+
+The regular release upload/download/descriptor pipeline still needs the signed
+companion wired in. Root install/activation, installed-bootstrap readback,
+frontend composition and historical recovery remain separate open gates.

@@ -18,6 +18,7 @@ fail() {
 [[ "$(id -un)" == "$FORGE_PLATFORM_SIGNER_ACCOUNT" ]] || fail signer-account-mismatch
 [[ -n "${FORGE_PLATFORM_APPLE_TEAM_ID:-}" ]] || fail team-id-required
 [[ -n "${FORGE_PLATFORM_CODESIGN_IDENTITY:-}" ]] || fail codesign-identity-required
+[[ -n "${FORGE_PLATFORM_INSTALLER_SIGNING_IDENTITY:-}" ]] || fail installer-signing-identity-required
 [[ -n "${FORGE_PLATFORM_NOTARYTOOL_PROFILE:-}" ]] || fail notary-profile-required
 [[ -n "${FORGE_PLATFORM_RELEASE_TRUST_RESOURCE:-}" ]] || fail release-trust-resource-required
 [[ -n "${FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE:-}" ]] || fail catalog-trust-resource-required
@@ -73,6 +74,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+source scripts/ci/macos_installer_helper_package_signing.sh
+installer_signing_hash="$(select_helper_package_identity "$private" "$FORGE_PLATFORM_APPLE_TEAM_ID")" || fail installer-signing-identity-not-ready
 
 # Full source validation runs before any signing or notarization authority is used.
 sh scripts/validate.sh >"$private/repository-validation.log" 2>&1 || fail repository-validation-failed
@@ -297,16 +301,19 @@ PY
 archive_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
 [[ "$archive_sha" =~ ^[0-9a-f]{64}$ ]] || fail archive-digest-invalid
 
+sign_helper_package "$app" "$archive" "$installer_version" "$SOURCE_SHA" "$work" "$private" "$FORGE_PLATFORM_APPLE_TEAM_ID" "$installer_signing_hash" "sha256:$archive_sha" || fail helper-package-qualification-failed
+
 evidence="$work/offline-signing-evidence.json"
 SOURCE_SHA="$SOURCE_SHA" INSTALLER_VERSION="$installer_version" ARCHIVE_NAME="$(basename "$archive")" \
 ARCHIVE_SHA256="$archive_sha" CODE_DIRECTORY_SHA256="$code_directory" NOTARY_ID="$notary_id" \
 TEAM_ID="$FORGE_PLATFORM_APPLE_TEAM_ID" \
 BUNDLE_ID="$(python3 scripts/validate_installer_release_identity.py --field bundle_identifier)" \
-python3 - "$evidence" <<'PY'
+python3 - "$evidence" "$work/helper-package-evidence.json" <<'PY'
 import json, os, sys
 from pathlib import Path
 value={
-    "schema":"forge-platform.offline-installer-signing-evidence/v1",
+    "schema":"forge-platform.offline-installer-signing-evidence/v2",
+    "helper_package":json.loads(Path(sys.argv[2]).read_text(encoding="utf-8")),
     "source_revision":os.environ["SOURCE_SHA"],
     "installer_version":os.environ["INSTALLER_VERSION"],
     "architecture":"arm64",
