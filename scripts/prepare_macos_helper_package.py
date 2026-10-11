@@ -23,7 +23,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
-from package_macos_installer_archive import _scan_bundle, _source_bundle
+from package_macos_installer_archive import _scan_bundle, _source_bundle, _same_snapshot
 from forge_platform.installer_release_provenance import (
     INSTALLER_RELEASE_PROVENANCE_RESOURCE_NAME,
     parse_installer_release_provenance_bytes,
@@ -93,6 +93,39 @@ def verify_app(app: Path, *, version: str, source_revision: str) -> str:
     return provenance.provenance_sha256
 
 
+
+
+def copy_public_app_without_local_attributes(source: Path, destination: Path) -> None:
+    """Copy exact public app bytes/modes, without importing local xattrs/ACLs."""
+    entries = _scan_bundle(source)
+    destination.mkdir(mode=0o755)
+    for entry in entries:
+        parts = entry.archive_path.split("/", 1)
+        if len(parts) == 1:
+            destination.chmod(entry.permissions)
+            continue
+        target = destination / parts[1]
+        if entry.kind == "directory":
+            target.mkdir(mode=entry.permissions)
+            target.chmod(entry.permissions)
+            continue
+        descriptor = os.open(entry.source, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        try:
+            if not _same_snapshot(os.fstat(descriptor), entry):
+                raise ValueError("helper source app changed before copy")
+            remaining = entry.size
+            with target.open("xb") as output:
+                while remaining:
+                    data = os.read(descriptor, min(remaining, 65536))
+                    if not data:
+                        raise ValueError("helper source app truncated during copy")
+                    output.write(data)
+                    remaining -= len(data)
+            if os.read(descriptor, 1) or not _same_snapshot(os.fstat(descriptor), entry):
+                raise ValueError("helper source app changed during copy")
+            target.chmod(entry.permissions)
+        finally:
+            os.close(descriptor)
 
 
 def strip_staged_metadata(payload: Path) -> None:
@@ -180,7 +213,7 @@ def build_candidate(*, app_bundle: Path, output: Path,
         staged_app.parent.mkdir(parents=True)
         # Retain links if the source changes unexpectedly; the second profile
         # scan rejects them instead of dereferencing them outside this bundle.
-        shutil.copytree(source, staged_app, symlinks=True)
+        copy_public_app_without_local_attributes(source, staged_app)
         if verify_app(staged_app, version=version, source_revision=source_revision) != provenance_sha256:
             raise ValueError("helper package provenance changed during staging")
         daemon = payload / PLIST_RELATIVE
@@ -188,6 +221,10 @@ def build_candidate(*, app_bundle: Path, output: Path,
         daemon.write_bytes(plistlib.dumps(package_launchdaemon(), fmt=plistlib.FMT_XML, sort_keys=True))
         daemon.chmod(0o644)
         strip_staged_metadata(payload)
+        # Parent directories contain only public package payload. Their installed
+        # modes must be explicit even under the private signer's umask 077.
+        for current, directories, files in os.walk(payload):
+            Path(current).chmod(0o755)
         # Notarization and signature must still be valid after sanitizing only
         # the fresh payload copy. Never modify the retained source release.
         if verify_app(staged_app, version=version, source_revision=source_revision) != provenance_sha256:
@@ -197,7 +234,7 @@ def build_candidate(*, app_bundle: Path, output: Path,
         candidate = workspace / "candidate.pkg"
         run_checked(["/usr/bin/pkgbuild", "--root", str(payload),
                      "--component-plist", str(components), "--install-location", "/",
-                     "--ownership", "recommended", "--identifier", BUNDLE_ID + ".helper-package",
+                     "--ownership", "recommended", "--compression", "legacy", "--identifier", BUNDLE_ID + ".helper-package",
                      "--version", version, str(candidate)])
         digest, size = publish_candidate(candidate, destination)
         return {"status": "UNSIGNED_CANDIDATE_ONLY", "installer_version": version,

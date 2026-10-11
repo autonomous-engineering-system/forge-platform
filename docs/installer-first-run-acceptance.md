@@ -69,3 +69,35 @@ The historical effect record cannot be retired from process absence alone: its
 schema does not identify a credential effect or establish completed ownership
 readback. Its sticky uncertainty remains preserved; no reset, new operation or
 authentication retry is authorized by this assembly qualification.
+
+
+## Package-bearing release producer qualification (2026-10-11)
+
+The local qualifier now has paired optional signed helper-package inputs. It
+emits descriptor V2 only after actual Developer ID Installer/team, stapled
+notarization and Gatekeeper checks, stable private file readback, and exact
+payload binding to the already captured installer archive digest. V1 remains
+the default. PackageInfo, the legacy CPIO payload and BOM must agree on the
+fixed app, release provenance, every app byte/mode, root ownership and fixed
+LaunchDaemon. Extra scripts, files, links and installation selectors fail closed.
+Only the existing strictly bounded macOS provenance metadata profile is accepted;
+its opaque bytes are never published as evidence.
+
+The package preparer copies public app bytes without local attributes, retains
+all real Apple app checks, fixes payload directory modes and requests legacy
+compression. Its output remains an unsigned candidate with no production
+admission. Twenty-five focused checks passed; changed production files exceed
+the existing strict 80.2 percent coverage gate (86.5 to 98.78 percent). A genuine
+public-app package preparation supplied the producer coverage evidence. Source
+review identified an initial missing release/payload binding; the bounded
+payload inspection fixed that finding and the subsequent read-only review passed.
+
+The native package verifier also rejects a FIFO before blocking on its contents.
+Eight focused native checks and 96.75 percent verifier coverage qualified this
+source fix. Neither group installed a package, changed a helper or retired a
+historical uncertain effect record.
+
+Remaining delivery gates include V2 structural publication/readback and actual
+signed-package production, root installation/effect journaling and activation,
+frontend installed-helper readback, supported historical recovery, protected
+publication and real public CLI/GUI qualification. Public 0.4.9 remains unchanged.

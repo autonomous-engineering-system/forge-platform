@@ -91,6 +91,9 @@ TARGETS = (
     "scripts/observe_composition_producer_releases.py",
     "scripts/package_macos_installer_app.py",
     "scripts/prepare_macos_installer_bootstrap_metadata.py",
+    "scripts/verified_installer_helper_package.py",
+    "scripts/installer_helper_package_payload.py",
+    "scripts/qualify_local_installer_release.py",
     "scripts/build_installer_product_worker.py",
     "scripts/package_macos_installer_archive.py",
     "scripts/prepare_managed_tool_pages.py",
@@ -177,6 +180,8 @@ TESTS = (
     "tests/installer/test_package_macos_installer_app.py",
     "tests/installer/test_package_macos_installer_bootstrap.py",
     "tests/installer/test_prepare_macos_installer_bootstrap_metadata.py",
+    "tests/installer/test_verified_installer_helper_package.py",
+    "tests/installer/test_qualify_local_installer_release.py",
     "tests/installer/test_build_installer_product_worker.py",
     "tests/installer/test_package_macos_installer_archive.py",
 )

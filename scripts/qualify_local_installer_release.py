@@ -201,6 +201,8 @@ def qualify(
     run_id: int,
     journal_root: Path,
     output_directory: Path,
+    signed_helper_package: Path | None = None,
+    helper_package_notarization_receipt_reference: str | None = None,
 ) -> InstallerReleaseOperation:
     try:
         preparation = InstallerReleasePreparation.parse(
@@ -273,6 +275,16 @@ def qualify(
         },
         "composition_catalog": {"url": catalog_url},
     }
+    if (signed_helper_package is None) != (helper_package_notarization_receipt_reference is None):
+        raise ValueError("helper package and its notarization reference must be paired")
+    if signed_helper_package is not None:
+        from scripts.verified_installer_helper_package import read_descriptor
+        descriptor["schema"] = "forge-platform.installer-release/v2"
+        descriptor["installer"]["assets"][0]["helper_package"] = read_descriptor(
+            signed_helper_package, team=identity.team_identifier,
+            notarization_reference=helper_package_notarization_receipt_reference,
+            archive=signed_archive, preparation=preparation, archive_digest=archive_digest,
+        )
     payload = _canonical(descriptor)
     tool = _descriptor_key_tool(descriptor_key_tool)
     expected_public = dict(trust.ed25519_public_keys)
@@ -346,6 +358,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preparation", required=True)
     parser.add_argument("--signed-archive", required=True)
+    parser.add_argument("--signed-helper-package")
+    parser.add_argument("--helper-package-notarization-receipt-reference")
     parser.add_argument("--release-trust", required=True)
     parser.add_argument("--descriptor-key-tool", required=True)
     parser.add_argument("--code-directory-sha256", required=True)
@@ -361,6 +375,8 @@ def main(argv: list[str] | None = None) -> int:
         operation = qualify(
             preparation_path=Path(args.preparation),
             signed_archive=Path(args.signed_archive),
+            signed_helper_package=Path(args.signed_helper_package) if args.signed_helper_package else None,
+            helper_package_notarization_receipt_reference=args.helper_package_notarization_receipt_reference,
             release_trust_path=Path(args.release_trust),
             descriptor_key_tool=Path(args.descriptor_key_tool),
             code_directory_sha256=args.code_directory_sha256,
