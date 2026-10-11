@@ -81,7 +81,7 @@ struct ManagedInstallerCodexCacheBootstrap: Sendable {
         }
         guard written, fchmod(output, 0o600) == 0,
               synchronize(output), sourceUnchanged(sourceHome, input: input, before: before),
-              privateDirectory(targetHome, owner: target.account.uid, group: target.account.gid),
+              privateComponentHome(targetHome, owner: target.account.uid, group: target.account.gid),
               fchown(output, target.account.uid, target.account.gid) == 0,
               synchronize(output) else {
             return discardTemporary(staging, name: temporary, created: created) ? .rejected : .uncertain
@@ -92,7 +92,7 @@ struct ManagedInstallerCodexCacheBootstrap: Sendable {
             return discardTemporary(staging, name: temporary, created: created) ? .rejected : .uncertain
         }
         guard synchronize(targetHome),
-              privateDirectory(targetHome, owner: target.account.uid, group: target.account.gid)
+              privateComponentHome(targetHome, owner: target.account.uid, group: target.account.gid)
         else { return .uncertain }
         var published = stat()
         guard fstatat(targetHome, "auth.json", &published, AT_SYMLINK_NOFOLLOW) == 0,
@@ -173,7 +173,8 @@ struct ManagedInstallerCodexCacheBootstrap: Sendable {
     private func sourceUnchanged(_ home: Int32, input: Int32, before: stat) -> Bool {
         var descriptor = stat()
         var leaf = stat()
-        guard fstat(input, &descriptor) == 0,
+        guard privateComponentHome(home, owner: before.st_uid, group: before.st_gid),
+              fstat(input, &descriptor) == 0,
               fstatat(home, "auth.json", &leaf, AT_SYMLINK_NOFOLLOW) == 0 else { return false }
         return [descriptor, leaf].allSatisfy {
             $0.st_dev == before.st_dev && $0.st_ino == before.st_ino
@@ -217,10 +218,15 @@ struct ManagedInstallerCodexCacheBootstrap: Sendable {
             guard next >= 0 else { return nil }
             let final = index == segments.count - 1
             guard privateDirectory(next, owner: final ? target.account.uid : expectedOwner,
-                                   group: final ? target.account.gid : nil) else { _ = close(next); return nil }
+                                   group: final ? target.account.gid : nil),
+                  !final || hasNoExtendedACL(next) else { _ = close(next); return nil }
             current = next
         }
         return current
+    }
+
+    private func privateComponentHome(_ descriptor: Int32, owner: uid_t, group: gid_t) -> Bool {
+        privateDirectory(descriptor, owner: owner, group: group) && hasNoExtendedACL(descriptor)
     }
 
     private func privateDirectory(_ descriptor: Int32, owner: uid_t, group: gid_t?) -> Bool {

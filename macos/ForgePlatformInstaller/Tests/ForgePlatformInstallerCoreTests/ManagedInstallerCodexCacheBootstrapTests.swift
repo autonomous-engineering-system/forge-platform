@@ -163,6 +163,46 @@ final class ManagedInstallerCodexCacheBootstrapTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
     }
 
+    func testActualComponentHomeACLRejectsBeforePublication() throws {
+        for destination in [false, true] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            let home = destination ? fixture.target.providerHomeURL : fixture.source.providerHomeURL
+            try addHomeACL(home)
+            XCTAssertEqual(fixture.bootstrap.bootstrap(source: fixture.source, target: fixture.target), .rejected)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.path))
+            XCTAssertEqual(try Data(contentsOf: fixture.original), fixture.bytes)
+        }
+    }
+
+    func testACLDriftAtPublicationReturnsUncertainAndRetainsEvidence() throws {
+        for destination in [false, true] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            let changedHome = destination ? fixture.target.providerHomeURL : fixture.source.providerHomeURL
+            let bootstrap = ManagedInstallerCodexCacheBootstrap(root: fixture.root, expectedOwner: getuid(), publish: { staging, name, home in
+                guard renameatx_np(staging, name, home, "auth.json", UInt32(RENAME_EXCL)) == 0 else { return false }
+                let grant = Process()
+                grant.executableURL = URL(fileURLWithPath: "/bin/chmod")
+                grant.arguments = ["+a", "everyone allow add_file,delete_child", changedHome.path]
+                grant.standardOutput = FileHandle.nullDevice; grant.standardError = FileHandle.nullDevice
+                do { try grant.run(); grant.waitUntilExit(); return grant.terminationStatus == 0 } catch { return false }
+            })
+            XCTAssertEqual(bootstrap.bootstrap(source: fixture.source, target: fixture.target), .uncertain)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destination.path))
+            XCTAssertEqual(try Data(contentsOf: fixture.original), fixture.bytes)
+        }
+    }
+
+    private func addHomeACL(_ home: URL) throws {
+        let grant = Process()
+        grant.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        grant.arguments = ["+a", "everyone allow add_file,delete_child", home.path]
+        grant.standardOutput = FileHandle.nullDevice; grant.standardError = FileHandle.nullDevice
+        try grant.run(); grant.waitUntilExit()
+        XCTAssertEqual(grant.terminationStatus, 0)
+    }
+
     private struct Fixture {
         let root: URL
         let source: ManagedInstallerProviderAuthenticationTarget

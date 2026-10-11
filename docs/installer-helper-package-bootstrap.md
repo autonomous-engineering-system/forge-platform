@@ -736,3 +736,31 @@ The required Python/Foundation/workflow validation passed 1522 checks across
 69 suites and its unchanged strict coverage gate. Complete exact-head independent
 review, protected delivery, actual signing/publication and live acceptance remain
 separate required gates. Original authentication uncertainty is unchanged.
+
+
+## Complete review — final home boundary and compatibility hold
+
+The full independent review of 92 changed files at8797b14 found two P2 issues.
+The final source/target Codex homes now require an empty extended ACL on
+admission and repeated readback/publication checks. Existing helper-owned
+ancestor search ACLs are retained. Twelve owning checks passed, including actual
+ACLs on both homes and post-publication drift; uncertain effects retain evidence.
+Changed-module coverage is98.281786 percent. Security re-review passed on this
+delta and the preceding full scope; immutable successor attestation follows.
+
+Quality remains blocked: immutable public0.4.9 accepts only the canonical V1
+descriptor. Publishing V2 under that same asset name prevents old clients from
+discovering their update. A temporary bridge followed by a latestV2 switch does
+not support clients that skipped the bridge. A sustainable same-release solution
+needs preserved signed V1 compatibility metadata plus a separately signed, exact
+companion binding and independent durable replay evidence. No descriptor hash
+replacement, fallback, trust change or compatibility workaround was implemented.
+That source/protocol correction requires its explicit bounded owner decision.
+
+The new additional release allowance remains MAX1/BOOKED0/REMAINING1. No
+candidate releasebuild, signing, notarization, PR, merge or publication was
+started. Complete owning gates on8797b14 passed1522Python checks and1632native
+checks with254production-file strict coverage gates; this subsequent narrow
+security fix was qualified only with its owning suite and exact module coverage.
+Neither those tests nor source review establish public CLI/GUI installation.
+Historical authentication uncertainty and original operation records are intact.
