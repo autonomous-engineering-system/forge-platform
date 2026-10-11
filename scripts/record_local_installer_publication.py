@@ -40,6 +40,10 @@ def record(
     run_id: int,
     journal_root: Path,
     output_path: Path,
+    helper_package_path: Path | None = None,
+    helper_package_readback_path: Path | None = None,
+    helper_companion_path: Path | None = None,
+    helper_companion_readback_path: Path | None = None,
 ) -> InstallerReleaseOperation:
     try:
         operation = InstallerReleaseOperation.parse(json.loads(operation_path.read_text(encoding="utf-8")))
@@ -58,6 +62,41 @@ def record(
         or archive_readback_digest != archive_digest
     ):
         raise ValueError("GitHub Release readback bytes do not bind qualified evidence")
+    from scripts.installer_helper_package_release import package_metadata, require_readback
+    from scripts.verify_installer_release_evidence import _strict_object
+    descriptor_raw = descriptor_path.read_bytes()
+    if "sha256:" + sha256(descriptor_raw).hexdigest() != descriptor_digest:
+        raise ValueError("publication descriptor changed before companion readback")
+    primary = _strict_object(descriptor_raw, "installer release descriptor")
+    metadata = package_metadata(primary)
+    from forge_platform.installer_helper_companion import requires_companion, read_document, bound_metadata, qualification_binding
+    companion_digest = None
+    if requires_companion(primary):
+        if helper_companion_path is None or helper_companion_readback_path is None:
+            raise ValueError("companion and independent readback are required")
+        original, original_identity = read_document(helper_companion_path)
+        readback, readback_identity = read_document(helper_companion_readback_path)
+        companion_digest = qualification_binding(operation)
+        if companion_digest is None or operation.qualification.qualification_receipt_reference != f"receipt:local-signing-qualification-{run_id}-helper-" + companion_digest.removeprefix("sha256:"):
+            raise ValueError("companion qualification does not bind publication run")
+        metadata = bound_metadata(descriptor_raw, original, companion_digest)
+        if original_identity == readback_identity or original != readback:
+            raise ValueError("companion publication requires exact independent readback")
+        bound_metadata(descriptor_raw, readback, companion_digest)
+        from scripts.verify_installer_release_evidence import _descriptor_signature_envelopes
+        _descriptor_signature_envelopes(_strict_object(original, "helper companion")["signatures"], operation)
+    elif helper_companion_path is not None or helper_companion_readback_path is not None:
+        raise ValueError("unbound companion readback is not admitted")
+    if metadata is None:
+        if helper_package_path is not None or helper_package_readback_path is not None:
+            raise ValueError("V1 publication cannot contain helper package readback")
+    else:
+        if helper_package_path is None or helper_package_readback_path is None:
+            raise ValueError("V2 publication requires exact helper package and independent readback")
+        original_identity = require_readback(helper_package_path, metadata)
+        readback_identity = require_readback(helper_package_readback_path, metadata)
+        if original_identity == readback_identity:
+            raise ValueError("helper package publication requires an independent readback file")
     evidence = InstallerPublicationEvidence(
         github_repository=operation.release_identity.github_repository,
         release_tag=operation.release_tag,
@@ -69,8 +108,8 @@ def record(
         descriptor_digest=descriptor_digest,
         descriptor_readback_digest=descriptor_readback_digest,
         archives={"arm64": archive_readback_digest},
-        publication_receipt_reference=f"receipt:github-release-{run_id}",
-        readback_receipt_reference=f"receipt:github-release-readback-{run_id}",
+        publication_receipt_reference=f"receipt:github-release-{run_id}" + ("-helper-" + companion_digest.removeprefix("sha256:") if companion_digest else ""),
+        readback_receipt_reference=f"receipt:github-release-readback-{run_id}" + ("-helper-" + companion_digest.removeprefix("sha256:") if companion_digest else ""),
     )
     store = InstallerReleaseOperationStore(journal_root)
     store.acquire(operation.operation_id)
@@ -96,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--descriptor-readback", required=True)
     parser.add_argument("--archive", required=True)
     parser.add_argument("--archive-readback", required=True)
+    parser.add_argument("--helper-package")
+    parser.add_argument("--helper-package-readback")
+    parser.add_argument("--helper-companion")
+    parser.add_argument("--helper-companion-readback")
     parser.add_argument("--run-id", required=True, type=int)
     parser.add_argument("--journal-root", required=True)
     parser.add_argument("--output", required=True)
@@ -103,6 +146,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         published = record(
             operation_path=Path(args.operation),
+            helper_package_path=Path(args.helper_package) if args.helper_package else None,
+            helper_package_readback_path=Path(args.helper_package_readback) if args.helper_package_readback else None,
+            helper_companion_path=Path(args.helper_companion) if args.helper_companion else None,
+            helper_companion_readback_path=Path(args.helper_companion_readback) if args.helper_companion_readback else None,
             descriptor_path=Path(args.descriptor),
             descriptor_readback_path=Path(args.descriptor_readback),
             archive_path=Path(args.archive),

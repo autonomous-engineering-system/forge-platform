@@ -13,7 +13,7 @@ final class ManagedInstallerProviderDeviceAuthenticationTests: XCTestCase {
                 requirement: codex, componentHome: home
             )
         )
-        XCTAssertEqual(codexCommand.arguments, ["login", "--device-auth"])
+        XCTAssertEqual(codexCommand.arguments, ["-c", "cli_auth_credentials_store=\"file\"", "login", "--device-auth"])
         XCTAssertEqual(codexCommand.environment["CODEX_HOME"], home.path)
         XCTAssertNil(codexCommand.environment["GH_CONFIG_DIR"])
         XCTAssertEqual(codexCommand.environment["HOME"], home.path)

@@ -195,7 +195,7 @@ def _read_regular_non_symlink_file(
     nofollow = getattr(os, "O_NOFOLLOW", None)
     if nofollow is None:
         raise ValueError(f"{label} cannot be opened safely on this platform")
-    flags = os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0)
+    flags = os.O_RDONLY | os.O_NONBLOCK | nofollow | getattr(os, "O_CLOEXEC", 0)
     descriptor = -1
     try:
         descriptor = os.open(path, flags)
@@ -545,7 +545,7 @@ def _descriptor_assets(
                 "operating_system", "architecture", "minimum_macos_version", "asset_name", "digest",
                 "bundle_identifier", "team_identifier",
                 "code_directory_sha256", "notarization_receipt_reference",
-            }),
+            } | ({"helper_package"} if descriptor["schema"].endswith("/v2") else set())),
             "descriptor asset",
         )
         if value["operating_system"] != "macos":
@@ -661,6 +661,8 @@ def verify(
     expected_bundle_identifier: str,
     expected_team_identifier: str,
     expected_asset_prefix: str,
+    helper_package_path: Path | None = None,
+    helper_companion_path: Path | None = None,
 ) -> InstallerReleaseEvidenceVerification:
     if _REVISION.fullmatch(source_revision) is None:
         raise ValueError("candidate source revision is invalid")
@@ -723,8 +725,20 @@ def verify(
         }),
         "installer release descriptor",
     )
-    if descriptor["schema"] != "forge-platform.installer-release/v1":
-        raise ValueError("installer release descriptor schema is invalid")
+    from scripts.installer_helper_package_release import package_metadata
+    helper_metadata = package_metadata(descriptor)
+    from forge_platform.installer_helper_companion import requires_companion, bound_metadata, read_document, qualification_binding
+    if requires_companion(descriptor):
+        if helper_companion_path is None:
+            raise ValueError("signed helper companion is required")
+        companion_raw, _ = read_document(helper_companion_path)
+        helper_metadata = bound_metadata(descriptor_raw, companion_raw, qualification_binding(operation))
+        companion = _strict_object(companion_raw, "helper companion")
+        _descriptor_signature_envelopes(companion["signatures"], operation)
+    elif helper_companion_path is not None:
+        raise ValueError("unbound helper companion is not admitted")
+    if (helper_metadata is None) != (helper_package_path is None):
+        raise ValueError("helper package input does not match descriptor schema")
     if isinstance(descriptor["sequence"], bool) or not isinstance(descriptor["sequence"], int) or descriptor["sequence"] <= 0:
         raise ValueError("descriptor sequence is invalid")
     if descriptor["sequence"] != operation.release_sequence:
@@ -740,6 +754,15 @@ def verify(
     _descriptor_github_release(descriptor, operation)
     _descriptor_signature_envelopes(descriptor["signatures"], operation)
     _descriptor_assets(descriptor, operation)
+    if helper_metadata is not None:
+        from scripts.verified_installer_helper_package import read_descriptor
+        observed_helper = read_descriptor(helper_package_path,
+            team=operation.release_identity.team_identifier,
+            notarization_reference=helper_metadata["notarization_receipt_reference"],
+            archive=archive_paths[INSTALLER_ARCHITECTURE], preparation=operation,
+            archive_digest=operation.archives[INSTALLER_ARCHITECTURE])
+        if observed_helper != helper_metadata:
+            raise ValueError("helper package bytes do not bind the descriptor")
     if _file_digest_bytes(descriptor_raw) != operation.descriptor_digest:
         raise ValueError("descriptor digest does not bind the durable operation")
     if (
@@ -767,6 +790,8 @@ def main() -> None:
     parser.add_argument("--operation", required=True)
     parser.add_argument("--descriptor", required=True)
     parser.add_argument("--archive", action="append", default=[], metavar="ARCHITECTURE=PATH")
+    parser.add_argument("--helper-package")
+    parser.add_argument("--helper-companion")
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--operation-id", required=True)
     parser.add_argument("--installer-version", required=True)
@@ -799,6 +824,8 @@ def main() -> None:
             operation_raw=operation_raw,
             descriptor_raw=descriptor_raw,
             archive_paths=_archive_arguments(args.archive),
+            helper_package_path=Path(args.helper_package) if args.helper_package else None,
+            helper_companion_path=Path(args.helper_companion) if args.helper_companion else None,
             source_revision=args.source_sha,
             expected_operation_id=args.operation_id,
             expected_version=args.installer_version,

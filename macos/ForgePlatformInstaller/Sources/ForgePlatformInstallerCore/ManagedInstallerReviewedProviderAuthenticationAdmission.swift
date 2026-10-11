@@ -101,6 +101,44 @@ struct ManagedInstallerReviewedProviderAuthenticationAdmission: Sendable {
         )
     }
 
+    /// Freeze every unverified Codex target before the one human ceremony.
+    /// Already verified peers require fresh independent readback, not copying.
+    func admitFanoutTargets(
+        canonicalIntent: Data,
+        source: ManagedInstallerReviewedProviderAuthenticationLaunchContext
+    ) async -> [ManagedInstallerReviewedProviderAuthenticationLaunchContext]? {
+        guard source.reviewed.requirement.provider == .codex else { return [source] }
+        let plan = source.reviewed.stablePlan
+        let group = plan.enabledProviderRequirements.filter { $0.provider == .codex }
+        guard !group.isEmpty, group.count <= 2,
+              Set(group.compactMap(\.ownerComponent)).count == group.count,
+              group.allSatisfy({ $0.credentialScope == .component
+                  && $0.targetIdentity == plan.deployment.id
+                  && ($0.ownerComponent == .forgeRuntime || $0.ownerComponent == .engineeringPlatformServer)
+              }),
+              group.count == 1 || group.allSatisfy({
+                  $0.runtime == source.reviewed.requirement.runtime
+                      && $0.runtime?.version.description == "0.157.1"
+              }),
+              let observed = await reader.read(stablePlan: plan), observed.matches(plan)
+        else { return nil }
+        var targets = [source]
+        for requirement in group where requirement.id != source.reviewed.requirement.id {
+            guard let status = observed.targets.first(where: { $0.id == requirement.id }) else { return nil }
+            if status.state == .verified { continue }
+            guard let peer = await admitLaunchTarget(
+                canonicalIntent: canonicalIntent, providerTargetID: requirement.id
+            ), peer.reviewed.stablePlan == plan else { return nil }
+            targets.append(peer)
+        }
+        guard let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(canonicalIntent),
+              let after = try? await loader.loadStablePlan(for: intent), after == plan,
+              let refreshedSource = await admitLaunchTarget(
+                  canonicalIntent: canonicalIntent, providerTargetID: source.reviewed.requirement.id
+              ), refreshedSource == source else { return nil }
+        return targets
+    }
+
     func verifyCompletion(
         canonicalIntent: Data, providerTargetID: ProviderTargetID,
         original: ManagedInstallerReviewedProviderAuthenticationContext

@@ -243,14 +243,36 @@ struct RegisteredInstallerHelperParentReader: Sendable {
 struct ManagedInstallerHelperXPCParentAdmission: Sendable {
     let expectedVersion: InstallerVersion?
     let readVersion: @Sendable () -> InstallerVersion?
+    var packageAdmission: ManagedInstallerPackageHelperXPCAdmission? = nil
+    var currentRelease: (@Sendable () -> VerifiedInstallerReleaseRecord?)? = nil
 
-    static func production(expectedVersion: InstallerVersion?) -> Self {
-        Self(expectedVersion: expectedVersion,
+    static func production(expectedVersion: InstallerVersion?, packageRelease: VerifiedInstallerReleaseRecord? = nil, currentRelease: (@Sendable () -> VerifiedInstallerReleaseRecord?)? = nil) -> Self {
+        if let currentRelease {
+            return Self(expectedVersion: expectedVersion, readVersion: { RegisteredInstallerHelperParentReader().readVersion() }, currentRelease: currentRelease)
+        }
+        if let packageRelease {
+            return Self(expectedVersion: expectedVersion, readVersion: { nil },
+                packageAdmission: .init(release: packageRelease))
+        }
+        return Self(expectedVersion: expectedVersion,
              readVersion: { RegisteredInstallerHelperParentReader().readVersion() })
     }
 
+    func admitsCurrentParent() async -> Bool {
+        if let currentRelease {
+            guard let record = currentRelease(), expectedVersion == record.release.version else { return false }
+            let admitted: Bool
+            if record.helperPackage != nil {
+                admitted = await ManagedInstallerPackageHelperXPCAdmission(release: record).admits(expectedVersion: expectedVersion)
+            } else { admitted = readVersion() == expectedVersion }
+            return admitted && currentRelease() == record
+        }
+        if let packageAdmission { return await packageAdmission.admits(expectedVersion: expectedVersion) }
+        return admits()
+    }
+
     func admits() -> Bool {
-        guard let expectedVersion else { return false }
+        guard currentRelease == nil, packageAdmission == nil, let expectedVersion else { return false }
         return readVersion() == expectedVersion
     }
 }

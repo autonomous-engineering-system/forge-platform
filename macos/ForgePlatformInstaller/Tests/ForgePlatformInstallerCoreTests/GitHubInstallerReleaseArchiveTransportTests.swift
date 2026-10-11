@@ -3,6 +3,22 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class GitHubInstallerReleaseArchiveTransportTests: XCTestCase {
+    func testHelperCompanionUsesExactReleaseEndpointBoundAndNoCredentials() async throws {
+        let release = try record(), expected = "https://github.com/" + release.githubAsset.repository + "/releases/download/" + release.githubAsset.tag + "/" + VerifiedInstallerHelperPackage.assetName
+        let transport = GitHubInstallerReleaseArchiveTransport(protocolClassesForTesting: [ArchiveDownloadURLProtocol.self])
+        for kind in ["valid", "short", "oversize", "http"] {
+            let body = Data(repeating: 7, count: kind == "short" ? 512 : (kind == "oversize" ? 1025 : 1024))
+            ArchiveDownloadURLProtocol.configure([expected: .response(statusCode: kind == "http" ? 503 : 200, headers: [:], body: body)])
+            let result = await transport.downloadInstallerHelperPackage(for: release)
+            XCTAssertEqual(result, kind == "valid" ? body : nil, kind)
+            XCTAssertEqual(ArchiveDownloadURLProtocol.observations().map(\.url), [expected])
+            XCTAssertNil(ArchiveDownloadURLProtocol.observations().first?.authorization)
+            XCTAssertEqual(ArchiveDownloadURLProtocol.observations().first?.cacheControl, "no-cache")
+        }
+        ArchiveDownloadURLProtocol.configure([:])
+        let v1 = await transport.downloadInstallerHelperPackage(for: try record(package: false))
+        XCTAssertNil(v1); XCTAssertTrue(ArchiveDownloadURLProtocol.observations().isEmpty)
+    }
     func testDerivesOnlyTheExactSignedGitHubReleaseAssetEndpoint() throws {
         let asset = try makeAsset()
 
@@ -210,6 +226,21 @@ final class GitHubInstallerReleaseArchiveTransportTests: XCTestCase {
         }
         return failure.code
     }
+    private func record(package: Bool = true) throws -> VerifiedInstallerReleaseRecord {
+            let asset = try GitHubInstallerReleaseAsset(repository: "pcvantol/forge-platform", tag: "installer-v1.2.3", assetName: "Installer.app.zip")
+            let release = VerifiedInstallerRelease(version: try InstallerVersion("1.2.3"), releasePage: asset.releasePage,
+                assetName: asset.assetName, sha256: String(repeating: "f", count: 64), signingKeyID: "release-key")
+            return try .init(release: release, sequence: 12, channel: .stable,
+                sourceRevision: String(repeating: "a", count: 40),
+                expectedBundleIdentifier: ManagedInstallerHelperSignedParentBundleLocator.bundleIdentifier,
+                expectedTeamIdentifier: "ZEML4LPXH4", expectedCodeDirectorySHA256: String(repeating: "b", count: 64),
+                policyRevision: "release/v1", capabilities: ["composition/v1"],
+                provenanceSHA256: String(repeating: "c", count: 64),
+                expectedReleaseTrustConfigurationSHA256: String(repeating: "d", count: 64),
+                compositionCatalogFeed: try .init(url: "https://catalog.example.invalid/stable.json"),
+                notarizationReference: "receipt:app-notarization", githubAsset: asset,
+                helperPackage: package ? try .init(sha256: String(repeating: "e", count: 64), bytes: 1024, notarizationReference: "receipt:package-notarization") : nil)
+        }
 }
 
 private enum ArchiveDownloadURLProtocolScript: Sendable {

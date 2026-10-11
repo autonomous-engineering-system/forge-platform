@@ -26,6 +26,8 @@ protocol ManagedInstallerProductWorkerEffectReading: Sendable {
 
 protocol ManagedInstallerProductWorkerEffectJournaling: Sendable {
     func begin(_ id: UUID) -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
+    func beginAuthentication(_ id: UUID)
+        -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
     func cancelBeforeLaunch(_ id: UUID)
         -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
     func finish(_ id: UUID, normalExit: Bool)
@@ -80,6 +82,22 @@ struct FileManagedInstallerProductWorkerEffectJournal:
                   previous.activeIDs.count < Self.maximumActive else { throw Failure.conflict }
             let next = ManagedInstallerProductWorkerEffectSnapshot(
                 activeIDs: previous.activeIDs + [id], uncertain: previous.uncertain
+            )
+            try write(try encode(next), in: root, replace: try recordExists(root))
+        }
+    }
+
+    /// Admit a new human ceremony only from quiet durable child evidence.
+    /// The read and reservation share the file lock: a prior cancellation or
+    /// concurrent child cannot slip between a preflight and the launch record.
+    /// This does not retire uncertainty or establish credential readiness.
+    func beginAuthentication(_ id: UUID)
+        -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {
+        transact { root in
+            let previous = try readRecord(root)
+            guard !previous.hasUnresolvedEffects else { throw Failure.conflict }
+            let next = ManagedInstallerProductWorkerEffectSnapshot(
+                activeIDs: [id], uncertain: false
             )
             try write(try encode(next), in: root, replace: try recordExists(root))
         }

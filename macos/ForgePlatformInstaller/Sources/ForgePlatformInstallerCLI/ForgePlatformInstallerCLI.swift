@@ -243,7 +243,8 @@ enum ForgePlatformInstallerCLIApplication {
                     currentRelease: currentRelease,
                     options: invocation.options,
                     confirm: confirm,
-                    register: registerHelper
+                    register: registerHelper,
+                    usePackagePreparation: true
                 )
             case .helperReplaceQualification:
                 result = await InstallerCLIHelperRegistration.run(

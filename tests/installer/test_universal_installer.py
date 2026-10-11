@@ -755,6 +755,44 @@ class UniversalInstallerTests(unittest.TestCase):
             {"é".encode("utf-8"), "e\u0301".encode("utf-8")},
         )
 
+    def test_standalone_v2_cannot_bypass_canonical_companion_contract(self) -> None:
+        payload = release_metadata()
+        payload["schema"] = "forge-platform.installer-release/v2"
+        payload["installer"]["assets"][0]["helper_package"] = dict(asset_name="forge-platform-installer-helper-arm64.pkg", bytes=1048576,
+            digest="sha256:"+"a"*64, notarization_receipt_reference="receipt:helper-package-v1")
+        with self.assertRaises(UniversalInstallerError):
+            InstallerRelease.from_signed_metadata(payload, FixtureVerifier(), signature_policy=FIXTURE_SIGNATURE_POLICY, sealed_release_trust=SEALED_RELEASE_TRUST)
+        with self.assertRaises(UniversalInstallerError):
+            InstallerRelease.from_signed_bytes(json.dumps(payload).encode(), FixtureVerifier(), signature_policy=FIXTURE_SIGNATURE_POLICY, sealed_release_trust=SEALED_RELEASE_TRUST)
+
+    def test_helper_package_schema_and_hostile_fields_are_rejected(self) -> None:
+        valid = {"asset_name": "forge-platform-installer-helper-arm64.pkg",
+                 "digest": "sha256:" + "a" * 64, "bytes": 1048576,
+                 "notarization_receipt_reference": "receipt:helper-package-v1"}
+        variants = [
+            {**valid, "asset_name": "../other.pkg"}, {**valid, "digest": "md5:" + "a" * 64},
+            {**valid, "bytes": 0}, {**valid, "bytes": True}, {**valid, "bytes": 1.5},
+            {**valid, "bytes": 536870913}, {**valid, "unknown": True},
+            {**valid, "notarization_receipt_reference": "secret-token"}, None,
+        ]
+        for package in variants:
+            with self.subTest(package=package):
+                payload = release_metadata()
+                payload["schema"] = "forge-platform.installer-release/v2"
+                payload["installer"]["assets"][0]["helper_package"] = package
+                with self.assertRaises((ValueError, UniversalInstallerError)):
+                    InstallerRelease.from_signed_metadata(payload, FixtureVerifier(),
+                        signature_policy=FIXTURE_SIGNATURE_POLICY, sealed_release_trust=SEALED_RELEASE_TRUST)
+        for schema, include in [("forge-platform.installer-release/v1", True),
+                                ("forge-platform.installer-release/v2", False)]:
+            payload = release_metadata()
+            payload["schema"] = schema
+            if include:
+                payload["installer"]["assets"][0]["helper_package"] = valid
+            with self.assertRaises((ValueError, UniversalInstallerError)):
+                InstallerRelease.from_signed_metadata(payload, FixtureVerifier(),
+                    signature_policy=FIXTURE_SIGNATURE_POLICY, sealed_release_trust=SEALED_RELEASE_TRUST)
+
     def test_signed_release_requires_a_trust_root_and_canonical_payload(self) -> None:
         verifier = FixtureVerifier()
         release = InstallerRelease.from_signed_metadata(

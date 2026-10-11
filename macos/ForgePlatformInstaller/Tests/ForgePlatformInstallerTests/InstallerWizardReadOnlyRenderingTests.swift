@@ -161,6 +161,95 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         XCTAssertFalse(try renderCustomerFlow(state: pairing, started: true).isEmpty)
     }
 
+    func testCustomerFlowRendersOneCodexActionForTwoTargetsAndCopyableChallenge() async throws {
+        let requirements = [ProviderOwnerComponent.engineeringPlatformServer, .forgeRuntime].map {
+            ProviderRequirement(provider: .codex, isRequired: true, credentialScope: .component,
+                                ownerComponent: $0, targetIdentity: "deployment-new")
+        }
+        var state = try providerState(allVerified: false, customRequirements: requirements, deploymentID: "deployment-new")
+        XCTAssertTrue(state.advance())
+        state.composition = CompositionReview(manifestIdentity: "forge-ep-2.8.1-2.3.113", status: .compatible,
+            components: [
+                ComponentDiff(componentID: "forge-runtime", title: "Forge", change: .install,
+                    candidateVersion: "2.8.1", artifactDigest: ManagedInstallerProductServiceAccountPlanner.installationForgeArtifactSHA256,
+                    detail: "read-only render fixture"),
+                ComponentDiff(componentID: "engineering-platform-server", title: "EP", change: .install,
+                    candidateVersion: "2.3.113", artifactDigest: "sha256:878e36323e37b29d97a188c02257283c3dc322c60755d57dc9017259f8ac386e",
+                    detail: "read-only render fixture"),
+            ])
+        let coordinator = ProviderStageGUICoordinator(release: try makeRelease("1.2.3"), renderChallenge: true)
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.setCompositionAcknowledged(true)
+        model.advance()
+        for _ in 0..<200 {
+            if case .observed = model.providerStage { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard case .observed(let readback) = model.providerStage else { return XCTFail("Expected read-only provider stage") }
+        XCTAssertEqual(readback.targets.count, 2)
+        XCTAssertFalse(readback.allVerified)
+        let groups = InstallerMVPProviderAuthenticationGroup.groups(targets: readback.targets, requirements: requirements)
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.title, "Codex voor EP en Forge")
+        XCTAssertEqual(groups.first?.actionTarget?.id, requirements[0].id)
+        let png = try renderCustomerFlow(state: model.state, started: true, suppliedModel: model)
+        try png.write(to: artifactRoot().appendingPathComponent("customer-codex-two-targets.png"))
+        model.beginReviewedProviderAuthentication(requirements[0].id)
+        for _ in 0..<200 {
+            if case .challenge = model.providerStage { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard case .challenge = model.providerStage else { return XCTFail("Expected synthetic UI challenge") }
+        let challengePNG = try renderCustomerFlow(state: model.state, started: true, suppliedModel: model)
+        XCTAssertFalse(png.isEmpty)
+        XCTAssertFalse(challengePNG.isEmpty)
+        XCTAssertNotEqual(png, challengePNG)
+        try challengePNG.write(to: artifactRoot().appendingPathComponent("customer-codex-copy-code.png"))
+        let executions = await coordinator.executionCalls()
+        let authentications = await coordinator.authenticationStartCount()
+        XCTAssertEqual(executions, 0)
+        XCTAssertEqual(authentications, 1)
+        XCTAssertFalse(model.state.enabledProvidersVerified)
+    }
+
+    func testProviderGroupingKeepsIndependentReadinessAndSeparateEPGitHubAction() throws {
+        let requirements = [
+            ProviderRequirement(provider: .codex, isRequired: true, credentialScope: .component,
+                ownerComponent: .engineeringPlatformServer, targetIdentity: "deployment-new"),
+            ProviderRequirement(provider: .codex, isRequired: true, credentialScope: .component,
+                ownerComponent: .forgeRuntime, targetIdentity: "deployment-new"),
+            ProviderRequirement(provider: .githubCLI, isRequired: true, credentialScope: .component,
+                ownerComponent: .engineeringPlatformServer, targetIdentity: "deployment-new"),
+        ]
+        func targets(bothCodexVerified: Bool) throws -> [ManagedInstallerReviewedProviderReadback.Target] {
+            try requirements.enumerated().map { index, requirement in
+                try .init(id: requirement.id,
+                          state: index == 0 || (index == 1 && bothCodexVerified) ? .verified : .authenticationRequired,
+                          evidenceReference: "receipt:gui-independent-target")
+            }
+        }
+        let partial = InstallerMVPProviderAuthenticationGroup.groups(
+            targets: try targets(bothCodexVerified: false), requirements: requirements)
+        XCTAssertEqual(partial.count, 2)
+        let codex = try XCTUnwrap(partial.first { $0.provider == .codex })
+        XCTAssertTrue(codex.pairedCodex)
+        XCTAssertEqual(codex.actionTarget?.id, requirements[1].id)
+        let github = try XCTUnwrap(partial.first { $0.provider == .githubCLI })
+        XCTAssertFalse(github.pairedCodex)
+        XCTAssertEqual(github.title, ProviderID.githubCLI.displayName)
+        XCTAssertEqual(github.actionTarget?.id, requirements[2].id)
+        let verified = InstallerMVPProviderAuthenticationGroup.groups(
+            targets: try targets(bothCodexVerified: true), requirements: requirements)
+        XCTAssertNil(verified.first { $0.provider == .codex }?.actionTarget)
+        XCTAssertNotNil(verified.first { $0.provider == .githubCLI }?.actionTarget)
+        XCTAssertTrue(InstallerMVPProviderAuthenticationGroup.groups(
+            targets: try targets(bothCodexVerified: true), requirements: []).isEmpty)
+        let single = InstallerMVPProviderAuthenticationGroup.groups(
+            targets: try targets(bothCodexVerified: false), requirements: [requirements[1]])
+        XCTAssertFalse(try XCTUnwrap(single.first).pairedCodex)
+        XCTAssertEqual(single.first?.title, ProviderID.codex.displayName)
+    }
+
     func testCustomerProgressDoesNotExposeInternalStageNames() {
         let stages = [
             ("managed-deployment", "Engineering Platform en Forge installeren"),
@@ -202,7 +291,7 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         let pending = model(current.state)
         prepare(pending)
         if case .loading = pending.state.deploymentSelection {} else {
-            XCTFail("inventory must be read before a clean target is selected")
+            XCTAssertTrue(pending.isHelperPreparationInFlight, "helper admission must precede inventory read")
         }
 
         var clean = try selfUpdateCurrent()
@@ -451,10 +540,10 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         return state
     }
 
-    private func providerState(allVerified: Bool) throws -> InstallerWizardState {
-        let requirements = try providerRequirements()
+    private func providerState(allVerified: Bool, customRequirements: [ProviderRequirement]? = nil, deploymentID: String = "deployment-prod") throws -> InstallerWizardState {
+        let requirements = try customRequirements ?? providerRequirements()
         var state = try deploymentAvailable()
-        XCTAssertTrue(state.selectManagedDeployment("deployment-prod"))
+        XCTAssertTrue(state.selectManagedDeployment(deploymentID))
         XCTAssertTrue(state.advance())
         XCTAssertTrue(state.beginSessionPreparation())
         XCTAssertTrue(
@@ -728,9 +817,10 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
 
     private func renderCustomerFlow(
         state: InstallerWizardState,
-        started: Bool
+        started: Bool,
+        suppliedModel: InstallerWizardViewModel? = nil
     ) throws -> Data {
-        let model = InstallerWizardViewModel(
+        let model = suppliedModel ?? InstallerWizardViewModel(
             state: state,
             coordinator: UnavailableInstallerWizardCoordinator()
         )
@@ -739,11 +829,26 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
             initiallyStarted: started
         )
         .frame(width: 960, height: 680)
-        let renderer = ImageRenderer(content: view)
-        guard let image = renderer.nsImage,
-              let tiff = image.tiffRepresentation,
-              let representation = NSBitmapImageRep(data: tiff),
-              let png = representation.representation(using: .png, properties: [:]) else {
+        // Native controls/ScrollView are not reliably drawn by ImageRenderer.
+        // Render the actual AppKit-hosted hierarchy without showing a window.
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = NSRect(x: 0, y: 0, width: 960, height: 680)
+        let window = NSWindow(contentRect: hosting.frame,
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        window.title = "Broncontrole — geen installatie"
+        window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+        window.orderFront(nil)
+        defer { window.close() }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        hosting.layoutSubtreeIfNeeded()
+        hosting.displayIfNeeded()
+        guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
+            throw ScreenshotError.renderFailed
+        }
+        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else {
             throw ScreenshotError.renderFailed
         }
         return png

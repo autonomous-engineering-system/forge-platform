@@ -264,9 +264,11 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
 
     public init(
         helperIdentity: ManagedInstallerPostToolXPCHelperIdentity,
-        expectedParentVersion: InstallerVersion? = nil
+        expectedParentVersion: InstallerVersion? = nil,
+        packageRelease: VerifiedInstallerReleaseRecord? = nil,
+        currentHelperRelease: (@Sendable () -> VerifiedInstallerReleaseRecord?)? = nil
     ) {
-        parentAdmission = .production(expectedVersion: expectedParentVersion)
+        parentAdmission = .production(expectedVersion: expectedParentVersion, packageRelease: packageRelease, currentRelease: currentHelperRelease)
         resumed = false
         connection = NSXPCConnection(
             machServiceName: Self.machServiceName,
@@ -292,8 +294,8 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
         connection.invalidate()
     }
 
-    private func admitConnection() -> Bool {
-        if let parentAdmission, !parentAdmission.admits() { return false }
+    private func admitConnection() async -> Bool {
+        if let parentAdmission, !(await parentAdmission.admitsCurrentParent()) { return false }
         if !resumed {
             connection.resume()
             resumed = true
@@ -314,12 +316,12 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
             return .failure(.invalidRequest)
         }
 
+        guard await admitConnection() else { return .failure(.unavailable) }
         return await withCheckedContinuation { continuation in
             let gate = ManagedInstallerProductOperationXPCReplyGate(
                 continuation: continuation
             )
-            guard admitConnection(),
-                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
             }) as? ManagedInstallerProductOperationXPCService else {
                 gate.complete(.failure(.unavailable))
@@ -351,12 +353,12 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
         ), request.canonicalJSONData() == canonicalRequest else {
             return .failure(.invalidRequest)
         }
+        guard await admitConnection() else { return .failure(.unavailable) }
         return await withCheckedContinuation { continuation in
             let gate = ManagedInstallerProductOperationXPCReplyGate(
                 continuation: continuation
             )
-            guard admitConnection(),
-                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
             }) as? ManagedInstallerProductOperationXPCService else {
                 gate.complete(.failure(.unavailable))
@@ -387,12 +389,12 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
         ), intent.canonicalJSONData() == canonicalIntent else {
             return .failure(.invalidRequest)
         }
+        guard await admitConnection() else { return .failure(.unavailable) }
         return await withCheckedContinuation { continuation in
             let gate = ManagedInstallerProductOperationXPCReplyGate(
                 continuation: continuation
             )
-            guard admitConnection(),
-                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
             }) as? ManagedInstallerProductOperationXPCService else {
                 gate.complete(.failure(.unavailable))
@@ -423,10 +425,10 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
         ), intent.canonicalJSONData() == canonicalIntent else {
             return .failure(.invalidRequest)
         }
+        guard await admitConnection() else { return .failure(.unavailable) }
         return await withCheckedContinuation { continuation in
             let gate = ManagedInstallerProductOperationXPCReplyGate(continuation: continuation)
-            guard admitConnection(),
-                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
             }) as? ManagedInstallerProductOperationXPCService else {
                 gate.complete(.failure(.unavailable))
@@ -454,12 +456,12 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
         ), intent.canonicalJSONData() == canonicalIntent else {
             return .failure(.invalidRequest)
         }
+        guard await admitConnection() else { return .failure(.unavailable) }
         return await withCheckedContinuation { continuation in
             let gate = ManagedInstallerProductOperationXPCReplyGate(
                 continuation: continuation
             )
-            guard admitConnection(),
-                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
             }) as? ManagedInstallerProductOperationXPCService else {
                 gate.complete(.failure(.unavailable))
@@ -487,12 +489,12 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
         ), request.canonicalJSONData() == canonicalRequest else {
             return .failure(.invalidRequest)
         }
+        guard await admitConnection() else { return .failure(.unavailable) }
         return await withCheckedContinuation { continuation in
             let gate = ManagedInstallerProductOperationXPCReplyGate(
                 continuation: continuation
             )
-            guard admitConnection(),
-                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
             }) as? ManagedInstallerProductOperationXPCService else {
                 gate.complete(.failure(.unavailable))
@@ -519,10 +521,10 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
         ), request.canonicalJSONData() == canonicalRequest else {
             return .failure(.invalidRequest)
         }
+        guard await admitConnection() else { return .failure(.unavailable) }
         return await withCheckedContinuation { continuation in
             let gate = ManagedInstallerProductOperationXPCReplyGate(continuation: continuation)
-            guard admitConnection(),
-                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
             }) as? ManagedInstallerProductOperationXPCService else {
                 gate.complete(.failure(.unavailable))
@@ -550,10 +552,10 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
         ), request.canonicalJSONData() == canonicalRequest else {
             return .failure(.invalidRequest)
         }
+        guard await admitConnection() else { return .failure(.unavailable) }
         return await withCheckedContinuation { continuation in
             let gate = ManagedInstallerProductOperationXPCReplyGate(continuation: continuation)
-            guard admitConnection(),
-                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
             }) as? ManagedInstallerProductOperationXPCService else {
                 gate.complete(.failure(.unavailable))
@@ -581,10 +583,10 @@ public actor MacOSManagedInstallerProductOperationXPCTransport:
         ), request.canonicalJSONData() == canonicalRequest else {
             return .failure(.invalidRequest)
         }
+        guard await admitConnection() else { return .failure(.unavailable) }
         return await withCheckedContinuation { continuation in
             let gate = ManagedInstallerProductOperationXPCReplyGate(continuation: continuation)
-            guard admitConnection(),
-                  let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.complete(.failure(.unavailable))
             }) as? ManagedInstallerProductOperationXPCService else {
                 gate.complete(.failure(.unavailable))

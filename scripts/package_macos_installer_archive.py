@@ -331,6 +331,12 @@ def _validate_minimum_app_layout(entries: Iterable[BundleEntry]) -> None:
         or not helper_executable.permissions & stat.S_IXUSR
     ):
         raise ValueError("installer app bundle has no regular privileged helper executable")
+    bootstrap = by_path.get(
+        f"{root}/Contents/Library/LaunchServices/"
+        "com.autonomous-engineering-system.forge-platform-installer.bootstrap"
+    )
+    if bootstrap is not None and (bootstrap.kind != "file" or bootstrap.permissions != 0o755):
+        raise ValueError("installer bootstrap must be a regular 0755 executable")
     product_worker = by_path.get(
         f"{root}/Contents/Resources/forge-platform-product-worker.pyz"
     )
@@ -400,6 +406,9 @@ def _write_regular_file(archive: zipfile.ZipFile, entry: BundleEntry) -> None:
                 or entry.archive_path.endswith("/Contents/MacOS/forge-platform-installer")
                 or entry.archive_path.endswith(
                     "/Contents/Resources/forge-platform-installer-helper"
+                )
+                or entry.archive_path.endswith(
+                    "/Contents/Library/LaunchServices/com.autonomous-engineering-system.forge-platform-installer.bootstrap"
                 )
             ):
                 require_thin_arm64_macho_header(

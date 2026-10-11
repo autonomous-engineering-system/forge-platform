@@ -196,6 +196,14 @@ public struct FileInstallerReleaseAcceptanceStore: InstallerReleaseAcceptanceSto
             if result != 0 && errno != EEXIST {
                 throw FileInstallerReleaseAcceptanceStoreError.insecure
             }
+            let parent = rootDirectory.deletingLastPathComponent().withUnsafeFileSystemRepresentation { path -> Int32 in
+                guard let path else { return -1 }
+                return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+            }
+            guard parent >= 0 else { throw FileInstallerReleaseAcceptanceStoreError.insecure }
+            let synchronized = Darwin.fsync(parent) == 0
+            _ = Darwin.close(parent)
+            guard synchronized else { throw FileInstallerReleaseAcceptanceStoreError.insecure }
         }
         let descriptor = rootDirectory.withUnsafeFileSystemRepresentation { path -> Int32 in
             guard let path else { return -1 }
@@ -216,7 +224,7 @@ public struct FileInstallerReleaseAcceptanceStore: InstallerReleaseAcceptanceSto
 
     private func readSecureRegularFileIfPresent(named name: String, in directoryDescriptor: Int32) throws -> Data? {
         let descriptor = name.withCString { fileName in
-            Darwin.openat(directoryDescriptor, fileName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+            Darwin.openat(directoryDescriptor, fileName, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW_ANY)
         }
         guard descriptor >= 0 else {
             if errno == ENOENT {
@@ -286,7 +294,7 @@ public struct FileInstallerReleaseAcceptanceStore: InstallerReleaseAcceptanceSto
 
     private func validateExistingRegularFileIfPresent(named name: String, in directoryDescriptor: Int32) throws {
         let descriptor = name.withCString { fileName in
-            Darwin.openat(directoryDescriptor, fileName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+            Darwin.openat(directoryDescriptor, fileName, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW_ANY)
         }
         guard descriptor >= 0 else {
             if errno == ENOENT {
@@ -304,7 +312,7 @@ public struct FileInstallerReleaseAcceptanceStore: InstallerReleaseAcceptanceSto
               (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
               details.st_uid == Darwin.geteuid(),
               details.st_nlink == 1,
-              (details.st_mode & mode_t(0o7777)) == mode_t(0o600) else {
+              (details.st_mode & mode_t(0o7777)) == mode_t(0o600), noExtendedACL(descriptor) else {
             throw FileInstallerReleaseAcceptanceStoreError.insecure
         }
         return details
@@ -317,7 +325,17 @@ public struct FileInstallerReleaseAcceptanceStore: InstallerReleaseAcceptanceSto
         }
         return (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
             && details.st_uid == Darwin.geteuid()
-            && (details.st_mode & mode_t(0o7777)) == mode_t(0o700)
+            && (details.st_mode & mode_t(0o7777)) == mode_t(0o700) && noExtendedACL(descriptor)
+    }
+
+    private func noExtendedACL(_ descriptor: Int32) -> Bool {
+        errno = 0
+        guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else { return errno == ENOENT }
+        defer { _ = acl_free(UnsafeMutableRawPointer(acl)) }
+        guard acl_valid(acl) == 0 else { return false }
+        var entry: acl_entry_t?
+        errno = 0
+        return acl_get_entry(acl, Int32(ACL_FIRST_ENTRY.rawValue), &entry) == -1 && errno == EINVAL
     }
 
     private func readBoundedData(
@@ -416,13 +434,15 @@ public actor GitHubSignedInstallerReleaseFeed: SignedInstallerReleaseFeedVerifyi
     private let architecture: String
     private let fetcher: any GitHubInstallerReleaseDescriptorFetching
     private let acceptanceStore: any InstallerReleaseAcceptanceStoring
+    private let helperAcceptanceStore: (any InstallerReleaseAcceptanceStoring)?
 
     public init(
         trustConfiguration: SealedInstallerReleaseTrustConfiguration,
         sealedReleaseProvenance: SealedInstallerReleaseProvenance,
         architecture: String,
         fetcher: any GitHubInstallerReleaseDescriptorFetching,
-        acceptanceStore: any InstallerReleaseAcceptanceStoring
+        acceptanceStore: any InstallerReleaseAcceptanceStoring,
+        helperAcceptanceStore: (any InstallerReleaseAcceptanceStoring)? = nil
     ) throws {
         guard GitHubInstallerReleaseDescriptor.isSupportedArchitecture(architecture) else {
             throw InstallerSelfUpdateMetadataError.invalidRecoveryRecord
@@ -432,6 +452,7 @@ public actor GitHubSignedInstallerReleaseFeed: SignedInstallerReleaseFeedVerifyi
         self.architecture = architecture
         self.fetcher = fetcher
         self.acceptanceStore = acceptanceStore
+        self.helperAcceptanceStore = helperAcceptanceStore
     }
 
     public func latestVerifiedInstallerRelease() async -> Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure> {
@@ -457,7 +478,7 @@ public actor GitHubSignedInstallerReleaseFeed: SignedInstallerReleaseFeedVerifyi
 
         let descriptor: GitHubInstallerReleaseDescriptor
         do {
-            descriptor = try GitHubInstallerReleaseDescriptor.decode(
+            descriptor = try GitHubInstallerReleaseDescriptor.decodePrimary(
                 bytes: descriptorReadback.bytes,
                 trustConfiguration: trustConfiguration,
                 expectedChannel: sealedReleaseProvenance.channel,
@@ -501,7 +522,38 @@ public actor GitHubSignedInstallerReleaseFeed: SignedInstallerReleaseFeedVerifyi
             }
         }
 
-        guard let record = descriptor.verifiedReleaseRecord(for: architecture) else {
+        var helperPackage: VerifiedInstallerHelperPackage?
+        if descriptor.capabilities.contains(GitHubInstallerReleaseDescriptor.helperCompanionCapability) {
+            guard descriptor.assets.allSatisfy({ $0.helperPackage == nil }), let helperAcceptanceStore else {
+                return .failure(InstallerSelfUpdateFailure(.releaseMetadataRejected))
+            }
+            guard case .success(let companion) = await fetcher.releaseDescriptor(repository: trustConfiguration.repository,
+                tag: tagReadback.tag, descriptorAssetName: GitHubInstallerReleaseDescriptor.helperCompanionAssetName) else {
+                return .failure(InstallerSelfUpdateFailure(.releaseMetadataRejected))
+            }
+            do {
+                let joined = try GitHubInstallerReleaseDescriptor.decodeCompanion(bytes: companion.bytes,
+                    primaryBytes: descriptorReadback.bytes, trustConfiguration: trustConfiguration,
+                    expectedChannel: sealedReleaseProvenance.channel, expectedTag: tagReadback.tag, observedAt: companion.observedAt)
+                guard let selected = joined.assets.first(where: { $0.architecture == architecture })?.helperPackage else {
+                    return .failure(InstallerSelfUpdateFailure(.releaseMetadataRejected))
+                }
+                let digest = GitHubInstallerReleaseDescriptor.sha256(of: companion.bytes)
+                guard case .success(let previous) = await helperAcceptanceStore.loadHighestAcceptedInstallerRelease(),
+                      previous == nil || (joined.sequence >= previous!.sequence &&
+                        (joined.sequence != previous!.sequence || digest == previous!.descriptorSHA256)) else {
+                    return .failure(InstallerSelfUpdateFailure(.releaseMetadataRejected))
+                }
+                if previous?.sequence != joined.sequence {
+                    let acceptance = try InstallerReleaseAcceptance(sequence: joined.sequence, descriptorSHA256: digest)
+                    guard case .success = await helperAcceptanceStore.saveHighestAcceptedInstallerRelease(acceptance) else {
+                        return .failure(InstallerSelfUpdateFailure(.recoveryPersistenceFailed))
+                    }
+                }
+                helperPackage = selected
+            } catch { return .failure(InstallerSelfUpdateFailure(.releaseMetadataRejected)) }
+        }
+        guard let record = descriptor.verifiedReleaseRecord(for: architecture, helperPackage: helperPackage) else {
             return .failure(InstallerSelfUpdateFailure(.releaseMetadataRejected))
         }
         return .success(record)
@@ -514,6 +566,9 @@ public actor GitHubSignedInstallerReleaseFeed: SignedInstallerReleaseFeedVerifyi
 /// release-side Python canonicalization.
 struct GitHubInstallerReleaseDescriptor: Sendable {
     static let schema = "forge-platform.installer-release/v1"
+    static let packageSchema = "forge-platform.installer-release/v2"
+    static let helperCompanionCapability = "helper-package-companion/v1"
+    static let helperCompanionAssetName = "ForgePlatformInstallerHelperDescriptor.json"
     static let maximumDescriptorBytes = 128 * 1024
     private static let maximumFuturePublicationSkew: TimeInterval = 5 * 60
 
@@ -541,6 +596,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
         let teamIdentifier: String
         let codeDirectorySHA256: String
         let notarizationReceiptReference: String
+        let helperPackage: VerifiedInstallerHelperPackage?
     }
 
     static func decode(
@@ -561,8 +617,10 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
               Set(fields.keys) == Set([
                   "schema", "sequence", "channel", "published_at", "expires_at", "github_release",
                   "installer", "composition_catalog", "signatures",
-              ]),
-              fields["schema"]?.stringValue == schema,
+              ]).union(fields["primary_descriptor_digest"] == nil ? [] : ["primary_descriptor_digest"]),
+              fields["primary_descriptor_digest"] == nil || fields["schema"]?.stringValue == packageSchema,
+              let descriptorSchema = fields["schema"]?.stringValue,
+              descriptorSchema == schema || descriptorSchema == packageSchema,
               let sequence = fields["sequence"]?.positiveUInt64Value,
               let channelRaw = fields["channel"]?.stringValue,
               let channel = InstallerReleaseChannel(rawValue: channelRaw),
@@ -629,7 +687,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
             throw GitHubInstallerReleaseDescriptorError.invalid
         }
 
-        let parsedAssets = try assets.map(parseAsset)
+        let parsedAssets = try assets.map { try parseAsset($0, withHelperPackage: descriptorSchema == packageSchema) }
         guard parsedAssets.count == 1,
               parsedAssets[0].architecture == "arm64",
               Set(parsedAssets.map { $0.architecture }).count == parsedAssets.count,
@@ -671,7 +729,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
         )
     }
 
-    func verifiedReleaseRecord(for architecture: String) -> VerifiedInstallerReleaseRecord? {
+    func verifiedReleaseRecord(for architecture: String, helperPackage: VerifiedInstallerHelperPackage? = nil) -> VerifiedInstallerReleaseRecord? {
         guard let asset = assets.first(where: { $0.architecture == architecture }) else {
             return nil
         }
@@ -702,7 +760,8 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
                 expectedReleaseTrustConfigurationSHA256: expectedReleaseTrustConfigurationSHA256,
                 compositionCatalogFeed: compositionCatalogFeed,
                 notarizationReference: asset.notarizationReceiptReference,
-                githubAsset: githubAsset
+                githubAsset: githubAsset,
+                helperPackage: helperPackage ?? asset.helperPackage
             )
         } catch {
             return nil
@@ -717,12 +776,14 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
         value == "arm64"
     }
 
-    private static func parseAsset(_ value: StrictJSONResourceValue) throws -> Asset {
+    private static func parseAsset(_ value: StrictJSONResourceValue, withHelperPackage: Bool) throws -> Asset {
+        let requiredFields: Set<String> = [
+            "operating_system", "architecture", "minimum_macos_version", "asset_name",
+            "digest", "bundle_identifier", "team_identifier", "code_directory_sha256",
+            "notarization_receipt_reference",
+        ]
         guard let fields = value.objectValue,
-              Set(fields.keys) == Set([
-                  "operating_system", "architecture", "minimum_macos_version", "asset_name", "digest", "bundle_identifier",
-                  "team_identifier", "code_directory_sha256", "notarization_receipt_reference",
-              ]),
+              Set(fields.keys) == requiredFields.union(withHelperPackage ? ["helper_package"] : []),
               fields["operating_system"]?.stringValue == "macos",
               let architecture = fields["architecture"]?.stringValue,
               isSupportedArchitecture(architecture),
@@ -742,6 +803,22 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
               InstallerSelfUpdateValidation.isNotarizationReceiptReference(notarizationReceiptReference) else {
             throw GitHubInstallerReleaseDescriptorError.invalid
         }
+        let helperPackage: VerifiedInstallerHelperPackage?
+        if withHelperPackage {
+            guard let package = fields["helper_package"]?.objectValue,
+                  Set(package.keys) == Set(["asset_name", "digest", "bytes", "notarization_receipt_reference"]),
+                  package["asset_name"]?.stringValue == VerifiedInstallerHelperPackage.assetName,
+                  let taggedDigest = package["digest"]?.stringValue,
+                  let digest = GitHubInstallerReleaseDescriptorValidation.rawDigest(fromTaggedDigest: taggedDigest),
+                  let bytes = package["bytes"]?.positiveUInt64Value,
+                  let reference = package["notarization_receipt_reference"]?.stringValue else {
+                throw GitHubInstallerReleaseDescriptorError.invalid
+            }
+            helperPackage = try VerifiedInstallerHelperPackage(
+                sha256: digest, bytes: bytes, notarizationReference: reference)
+        } else {
+            helperPackage = nil
+        }
         return Asset(
             architecture: architecture,
             minimumMacOSVersion: minimumMacOSVersion,
@@ -750,7 +827,8 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
             bundleIdentifier: bundleIdentifier,
             teamIdentifier: teamIdentifier,
             codeDirectorySHA256: codeDirectorySHA256,
-            notarizationReceiptReference: notarizationReceiptReference
+            notarizationReceiptReference: notarizationReceiptReference,
+            helperPackage: helperPackage
         )
     }
 
@@ -775,6 +853,47 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
             trustedPublicKeys: trustedKeys,
             signatureThreshold: trustConfiguration.signatureThreshold
         )
+    }
+
+    static func decodePrimary(bytes: Data, trustConfiguration: SealedInstallerReleaseTrustConfiguration,
+        expectedChannel: InstallerReleaseChannel, expectedTag: String, observedAt: Date) throws -> GitHubInstallerReleaseDescriptor {
+        var reader = try StrictJSONResourceReader(data: bytes)
+        guard try reader.parseDocument().objectValue?["schema"]?.stringValue == schema else {
+            throw GitHubInstallerReleaseDescriptorError.invalid
+        }
+        return try decode(bytes: bytes, trustConfiguration: trustConfiguration,
+            expectedChannel: expectedChannel, expectedTag: expectedTag, observedAt: observedAt)
+    }
+
+    static func decodeCompanion(bytes: Data, primaryBytes: Data,
+        trustConfiguration: SealedInstallerReleaseTrustConfiguration, expectedChannel: InstallerReleaseChannel,
+        expectedTag: String, observedAt: Date) throws -> GitHubInstallerReleaseDescriptor {
+        _ = try decodePrimary(bytes: primaryBytes, trustConfiguration: trustConfiguration,
+            expectedChannel: expectedChannel, expectedTag: expectedTag, observedAt: observedAt)
+        let companion = try decode(bytes: bytes, trustConfiguration: trustConfiguration,
+            expectedChannel: expectedChannel, expectedTag: expectedTag, observedAt: observedAt)
+        var primaryReader = try StrictJSONResourceReader(data: primaryBytes)
+        let primary = try primaryReader.parseDocument()
+        var companionReader = try StrictJSONResourceReader(data: bytes)
+        let root = try companionReader.parseDocument()
+        guard let p = primary.objectValue, p["schema"]?.stringValue == schema,
+              var c = root.objectValue, c["schema"]?.stringValue == packageSchema,
+              c["primary_descriptor_digest"]?.stringValue == "sha256:" + sha256(of: primaryBytes),
+              var installer = c["installer"]?.objectValue,
+              let assets = installer["assets"]?.arrayValue else { throw GitHubInstallerReleaseDescriptorError.invalid }
+        c.removeValue(forKey: "primary_descriptor_digest"); c["schema"] = .string(schema)
+        var clean: [StrictJSONResourceValue] = []
+        for asset in assets {
+            guard var fields = asset.objectValue, fields.removeValue(forKey: "helper_package") != nil else {
+                throw GitHubInstallerReleaseDescriptorError.invalid
+            }
+            clean.append(.object(fields))
+        }
+        installer["assets"] = .array(clean); c["installer"] = .object(installer)
+        guard try canonicalUnsignedPayload(from: .object(c)) == canonicalUnsignedPayload(from: primary) else {
+            throw GitHubInstallerReleaseDescriptorError.invalid
+        }
+        return companion
     }
 
     static func canonicalUnsignedPayload(from root: StrictJSONResourceValue) throws -> Data {

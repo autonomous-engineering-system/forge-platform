@@ -112,7 +112,8 @@ enum InstallerCLIHelperRegistration {
         replacingMVP0327: Bool = false,
         replacingMVP0328: Bool = false,
         replacingMVP0329: Bool = false,
-        replacingCleanVM045: Bool = false
+        replacingCleanVM045: Bool = false,
+        usePackagePreparation: Bool = false
     ) async -> InstallerCLIResult {
         if !options.assumeYes {
             let accepted = options.nonInteractive ? false : await confirm(
@@ -164,10 +165,27 @@ enum InstallerCLIHelperRegistration {
         }
 
         switch await startup.start(currentVersion: currentVersion) {
-        case .ready(let freshRelease, _):
+        case .ready(let freshRelease, let coordinator):
             guard freshRelease == currentRelease,
                   freshRelease.version == currentVersion else {
                 return blocked("De geverifieerde installerrelease veranderde vóór helperregistratie.")
+            }
+            if usePackagePreparation {
+                switch await coordinator.prepareCurrentInstallerHelper(allowAuthorization: !options.nonInteractive) {
+                case .notRequired: break // Verified V1 retains the explicit legacy route.
+                case .ready:
+                    return InstallerCLIResult(exitCode: .success, status: "helper-package-ready",
+                        message: "De installatiehulp is onafhankelijk gecontroleerd.")
+                case .cancelled:
+                    return InstallerCLIResult(exitCode: .confirmationRequired, status: "helper-authorization-cancelled",
+                        message: "De macOS-autorisatie is geannuleerd.")
+                case .blocked:
+                    return InstallerCLIResult(exitCode: .interactionRequired, status: "helper-preparation-blocked",
+                        message: "De installatiehulp is nog niet beschikbaar. Controleer de installer en beheerdersautorisatie.")
+                case .unresolved:
+                    return InstallerCLIResult(exitCode: .blocked, status: "helper-preparation-unresolved",
+                        message: "De vorige helperpoging is nog niet bevestigd. Er is geen nieuwe poging gestart.")
+                }
             }
         case .updateRequired(let release), .relaunching(let release):
             return InstallerCLIResult(

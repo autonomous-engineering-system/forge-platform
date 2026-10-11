@@ -204,6 +204,26 @@ public struct InstallerReleaseProvenanceExpectation: Equatable, Sendable {
     }
 }
 
+/// Digest-pinned companion package carried by the same signed release
+/// descriptor. This metadata grants no installation or helper readiness.
+public struct VerifiedInstallerHelperPackage: Equatable, Sendable {
+    public static let assetName = "forge-platform-installer-helper-arm64.pkg"
+    public let sha256: String
+    public let bytes: UInt64
+    public let notarizationReference: String
+
+    init(sha256: String, bytes: UInt64, notarizationReference: String) throws {
+        guard InstallerSelfUpdateValidation.isSHA256(sha256),
+              bytes > 0, bytes <= 512 * 1024 * 1024,
+              InstallerSelfUpdateValidation.isNotarizationReceiptReference(notarizationReference) else {
+            throw InstallerSelfUpdateMetadataError.invalidRecoveryRecord
+        }
+        self.sha256 = sha256
+        self.bytes = bytes
+        self.notarizationReference = notarizationReference
+    }
+}
+
 public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     public let release: VerifiedInstallerRelease
     public let sequence: UInt64
@@ -228,6 +248,7 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     public let compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator
     public let notarizationReference: String
     public let githubAsset: GitHubInstallerReleaseAsset
+    public let helperPackage: VerifiedInstallerHelperPackage?
 
     public init(
         release: VerifiedInstallerRelease,
@@ -243,7 +264,8 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         expectedReleaseTrustConfigurationSHA256: String,
         compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator,
         notarizationReference: String,
-        githubAsset: GitHubInstallerReleaseAsset
+        githubAsset: GitHubInstallerReleaseAsset,
+        helperPackage: VerifiedInstallerHelperPackage? = nil
     ) throws {
         guard sequence > 0 else {
             throw InstallerSelfUpdateMetadataError.invalidReleaseSequence
@@ -295,6 +317,7 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         self.compositionCatalogFeed = compositionCatalogFeed
         self.notarizationReference = notarizationReference
         self.githubAsset = githubAsset
+        self.helperPackage = helperPackage
     }
 }
 
@@ -567,6 +590,10 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     /// A release record observed during an update check is not yet authority
     /// for composition.  It becomes current only after `enforceCurrentInstaller`
     /// has completed its mandatory self-update path.
+    private var helperAdmissionEpoch: UInt64 = 0
+    private var helperCurrencyAdmitted = false
+    private let helperReleaseBinding: (@Sendable (VerifiedInstallerReleaseRecord?) -> Void)?
+    private let helperPreparation: (@Sendable (VerifiedInstallerReleaseRecord, Bool, InstallerHelperPreparationAdmission) async -> InstallerHelperPreparationOutcome)?
     private var checkedCurrentReleaseRecord: VerifiedInstallerReleaseRecord?
     private var currentVerifiedReleaseRecord: VerifiedInstallerReleaseRecord?
     private var preparedCompositionSession: VerifiedCompositionSessionPlan?
@@ -612,8 +639,12 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         purgeRecoveryStore:
             (any ManagedInstallerPurgeRecoveryStoring)? = nil,
         preservedRegistryReadTransport:
-            (any ManagedInstallerPreservedRegistryReading)? = nil
+            (any ManagedInstallerPreservedRegistryReading)? = nil,
+        helperReleaseBinding: (@Sendable (VerifiedInstallerReleaseRecord?) -> Void)? = nil,
+        helperPreparation: (@Sendable (VerifiedInstallerReleaseRecord, Bool, InstallerHelperPreparationAdmission) async -> InstallerHelperPreparationOutcome)? = nil
     ) {
+        self.helperReleaseBinding = helperReleaseBinding
+        self.helperPreparation = helperPreparation
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
         self.staging = staging
@@ -647,6 +678,9 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         currentVersion: InstallerVersion,
         invalidateCompositionSession: Bool = true
     ) async -> SelfUpdateCheckResult {
+        helperAdmissionEpoch &+= 1
+        helperCurrencyAdmitted = false
+        helperReleaseBinding?(nil)
         pendingUpdate = nil
         if invalidateCompositionSession {
             invalidateVerifiedCompositionSession()
@@ -699,6 +733,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                         )
                     }
                     self.currentVerifiedReleaseRecord = checked
+                    self.helperCurrencyAdmitted = true
+                    self.helperReleaseBinding?(checked)
                     self.checkedCurrentReleaseRecord = nil
                     return .current(release)
                 }
@@ -730,6 +766,22 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         ) {
             await self.enforceCurrentInstallerWhileLocked(currentVersion: currentVersion)
         }
+    }
+
+    public func prepareCurrentInstallerHelper(allowAuthorization: Bool = true) async -> InstallerHelperPreparationOutcome {
+        guard helperCurrencyAdmitted, let record = currentVerifiedReleaseRecord else { return .blocked }
+        guard record.helperPackage != nil else { return .notRequired }
+        guard let helperPreparation else { return .blocked }
+        let generation = compositionSessionGeneration
+        let epoch = helperAdmissionEpoch
+        let admission = InstallerHelperPreparationAdmission(isCurrent: { await self.helperContextIsCurrent(record, epoch: epoch) })
+        let result = await helperPreparation(record, allowAuthorization, admission)
+        guard generation == compositionSessionGeneration, helperContextIsCurrent(record, epoch: epoch) else { return .unresolved }
+        return result
+    }
+
+    private func helperContextIsCurrent(_ record: VerifiedInstallerReleaseRecord, epoch: UInt64) -> Bool {
+        helperCurrencyAdmitted && helperAdmissionEpoch == epoch && currentVerifiedReleaseRecord == record
     }
 
     public func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {
@@ -1469,6 +1521,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                     return .failed(InstallerSelfUpdateFailureCode.releaseMetadataRejected.userFacingMessage)
                 }
                 currentVerifiedReleaseRecord = checkedCurrentReleaseRecord
+                helperCurrencyAdmitted = true
+                helperReleaseBinding?(checkedCurrentReleaseRecord)
                 self.checkedCurrentReleaseRecord = nil
                 return .current(release)
             }
@@ -1825,8 +1879,11 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     }
 
     private func invalidateVerifiedCompositionSession() {
+        helperAdmissionEpoch &+= 1
+        helperCurrencyAdmitted = false
         checkedCurrentReleaseRecord = nil
         currentVerifiedReleaseRecord = nil
+        helperReleaseBinding?(nil)
         preparedCompositionSession = nil
         preparedCompositionSessionTarget = nil
         preparedCompositionSessionComponents = nil

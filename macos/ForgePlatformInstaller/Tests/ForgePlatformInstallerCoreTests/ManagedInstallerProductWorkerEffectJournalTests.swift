@@ -160,6 +160,16 @@ final class TestManagedInstallerProductWorkerEffectJournal:
         return .success(())
     }
 
+    func beginAuthentication(_ id: UUID)
+        -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {
+        lock.lock()
+        defer { lock.unlock() }
+        guard acceptsBegin else { return .failure(.unavailable) }
+        guard !uncertain, active.isEmpty else { return .failure(.conflict) }
+        active.insert(id)
+        return .success(())
+    }
+
     func cancelBeforeLaunch(_ id: UUID)
         -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {
         finish(id, normalExit: true)

@@ -18,6 +18,7 @@ fail() {
 [[ "$(id -un)" == "$FORGE_PLATFORM_SIGNER_ACCOUNT" ]] || fail signer-account-mismatch
 [[ -n "${FORGE_PLATFORM_APPLE_TEAM_ID:-}" ]] || fail team-id-required
 [[ -n "${FORGE_PLATFORM_CODESIGN_IDENTITY:-}" ]] || fail codesign-identity-required
+[[ -n "${FORGE_PLATFORM_INSTALLER_SIGNING_IDENTITY:-}" ]] || fail installer-signing-identity-required
 [[ -n "${FORGE_PLATFORM_NOTARYTOOL_PROFILE:-}" ]] || fail notary-profile-required
 [[ -n "${FORGE_PLATFORM_RELEASE_TRUST_RESOURCE:-}" ]] || fail release-trust-resource-required
 [[ -n "${FORGE_PLATFORM_COMPOSITION_CATALOG_TRUST_RESOURCE:-}" ]] || fail catalog-trust-resource-required
@@ -74,6 +75,9 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+source scripts/ci/macos_installer_helper_package_signing.sh
+installer_signing_hash="$(select_helper_package_identity "$private" "$FORGE_PLATFORM_APPLE_TEAM_ID")" || fail installer-signing-identity-not-ready
+
 # Full source validation runs before any signing or notarization authority is used.
 sh scripts/validate.sh >"$private/repository-validation.log" 2>&1 || fail repository-validation-failed
 (
@@ -106,11 +110,32 @@ python3 scripts/prepare_offline_installer_resources.py \
   --output "$provenance" >"$private/provenance.log" 2>&1 \
   || fail provenance-preparation-failed
 
+# Link the bootstrap only after exact release provenance has been prepared.
+# These are public sealed metadata bytes, never caller credentials or options.
+bootstrap_metadata="$private/bootstrap-link-inputs"
+python3 scripts/prepare_macos_installer_bootstrap_metadata.py \
+  --release-trust "$FORGE_PLATFORM_RELEASE_TRUST_RESOURCE" \
+  --release-provenance "$provenance" \
+  --output "$bootstrap_metadata" >"$private/bootstrap-metadata.log" 2>&1 \
+  || fail bootstrap-metadata-preparation-failed
+(
+  cd macos/ForgePlatformInstaller
+  swift build -c release --product forge-platform-installer-bootstrap \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+    -Xlinker "$bootstrap_metadata/bootstrap-info.plist" \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __launchd_plist \
+    -Xlinker "$bootstrap_metadata/bootstrap-launchd.plist" \
+    >"$private/swift-build-bootstrap.log" 2>&1
+) || fail bootstrap-link-failed
+bootstrap="$bin_dir/forge-platform-installer-bootstrap"
+[[ -x "$bootstrap" ]] || fail bootstrap-binary-missing
+
 app="$work/ForgePlatformInstaller.app"
 python3 scripts/package_macos_installer_app.py \
   --executable "$gui" \
   --cli-executable "$cli" \
   --helper-executable "$helper" \
+  --bootstrap-executable "$bootstrap" \
   --product-worker "$product_worker" \
   --forge-update-controller "$FORGE_PLATFORM_FORGE_UPDATE_CONTROLLER" \
   --forge-release-complete-receipt "$FORGE_PLATFORM_FORGE_RELEASE_COMPLETE_RECEIPT" \
@@ -176,7 +201,11 @@ raise SystemExit(0 if completed.returncode == 0 else 1)
 PY
 }
 
+bootstrap_label="com.autonomous-engineering-system.forge-platform-installer.bootstrap"
+bootstrap_candidate="$app/Contents/Library/LaunchServices/$bootstrap_label"
+[[ -x "$bootstrap_candidate" ]] || fail bootstrap-not-packaged
 # Sign every executable code object explicitly, then seal the app bundle.
+bounded "$private/codesign-bootstrap.log" codesign --force --options runtime --timestamp --identifier "$bootstrap_label" --sign "$selected_hash" "$bootstrap_candidate" || fail bootstrap-signing-failed
 bounded "$private/codesign-helper.log" codesign --force --options runtime --timestamp --identifier "com.autonomous-engineering-system.forge-platform-installer.helper" --sign "$selected_hash" "$app/Contents/Resources/forge-platform-installer-helper" || fail helper-signing-failed
 # The helper admits the exact sealed app identifier. Sign the separately
 # executable CLI with that identifier instead of codesign's basename default.
@@ -184,6 +213,8 @@ bounded "$private/codesign-cli.log" codesign --force --options runtime --timesta
 bounded "$private/codesign-gui.log" codesign --force --options runtime --timestamp --sign "$selected_hash" "$app/Contents/MacOS/ForgePlatformInstaller" || fail gui-signing-failed
 bounded "$private/codesign-app.log" codesign --force --options runtime --timestamp --sign "$selected_hash" "$app" || fail app-signing-failed
 bounded "$private/codesign-verify.log" codesign --verify --strict --deep "$app" || fail signed-app-verification-failed
+bootstrap_requirement="anchor apple generic and identifier \"$bootstrap_label\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\""
+bounded "$private/codesign-bootstrap-requirement.log" codesign --verify --strict "-R=$bootstrap_requirement" "$bootstrap_candidate" || fail signed-bootstrap-identity-failed
 helper_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"com.autonomous-engineering-system.forge-platform-installer.helper\""
 bounded "$private/codesign-helper-requirement.log" codesign --verify --strict "-R=$helper_requirement" "$app/Contents/Resources/forge-platform-installer-helper" || fail signed-helper-identity-failed
 requirement="anchor apple generic and certificate leaf[subject.OU] = \"$FORGE_PLATFORM_APPLE_TEAM_ID\" and identifier \"$bundle_identifier\""
@@ -255,6 +286,7 @@ bounded "$private/carrier-staple-validate.log" xcrun stapler validate -v "$extra
 bounded "$private/carrier-gatekeeper.log" spctl --assess --type execute --verbose=4 "$extracted_app" || fail final-archive-gatekeeper-rejected
 bounded "$private/carrier-gui-caller.log" codesign --verify --strict "-R=$caller_requirement" "$extracted_app/Contents/MacOS/ForgePlatformInstaller" || fail final-archive-gui-caller-identity-failed
 bounded "$private/carrier-cli-caller.log" codesign --verify --strict "-R=$caller_requirement" "$extracted_app/Contents/MacOS/forge-platform-installer" || fail final-archive-cli-caller-identity-failed
+bounded "$private/carrier-bootstrap.log" codesign --verify --strict "-R=$bootstrap_requirement" "$extracted_app/Contents/Library/LaunchServices/$bootstrap_label" || fail final-archive-bootstrap-identity-failed
 
 codesign -d --verbose=4 "$app" >"$private/codesign-display.txt" 2>&1 || fail codedirectory-readback-failed
 code_directory="$(python3 - "$private/codesign-display.txt" <<'PY'
@@ -269,16 +301,19 @@ PY
 archive_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
 [[ "$archive_sha" =~ ^[0-9a-f]{64}$ ]] || fail archive-digest-invalid
 
+sign_helper_package "$app" "$archive" "$installer_version" "$SOURCE_SHA" "$work" "$private" "$FORGE_PLATFORM_APPLE_TEAM_ID" "$installer_signing_hash" "sha256:$archive_sha" || fail helper-package-qualification-failed
+
 evidence="$work/offline-signing-evidence.json"
 SOURCE_SHA="$SOURCE_SHA" INSTALLER_VERSION="$installer_version" ARCHIVE_NAME="$(basename "$archive")" \
 ARCHIVE_SHA256="$archive_sha" CODE_DIRECTORY_SHA256="$code_directory" NOTARY_ID="$notary_id" \
 TEAM_ID="$FORGE_PLATFORM_APPLE_TEAM_ID" \
 BUNDLE_ID="$(python3 scripts/validate_installer_release_identity.py --field bundle_identifier)" \
-python3 - "$evidence" <<'PY'
+python3 - "$evidence" "$work/helper-package-evidence.json" <<'PY'
 import json, os, sys
 from pathlib import Path
 value={
-    "schema":"forge-platform.offline-installer-signing-evidence/v1",
+    "schema":"forge-platform.offline-installer-signing-evidence/v2",
+    "helper_package":json.loads(Path(sys.argv[2]).read_text(encoding="utf-8")),
     "source_revision":os.environ["SOURCE_SHA"],
     "installer_version":os.environ["INSTALLER_VERSION"],
     "architecture":"arm64",

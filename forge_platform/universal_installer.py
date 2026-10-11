@@ -46,6 +46,7 @@ from .macos_platform_contract import (
 
 
 INSTALLER_RELEASE_SCHEMA = "forge-platform.installer-release/v1"
+INSTALLER_RELEASE_PACKAGE_SCHEMA = "forge-platform.installer-release/v2"
 COMPOSITION_CATALOG_SCHEMA = "forge-platform.composition-catalog/v1"
 COMPOSITION_SCHEMA = "forge-platform.composition/v1"
 COMPOSITION_SCHEMA_V2 = "forge-platform.composition/v2"
@@ -675,6 +676,35 @@ class SealedInstallerReleaseTrustExpectation:
 
 
 @dataclass(frozen=True)
+class InstallerHelperPackage:
+    """Companion metadata under the same signed release; no install authority."""
+
+    asset_name: str
+    digest: str
+    bytes: int
+    notarization_receipt_reference: str
+
+    def __post_init__(self) -> None:
+        if self.asset_name != "forge-platform-installer-helper-arm64.pkg":
+            raise ValueError("helper package asset name is invalid")
+        _digest(self.digest, "helper package digest")
+        if type(self.bytes) is not int or not 0 < self.bytes <= 512 * 1024 * 1024:
+            raise ValueError("helper package byte count is invalid")
+        if (not isinstance(self.notarization_receipt_reference, str)
+                or _OPAQUE_JOURNAL_REFERENCE.fullmatch(self.notarization_receipt_reference) is None):
+            raise ValueError("helper package notarization reference is invalid")
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "InstallerHelperPackage":
+        payload = _mapping(value, frozenset({
+            "asset_name", "digest", "bytes", "notarization_receipt_reference",
+        }), "helper package")
+        return cls(asset_name=payload["asset_name"], digest=payload["digest"],
+                   bytes=payload["bytes"],
+                   notarization_receipt_reference=payload["notarization_receipt_reference"])
+
+
+@dataclass(frozen=True)
 class InstallerAsset:
     """One macOS archive bound to a canonical GitHub Release asset name."""
 
@@ -687,8 +717,11 @@ class InstallerAsset:
     team_identifier: str
     code_directory_sha256: str
     notarization_receipt_reference: str
+    helper_package: InstallerHelperPackage | None = None
 
     def __post_init__(self) -> None:
+        if self.helper_package is not None and not isinstance(self.helper_package, InstallerHelperPackage):
+            raise ValueError("helper package metadata is invalid")
         if self.operating_system != "macos":
             raise ValueError("installer asset operating_system must be macos")
         if self.architecture not in SUPPORTED_MACOS_ARCHITECTURES:
@@ -710,17 +743,18 @@ class InstallerAsset:
             raise ValueError("installer asset notarization receipt reference is invalid")
 
     @classmethod
-    def from_mapping(cls, value: object) -> "InstallerAsset":
+    def from_mapping(cls, value: object, *, with_helper_package: bool = False) -> "InstallerAsset":
         payload = _mapping(
             value,
             frozenset({
                 "operating_system", "architecture", "minimum_macos_version", "asset_name", "digest",
                 "bundle_identifier", "team_identifier",
                 "code_directory_sha256", "notarization_receipt_reference",
-            }),
+            }) | (frozenset({"helper_package"}) if with_helper_package else frozenset()),
             "installer asset",
         )
         return cls(
+            helper_package=InstallerHelperPackage.from_mapping(payload["helper_package"]) if with_helper_package else None,
             operating_system=_required(payload["operating_system"], "installer asset operating_system"),
             architecture=_required(payload["architecture"], "installer asset architecture"),
             minimum_macos_version=_required(
@@ -947,7 +981,16 @@ class InstallerRelease:
             raise ValueError("installer release signature key IDs must be unique")
 
     @classmethod
-    def from_signed_metadata(
+    def from_signed_metadata(cls, value, verifier, *, signature_policy, sealed_release_trust):
+        from forge_platform.installer_helper_companion import requires_companion
+        if not isinstance(value, dict) or value.get("schema") != INSTALLER_RELEASE_SCHEMA:
+            raise UniversalInstallerError("canonical installer descriptor must preserve V1")
+        if requires_companion(value):
+            raise UniversalInstallerError("companion release requires exact primary bytes and durable companion admission")
+        return cls._from_signed_metadata(value, verifier, signature_policy=signature_policy, sealed_release_trust=sealed_release_trust)
+
+    @classmethod
+    def _from_signed_metadata(
         cls,
         value: object,
         verifier: InstallerMetadataVerifier,
@@ -963,7 +1006,7 @@ class InstallerRelease:
             }),
             "installer release metadata",
         )
-        if payload["schema"] != INSTALLER_RELEASE_SCHEMA:
+        if payload["schema"] not in (INSTALLER_RELEASE_SCHEMA, INSTALLER_RELEASE_PACKAGE_SCHEMA):
             raise UniversalInstallerError("installer release schema is unsupported")
         signatures = parse_public_signature_envelopes(payload["signatures"], label="installer release metadata")
         unsigned = {key: entry for key, entry in payload.items() if key != "signatures"}
@@ -1012,7 +1055,7 @@ class InstallerRelease:
             published_at=_timestamp(payload["published_at"], "installer published_at"),
             expires_at=_timestamp(payload["expires_at"], "installer expires_at"),
             capabilities=frozenset(parsed_capabilities),
-            assets=tuple(InstallerAsset.from_mapping(asset) for asset in assets),
+            assets=tuple(InstallerAsset.from_mapping(asset, with_helper_package=payload["schema"] == INSTALLER_RELEASE_PACKAGE_SCHEMA) for asset in assets),
             composition_catalog_feed=CatalogFeedLocator(_https_url(catalog["url"], "catalog URL")),
             signatures=signatures,
         )
@@ -1032,6 +1075,8 @@ class InstallerRelease:
         *,
         signature_policy: SignatureThresholdPolicy,
         sealed_release_trust: SealedInstallerReleaseTrustExpectation,
+        helper_companion_bytes: bytes | None = None,
+        helper_companion_acceptance_store: object | None = None,
     ) -> "InstallerRelease":
         """Parse exactly the signed descriptor bytes fetched from a release."""
 
@@ -1041,12 +1086,26 @@ class InstallerRelease:
             or len(raw_bytes) > MAXIMUM_INSTALLER_RELEASE_DESCRIPTOR_BYTES
         ):
             raise UniversalInstallerError("installer release descriptor exceeds the accepted byte bound")
-        return cls.from_signed_metadata(
-            _strict_json_mapping(raw_bytes, "installer release metadata"),
-            verifier,
-            signature_policy=signature_policy,
-            sealed_release_trust=sealed_release_trust,
-        )
+        from forge_platform.installer_helper_companion import requires_companion, bound_metadata, strict_object, FileHelperCompanionAcceptanceStore
+        payload = _strict_json_mapping(raw_bytes, "installer release metadata")
+        if payload.get("schema") != INSTALLER_RELEASE_SCHEMA:
+            raise UniversalInstallerError("canonical installer descriptor must preserve V1")
+        primary = cls._from_signed_metadata(payload, verifier, signature_policy=signature_policy, sealed_release_trust=sealed_release_trust)
+        if not requires_companion(payload):
+            if helper_companion_bytes is not None or helper_companion_acceptance_store is not None:
+                raise UniversalInstallerError("unbound helper companion")
+            return primary
+        if not isinstance(helper_companion_bytes, bytes) or not isinstance(helper_companion_acceptance_store, FileHelperCompanionAcceptanceStore):
+            raise UniversalInstallerError("companion bytes and durable acceptance store are required")
+        companion = strict_object(helper_companion_bytes)
+        digest = "sha256:" + sha256(helper_companion_bytes).hexdigest()
+        metadata = bound_metadata(raw_bytes, helper_companion_bytes, digest)
+        signatures = parse_public_signature_envelopes(companion["signatures"], label="installer helper companion")
+        _verify_metadata_signatures(_canonical_json({k:v for k,v in companion.items() if k != "signatures"}), signatures,
+            verifier, signature_policy, label="installer helper companion")
+        helper_companion_acceptance_store.accept(primary.sequence, digest)
+        from dataclasses import replace
+        return replace(primary, assets=tuple(replace(asset, helper_package=InstallerHelperPackage.from_mapping(metadata)) for asset in primary.assets))
 
     def asset_for(self, architecture: str) -> InstallerAsset | None:
         return next(

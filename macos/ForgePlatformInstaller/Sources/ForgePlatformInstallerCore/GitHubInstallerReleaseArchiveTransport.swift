@@ -66,6 +66,16 @@ public final class GitHubInstallerReleaseArchiveTransport: NSObject, GitHubInsta
         }
     }
 
+    /// Fixed companion selected by the same verified release, never a caller URL.
+    func downloadInstallerHelperPackage(for release: VerifiedInstallerReleaseRecord) async -> Data? {
+        guard let package = release.helperPackage, package.bytes > 0, package.bytes <= 512 * 1024 * 1024,
+              let endpoint = URL(string: "https://github.com/\(release.githubAsset.repository)/releases/download/\(release.githubAsset.tag)/\(VerifiedInstallerHelperPackage.assetName)"),
+              GitHubInstallerReleaseArchiveEndpoint.isAllowedArchiveURL(endpoint) else { return nil }
+        guard let bytes = try? await fetchArchive(at: endpoint, maximumBytes: Int(package.bytes)),
+              UInt64(bytes.count) == package.bytes else { return nil }
+        return bytes
+    }
+
     private func fetchArchive(at endpoint: URL, maximumBytes: Int) async throws -> Data {
         guard GitHubInstallerReleaseArchiveEndpoint.isAllowedArchiveURL(endpoint) else {
             throw GitHubInstallerReleaseArchiveTransportError.invalidEndpoint

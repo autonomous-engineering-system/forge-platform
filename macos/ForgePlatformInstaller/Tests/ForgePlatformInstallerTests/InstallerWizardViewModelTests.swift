@@ -860,13 +860,17 @@ private actor WizardCoordinatorSpy: InstallerWizardCoordinator {
     }
 }
 
-private actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
+actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
     let release: VerifiedInstallerRelease
     private var staged = 0
     private var executed = 0
     private var authenticationStarts = 0
 
-    init(release: VerifiedInstallerRelease) { self.release = release }
+    private let renderChallenge: Bool
+    init(release: VerifiedInstallerRelease, renderChallenge: Bool = false) {
+        self.release = release
+        self.renderChallenge = renderChallenge
+    }
 
     func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
         .rejected("not used")
@@ -925,7 +929,23 @@ private actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
         if operation.enabledProviderRequirements.contains(where: { $0.id == providerTargetID }) {
             authenticationStarts += 1
         }
-        return nil
+        // Read-only render data; this actor cannot execute a product action.
+        guard renderChallenge,
+              let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(
+                StrictSignedJSON.canonicalPayload(from: .object([
+                    "schema": .string(ManagedInstallerReviewedExecutionIntent.schema),
+                    "operation_id": .string("gui-provider-stage"),
+                    "deployment_id": .string(operation.deploymentID),
+                    "session_id": .string(operation.sessionID),
+                    "stable_plan_fingerprint": .string(String(repeating: "a", count: 64)),
+                    "installer_version": .string(release.version.description),
+                    "installer_release_sha256": .string(release.sha256),
+                ]))
+              ), let challenge = ManagedInstallerProviderDeviceChallenge.parse(provider: .codex,
+                    output: Data("https://auth.openai.com/codex/device\nEnter this one-time code ABCD-EF12".utf8))
+        else { return nil }
+        return ManagedInstallerProviderAuthenticationChallengeResponse(
+            intent: intent, targetID: providerTargetID, challenge: challenge)
     }
 
     func executeReviewedManagedDeployment(

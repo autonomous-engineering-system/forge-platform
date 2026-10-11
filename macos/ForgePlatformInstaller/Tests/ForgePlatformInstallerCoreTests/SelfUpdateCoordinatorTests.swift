@@ -1,8 +1,105 @@
 import CryptoKit
+import Darwin
 import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class SelfUpdateCoordinatorTests: XCTestCase {
+
+    func testFailedCurrencyRecheckCannotReadmitOldHelperRelease() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: true)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let feed = FeedSpy(result: .success(record))
+        let selection = ManagedInstallerHelperBackendReleaseSelection()
+        let coordinator = makeCoordinator(feed: feed,
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            helperReleaseBinding: { selection.bind($0) },
+            helperPreparation: { _, _, _ in
+                XCTFail("A failed currency recheck must never enter package preparation")
+                return .ready
+            })
+        let first = await coordinator.enforceCurrentInstaller(currentVersion: identity.version)
+        XCTAssertEqual(first, .current(record.release))
+        await feed.setResult(.failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable)))
+        let failed = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+        guard case .failed = failed else { return XCTFail("Expected failed recheck") }
+        XCTAssertNil(selection.read())
+        let blocked = await coordinator.prepareCurrentInstallerHelper()
+        XCTAssertEqual(blocked, .blocked)
+        await feed.setResult(.success(record))
+        let fresh = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+        XCTAssertEqual(fresh, .current(record.release))
+        XCTAssertEqual(selection.read(), record)
+    }
+
+    func testCurrencyInvalidationDuringSuspendedPackageStageNeverAuthorizes() async throws {
+        let bytes = Data("source-only-staged-helper".utf8)
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: true, packageDigest: digest, packageBytes: UInt64(bytes.count))
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        guard let physical = FileManager.default.temporaryDirectory.path.withCString({ realpath($0, nil) }) else { throw CocoaError(.fileReadUnknown) }
+        defer { free(physical) }
+        let root = URL(fileURLWithPath: String(cString: physical)).appendingPathComponent("source-helper-currency-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fd = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY)
+        guard fd >= 0, let acl = acl_init(0) else { throw CocoaError(.fileWriteUnknown) }
+        defer { _ = close(fd); _ = acl_free(UnsafeMutableRawPointer(acl)) }
+        XCTAssertEqual(acl_set_fd_np(fd, acl, ACL_TYPE_EXTENDED), 0)
+        let staging = MacOSInstallerHelperPackageStaging(root: root, download: { _ in bytes }, verifier: .init(check: { _, _ in true }))
+        let stageResult = await staging.stage(release: record)
+        let staged = try XCTUnwrap(stageResult)
+        let entered = expectation(description: "stage suspended with unchanged physical app")
+        let gate = HelperStageGate(entered: entered)
+        let preparation = MacOSInstallerHelperPackagePreparation(actions: .init(operatorAdmitted: { true }, current: { identity },
+            installed: { _ in nil }, namespaceClean: { true }, stage: { _ in await gate.wait(); return staged },
+            authorize: { _, _ in XCTFail("Invalidated currency must not authorize"); return .unavailable },
+            install: { _, _ in XCTFail("Invalidated currency must not install"); return nil }))
+        let coordinator = makeCoordinator(feed: FeedSpy(result: .success(record)), inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            helperPreparation: { selected, authorization, admission in
+                switch await preparation.prepare(release: selected, allowAuthorization: authorization, admission: admission) {
+                case .ready: return .ready
+                case .cancelled: return .cancelled
+                case .blocked: return .blocked
+                case .unresolved: return .unresolved
+                }
+            })
+        _ = await coordinator.enforceCurrentInstaller(currentVersion: identity.version)
+        let first = Task { await coordinator.prepareCurrentInstallerHelper(allowAuthorization: true) }
+        await fulfillment(of: [entered], timeout: 3)
+        _ = await coordinator.checkForUpdate(currentVersion: identity.version)
+        await gate.finish()
+        let result = await first.value
+        XCTAssertEqual(result, .unresolved)
+    }
+    private actor HelperStageGate {
+        let entered: XCTestExpectation; var continuation: CheckedContinuation<Void, Never>?
+        init(entered: XCTestExpectation) { self.entered = entered }
+        func wait() async { await withCheckedContinuation { continuation = $0; entered.fulfill() } }
+        func finish() { continuation?.resume(); continuation = nil }
+    }
+
+    func testHelperPreparationUsesOnlyEnforcedCurrentPackageAndCurrencyBinding() async throws {
+        for package in [false, true] {
+            let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: package)
+            let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+            let selection = ManagedInstallerHelperBackendReleaseSelection()
+            let coordinator = makeCoordinator(feed: FeedSpy(result: .success(record)),
+                inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+                staging: StagingSpy(result: .success(try makeStagedAsset())), helperReleaseBinding: { selection.bind($0) },
+                helperPreparation: { actual, authorization, admission in
+                    let valid = await admission.isCurrent(); XCTAssertTrue(valid); XCTAssertEqual(actual, record); XCTAssertFalse(authorization); return .ready })
+            let before = await coordinator.prepareCurrentInstallerHelper(allowAuthorization: false)
+            XCTAssertEqual(before, .blocked); XCTAssertNil(selection.read())
+            let enforced = await coordinator.enforceCurrentInstaller(currentVersion: identity.version)
+            XCTAssertEqual(enforced, .current(record.release)); XCTAssertEqual(selection.read(), record)
+            let prepared = await coordinator.prepareCurrentInstallerHelper(allowAuthorization: false)
+            XCTAssertEqual(prepared, package ? .ready : .notRequired)
+            _ = await coordinator.checkForUpdate(currentVersion: identity.version)
+            XCTAssertNil(selection.read())
+        }
+    }
 
     func testReleasedRuntimeReadsOnlyExactTerminalPreserveRecovery() async throws {
         let record = try makeReleaseRecord(version: "1.2.3", sequence: 20)
@@ -2214,7 +2311,9 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         purgeRecoveryStore:
             (any ManagedInstallerPurgeRecoveryStoring)? = AcceptingPurgeRecoveryStore(),
         preservedRegistryReadTransport:
-            (any ManagedInstallerPreservedRegistryReading)? = nil
+            (any ManagedInstallerPreservedRegistryReading)? = nil,
+        helperReleaseBinding: (@Sendable (VerifiedInstallerReleaseRecord?) -> Void)? = nil,
+        helperPreparation: (@Sendable (VerifiedInstallerReleaseRecord, Bool, InstallerHelperPreparationAdmission) async -> InstallerHelperPreparationOutcome)? = nil
     ) -> VerifiedInstallerSelfUpdateCoordinator {
         VerifiedInstallerSelfUpdateCoordinator(
             releaseFeed: feed,
@@ -2235,7 +2334,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             preserveRecoveryTransport: preserveRecoveryTransport,
             purgeRecoveryTransport: purgeRecoveryTransport,
             purgeRecoveryStore: purgeRecoveryStore,
-            preservedRegistryReadTransport: preservedRegistryReadTransport
+            preservedRegistryReadTransport: preservedRegistryReadTransport,
+            helperReleaseBinding: helperReleaseBinding, helperPreparation: helperPreparation
         )
     }
 
@@ -2333,7 +2433,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
     private func makeReleaseRecord(
         version: String,
         sequence: UInt64,
-        channel: InstallerReleaseChannel = .stable
+        channel: InstallerReleaseChannel = .stable, package: Bool = false, packageDigest: String = String(repeating: "e", count: 64), packageBytes: UInt64 = 1024
     ) throws -> VerifiedInstallerReleaseRecord {
         let asset = try GitHubInstallerReleaseAsset(
             repository: "pcvantol/forge-platform",
@@ -2363,7 +2463,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
                 url: "https://catalog.example.invalid/forge-platform/stable.json"
             ),
             notarizationReference: "receipt:notarization-ticket-v1",
-            githubAsset: asset
+            githubAsset: asset,
+            helperPackage: package ? try .init(sha256: packageDigest, bytes: packageBytes, notarizationReference: "receipt:package") : nil
         )
     }
 

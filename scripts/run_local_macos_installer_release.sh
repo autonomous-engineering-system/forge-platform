@@ -94,6 +94,28 @@ test -f "$APP/Contents/Resources/forge-platform-product-worker.pyz" ||
   fail unsigned-product-worker-missing
 test -f "$APP/Contents/Library/LaunchDaemons/com.autonomous-engineering-system.forge-platform-installer.helper.plist" ||
   fail unsigned-helper-plist-missing
+# Preserve V1 candidates; a candidate carrying the release-bound bootstrap
+# must publish its signed companion and independently prove every readback.
+HELPER_PACKAGE_NAME="forge-platform-installer-helper-arm64.pkg"
+HELPER_DESCRIPTOR_NAME="ForgePlatformInstallerHelperDescriptor.json"
+BOOTSTRAP_LABEL="com.autonomous-engineering-system.forge-platform-installer.bootstrap"
+BOOTSTRAP="$APP/Contents/Library/LaunchServices/$BOOTSTRAP_LABEL"
+QUALIFIER_PACKAGE_ARGS=()
+STRUCTURE_PACKAGE_ARGS=()
+PUBLICATION_PACKAGE_ARGS=()
+PACKAGE_UPLOAD_ASSETS=()
+PACKAGE_DOWNLOAD_ARGS=()
+HAS_BOOTSTRAP=false
+if [[ -e "$BOOTSTRAP" || -L "$BOOTSTRAP" ]]; then
+  test -f "$BOOTSTRAP" && test ! -L "$BOOTSTRAP" && test -x "$BOOTSTRAP" || fail unsigned-bootstrap-invalid
+  HAS_BOOTSTRAP=true
+  source scripts/ci/macos_installer_helper_package_signing.sh
+  INSTALLER_SIGNING_HASH="$(select_helper_package_identity "$WORK/metadata" "$TEAM_IDENTIFIER")" || fail installer-signing-identity-not-ready
+  BOOTSTRAP_REQUIREMENT="anchor apple generic and identifier \"$BOOTSTRAP_LABEL\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$TEAM_IDENTIFIER\""
+  codesign --force --options runtime --timestamp --identifier "$BOOTSTRAP_LABEL" --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$BOOTSTRAP"
+  codesign --verify --strict "-R=$BOOTSTRAP_REQUIREMENT" "$BOOTSTRAP" || fail signed-bootstrap-identity-invalid
+fi
+
 codesign --force --options runtime --timestamp \
   --identifier "com.autonomous-engineering-system.forge-platform-installer.helper" \
   --sign "$FORGE_PLATFORM_CODESIGN_IDENTITY" "$HELPER"
@@ -185,6 +207,31 @@ codesign --verify --strict "-R=$CALLER_REQUIREMENT" "$CARRIER_APP/Contents/MacOS
 codesign --verify --strict "-R=$CALLER_REQUIREMENT" "$CARRIER_APP/Contents/MacOS/forge-platform-installer" ||
   fail final-archive-cli-caller-identity-invalid
 
+if [[ "$HAS_BOOTSTRAP" == true ]]; then
+  codesign --verify --strict "-R=$BOOTSTRAP_REQUIREMENT" "$CARRIER_APP/Contents/Library/LaunchServices/$BOOTSTRAP_LABEL" || fail final-archive-bootstrap-identity-invalid
+  SIGNED_ARCHIVE_DIGEST="$(python3 - "$WORK/release/$ARCHIVE_NAME" <<'PYCODE'
+from hashlib import sha256
+from pathlib import Path
+import sys
+value=sha256()
+with Path(sys.argv[1]).open("rb") as stream:
+    for block in iter(lambda:stream.read(65536),b""):value.update(block)
+print("sha256:"+value.hexdigest())
+PYCODE
+)" || fail signed-archive-digest-unavailable
+  sign_helper_package "$CARRIER_APP" "$WORK/release/$ARCHIVE_NAME" "$INSTALLER_VERSION" "$SOURCE_SHA" "$WORK/release" "$WORK/metadata" "$TEAM_IDENTIFIER" "$INSTALLER_SIGNING_HASH" "$SIGNED_ARCHIVE_DIGEST" || fail helper-package-qualification-failed
+  HELPER_PACKAGE_NOTARY_REFERENCE="$(python3 - "$WORK/release/helper-package-evidence.json" <<'PYCODE'
+import json,sys
+print(json.load(open(sys.argv[1],encoding="utf-8"))["notarization_receipt_reference"])
+PYCODE
+)" || fail helper-package-receipt-invalid
+  QUALIFIER_PACKAGE_ARGS=(--signed-helper-package "$WORK/release/$HELPER_PACKAGE_NAME" --helper-package-notarization-receipt-reference "$HELPER_PACKAGE_NOTARY_REFERENCE")
+  STRUCTURE_PACKAGE_ARGS=(--helper-package "$WORK/release/$HELPER_PACKAGE_NAME" --helper-companion "$WORK/release/$HELPER_DESCRIPTOR_NAME")
+  PUBLICATION_PACKAGE_ARGS=(--helper-package "$WORK/release/$HELPER_PACKAGE_NAME" --helper-package-readback "$WORK/readback/$HELPER_PACKAGE_NAME" --helper-companion "$WORK/release/$HELPER_DESCRIPTOR_NAME" --helper-companion-readback "$WORK/readback/$HELPER_DESCRIPTOR_NAME")
+  PACKAGE_UPLOAD_ASSETS=("$WORK/release/$HELPER_PACKAGE_NAME" "$WORK/release/$HELPER_DESCRIPTOR_NAME")
+  PACKAGE_DOWNLOAD_ARGS=(--pattern "$HELPER_PACKAGE_NAME" --pattern "$HELPER_DESCRIPTOR_NAME")
+fi
+
 codesign --display --verbose=6 "$APP" >"$WORK/metadata/codesign-final.txt" 2>&1
 CODE_DIRECTORY_SHA256="$(python3 - "$WORK/metadata/codesign-final.txt" <<'PY'
 import re
@@ -218,9 +265,9 @@ codesign --force --options runtime --timestamp \
 descriptor_tool_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$TEAM_IDENTIFIER\" and identifier \"$DESCRIPTOR_KEY_TOOL_IDENTIFIER\""
 codesign --verify --strict "-R=$descriptor_tool_requirement" "$DESCRIPTOR_KEY_TOOL" ||
   fail descriptor-key-tool-signature-invalid
-python3 scripts/qualify_local_installer_release.py   --preparation "$WORK/candidate/installer-release-preparation.json"   --signed-archive "$WORK/release/$ARCHIVE_NAME"   --release-trust "$TRUST_RESOURCE"   --descriptor-key-tool "$DESCRIPTOR_KEY_TOOL"   --code-directory-sha256 "$CODE_DIRECTORY_SHA256"   --notarization-receipt-reference "receipt:apple-notary-$NOTARY_ID"   --catalog-url "$FORGE_PLATFORM_COMPOSITION_CATALOG_URL"   --published-at "$PUBLISHED_AT"   --expires-at "$EXPIRES_AT"   --run-id "$RUN_ID"   --journal-root "$STATE_ROOT/journal"   --output-directory "$WORK/release"
+python3 scripts/qualify_local_installer_release.py "${QUALIFIER_PACKAGE_ARGS[@]}"   --preparation "$WORK/candidate/installer-release-preparation.json"   --signed-archive "$WORK/release/$ARCHIVE_NAME"   --release-trust "$TRUST_RESOURCE"   --descriptor-key-tool "$DESCRIPTOR_KEY_TOOL"   --code-directory-sha256 "$CODE_DIRECTORY_SHA256"   --notarization-receipt-reference "receipt:apple-notary-$NOTARY_ID"   --catalog-url "$FORGE_PLATFORM_COMPOSITION_CATALOG_URL"   --published-at "$PUBLISHED_AT"   --expires-at "$EXPIRES_AT"   --run-id "$RUN_ID"   --journal-root "$STATE_ROOT/journal"   --output-directory "$WORK/release"
 
-python3 scripts/verify_installer_release_evidence.py   --operation "$WORK/release/installer-release-operation.json"   --descriptor "$WORK/release/$DESCRIPTOR_NAME"   --archive "arm64=$WORK/release/$ARCHIVE_NAME"   --source-sha "$SOURCE_SHA"   --operation-id "$OPERATION_ID"   --installer-version "$INSTALLER_VERSION"   --channel "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["channel"])' "$WORK/candidate/installer-candidate.json")"   --release-sequence "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["release_sequence"])' "$AUTHORIZATION")"   --policy-revision "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["policy_revision"])' "$WORK/candidate/installer-candidate.json")"   --provenance-sha256 "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["provenance_sha256"])' "$WORK/candidate/installer-candidate.json")"   --release-trust-configuration-sha256 "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["release_trust_configuration_sha256"])' "$WORK/candidate/installer-candidate.json")"   --github-repository "$REPOSITORY"   --release-tag "$RELEASE_TAG"   --descriptor-asset-name "$DESCRIPTOR_NAME"   --bundle-identifier "$BUNDLE_IDENTIFIER"   --team-identifier "$TEAM_IDENTIFIER"   --asset-prefix "$(python3 scripts/validate_installer_release_identity.py --field asset_prefix)"
+python3 scripts/verify_installer_release_evidence.py "${STRUCTURE_PACKAGE_ARGS[@]}"   --operation "$WORK/release/installer-release-operation.json"   --descriptor "$WORK/release/$DESCRIPTOR_NAME"   --archive "arm64=$WORK/release/$ARCHIVE_NAME"   --source-sha "$SOURCE_SHA"   --operation-id "$OPERATION_ID"   --installer-version "$INSTALLER_VERSION"   --channel "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["channel"])' "$WORK/candidate/installer-candidate.json")"   --release-sequence "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["release_sequence"])' "$AUTHORIZATION")"   --policy-revision "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["policy_revision"])' "$WORK/candidate/installer-candidate.json")"   --provenance-sha256 "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["provenance_sha256"])' "$WORK/candidate/installer-candidate.json")"   --release-trust-configuration-sha256 "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["release_trust_configuration_sha256"])' "$WORK/candidate/installer-candidate.json")"   --github-repository "$REPOSITORY"   --release-tag "$RELEASE_TAG"   --descriptor-asset-name "$DESCRIPTOR_NAME"   --bundle-identifier "$BUNDLE_IDENTIFIER"   --team-identifier "$TEAM_IDENTIFIER"   --asset-prefix "$(python3 scripts/validate_installer_release_identity.py --field asset_prefix)"
 
 git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
 test "$(git rev-parse origin/main)" = "$SOURCE_SHA" || fail main-changed-before-publication
@@ -233,12 +280,16 @@ else
   gh release create "$RELEASE_TAG" --repo "$REPOSITORY" --draft     --target "$SOURCE_SHA" --title "Forge Platform Installer $INSTALLER_VERSION"     --notes "Exact locally signed and notarized installer release for $SOURCE_SHA."
 fi
 
-gh release upload "$RELEASE_TAG" --repo "$REPOSITORY" --clobber   "$WORK/release/$ARCHIVE_NAME"   "$WORK/release/$DESCRIPTOR_NAME"   "$WORK/release/installer-release-operation.json"
-gh release download "$RELEASE_TAG" --repo "$REPOSITORY"   --pattern "$ARCHIVE_NAME" --pattern "$DESCRIPTOR_NAME"   --dir "$WORK/readback"
+gh release upload "$RELEASE_TAG" --repo "$REPOSITORY" --clobber   "$WORK/release/$ARCHIVE_NAME"   "$WORK/release/$DESCRIPTOR_NAME"   "$WORK/release/installer-release-operation.json" "${PACKAGE_UPLOAD_ASSETS[@]}"
+gh release download "$RELEASE_TAG" --repo "$REPOSITORY"   --pattern "$ARCHIVE_NAME" --pattern "$DESCRIPTOR_NAME" "${PACKAGE_DOWNLOAD_ARGS[@]}"   --dir "$WORK/readback"
 cmp "$WORK/release/$ARCHIVE_NAME" "$WORK/readback/$ARCHIVE_NAME"
 cmp "$WORK/release/$DESCRIPTOR_NAME" "$WORK/readback/$DESCRIPTOR_NAME"
+if [[ "$HAS_BOOTSTRAP" == true ]]; then
+  cmp "$WORK/release/$HELPER_PACKAGE_NAME" "$WORK/readback/$HELPER_PACKAGE_NAME"
+  cmp "$WORK/release/$HELPER_DESCRIPTOR_NAME" "$WORK/readback/$HELPER_DESCRIPTOR_NAME"
+fi
 
-python3 scripts/record_local_installer_publication.py   --operation "$WORK/release/installer-release-operation.json"   --descriptor "$WORK/release/$DESCRIPTOR_NAME"   --descriptor-readback "$WORK/readback/$DESCRIPTOR_NAME"   --archive "$WORK/release/$ARCHIVE_NAME"   --archive-readback "$WORK/readback/$ARCHIVE_NAME"   --run-id "$RUN_ID"   --journal-root "$STATE_ROOT/journal"   --output "$WORK/release/installer-release-operation-published.json"
+python3 scripts/record_local_installer_publication.py "${PUBLICATION_PACKAGE_ARGS[@]}"   --operation "$WORK/release/installer-release-operation.json"   --descriptor "$WORK/release/$DESCRIPTOR_NAME"   --descriptor-readback "$WORK/readback/$DESCRIPTOR_NAME"   --archive "$WORK/release/$ARCHIVE_NAME"   --archive-readback "$WORK/readback/$ARCHIVE_NAME"   --run-id "$RUN_ID"   --journal-root "$STATE_ROOT/journal"   --output "$WORK/release/installer-release-operation-published.json"
 cp "$WORK/release/installer-release-operation-published.json"   "$WORK/release/installer-release-operation.json"
 gh release upload "$RELEASE_TAG" --repo "$REPOSITORY" --clobber   "$WORK/release/installer-release-operation.json"
 rm -f "$WORK/readback/installer-release-operation.json"
@@ -248,9 +299,13 @@ cmp "$WORK/release/installer-release-operation-published.json"   "$WORK/readback
 gh release edit "$RELEASE_TAG" --repo "$REPOSITORY" --draft=false
 test "$(gh release view "$RELEASE_TAG" --repo "$REPOSITORY" --json isDraft --jq .isDraft)" = false
 mkdir "$WORK/public-readback"
-gh release download "$RELEASE_TAG" --repo "$REPOSITORY"   --pattern "$ARCHIVE_NAME" --pattern "$DESCRIPTOR_NAME"   --pattern installer-release-operation.json --dir "$WORK/public-readback"
+gh release download "$RELEASE_TAG" --repo "$REPOSITORY"   --pattern "$ARCHIVE_NAME" --pattern "$DESCRIPTOR_NAME"   --pattern installer-release-operation.json "${PACKAGE_DOWNLOAD_ARGS[@]}" --dir "$WORK/public-readback"
 cmp "$WORK/release/$ARCHIVE_NAME" "$WORK/public-readback/$ARCHIVE_NAME"
 cmp "$WORK/release/$DESCRIPTOR_NAME" "$WORK/public-readback/$DESCRIPTOR_NAME"
+if [[ "$HAS_BOOTSTRAP" == true ]]; then
+  cmp "$WORK/release/$HELPER_PACKAGE_NAME" "$WORK/public-readback/$HELPER_PACKAGE_NAME"
+  cmp "$WORK/release/$HELPER_DESCRIPTOR_NAME" "$WORK/public-readback/$HELPER_DESCRIPTOR_NAME"
+fi
 cmp "$WORK/release/installer-release-operation-published.json"   "$WORK/public-readback/installer-release-operation.json"
 
 echo "LOCAL_INSTALLER_RELEASE=PASS source_sha=$SOURCE_SHA run_id=$RUN_ID tag=$RELEASE_TAG archive=$ARCHIVE_NAME"

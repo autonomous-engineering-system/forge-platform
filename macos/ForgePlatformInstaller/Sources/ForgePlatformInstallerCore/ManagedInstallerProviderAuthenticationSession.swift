@@ -78,6 +78,11 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
         guard challengeTimeout > 0, sessionTimeout > challengeTimeout else { return nil }
         lock.lock()
         guard !started else { lock.unlock(); return nil }
+        guard !exitRegistry.hasUncertainChildEffects() else {
+            terminal = .rejected
+            lock.unlock()
+            return nil
+        }
         started = true
         let out = Pipe()
         let err = Pipe()
@@ -129,7 +134,7 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
             _ = exitRegistry.finish(token)
             return nil
         }
-        guard case .success = effectJournal.begin(token) else {
+        guard case .success = effectJournal.beginAuthentication(token) else {
             lock.unlock()
             _ = exitRegistry.finish(token)
             reject()
@@ -184,6 +189,16 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
         }
         effectToken = nil
         return true
+    }
+
+    /// A failed bootstrap after possible publication is sticky negative
+    /// evidence. The historical journal and reservation remain unresolved.
+    func rejectUncertainBootstrap() {
+        lock.lock()
+        defer { lock.unlock() }
+        terminal = .rejected
+        exitRegistry.markChildEffectsUncertain()
+        _ = effectJournal.markUncertain()
     }
 
     func cancel() {

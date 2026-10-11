@@ -1299,6 +1299,28 @@ final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
         XCTAssertEqual(callsAfterStale, 1)
     }
 
+    func testHelperPackagePreparationUsesFreshCoordinatorAndNeverFallsBackOrPromptsNonInteractive() async throws {
+        let current = try release("0.4.9")
+        for (outcome, status, code) in [
+            (InstallerHelperPreparationOutcome.ready, "helper-package-ready", InstallerCLIExitCode.success),
+            (.blocked, "helper-preparation-blocked", .interactionRequired),
+            (.cancelled, "helper-authorization-cancelled", .confirmationRequired),
+            (.unresolved, "helper-preparation-unresolved", .blocked),
+        ] {
+            let original = CLIReadyCoordinator(), fresh = CLIReadyCoordinator(helperOutcome: outcome)
+            let result = await run(["helper", "register", "--yes", "--non-interactive", "--json"],
+                startup: CLIStartupSpy(outcome: .ready(currentRelease: current, coordinator: original),
+                    recheckOutcome: .ready(currentRelease: current, coordinator: fresh)), version: "0.4.9",
+                registration: { _ in XCTFail("Package outcome must not invoke legacy registration"); return .failed(.serviceUnavailable) })
+            XCTAssertEqual(result.code, code.rawValue); XCTAssertTrue(result.stdout.joined().contains(status) || result.stderr.joined().contains(status))
+            let oldCalls = await original.helperAuthorizationRequests(), calls = await fresh.helperAuthorizationRequests()
+            XCTAssertEqual(oldCalls, []); XCTAssertEqual(calls, [false])
+        }
+        let ready = CLIReadyCoordinator(helperOutcome: .ready)
+        _ = await run(["status", "--json"], startup: CLIStartupSpy(outcome: .ready(currentRelease: current, coordinator: ready)), version: "0.4.9")
+        let statusCalls = await ready.helperAuthorizationRequests(); XCTAssertEqual(statusCalls, [])
+    }
+
     func testHelperRegistrarFactoryRoutesOnlyThroughAnAvailableCoordinator() async throws {
         let version = try InstallerVersion("0.3.18")
         let coordinator = ManagedInstallerPrivilegedHelperRegistrationCoordinator(
@@ -1646,6 +1668,11 @@ private actor CLITestTrustedRuntime: TrustedInstallerRuntime {
 }
 
 private actor CLIReadyCoordinator: InstallerWizardCoordinator {
+    private var authorizationRequests: [Bool] = []
+    private let helperOutcome: InstallerHelperPreparationOutcome
+    init(helperOutcome: InstallerHelperPreparationOutcome = .notRequired) { self.helperOutcome = helperOutcome }
+    func prepareCurrentInstallerHelper(allowAuthorization: Bool) async -> InstallerHelperPreparationOutcome { authorizationRequests.append(allowAuthorization); return helperOutcome }
+    func helperAuthorizationRequests() -> [Bool] { authorizationRequests }
     private var inventories = 0
 
     func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {

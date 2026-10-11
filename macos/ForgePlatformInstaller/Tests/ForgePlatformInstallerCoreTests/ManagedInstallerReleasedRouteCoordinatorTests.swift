@@ -137,6 +137,23 @@ final class ManagedInstallerReleasedRouteCoordinatorTests: XCTestCase {
         XCTAssertEqual(finished, [provider.id])
     }
 
+    func testProviderReadbackReturnsTargetsVerifiedDuringCeremonyCompletion() async throws {
+        let codex = ProviderRequirement(provider: .codex, isRequired: true)
+        let github = ProviderRequirement(provider: .githubCLI, isRequired: true)
+        let fixture = try ReleasedRouteFixture(providerRequirements: [codex, github])
+        let loader = ExecutionRouteLoader(snapshot: fixture.snapshot)
+        await loader.setVerifiedTargets([codex.id])
+        await loader.setTargetsVerifiedOnFinish([github.id])
+        let coordinator = ManagedInstallerReleasedRouteCoordinator(loader: loader)
+        _ = await coordinator.prepareHostPreflight(session: fixture.session, deployment: fixture.deployment)
+        guard case .observed(let readback) = await coordinator.readReviewedProviders(fixture.operation)
+        else { return XCTFail("Completion readback must replace the earlier snapshot") }
+        XCTAssertTrue(readback.allVerified)
+        XCTAssertTrue(readback.targets.allSatisfy { $0.evidenceReference == "receipt:route-provider-finish" })
+        let finished = await loader.finishedTargets()
+        XCTAssertEqual(finished, [codex.id])
+    }
+
     func testProviderReadbackKeepsPreviouslyVerifiedCredentialWhenNoSessionExists() async throws {
         let provider = ProviderRequirement(provider: .codex, isRequired: true)
         let fixture = try ReleasedRouteFixture(providerRequirements: [provider])
@@ -495,6 +512,7 @@ private actor ExecutionRouteLoader:
     private var finishRequests: [ProviderTargetID] = []
     private var finishFailure = false
     private var foreignFinish = false
+    private var targetsVerifiedOnFinish = Set<ProviderTargetID>()
 
     init(snapshot: ManagedInstallerReleasedRouteSnapshot) { self.snapshot = snapshot }
     func setFailure(_ value: Bool) { failing = value }
@@ -503,6 +521,7 @@ private actor ExecutionRouteLoader:
     func setVerifiedTargets(_ values: Set<ProviderTargetID>) { verifiedTargets = values }
     func setFinishFailure(_ value: Bool) { finishFailure = value }
     func setForeignFinish(_ value: Bool) { foreignFinish = value }
+    func setTargetsVerifiedOnFinish(_ values: Set<ProviderTargetID>) { targetsVerifiedOnFinish = values }
     func finishedTargets() -> [ProviderTargetID] { finishRequests }
     func sentIntents() -> [ManagedInstallerReviewedExecutionIntent] { sent }
     func registeredSelections() -> [ManagedInstallerReviewedSelection] { registered }
@@ -581,6 +600,7 @@ private actor ExecutionRouteLoader:
     ) async throws -> ManagedInstallerReviewedProviderReadback {
         finishRequests.append(providerTargetID)
         if finishFailure { throw TestFailure.failed }
+        verifiedTargets.formUnion(targetsVerifiedOnFinish)
         return try ManagedInstallerReviewedProviderReadback(
             operationID: foreignFinish ? "foreign-operation" : intent.operationID,
             stablePlanFingerprint: intent.stablePlanFingerprint,

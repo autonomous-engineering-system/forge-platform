@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 import ForgePlatformInstallerCore
@@ -81,6 +82,9 @@ final class InstallerWizardViewModel: ObservableObject {
         return false
     }
 
+    @Published private(set) var helperPreparation: InstallerHelperPreparationOutcome?
+    @Published private(set) var isHelperPreparationInFlight = false
+    var helperIsReady: Bool { helperPreparation == .ready || helperPreparation == .notRequired }
     private let coordinator: any InstallerWizardCoordinator
     @Published private(set) var isPreflightRequestInFlight = false
     @Published private(set) var isReviewRequestInFlight = false
@@ -120,6 +124,18 @@ final class InstallerWizardViewModel: ObservableObject {
         Task { @MainActor [weak self] in
             let result = await coordinator.handOffSelfUpdate(release)
             self?.state.recordSelfUpdateHandoff(result, for: release)
+        }
+    }
+
+    func prepareInstallerHelper(recheck: Bool = false) {
+        guard state.selfUpdate.isCurrent, !isHelperPreparationInFlight,
+              recheck || helperPreparation == nil else { return }
+        isHelperPreparationInFlight = true
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.prepareCurrentInstallerHelper(allowAuthorization: true)
+            self?.helperPreparation = result
+            self?.isHelperPreparationInFlight = false
         }
     }
 
@@ -1860,9 +1876,16 @@ private struct CompositionReviewScreen: View {
             case .challenge(let challenge):
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Meld \(challenge.providerTargetID) aan met deze eenmalige code:")
-                    Text(challenge.userCode)
-                        .font(.title3.monospaced().weight(.semibold))
-                        .textSelection(.enabled)
+                    HStack(spacing: 12) {
+                        Text(challenge.userCode)
+                            .font(.title3.monospaced().weight(.semibold))
+                            .textSelection(.enabled)
+                        Button("Kopieer code", systemImage: "doc.on.doc") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(challenge.userCode, forType: .string)
+                        }
+                        .help("Kopieer de eenmalige aanmeldcode")
+                    }
                     Link("Open provider-aanmeldpagina",
                          destination: challenge.verificationURL)
                     Text("Kies daarna opnieuw Verder voor onafhankelijke verificatie.")

@@ -4,6 +4,7 @@
     "composition/v1",
     "composition/v2",
     "composition/v3",
+    "helper-package-companion/v1",
     "managed-deployment/v1",
     "managed-python-runtime/v1",
     "provider-fanout/v1",

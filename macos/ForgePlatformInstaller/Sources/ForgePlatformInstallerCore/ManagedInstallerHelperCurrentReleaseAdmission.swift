@@ -68,7 +68,8 @@ struct ManagedInstallerHelperCurrentReleaseAdmission: Sendable {
                     fetcher: fetcher,
                     acceptanceStore: FileInstallerReleaseAcceptanceStore(
                         rootDirectory: stateRoot
-                    )
+                    ),
+                    helperAcceptanceStore: FileInstallerReleaseAcceptanceStore(rootDirectory: stateRoot.appendingPathComponent("helper-companion-acceptance-v1", isDirectory: true))
                 )
             }
         )

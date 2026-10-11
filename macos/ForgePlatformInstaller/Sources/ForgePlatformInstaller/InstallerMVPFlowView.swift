@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import ForgePlatformInstallerCore
 
@@ -81,6 +82,9 @@ struct InstallerMVPFlowView: View {
             }
         }
         .padding(32)
+        .onChange(of: viewModel.helperPreparation) { _, _ in
+            Task { @MainActor in continuePreparation() }
+        }
         .onChange(of: viewModel.state) { _, _ in
             Task { @MainActor in continuePreparation() }
         }
@@ -101,6 +105,27 @@ struct InstallerMVPFlowView: View {
 
     @ViewBuilder
     private var preparing: some View {
+        if viewModel.state.step == .deployment && !viewModel.helperIsReady {
+            if viewModel.isHelperPreparationInFlight {
+                ProgressView("macOS-installatiehulp voorbereiden…")
+            } else {
+                switch viewModel.helperPreparation {
+                case .cancelled:
+                    retryMessage("De macOS-autorisatie is geannuleerd.")
+                case .blocked:
+                    retryMessage("De installatiehulp is niet beschikbaar. Gebruik een beheerdersaccount en controleer de installer.")
+                case .unresolved:
+                    retryMessage("De vorige helperpoging is nog niet bevestigd. Er wordt geen nieuwe poging gestart.")
+                    Button("Controleer installatiehulp") { viewModel.prepareInstallerHelper(recheck: true) }
+                default:
+                    ProgressView("macOS-installatiehulp controleren…")
+                }
+            }
+        } else { preparingContent }
+    }
+
+    @ViewBuilder
+    private var preparingContent: some View {
         Text("Installatie voorbereiden")
             .font(.title2.weight(.semibold))
         switch viewModel.state.step {
@@ -237,25 +262,40 @@ struct InstallerMVPFlowView: View {
             case .prepared:
                 ProgressView("Providerstatus controleren…")
             case .observed(let readback):
-                ForEach(readback.targets, id: \.id) { target in
-                    HStack {
-                        Text(viewModel.state.providers.first(where: { $0.id == target.id })?
-                            .requirement.provider.displayName ?? "Provider")
-                        Spacer()
-                        if target.state == .verified {
-                            Text("Verbonden").foregroundStyle(.green)
-                        } else {
-                            Button("Aanmelden") {
-                                viewModel.beginReviewedProviderAuthentication(target.id)
+                ForEach(InstallerMVPProviderAuthenticationGroup.groups(
+                    targets: readback.targets,
+                    requirements: viewModel.state.providers.map(\.requirement)
+                )) { group in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(group.title)
+                            Spacer()
+                            if let pending = group.actionTarget {
+                                Button("Aanmelden") {
+                                    viewModel.beginReviewedProviderAuthentication(pending.id)
+                                }
+                            } else {
+                                Text("Verbonden").foregroundStyle(.green)
                             }
+                        }
+                        if group.pairedCodex {
+                            Text("Eén aanmelding. Beide verbindingen worden afzonderlijk gecontroleerd.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
             case .challenge(let challenge):
                 Text("Open de aanmeldpagina en voer deze eenmalige code zelf in:")
-                Text(challenge.userCode)
-                    .font(.title3.monospaced().weight(.semibold))
-                    .textSelection(.enabled)
+                HStack(spacing: 12) {
+                    Text(challenge.userCode)
+                        .font(.title3.monospaced().weight(.semibold))
+                        .textSelection(.enabled)
+                    Button("Kopieer code", systemImage: "doc.on.doc") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(challenge.userCode, forType: .string)
+                    }
+                    .help("Kopieer de eenmalige aanmeldcode")
+                }
                 Link("Open aanmeldpagina", destination: challenge.verificationURL)
                 Button("Ik ben aangemeld; controleer verbinding") {
                     viewModel.advance()
@@ -378,6 +418,10 @@ struct InstallerMVPPreparationProgress {
         case .deployment:
             switch viewModel.state.deploymentSelection {
             case .pending:
+                if !viewModel.helperIsReady {
+                    viewModel.prepareInstallerHelper()
+                    return
+                }
                 viewModel.prepareManagedDeploymentInventory()
             case .available(let inventory) where inventory.existing.isEmpty:
                 viewModel.selectManagedDeployment(inventory.createCandidate.id)
@@ -425,6 +469,37 @@ private enum Phase {
         case .ready: "Klaar voor installatie"
         case .installing: "Installeren"
         case .done: "Gereed"
+        }
+    }
+}
+
+
+// Presentation only: readiness remains independently owned by each target.
+struct InstallerMVPProviderAuthenticationGroup: Identifiable {
+    let provider: ProviderID
+    let targets: [ManagedInstallerReviewedProviderReadback.Target]
+    let pairedCodex: Bool
+
+    var id: ProviderID { provider }
+    var title: String { pairedCodex ? "Codex voor EP en Forge" : provider.displayName }
+    var actionTarget: ManagedInstallerReviewedProviderReadback.Target? {
+        targets.first { $0.state != .verified }
+    }
+
+    static func groups(
+        targets: [ManagedInstallerReviewedProviderReadback.Target],
+        requirements: [ProviderRequirement]
+    ) -> [Self] {
+        ProviderID.allCases.compactMap { provider in
+            let selected = requirements.filter { $0.provider == provider }
+            let observed = targets.filter { target in selected.contains { $0.id == target.id } }
+            guard !observed.isEmpty else { return nil }
+            let owners = Set(selected.filter { requirement in
+                observed.contains { $0.id == requirement.id }
+            }.map(\.ownerComponent))
+            return Self(provider: provider, targets: observed,
+                        pairedCodex: provider == .codex && observed.count == 2 &&
+                            owners == Set([.engineeringPlatformServer, .forgeRuntime]))
         }
     }
 }

@@ -664,6 +664,87 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         ))
     }
 
+    func testOneCodexCeremonyBootstrapsAndIndependentlyVerifiesBothTargets() async throws {
+        let fanout = try CodexFanoutFixture()
+        let reader = ProviderAuthMutableStatusReader(status: fanout.prior)
+        let targets = fanout.targets
+        let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fanout.fixture.plan), reader: reader,
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let counts = CodexFanoutCounts()
+        let effects = TestManagedInstallerProductWorkerEffectJournal()
+        let after = fanout.verified
+        let starter = ManagedInstallerReviewedProviderAuthenticationStart(
+            admission: admission, makeSession: { _ in counts.makeSession(effects: effects) },
+            bootstrapCodex: { _, _ in
+                counts.bootstrapped()
+                await reader.set(after)
+                return .published
+            })
+        let bytes = fanout.intent.canonicalJSONData()
+        let challenge = await starter.begin(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertNotNil(challenge)
+        let duplicate = await starter.begin(canonicalIntent: bytes, providerTargetID: fanout.forge.id)
+        XCTAssertNil(duplicate)
+        await reader.set(fanout.sourceVerified)
+        var completed: Data?
+        for _ in 0..<30 {
+            completed = await starter.finish(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+            if completed != nil { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(completed, after.canonicalJSONData())
+        XCTAssertEqual(counts.snapshot(), [1, 1])
+        XCTAssertFalse(effects.snapshot().hasUnresolvedEffects)
+    }
+
+    func testCodexPublicationAloneNeverVerifiesPeerOrRepeatsBootstrap() async throws {
+        let fanout = try CodexFanoutFixture()
+        let reader = ProviderAuthMutableStatusReader(status: fanout.prior)
+        let targets = fanout.targets
+        let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fanout.fixture.plan), reader: reader,
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let counts = CodexFanoutCounts()
+        let effects = TestManagedInstallerProductWorkerEffectJournal()
+        let starter = ManagedInstallerReviewedProviderAuthenticationStart(
+            admission: admission, makeSession: { _ in counts.makeSession(effects: effects) },
+            bootstrapCodex: { _, _ in counts.bootstrapped(); return .published })
+        let bytes = fanout.intent.canonicalJSONData()
+        let challenge = await starter.begin(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertNotNil(challenge)
+        await reader.set(fanout.sourceVerified)
+        for _ in 0..<30 {
+            let completion = await starter.finish(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+            XCTAssertNil(completion)
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(counts.snapshot(), [1, 1])
+        XCTAssertTrue(effects.snapshot().hasUnresolvedEffects)
+        await reader.set(fanout.verified)
+        let completed = await starter.finish(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertEqual(completed, fanout.verified.canonicalJSONData())
+        XCTAssertEqual(counts.snapshot(), [1, 1])
+        XCTAssertFalse(effects.snapshot().hasUnresolvedEffects)
+    }
+
+    func testUnsupportedCodexFanoutRuntimeRejectsBeforeHumanCeremony() async throws {
+        let fanout = try CodexFanoutFixture(version: "1.2.3")
+        let reader = ProviderAuthMutableStatusReader(status: fanout.prior)
+        let targets = fanout.targets
+        let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fanout.fixture.plan), reader: reader,
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let counts = CodexFanoutCounts()
+        let effects = TestManagedInstallerProductWorkerEffectJournal()
+        let starter = ManagedInstallerReviewedProviderAuthenticationStart(
+            admission: admission, makeSession: { _ in counts.makeSession(effects: effects) })
+        let challenge = await starter.begin(canonicalIntent: fanout.intent.canonicalJSONData(), providerTargetID: fanout.ep.id)
+        XCTAssertNil(challenge)
+        XCTAssertEqual(counts.snapshot(), [0, 0])
+        XCTAssertFalse(effects.snapshot().hasUnresolvedEffects)
+    }
+
     func testHumanProviderAuthenticationAdmissionRequiresFreshExactTargetReadback()
         async throws {
         let requirement = try stagedProviderRequirement()
@@ -737,6 +818,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                 ]
                 return ManagedInstallerProviderAuthenticationSession(
                     provider: .codex, process: process,
+                    exitRegistry: ManagedInstallerHelperChildExitRegistry(),
                     effectJournal: TestManagedInstallerProductWorkerEffectJournal()
                 )
             }
@@ -916,6 +998,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
                     + "Enter this one-time code ABCD-EF12\\n'; /bin/sleep 0.1; exit 1"]
                 return ManagedInstallerProviderAuthenticationSession(
                     provider: .codex, process: process,
+                    exitRegistry: ManagedInstallerHelperChildExitRegistry(),
                     effectJournal: TestManagedInstallerProductWorkerEffectJournal()
                 )
             }
@@ -2587,5 +2670,64 @@ private extension Result {
     var failure: Failure? {
         if case .failure(let value) = self { return value }
         return nil
+    }
+}
+
+private struct CodexFanoutFixture {
+    let fixture: FreshRuntimeFixture
+    let intent: ManagedInstallerReviewedExecutionIntent
+    let ep: ProviderRequirement
+    let forge: ProviderRequirement
+    let prior: ManagedInstallerReviewedProviderReadback
+    let sourceVerified: ManagedInstallerReviewedProviderReadback
+    let verified: ManagedInstallerReviewedProviderReadback
+    let targets: [ProviderTargetID: ManagedInstallerProviderAuthenticationTarget]
+
+    init(version: String = "0.157.1") throws {
+        let base = try stagedProviderRequirement().runtime!
+        let runtime = try ProviderRuntimeRequirement(version: InstallerVersion(version), archiveKind: base.archiveKind,
+            artifactURL: base.artifactURL, artifactSHA256: base.artifactSHA256,
+            executableRelativePath: base.executableRelativePath, executableSHA256: base.executableSHA256)
+        ep = .init(provider: .codex, isRequired: true, minimumVersion: runtime.version, credentialScope: .component,
+                   ownerComponent: .engineeringPlatformServer, targetIdentity: "deployment-a", runtime: runtime)
+        forge = .init(provider: .codex, isRequired: true, minimumVersion: runtime.version, credentialScope: .component,
+                      ownerComponent: .forgeRuntime, targetIdentity: "deployment-a", runtime: runtime)
+        let requirements = [ep, forge].sorted { $0.id.rawValue < $1.id.rawValue }
+        let localFixture = try FreshRuntimeFixture(providers: requirements)
+        fixture = localFixture
+        let localIntent = try ManagedInstallerReviewedExecutionIntent(stablePlan: localFixture.plan)
+        intent = localIntent
+        func status(_ verifiedIDs: Set<ProviderTargetID>) throws -> ManagedInstallerReviewedProviderReadback {
+            try .init(operationID: localIntent.operationID, stablePlanFingerprint: localIntent.stablePlanFingerprint,
+                targets: requirements.map {
+                    try .init(id: $0.id, state: verifiedIDs.contains($0.id) ? .verified : .authenticationRequired,
+                              evidenceReference: "receipt:" + (verifiedIDs.contains($0.id) ? "after-" : "before-") + $0.ownerComponent!.rawValue)
+                })
+        }
+        prior = try status([])
+        sourceVerified = try status([ep.id])
+        verified = try status(Set(requirements.map(\.id)))
+        targets = Dictionary(uniqueKeysWithValues: requirements.map { requirement in
+            (requirement.id, ManagedInstallerProviderAuthenticationTarget(provider: .codex,
+                account: .init(name: "_fpi_" + String(repeating: "a", count: 20), uid: 501, gid: 20),
+                executableURL: URL(fileURLWithPath: "/private/provider/runtime/bin/codex"),
+                providerHomeURL: URL(fileURLWithPath: "/private/provider/" + requirement.ownerComponent!.rawValue + "/home"),
+                priorEvidenceReference: "receipt:before-" + requirement.ownerComponent!.rawValue))
+        })
+    }
+}
+
+private final class CodexFanoutCounts: @unchecked Sendable {
+    private let lock = NSLock()
+    private var launches = 0
+    private var copies = 0
+    func snapshot() -> [Int] { lock.lock(); defer { lock.unlock() }; return [launches, copies] }
+    func bootstrapped() { lock.lock(); copies += 1; lock.unlock() }
+    func makeSession(effects: TestManagedInstallerProductWorkerEffectJournal) -> ManagedInstallerProviderAuthenticationSession {
+        lock.lock(); launches += 1; lock.unlock()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "printf 'https://auth.openai.com/codex/device\\nEnter this one-time code ABCD-EF12\\n'; exec /bin/sleep 0.1"]
+        return .init(provider: .codex, process: process, exitRegistry: ManagedInstallerHelperChildExitRegistry(), effectJournal: effects)
     }
 }

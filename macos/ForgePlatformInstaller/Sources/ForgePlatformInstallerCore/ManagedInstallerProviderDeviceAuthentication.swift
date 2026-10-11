@@ -22,7 +22,7 @@ public struct ManagedInstallerProviderDeviceAuthenticationCommand: Equatable, Se
 
     public static func fixedArguments(for provider: ProviderID) -> [String] {
         switch provider {
-        case .codex: return ["login", "--device-auth"]
+        case .codex: return ["-c", "cli_auth_credentials_store=\"file\"", "login", "--device-auth"]
         case .githubCLI:
             return [
                 "auth", "login", "--web", "--hostname", "github.com",
