@@ -506,3 +506,22 @@ permission, does not claim readiness and leaves the product/provider effect
 journal untouched. Actual package installation, independent installed-file
 verification, initial activation, fresh readiness, frontend/backend integration
 and qualified historical recovery remain separate open gates.
+
+
+## Preactivation installed-file evidence (2026-10-11, source only)
+
+The independent installed-helper reader now exposes a separate files-only
+readback. It validates the actual protected app tree, executable, sealed app
+identity and exact daemon configuration before activation. It rechecks the tree
+and daemon after asynchronous seal inspection. Its returned evidence carries
+release sequence and app CodeDirectory only; it cannot claim a registered job,
+process or installation readiness. The existing full running-helper reader is
+unchanged and remains required after activation.
+
+Nine targeted native reader checks passed, including files present with no job
+or process, missing/foreign signing evidence, mutation during inspection and the
+existing FIFO/namespace/running-reader checks. Changed-reader coverage is
+85.416667 percent under the unchanged strict 80.2 gate. Scoped read-only review
+passed. The future root coordinator must hold its mutation lease across these
+checks and require fresh full running readback; these source checks did not
+install a package or activate a service.

@@ -37,6 +37,36 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
         }
     }
 
+    func testFilesCanBeVerifiedBeforeActivationWithoutClaimingRunningReadiness() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let reader = f.reader(process: .some(nil), job: .some(nil))
+        let files = await reader.readFiles(release: try f.record())
+        XCTAssertEqual(files?.releaseSequence, 12)
+        XCTAssertEqual(files?.appCodeDirectorySHA256, String(repeating: "b", count: 64))
+        let ready = await reader.read(release: try f.record())
+        XCTAssertNil(ready)
+        let unsupported = await reader.readFiles(release: try f.record(package: false))
+        XCTAssertNil(unsupported)
+        let unsigned = await f.reader(evidence: .some(nil)).readFiles(release: try f.record())
+        XCTAssertNil(unsigned)
+    }
+    func testFilesReadbackRejectsMutationOrForeignSealBeforeActivation() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let evidence = try f.evidence()
+        let changed = f.reader(bundle: { _ in
+            try? Data("changed daemon".utf8).write(to: f.daemon)
+            return evidence
+        })
+        let denied = await changed.readFiles(release: try f.record())
+        XCTAssertNil(denied)
+        let wrong = try MacOSInstallerBundleCodeSigningEvidence(bundleIdentifier: "com.example.foreign",
+            installerVersion: InstallerVersion("1.2.3"), teamIdentifier: "ZEML4LPXH4",
+            codeDirectorySHA256: String(repeating: "b", count: 64))
+        let second = try Fixture(); defer { second.remove() }
+        let foreign = await second.reader(evidence: wrong).readFiles(release: try second.record())
+        XCTAssertNil(foreign)
+    }
+
     func testIndependentLayoutJobProcessAndReleaseReadback() async throws {
         let f = try Fixture()
         defer { f.remove() }

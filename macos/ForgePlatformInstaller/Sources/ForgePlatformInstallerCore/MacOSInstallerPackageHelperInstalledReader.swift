@@ -9,6 +9,15 @@ struct MacOSInstallerPackageHelperReadback: Equatable, Sendable {
     let processID: Int32
 }
 
+/// Files only. This evidence does not assert a registered/running service.
+struct MacOSInstallerPackageHelperFilesReadback: Equatable, Sendable {
+    let releaseSequence: UInt64
+    let appCodeDirectorySHA256: String
+    fileprivate init(releaseSequence: UInt64, appCodeDirectorySHA256: String) {
+        self.releaseSequence = releaseSequence; self.appCodeDirectorySHA256 = appCodeDirectorySHA256
+    }
+}
+
 struct MacOSInstallerPackageHelperProcess: Equatable, Sendable {
     let processID: Int32
     let startSeconds: UInt64
@@ -74,6 +83,24 @@ struct MacOSInstallerPackageHelperInstalledReader: Sendable {
               readProcess(pid, executable, release.expectedTeamIdentifier) == process else { return nil }
         return .init(releaseSequence: release.sequence,
                      appCodeDirectorySHA256: evidence.codeDirectorySHA256, processID: pid)
+    }
+
+    /// Required after installer exit and before any job activation. The full
+    /// read(release:) remains the separate running-helper readiness check.
+    func readFiles(release: VerifiedInstallerReleaseRecord) async -> MacOSInstallerPackageHelperFilesReadback? {
+        guard release.helperPackage != nil else { return nil }
+        let app = shelf.appendingPathComponent(Self.appName, isDirectory: true)
+        let executable = app.appendingPathComponent(ManagedInstallerPrivilegedHelperContract.bundleProgram)
+        guard let before = snapshot(app: app),
+              let helperIdentity = before[executable.path], helperIdentity.mode & 0o100 != 0,
+              let daemonBefore = readDaemon(), Self.validDaemon(daemonBefore.data, executable: executable),
+              let evidence = await readBundle(app),
+              evidence.bundleIdentifier == release.expectedBundleIdentifier,
+              evidence.teamIdentifier == release.expectedTeamIdentifier,
+              evidence.installerVersion == release.release.version,
+              evidence.codeDirectorySHA256 == release.expectedCodeDirectorySHA256,
+              snapshot(app: app) == before, readDaemon() == daemonBefore else { return nil }
+        return .init(releaseSequence: release.sequence, appCodeDirectorySHA256: evidence.codeDirectorySHA256)
     }
 
     private struct Identity: Equatable, Sendable {
