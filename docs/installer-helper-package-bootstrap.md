@@ -421,3 +421,31 @@ script, Keychain operation, notary submission or installed-helper action ran.
 The regular release upload/download/descriptor pipeline still needs the signed
 companion wired in. Root install/activation, installed-bootstrap readback,
 frontend composition and historical recovery remain separate open gates.
+
+
+## Protected publisher companion wiring (2026-10-11, source only)
+
+The regular local publisher retains V1 candidates without a bootstrap. For a
+bootstrap-bearing candidate it requires the separate Installer selector, signs
+and verifies the bootstrap before sealing the app, then verifies the bootstrap
+again in the actual stapled archive carrier. Companion signing starts only after
+carrier extraction and all existing staple/Gatekeeper/signature/caller checks.
+The library now owns its bounded private command runner and does not depend on
+an offline-only caller function.
+
+Explicit argument arrays pass the signed companion and its notarization reference
+to the V2 qualifier and structural verifier. The companion is uploaded, separately
+downloaded and byte-compared before publication-journal admission; its public
+readback is downloaded and compared again after the draft becomes public. The
+existing recorder enforces independent file identity and descriptor digest/size.
+No new operation or historical journal schema is introduced by this wiring.
+
+Twenty-one scoped dependency checks passed, including real early refusal of
+unauthorized contexts before checkout/artifact work, shell syntax, actual metadata
+handoffs and private companion-journal checks. A source-order regression check
+covers carrier trust before package effects and download before publication.
+Read-only review found an initially misplaced companion block; it was moved after
+carrier checks and the scoped re-review passed. These checks did not run the
+publisher, contact GitHub/Apple for delivery, sign an artifact or prove installation.
+Actual protected publication, root installation/activation, frontend installed
+readback and historical recovery remain open.

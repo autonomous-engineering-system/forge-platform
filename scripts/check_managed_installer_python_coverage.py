@@ -182,6 +182,7 @@ TESTS = (
     "tests/installer/test_package_macos_installer_app.py",
     "tests/installer/test_package_macos_installer_bootstrap.py",
     "tests/installer/test_prepare_macos_installer_bootstrap_metadata.py",
+    "tests/installer/test_helper_package_release_orchestration.py",
     "tests/installer/test_installer_package_signing_metadata.py",
     "tests/installer/test_installer_helper_package_release.py",
     "tests/installer/test_verified_installer_helper_package.py",

@@ -5,6 +5,18 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   exit 64
 fi
 
+helper_package_bounded() {
+  local log="$1"; shift
+  python3 - "$log" "$@" <<'PYCODE'
+import subprocess,sys
+with open(sys.argv[1],"wb") as output:
+    try:
+        result=subprocess.run(sys.argv[2:],stdin=subprocess.DEVNULL,stdout=output,stderr=output,timeout=1800,check=False)
+    except (OSError,subprocess.TimeoutExpired):raise SystemExit(1)
+raise SystemExit(0 if result.returncode==0 else 1)
+PYCODE
+}
+
 select_helper_package_identity() {
   local private="$1" team="$2"
   [[ -n "${FORGE_PLATFORM_INSTALLER_SIGNING_IDENTITY:-}" ]] || return 1
@@ -46,7 +58,7 @@ try:verify_payload(fd,archive=archive,preparation=preparation,archive_digest=dig
 finally:os.close(fd)
 PYCODE
   [[ "$?" == 0 ]] || return 1
-  bounded "$private/productsign.log" /usr/bin/productsign --sign "$identity" --timestamp "$unsigned" "$package" || return 1
+  helper_package_bounded "$private/productsign.log" /usr/bin/productsign --sign "$identity" --timestamp "$unsigned" "$package" || return 1
   chmod 600 "$package" || return 1
   python3 - "$private/helper-package-notary.json" "$private/helper-package-notary-error.log" "$package" <<'PYCODE'
 import os,subprocess,sys
@@ -67,7 +79,7 @@ try:
 except (OSError,ValueError):raise SystemExit(1)
 PYCODE
 )" || return 1
-  bounded "$private/helper-package-staple.log" /usr/bin/xcrun stapler staple "$package" || return 1
+  helper_package_bounded "$private/helper-package-staple.log" /usr/bin/xcrun stapler staple "$package" || return 1
   # The existing inspector independently rechecks Apple Installer/team, staple,
   # Gatekeeper, all payload bytes and archive/provenance binding after signing.
   python3 - "$package" "$archive" "$version" "$source" "$team" "$notary" "$receipt" "$archive_digest" <<'PYCODE'
