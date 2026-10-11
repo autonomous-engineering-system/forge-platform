@@ -5,6 +5,33 @@ import XCTest
 
 final class SelfUpdateCoordinatorTests: XCTestCase {
 
+    func testFailedCurrencyRecheckCannotReadmitOldHelperRelease() async throws {
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: true)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let feed = FeedSpy(result: .success(record))
+        let selection = ManagedInstallerHelperBackendReleaseSelection()
+        let coordinator = makeCoordinator(feed: feed,
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            helperReleaseBinding: { selection.bind($0) },
+            helperPreparation: { _, _, _ in
+                XCTFail("A failed currency recheck must never enter package preparation")
+                return .ready
+            })
+        let first = await coordinator.enforceCurrentInstaller(currentVersion: identity.version)
+        XCTAssertEqual(first, .current(record.release))
+        await feed.setResult(.failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable)))
+        let failed = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+        guard case .failed = failed else { return XCTFail("Expected failed recheck") }
+        XCTAssertNil(selection.read())
+        let blocked = await coordinator.prepareCurrentInstallerHelper()
+        XCTAssertEqual(blocked, .blocked)
+        await feed.setResult(.success(record))
+        let fresh = await coordinator.recheckInstallerBeforeMutation(currentVersion: identity.version)
+        XCTAssertEqual(fresh, .current(record.release))
+        XCTAssertEqual(selection.read(), record)
+    }
+
     func testCurrencyInvalidationDuringSuspendedPackageStageNeverAuthorizes() async throws {
         let bytes = Data("source-only-staged-helper".utf8)
         let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
