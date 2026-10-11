@@ -389,6 +389,71 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
         }
     }
 
+    func testBootstrapClientRequiresIndependentMatchingRunningEvidence() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let release = try f.record()
+        let claim = try bootstrapClaim(release)
+        let source = f.base.appendingPathComponent(VerifiedInstallerHelperPackage.assetName)
+        let observed = InstallProbe()
+        let client = MacOSInstallerHelperPackageBootstrapClient(request: { bytes in
+            let request = MacOSInstallerHelperBootstrapImportRequest.decode(bytes)
+            XCTAssertEqual(request?.source, source); XCTAssertEqual(request?.sequence, release.sequence)
+            XCTAssertEqual(request?.packageSHA256, release.helperPackage?.sha256)
+            observed.add("request"); return claim
+        }, readInstalled: { record in observed.add("read"); return await f.reader().read(release: record) })
+        let ready = await client.install(source: source, release: release)
+        XCTAssertEqual(ready?.processID, 42); XCTAssertEqual(observed.items, ["request", "read"])
+        for mismatch in [true, false] {
+            let denied = MacOSInstallerHelperPackageBootstrapClient(request: { _ in claim }, readInstalled: { record in
+                mismatch ? .init(releaseSequence: record.sequence, appCodeDirectorySHA256: record.expectedCodeDirectorySHA256, processID: 43) : nil
+            })
+            let result = await denied.install(source: source, release: release); XCTAssertNil(result)
+        }
+        let unsupported = await client.install(source: source, release: try f.record(package: false))
+        let invalidPath = await client.install(source: f.base.appendingPathComponent("other.pkg"), release: release)
+        let remote = await client.install(source: URL(string: "https://example.invalid/file.pkg")!, release: release)
+        XCTAssertNil(unsupported); XCTAssertNil(invalidPath); XCTAssertNil(remote)
+        XCTAssertEqual(observed.items, ["request", "read"])
+        // Constructing production client does not connect, authorize or install.
+        _ = MacOSInstallerHelperPackageBootstrapClient()
+    }
+    func testBootstrapClientRefusesHostileOrImportOnlyReceiptsBeforeInstalledRead() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let release = try f.record(), claim = try bootstrapClaim(release)
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: claim) as? [String: Any])
+        var candidates = [Data(), Data([255]), Data(repeating: 32, count: 8193), Data("{}".utf8),
+            Data("{\"schema\":\"a\",\"schema\":\"b\"}".utf8)]
+        for key in ["schema", "status", "release_sequence", "app_code_directory_sha256", "process_id", "installation_ready", "extra"] {
+            var fields = original
+            switch key {
+            case "release_sequence": fields[key] = 13
+            case "process_id": fields[key] = Int64(Int32.max) + 1
+            case "installation_ready": fields[key] = 1
+            default: fields[key] = "wrong"
+            }
+            candidates.append(try JSONSerialization.data(withJSONObject: fields))
+        }
+        for pid in ["-1", "0", "true", "42.0"] {
+            candidates.append(Data(String(decoding: claim, as: UTF8.self).replacingOccurrences(of: "\"process_id\":42", with: "\"process_id\":" + pid).utf8))
+        }
+        for bytes in candidates {
+            let denied = MacOSInstallerHelperPackageBootstrapClient(request: { _ in bytes }, readInstalled: { _ in
+                XCTFail("Invalid helper claim must fail before installed read"); return nil
+            })
+            let result = await denied.install(source: f.base.appendingPathComponent(VerifiedInstallerHelperPackage.assetName), release: release)
+            XCTAssertNil(result)
+        }
+        let unavailable = MacOSInstallerHelperPackageBootstrapClient(request: { _ in nil }, readInstalled: { _ in XCTFail("No reply"); return nil })
+        let nilResult = await unavailable.install(source: f.base.appendingPathComponent(VerifiedInstallerHelperPackage.assetName), release: release)
+        XCTAssertNil(nilResult)
+    }
+    private func bootstrapClaim(_ release: VerifiedInstallerReleaseRecord) throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["schema": "forge-platform.bootstrap-install-receipt/v1",
+            "status": "HELPER_RUNNING_VERIFIED", "release_sequence": release.sequence,
+            "app_code_directory_sha256": release.expectedCodeDirectorySHA256, "process_id": 42,
+            "installation_ready": true], options: [.sortedKeys])
+    }
+
     private func installFixture(_ f: Fixture) throws -> (MacOSInstallerImportedHelperPackage, VerifiedInstallerReleaseRecord,
         MacOSInstallerHelperPackageEffectJournal, FileInstallerSelfUpdateOperationLock) {
         let source = f.base.appendingPathComponent("source"), stage = f.base.appendingPathComponent("stage"), journal = f.base.appendingPathComponent("journal")

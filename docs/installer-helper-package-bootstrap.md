@@ -617,3 +617,35 @@ installed, bootstrap registered, helper started/stopped or historical product/au
 journal changed. Frontend/backend package-route selection, supported historical
 recovery, actual package publication/qualification and public CLI/GUI proof remain
 open. Current published 0.4.9 V1 cannot supply this package-bearing route.
+
+
+## Frontend bootstrap client and independent readback (2026-10-11, source only)
+
+A dedicated native client now targets only the fixed privileged bootstrap Mach
+service with its closed Developer ID requirement. It sends the explicit install
+method, with the existing strict bounded package-import request. The connection
+is single-use: malformed local requests fail before admission, and an attempted
+request is never reconnected or retried. Error/interruption/invalidation/timeout
+resolve the reply once; timeout closes the connection, so root-side sticky peer
+revocation prevents a subsequent effect phase. Root effect history is retained.
+
+The client accepts only the closed helper-install receipt schema, exact selected
+release sequence/CodeDirectory, actual boolean readiness and positive Int32 PID.
+Extra/duplicate fields, import-only claims, invalid numeric values and oversized
+bytes are rejected. Even a valid server claim cannot return success without an
+independent full installed reader producing exactly the same sequence/CD/PID.
+No credential or protected root package path enters this receipt.
+
+Twenty-two focused checks passed, including hostile claims, missing/mismatched
+independent readback and actual anonymous local XPC explicit-method/one-request/
+missing-reply timeout behavior. Anonymous source qualification installs no trust
+policy and is not a released backend option or live signing/installation proof.
+New production file coverage is 96.330275 percent, strictly above 80.2. Scoped
+read-only review passed. No package installation, authorization prompt, bootstrap
+registration or product/helper lifecycle action occurred.
+
+This client is not yet selected by the wizard or CLI. Frontend authorization/
+verified package staging, package versus historical SM backend admission and
+supported historical recovery remain open; existing published V1 is unchanged.
+The GUI/CLI must independently qualify the main helper protocol after installed
+readback before product work, and public CLI/GUI MVP proof remains open.
