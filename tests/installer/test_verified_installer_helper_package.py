@@ -45,6 +45,49 @@ class HelperPackageDescriptorTests(unittest.TestCase):
                 def failing(tool,args):
                     count.append(tool);return None if len(count)-1==fail else (GOOD if tool.endswith('pkgutil') else '')
                 with patch.object(verifier,'_observe',side_effect=failing),self.assertRaises(ValueError):self.read(p)
+    def test_signed_xar_name_profile_is_unambiguous_and_preserves_payload_checks(self):
+        # Source-only malformed containers are never installation/runtime input.
+        # The real retained signed release is qualified separately without mocks.
+        import copy
+        import struct
+        import xml.etree.ElementTree as XML
+        import zlib
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);package=self.file(root);original=package.read_bytes()
+            magic,header,version,compressed,expanded,algorithm=struct.unpack('>4sHHQQI',original[:28])
+            original_toc=XML.fromstring(zlib.decompress(original[header:header+compressed]))
+            heap=original[header+compressed:]
+            for kind in ['single','identical-two','mixed','different','three','missing','attribute','nested','unknown','duplicate-member','scripts','duplicate-data','duplicate-type','bad-extent']:
+                with self.subTest(kind=kind):
+                    toc=copy.deepcopy(original_toc);nodes=toc.findall('toc/file')
+                    for node in nodes:
+                        name=node.find('name')
+                        if kind not in ['single','mixed'] or (kind=='mixed' and node is nodes[0]):
+                            node.append(copy.deepcopy(name))
+                    node=nodes[0]
+                    if kind=='different':node.findall('name')[1].text='Payload'
+                    elif kind=='three':node.append(copy.deepcopy(node.find('name')))
+                    elif kind=='missing':
+                        for name in node.findall('name'):node.remove(name)
+                    elif kind=='attribute':node.findall('name')[1].set('alias','PackageInfo')
+                    elif kind=='nested':XML.SubElement(node.findall('name')[1],'name').text='PackageInfo'
+                    elif kind=='unknown':
+                        for name in node.findall('name'):name.text='Other'
+                    elif kind=='duplicate-member':toc.find('toc').append(copy.deepcopy(node))
+                    elif kind=='scripts':
+                        for name in node.findall('name'):name.text='Scripts'
+                    elif kind=='duplicate-data':node.append(copy.deepcopy(node.find('data')))
+                    elif kind=='duplicate-type':node.append(copy.deepcopy(node.find('type')))
+                    elif kind=='bad-extent':node.find('data/offset').text=str(len(original)*2)
+                    xml=XML.tostring(toc);encoded=zlib.compress(xml)
+                    package.write_bytes(struct.pack('>4sHHQQI',magic,header,version,len(encoded),len(xml),algorithm)+encoded+heap)
+                    with patch.object(verifier,'_observe',side_effect=lambda tool,args:GOOD if tool.endswith('pkgutil') else ''):
+                        if kind in ['single','identical-two','mixed']:
+                            result=self.read(package)
+                            self.assertEqual(result['digest'],'sha256:'+sha256(package.read_bytes()).hexdigest())
+                        else:
+                            with self.assertRaises(ValueError):self.read(package)
+
     def test_wrong_signature_identity_ambiguity_and_unsigned_status(self):
         with tempfile.TemporaryDirectory() as temporary:
             p=self.file(Path(temporary))
