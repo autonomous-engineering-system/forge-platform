@@ -1,0 +1,25 @@
+{
+  "allowed_projection_paths": [
+    "installer-version.json"
+  ],
+  "baseline_version": "0.4.13",
+  "event_lineage": "L1-INSTALLER-CANONICAL-JOURNAL-WIZARD-CORRECTION-20261012",
+  "expected_source_revision": "ef33a10fe64a84d5624e15bfa55d3e7ecd766cd4",
+  "manifest_sha256_after": "a0b22a668fcd4ec81c08c8f63dbd78f0e30f33078830cda3a4cdd555588d4a87",
+  "manifest_sha256_before": "b8aa80429991d465965cc7320d464beeb322fb119cfeeade412b79f2f7953525",
+  "operation_id": "l1-installer-0414-canonical-journal-wizard-20261012",
+  "packager_sha256_after": "3b8b1e6d5233539430243bfd3f4bd310716e8ebfc4bb0f2a46766020c4c43ea7",
+  "packager_sha256_before": "3b8b1e6d5233539430243bfd3f4bd310716e8ebfc4bb0f2a46766020c4c43ea7",
+  "policy_revision": "forge-platform-installer-version-v2",
+  "product": "forge-platform-installer",
+  "release_class": "PATCH",
+  "requested_bump": "patch",
+  "requested_exact_version": null,
+  "runtime_info_plist_path": "Contents/Info.plist",
+  "runtime_projection_schema": "forge-platform-installer-info-plist-version-projection/v1",
+  "runtime_projection_sha256_after": "1f0c07fa6d4b0a2ba5915d0b7a22429b4286c33c901866b149de0791270c420d",
+  "runtime_projection_sha256_before": "a1665fc6b3a347f764ac7f09b8bcfe91572378f95c31d6487d031178edfc6bb8",
+  "schema": "forge-platform.installer-version-operation/v2",
+  "state": "APPLIED",
+  "target_version": "0.4.14"
+}
