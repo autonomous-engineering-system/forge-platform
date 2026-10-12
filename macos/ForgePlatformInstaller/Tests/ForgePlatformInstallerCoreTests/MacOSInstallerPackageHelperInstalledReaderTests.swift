@@ -187,6 +187,27 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
         XCTAssertEqual(MacOSInstallerPackageHelperInstalledReader.parseJob(nested, executable: f.helper, daemon: f.daemon), 42)
     }
 
+    func testKernelProcessReadRetainsExactOwnerPIDAndStableIncarnation() throws {
+        let pid = getpid()
+        let first = try XCTUnwrap(MacOSInstallerPackageHelperInstalledReader.inspectKernelProcess(pid, expectedOwner: geteuid()))
+        XCTAssertEqual(first.processID, pid)
+        XCTAssertGreaterThan(first.startSeconds, 0)
+        XCTAssertLessThan(first.startMicroseconds, 1_000_000)
+        XCTAssertEqual(MacOSInstallerPackageHelperInstalledReader.inspectKernelProcess(pid, expectedOwner: geteuid()), first)
+        XCTAssertNil(MacOSInstallerPackageHelperInstalledReader.inspectKernelProcess(pid, expectedOwner: geteuid() == 0 ? 501 : 0))
+        for invalid: Int32 in [-1, 0, Int32.max] {
+            XCTAssertNil(MacOSInstallerPackageHelperInstalledReader.inspectKernelProcess(invalid, expectedOwner: 0))
+        }
+    }
+
+    func testKernelProcessReadObservesRootLaunchdAsOrdinaryOperator() throws {
+        let process = try XCTUnwrap(MacOSInstallerPackageHelperInstalledReader.inspectKernelProcess(1, expectedOwner: 0))
+        XCTAssertEqual(process.processID, 1)
+        XCTAssertGreaterThan(process.startSeconds, 0)
+        XCTAssertEqual(MacOSInstallerPackageHelperInstalledReader.inspectKernelProcess(1, expectedOwner: 0), process)
+        XCTAssertNil(MacOSInstallerPackageHelperInstalledReader.inspectKernelProcess(1, expectedOwner: 501))
+    }
+
     func testPlatformInspectorRejectsWrongPIDOwnerPathAndUnsignedCurrentProcess() {
         let current = getpid()
         XCTAssertNil(MacOSInstallerPackageHelperInstalledReader.inspectProcess(-1, executable: URL(fileURLWithPath: "/none"), team: "ZEML4LPXH4"))

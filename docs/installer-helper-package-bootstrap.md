@@ -840,3 +840,26 @@ Debug builds offer a presentation-only progress inspection window. It constructs
 no live startup model or coordinator, and release builds omit this route. Visual
 and anonymous-XPC source tests are distinct from actual signed startup, package
 installation, helper readiness, and public CLI/GUI installation evidence.
+
+## Ordinary-operator running-process readback (2026-10-12)
+
+The public 0.4.11 VM GUI installed and activated its exact signed main helper;
+the protected effect journal reached `readbackRecorded` with installer exit 0.
+The GUI's independent process observation then failed: macOS 27 returns `EPERM`
+for `PROC_PIDTBSDINFO` on a root helper when called by its ordinary operator.
+That owner GUI installation is a readiness FAIL, despite public artifact PASS.
+
+The bounded correction obtains owner, exact PID and process incarnation from
+`sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID, pid)`. It requires a successful result,
+exact `kinfo_proc` byte count, matching PID/UID, positive start seconds and a valid
+microsecond value. Before/after incarnation equality, exact executable path,
+live and static Developer ID requirements, matching code hashes, stable sealed
+files, exact release binding and launchd readback remain mandatory. No new IPC,
+privileged effect, fallback, retry or journal reset is introduced.
+
+Physical read-only qualification as VM operator UID 501 observed the actual
+root helper's PID, owner and stable start timestamp, and verified both its live
+and static signatures and code-hash agreement. Wrong owner, path and team were
+rejected. This process-reader evidence is distinct from full GUI startup PASS.
+A real signed GUI selftest is required before the next owner handoff; an unsigned
+presentation preview or source-only tests cannot satisfy that gate.
