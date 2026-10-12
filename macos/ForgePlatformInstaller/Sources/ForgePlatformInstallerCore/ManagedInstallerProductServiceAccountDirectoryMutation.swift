@@ -195,16 +195,26 @@ struct MacOSManagedInstallerProductServiceAccountDirectoryMutation:
                   componentIdentity: claim.componentIdentity,
                   instanceID: claim.instanceID
               ) else { return nil }
-        let suffix = String(claim.accountName.dropFirst("_fpi_".count))
+        return Self.generatedAccountIdentity(name: claim.accountName)
+    }
+
+    /// Read-only reuse of the existing generated account profile. This is not
+    /// an account-creation or product-authority admission.
+    static func generatedAccountIdentity(name: String)
+        -> (user: ManagedInstallerLocalDirectoryUser,
+            group: ManagedInstallerLocalDirectoryGroup)? {
+        guard name.hasPrefix("_fpi_"), name.utf8.count == 25,
+              name.dropFirst(5).utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+        let suffix = String(name.dropFirst("_fpi_".count))
         let groupName = "_fpi_g_" + suffix
-        let digest = SHA256.hash(data: Data(claim.accountName.utf8))
+        let digest = SHA256.hash(data: Data(name.utf8))
         let first = digest.prefix(4).reduce(UInt32(0)) {
             ($0 << 8) | UInt32($1)
         }
         let id = Self.minimumID + first % Self.idRange
         return (
             ManagedInstallerLocalDirectoryUser(
-                name: claim.accountName, uid: id, gid: id,
+                name: name, uid: id, gid: id,
                 home: "/var/empty", shell: "/usr/bin/false",
                 authenticationAuthority: Self.disabledAuthority
             ),

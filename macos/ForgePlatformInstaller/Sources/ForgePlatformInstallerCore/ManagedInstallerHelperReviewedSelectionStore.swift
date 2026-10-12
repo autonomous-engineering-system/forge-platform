@@ -95,6 +95,27 @@ struct FileManagedInstallerHelperReviewedSelectionStore: Sendable {
         return selection
     }
 
+    /// Read the exact helper-owned selection for an existing parent journal;
+    /// this overload cannot manufacture a reviewed intent or authorize work.
+    func loadSelection(for record: ManagedPythonRuntimeParentJournalRecord) throws
+        -> ManagedInstallerReviewedSelection {
+        let root = try openRoot(); defer { Darwin.close(root) }
+        let bound = record.operationID + "\u{0}" + record.stablePlanFingerprint
+        let digest = SHA256.hash(data: Data(bound.utf8)).map { String(format: "%02x", $0) }.joined()
+        let resumed = try read(named: "reviewed-selection-post-tool-" + digest + ".json", root: root)
+        guard let bytes = try resumed ?? read(named: Self.fileName(for: record.operationID), root: root),
+              let selection = try? ManagedInstallerReviewedSelection.decodeJSON(bytes),
+              selection.intent.operationID == record.operationID,
+              selection.intent.stablePlanFingerprint == record.stablePlanFingerprint,
+              selection.intent.deploymentID == record.deploymentID,
+              selection.intent.sessionID == record.sessionID,
+              Set(selection.componentIdentities) == Set(record.productVirtualEnvironments.map(\.componentIdentity)),
+              selection.componentIdentities.count == record.productVirtualEnvironments.count else {
+            throw ManagedInstallerHelperReviewedSelectionStoreFailure.unavailable
+        }
+        return selection
+    }
+
     private static func fileName(for operationID: String) -> String {
         let digest = SHA256.hash(data: Data(operationID.utf8))
             .map { String(format: "%02x", $0) }.joined()
@@ -201,7 +222,7 @@ struct FileManagedInstallerHelperReviewedSelectionStore: Sendable {
 
     private func read(named name: String, root: Int32) throws -> Data? {
         let file = name.withCString {
-            Darwin.openat(root, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+            Darwin.openat(root, $0, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW_ANY)
         }
         guard file >= 0 else {
             if errno == ENOENT { return nil }
@@ -359,8 +380,20 @@ extension FileManagedInstallerHelperReviewedSelectionStore {
 
     func loadOperator(for claim: ManagedInstallerProductServiceAccountClaim) throws
         -> ManagedInstallerNamedOperator {
+        try loadCorrelatedOperator(operationID: claim.operationID,
+            fingerprint: claim.stablePlanFingerprint, deploymentID: claim.deploymentID)
+    }
+
+    func loadOperator(for record: ManagedPythonRuntimeParentJournalRecord) throws
+        -> ManagedInstallerNamedOperator {
+        try loadCorrelatedOperator(operationID: record.operationID,
+            fingerprint: record.stablePlanFingerprint, deploymentID: record.deploymentID)
+    }
+
+    private func loadCorrelatedOperator(operationID: String, fingerprint: String,
+                                        deploymentID: String) throws -> ManagedInstallerNamedOperator {
         let root = try openRoot(); defer { Darwin.close(root) }
-        let identity = claim.operationID + "\u{0}" + claim.stablePlanFingerprint
+        let identity = operationID + "\u{0}" + fingerprint
         let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
         guard let raw = try read(named: "reviewed-installer-user-" + digest + ".json", root: root) else {
             throw ManagedInstallerHelperReviewedSelectionStoreFailure.unavailable
@@ -368,9 +401,9 @@ extension FileManagedInstallerHelperReviewedSelectionStore {
         var reader = try StrictJSONResourceReader(data: raw)
         guard let fields = try reader.parseDocument().objectValue,
               fields["schema"]?.stringValue == "forge-platform.reviewed-installer-user/v1",
-              fields["operation_id"]?.stringValue == claim.operationID,
-              fields["stable_plan_fingerprint"]?.stringValue == claim.stablePlanFingerprint,
-              fields["deployment_id"]?.stringValue == claim.deploymentID,
+              fields["operation_id"]?.stringValue == operationID,
+              fields["stable_plan_fingerprint"]?.stringValue == fingerprint,
+              fields["deployment_id"]?.stringValue == deploymentID,
               let userFields = fields["operator"]?.objectValue,
               let uid = userFields["uid"]?.integerValue,
               let number = UInt32(exactly: uid), number > 0 else {
