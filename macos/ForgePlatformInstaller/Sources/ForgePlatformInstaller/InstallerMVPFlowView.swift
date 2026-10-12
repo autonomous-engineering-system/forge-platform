@@ -14,13 +14,17 @@ struct InstallerMVPFlowView: View {
     @State private var repository = ""
     @State private var repositoryIdentity = ""
     @State private var showTechnicalDetails = false
+    @State private var history = InstallerMVPResultHistory()
+    @State private var pendingConnection: InstallerMVPProviderConnectionIntent?
 
-    init(viewModel: InstallerWizardViewModel, initiallyStarted: Bool = false) {
+    init(viewModel: InstallerWizardViewModel, initiallyStarted: Bool = false,
+         resultHistory: InstallerMVPResultHistory = .init()) {
         self.viewModel = viewModel
         _started = State(initialValue: initiallyStarted)
+        _history = State(initialValue: resultHistory)
     }
 
-    private var phase: Phase {
+    private var phase: InstallerMVPFlowStep {
         guard started else { return .welcome }
         switch viewModel.state.step {
         case .selfUpdate, .deployment, .composition, .preflight:
@@ -63,7 +67,16 @@ struct InstallerMVPFlowView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    switch phase {
+                    if started { stepNavigation }
+                    if let snapshot = history.viewedSnapshot {
+                        Text("\(snapshot.step.title) — eerdere resultaten")
+                            .font(.title2.weight(.semibold))
+                        ForEach(snapshot.results, id: \.self) { result in Text(result) }
+                        Text("Dit is een terugblik. De huidige stap blijft actief.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Terug naar huidige stap") { history.returnToCurrent() }
+                    } else {
+                        switch phase {
                     case .welcome: welcome
                     case .preparing: preparing
                     case .providers: providers
@@ -77,11 +90,16 @@ struct InstallerMVPFlowView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.top, 12)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(32)
+        .onAppear { captureResults() }
+        .onReceive(viewModel.$providerStage) { _ in
+            Task { @MainActor in completeSelectedProviderAction() }
+        }
         .onChange(of: viewModel.helperPreparation) { _, _ in
             Task { @MainActor in continuePreparation() }
         }
@@ -96,7 +114,9 @@ struct InstallerMVPFlowView: View {
                 .font(.title2.weight(.semibold))
             Text("Deze installer zet Engineering Platform en Forge op deze Mac. Daarna verbind je de benodigde providers en controleren we of beide producten werken.")
             Button("Begin installatie") {
+                captureResults()
                 started = true
+                captureResults()
                 continuePreparation()
             }
             .buttonStyle(.borderedProminent)
@@ -167,10 +187,11 @@ struct InstallerMVPFlowView: View {
                 ProgressView("Installatiebestanden controleren…")
             }
         case .preflight:
-            if preparation.preflightRequested && !viewModel.isPreflightRequestInFlight
-                && !viewModel.state.preflight.isPassed {
-                retryMessage("Deze Mac is nog niet klaar voor de installatie. Los het probleem op en controleer opnieuw; er is nog geen productinstallatie begonnen.")
-                Button("Controleer opnieuw") { viewModel.prepareHostPreflight() }
+            if !viewModel.isPreflightRequestInFlight && (
+                viewModel.state.preflight.checks.contains { if case .failed = $0.state { return true }; return false }
+                || preparation.preflightRequested && !viewModel.state.preflight.isPassed
+            ) {
+                preflightProblems
             } else {
                 ProgressView("Deze Mac voorbereiden…")
             }
@@ -188,28 +209,13 @@ struct InstallerMVPFlowView: View {
 
         switch viewModel.state.step {
         case .providers:
-            ForEach(viewModel.state.providers) { provider in
-                HStack {
-                    Text(provider.requirement.provider.displayName)
-                    Spacer()
-                    Text(provider.state.isVerified ? "Verbonden" : "Nog niet verbonden")
-                        .foregroundStyle(provider.state.isVerified ? .green : .secondary)
-                    if provider.isEnabled && provider.requirement.credentialScope == .user {
-                        if case .selected = provider.state {
-                            Button("Verbinden") {
-                                viewModel.performProviderAction(.install, target: provider.id)
-                            }
-                        } else if case .authenticationRequired = provider.state {
-                            Button("Aanmelden") {
-                                viewModel.performProviderAction(.authenticate, target: provider.id)
-                            }
-                        }
-                    }
-                }
+            providerOverview
+            if !viewModel.state.canAdvance {
+                Text("Verbind de geselecteerde providers om verder te gaan.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView("Verbindingen controleren…")
             }
-            Button("Verder") { viewModel.advance() }
-                .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.state.canAdvance)
 
         case .review:
             reviewProviderContent
@@ -221,8 +227,10 @@ struct InstallerMVPFlowView: View {
     @ViewBuilder
     private var reviewProviderContent: some View {
         if viewModel.isReviewRequestInFlight {
-            ProgressView("Installatie voorbereiden…")
+            providerOverview
+            ProgressView("Providerverbindingen voorbereiden…")
         } else if case .pending = viewModel.state.composition.status {
+            providerOverview
             ProgressView("Producten controleren…")
         } else if case .incompatible = viewModel.state.composition.status {
             retryMessage("Engineering Platform en Forge kunnen nu niet samen worden geïnstalleerd. Controleer opnieuw wanneer de installatiebestanden beschikbaar zijn; er is nog geen productinstallatie begonnen.")
@@ -255,12 +263,7 @@ struct InstallerMVPFlowView: View {
             switch viewModel.providerStage {
             case .idle:
                 if !viewModel.state.enabledProvidersVerified {
-                    Button("Verbindingen voorbereiden") {
-                        viewModel.setCompositionAcknowledged(true)
-                        viewModel.advance()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!viewModel.state.pairingTargetIsReady)
+                    providerOverview
                 }
             case .staging, .authenticating:
                 ProgressView("Providers verbinden…")
@@ -276,7 +279,7 @@ struct InstallerMVPFlowView: View {
                             Text(group.title)
                             Spacer()
                             if let pending = group.actionTarget {
-                                Button("Aanmelden") {
+                                Button("\(group.provider == .codex ? "Codex" : group.provider.displayName) verbinden") {
                                     viewModel.beginReviewedProviderAuthentication(pending.id)
                                 }
                             } else {
@@ -377,6 +380,140 @@ struct InstallerMVPFlowView: View {
         }
     }
 
+    private var preflightProblems: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Mac-controle niet afgerond").font(.title3.weight(.semibold))
+            let problems = InstallerMVPPreflightProblem.problems(in: viewModel.state.preflight)
+            if problems.isEmpty {
+                retryMessage("Er ontbreekt een controleresultaat. De installer kan daardoor nog geen installatie toestaan.")
+                Text("Controleer opnieuw. Blijft het resultaat ontbreken, kopieer de diagnose voor ondersteuning.")
+            }
+            ForEach(problems) { problem in
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(problem.title, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Text(problem.explanation)
+                        Text(problem.nextStep)
+                        Text("Diagnose: " + problem.diagnosticCode)
+                            .font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            if problems.contains(where: \.canCheckHelper) {
+                Button("Controleer installatiehulp") { viewModel.prepareInstallerHelper(recheck: true) }
+                    .disabled(viewModel.isHelperPreparationInFlight)
+                if viewModel.isHelperPreparationInFlight {
+                    InstallerHelperPreparationProgressView(progress: viewModel.helperProgress)
+                }
+            }
+            HStack {
+                Button("Mac opnieuw controleren") { viewModel.prepareHostPreflight() }
+                    .disabled(viewModel.isPreflightRequestInFlight || viewModel.isHelperPreparationInFlight)
+                Button("Kopieer diagnose", systemImage: "doc.on.doc") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(InstallerMVPPreflightProblem.diagnosis(
+                        version: viewModel.state.currentInstallerVersion, preflight: viewModel.state.preflight),
+                        forType: .string)
+                }
+            }
+        }
+    }
+
+    private var providerOverview: some View {
+        ForEach(InstallerMVPProviderOverviewGroup.groups(viewModel.state.providers)) { group in
+            HStack {
+                Text(group.title)
+                Spacer()
+                Text(group.status).foregroundStyle(.secondary)
+                if viewModel.state.step == .review, case .idle = viewModel.providerStage {
+                    if group.targets.contains(where: { !$0.isVerified }) {
+                        Button("\(group.provider == .codex ? "Codex" : group.provider == .githubCLI ? "GitHub" : group.provider.displayName) verbinden") {
+                            guard let context = InstallerMVPResultSnapshot.context(for: viewModel.state) else { return }
+                            pendingConnection = .init(provider: group.provider, context: context)
+                            viewModel.setCompositionAcknowledged(true)
+                            viewModel.advance()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!isCompatible || !viewModel.state.pairingTargetIsReady
+                            || viewModel.isReviewRequestInFlight || viewModel.state.preMutationCurrency.isChecking)
+                    }
+                } else if let (target, action) = group.userAction {
+                    Button("\(group.provider == .codex ? "Codex" : group.provider.displayName) verbinden") {
+                        viewModel.performProviderAction(action, target: target)
+                    }
+                }
+            }
+        }
+    }
+
+    private var stepNavigation: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                ForEach(InstallerMVPFlowStep.allCases) { step in
+                    if step.rawValue < phase.rawValue && history.snapshots[step] != nil {
+                        Button(step.title) { history.view(step) }
+                            .help("Bekijk eerdere resultaten zonder de stap opnieuw uit te voeren")
+                    } else {
+                        Text(step.title)
+                            .fontWeight(step == phase ? .semibold : .regular)
+                            .foregroundStyle(step == phase ? .primary : .secondary)
+                    }
+                }
+            }
+            if let previous = history.previousStep {
+                Button("Vorige stap bekijken") { history.view(previous) }
+            }
+        }
+    }
+
+    private func captureResults() {
+        let state = viewModel.state
+        var results: [String] = []
+        switch phase {
+        case .welcome:
+            results = ["Gekozen installatie: Engineering Platform en Forge op deze Mac."]
+        case .preparing:
+            results = ["Installerversie: \(state.currentInstallerVersion.description)",
+                       viewModel.helperIsReady ? "macOS-installatiehulp gecontroleerd." : "macOS-installatiehulp nog niet bevestigd.",
+                       state.preflight.isPassed ? "Mac-controle geslaagd." : "Mac-controle nog niet afgerond."]
+            results += InstallerMVPPreflightProblem.problems(in: state.preflight)
+                .map { $0.title + " · " + $0.diagnosticCode }
+            if let plan = state.acceptedSessionPlan {
+                results.append("Installatiebestanden gecontroleerd: \(plan.manifestSHA256)")
+            }
+        case .providers, .ready:
+            results = InstallerMVPProviderOverviewGroup.groups(state.providers).map { "\($0.title): \($0.status)" }
+            if phase == .ready { results.append("Producten en verbindingen zijn klaar voor installatie.") }
+        case .installing:
+            results = state.executionStages.map { "\(InstallerMVPStagePresentation.title(for: $0)): \($0.state.displayName)" }
+        case .done:
+            results = state.summaryItems.map { "\($0.title): \($0.status)" }
+        }
+        let context = InstallerMVPResultSnapshot.context(for: state)
+        history.observe(.init(step: phase, results: results), context: context)
+        if pendingConnection?.context != context { pendingConnection = nil }
+    }
+
+    @MainActor
+    private func completeSelectedProviderAction() {
+        guard let intent = pendingConnection else { return }
+        switch viewModel.providerStage {
+        case .observed(let readback):
+            pendingConnection = nil
+            if let target = intent.target(in: readback,
+                requirements: viewModel.state.enabledProviders.map(\.requirement),
+                context: InstallerMVPResultSnapshot.context(for: viewModel.state)) {
+                viewModel.beginReviewedProviderAuthentication(target)
+            }
+        case .blocked:
+            pendingConnection = nil
+        default:
+            break
+        }
+    }
+
     private func retryMessage(_ message: String) -> some View {
         Label(message, systemImage: "exclamationmark.triangle")
             .foregroundStyle(.orange)
@@ -384,7 +521,9 @@ struct InstallerMVPFlowView: View {
 
     @MainActor
     private func continuePreparation() {
+        captureResults()
         preparation.continuePreparation(viewModel: viewModel, started: started)
+        captureResults()
     }
 }
 
@@ -457,36 +596,23 @@ struct InstallerMVPPreparationProgress {
             }
         case .execution:
             if viewModel.state.canAdvance { viewModel.advance() }
-        case .providers, .summary:
+        case .providers:
+            if viewModel.state.canAdvance { viewModel.advance() }
+        case .summary:
             break
         }
     }
 }
-
-private enum Phase {
-    case welcome, preparing, providers, ready, installing, done
-
-    var title: String {
-        switch self {
-        case .welcome: "Welkom"
-        case .preparing: "Welkom"
-        case .providers: "Providers"
-        case .ready: "Klaar voor installatie"
-        case .installing: "Installeren"
-        case .done: "Gereed"
-        }
-    }
-}
-
 
 // Presentation only: readiness remains independently owned by each target.
 struct InstallerMVPProviderAuthenticationGroup: Identifiable {
     let provider: ProviderID
     let targets: [ManagedInstallerReviewedProviderReadback.Target]
     let pairedCodex: Bool
+    let owners: Set<ProviderOwnerComponent?>
 
     var id: ProviderID { provider }
-    var title: String { pairedCodex ? "Codex voor EP en Forge" : provider.displayName }
+    var title: String { InstallerMVPProviderOverviewGroup.title(provider, owners: owners) }
     var actionTarget: ManagedInstallerReviewedProviderReadback.Target? {
         targets.first { $0.state != .verified }
     }
@@ -504,7 +630,7 @@ struct InstallerMVPProviderAuthenticationGroup: Identifiable {
             }.map(\.ownerComponent))
             return Self(provider: provider, targets: observed,
                         pairedCodex: provider == .codex && observed.count == 2 &&
-                            owners == Set([.engineeringPlatformServer, .forgeRuntime]))
+                            owners == Set([.engineeringPlatformServer, .forgeRuntime]), owners: owners)
         }
     }
 }
