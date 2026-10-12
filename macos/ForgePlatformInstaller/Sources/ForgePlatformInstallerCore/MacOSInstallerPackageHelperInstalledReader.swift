@@ -219,17 +219,33 @@ struct MacOSInstallerPackageHelperInstalledReader: Sendable {
         return acl_get_entry(acl, Int32(ACL_FIRST_ENTRY.rawValue), &entry) == -1 && errno == EINVAL
     }
 
+    /// KERN_PROC_PID exposes kernel owner and incarnation timestamps to a normal
+    /// operator. PROC_PIDTBSDINFO requires privileges for a root helper on macOS
+    /// 27; retain exact PID/owner/start-time evidence with this supported query.
+    static func inspectKernelProcess(_ pid: Int32, expectedOwner: uid_t) -> MacOSInstallerPackageHelperProcess? {
+        guard pid > 0 else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.size
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        let result = mib.withUnsafeMutableBufferPointer {
+            Darwin.sysctl($0.baseAddress, UInt32($0.count), &info, &size, nil, 0)
+        }
+        let started = info.kp_proc.p_un.__p_starttime
+        guard result == 0, size == MemoryLayout<kinfo_proc>.size,
+              info.kp_proc.p_pid == pid, info.kp_eproc.e_ucred.cr_uid == expectedOwner,
+              started.tv_sec > 0, started.tv_usec >= 0, started.tv_usec < 1_000_000 else { return nil }
+        return .init(processID: pid, startSeconds: UInt64(started.tv_sec), startMicroseconds: UInt64(started.tv_usec))
+    }
+
     static func inspectProcess(_ pid: Int32, executable: URL, team: String,
                                expectedOwner: uid_t = 0,
                                expectedIdentifier: String = ManagedInstallerPrivilegedHelperContract.label) -> MacOSInstallerPackageHelperProcess? {
         func identity() -> MacOSInstallerPackageHelperProcess? {
-            var bsd = proc_bsdinfo()
-            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, Int32(MemoryLayout<proc_bsdinfo>.size)) == MemoryLayout<proc_bsdinfo>.size,
-                  bsd.pbi_uid == expectedOwner, bsd.pbi_pid == pid, bsd.pbi_start_tvsec > 0 else { return nil }
+            guard let process = inspectKernelProcess(pid, expectedOwner: expectedOwner) else { return nil }
             var bytes = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
             guard proc_pidpath(pid, &bytes, UInt32(bytes.count)) > 0,
                   String(cString: bytes) == executable.path else { return nil }
-            return .init(processID: pid, startSeconds: bsd.pbi_start_tvsec, startMicroseconds: bsd.pbi_start_tvusec)
+            return process
         }
         guard pid > 0, InstallerSelfUpdateValidation.isTeamIdentifier(team),
               [ManagedInstallerPrivilegedHelperContract.label, MacOSInstallerHelperBootstrapContract.label,
