@@ -5,6 +5,16 @@ import ForgePlatformInstallerCore
 enum InstallerMVPFlowStep: Int, CaseIterable, Identifiable {
     case welcome, preparing, providers, ready, installing, done
     var id: Self { self }
+    var systemImage: String {
+        switch self {
+        case .welcome: "hand.wave"
+        case .preparing: "gearshape.2"
+        case .providers: "person.crop.circle.badge.checkmark"
+        case .ready: "checklist"
+        case .installing: "arrow.down.to.line"
+        case .done: "checkmark.seal"
+        }
+    }
     var title: String {
         switch self {
         case .welcome: "Welkom"

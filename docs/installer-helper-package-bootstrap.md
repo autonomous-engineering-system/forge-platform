@@ -863,3 +863,18 @@ and static signatures and code-hash agreement. Wrong owner, path and team were
 rejected. This process-reader evidence is distinct from full GUI startup PASS.
 A real signed GUI selftest is required before the next owner handoff; an unsigned
 presentation preview or source-only tests cannot satisfy that gate.
+
+## Canonical parent journal reader (12 October 2026)
+
+The helper account-cohort reader validates the exact canonical format emitted by
+`FileManagedPythonRuntimeRecoveryStore`: sorted keys and unescaped slashes.
+The byte-equality check remains mandatory. A semantically equal escaped variant
+is rejected without rewriting the journal. Regression qualification seeds and
+loads journals through the owning production store, then exercises account,
+selection, file-profile and known/unknown search-ACL boundaries. Hand-encoding a
+positive fixture with the reader's own format is not sufficient qualification.
+
+Local unsigned qualification includes 1,682 native checks and strict production
+Swift coverage above 80.2 percent per file. Source and read-only observations
+remain separate from actual public installation, authentication and pairing
+acceptance.
