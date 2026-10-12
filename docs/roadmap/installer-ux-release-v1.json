@@ -440,5 +440,18 @@
       "requirement": "Partial service, provider or pairing failure remains recoverable and cannot prematurely commit installed/ready state",
       "status": "PLANNED"
     }
-  ]
+  ],
+  "snapshot_kind": "HISTORICAL_BROADER_IUR_BASELINE",
+  "snapshot_recorded_at": "2026-09-29",
+  "current_lane1_overlay": {
+    "increment": "LANE_1_INSTALLER_FEATURE_TEST_MATRIX_V1_20261012",
+    "recorded_at": "2026-10-12",
+    "document": "docs/roadmap/INSTALLER_FEATURE_TEST_MATRIX_V1.md",
+    "case_inventory": "docs/roadmap/installer-feature-test-matrix-v1.json",
+    "status": "PUBLIC_ARTIFACT_QUALIFIED_E2E_OPEN",
+    "installer_version": "0.4.10",
+    "changes_historical_node_statuses": false,
+    "authorizes_execution": false
+  },
+  "initial_design_recorded_at": "2026-09-13"
 }

@@ -1,7 +1,11 @@
 # Installer UX and release qualification V1
 
-**Owner:** Forge Platform. **Status:** lifecycle contract `DESIGNED`; consumer
-implementation, release and live acceptance `PLANNED`.
+**Owner:** Forge Platform. **Snapshot:** historical broader IUR lifecycle design
+(13 September 2026); node statuses below belong to that snapshot, not current LANE_1 delivery.
+**Current LANE_1 (12 October 2026):** public installer 0.4.10 artifact qualified;
+public installed CLI/GUI acceptance remains open. See the complete
+[feature/test matrix](INSTALLER_FEATURE_TEST_MATRIX_V1.md) and
+[explicit case inventory](installer-feature-test-matrix-v1.json).
 **Recorded:** 13 September 2026. **Version effect:** NO_BUMP documentation only.
 [Documentary DAG](installer-ux-release-v1.json).
 
@@ -13,13 +17,13 @@ This refinement consumes the [Universal Installer contract](../architecture/UNIV
 and [ownership matrix](../architecture/OWNERSHIP_MATRIX.md); it does not create a
 second provisioning engine or generic workflow-policy authority.
 
-Current lifecycle observations: Platform `e92f4e4151080f7c2a9d4fdeba1541b1407d7907`,
+Historical lifecycle observations (not current selected pairing artifacts): Platform `e92f4e4151080f7c2a9d4fdeba1541b1407d7907`,
 EP `7b99b578153ae5d72372a09db194306b49ec9f9c`,
 Forge `0a3d6e35b01da93bb5a674ae7795558655c16c7d`,
 Workspace `36d294836cb653361fda3972de38acce3d2970f8`.
 These pins are observations, not enduring peer status or installed evidence.
 
-| Producer | Released baseline | Lifecycle contract | Roadmap status |
+| Producer | Historical released baseline | Lifecycle contract | Historical roadmap status |
 | --- | --- | --- | --- |
 | Forge | 2.7.38 / `forge-v2.7.38` / source `0a3d6e…` | `forge-server-instance-lifecycle/v1` plus separately bound external updater controller | `QUALIFIED` released-wheel evidence; 2.7.38 controller consumer wiring not yet qualified |
 | Engineering Platform | 2.3.106 / `engineering-platform-v2.3.106` / source `7b99b578…` | `engineering-platform.system-instance-lifecycle/v1` | `QUALIFIED` published-wheel native evidence with declared foreground/service/provider limits; consumer binding under review |
