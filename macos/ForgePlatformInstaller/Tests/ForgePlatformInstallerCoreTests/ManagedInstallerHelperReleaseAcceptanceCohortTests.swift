@@ -4,7 +4,7 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ManagedInstallerHelperReleaseAcceptanceCohortTests: XCTestCase {
-    func testEmptyProtectedNamespaceHasNoAccountAuthority() throws {
+    func testEmptyProtectedNamespaceHasNoAccountAuthority() async throws {
         let root = try freshRoot(); defer { try? FileManager.default.removeItem(at: root) }
         let reader = ManagedInstallerHelperReleaseAcceptanceCohort(root: root, expectedOwner: geteuid())
         XCTAssertEqual(try reader.readAllowedUIDs().get(), [])
@@ -12,8 +12,8 @@ final class ManagedInstallerHelperReleaseAcceptanceCohortTests: XCTestCase {
         XCTAssertEqual(try reader.readAllowedUIDs().get(), [])
     }
 
-    func testActiveEPJournalUsesExactGeneratedDisabledOSProfile() throws {
-        let source = try setup(component: "engineering-platform-server")
+    func testActiveEPJournalUsesExactGeneratedDisabledOSProfile() async throws {
+        let source = try await setup(component: "engineering-platform-server")
         defer { try? FileManager.default.removeItem(at: source.root) }
         let reader = ManagedInstallerHelperReleaseAcceptanceCohort(root: source.root, expectedOwner: geteuid(), directory: CohortTestDirectory(expected: source.expected))
         XCTAssertEqual(try reader.readAllowedUIDs().get(), [try XCTUnwrap(source.expected).user.uid])
@@ -22,8 +22,24 @@ final class ManagedInstallerHelperReleaseAcceptanceCohortTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: source.journal), original)
     }
 
-    func testMissingForeignOrUnavailableOSAccountNeverAdmitsGeneratedName() throws {
-        let source = try setup(component: "engineering-platform-server")
+    func testReaderUsesOwningWriterCanonicalBytesAndRejectsEscapedAlternative() async throws {
+        let source = try await setup(component: "engineering-platform-server")
+        defer { try? FileManager.default.removeItem(at: source.root) }
+        let original = try Data(contentsOf: source.journal)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let escaped = try encoder.encode(source.record)
+        XCTAssertNotEqual(escaped, original, "The real owning writer must expose the slash-format regression")
+        let reader = ManagedInstallerHelperReleaseAcceptanceCohort(root: source.root, expectedOwner: geteuid(),
+            directory: CohortTestDirectory(expected: source.expected))
+        XCTAssertEqual(try reader.readAllowedUIDs().get(), [try XCTUnwrap(source.expected).user.uid])
+        XCTAssertEqual(try Data(contentsOf: source.journal), original)
+        try escaped.write(to: source.journal)
+        if case .success = reader.readAllowedUIDs() { XCTFail("Noncanonical escaped journal admitted") }
+        XCTAssertEqual(try Data(contentsOf: source.journal), escaped, "The reader may not repair a rejected journal")
+    }
+
+    func testMissingForeignOrUnavailableOSAccountNeverAdmitsGeneratedName() async throws {
+        let source = try await setup(component: "engineering-platform-server")
         defer { try? FileManager.default.removeItem(at: source.root) }
         for mode in CohortTestDirectory.Mode.allCases where mode != .exact && mode != .missing {
             let reader = ManagedInstallerHelperReleaseAcceptanceCohort(root: source.root, expectedOwner: geteuid(),
@@ -32,8 +48,8 @@ final class ManagedInstallerHelperReleaseAcceptanceCohortTests: XCTestCase {
         }
     }
 
-    func testForgeRequiresExistingPeerBoundOperatorAndFreshNativeIdentity() throws {
-        let source = try setup(component: "forge-runtime")
+    func testForgeRequiresExistingPeerBoundOperatorAndFreshNativeIdentity() async throws {
+        let source = try await setup(component: "forge-runtime")
         defer { try? FileManager.default.removeItem(at: source.root) }
         let reader = ManagedInstallerHelperReleaseAcceptanceCohort(root: source.root, expectedOwner: geteuid())
         if case .success = reader.readAllowedUIDs() { XCTFail("No peer-attested operator record") }
@@ -49,16 +65,16 @@ final class ManagedInstallerHelperReleaseAcceptanceCohortTests: XCTestCase {
         if case .success = reader.readAllowedUIDs() { XCTFail("Corrupt peer record admitted") }
     }
 
-    func testMalformedForeignLooseAndLinkedJournalProfilesFailClosed() throws {
+    func testMalformedForeignLooseAndLinkedJournalProfilesFailClosed() async throws {
         for variant in ["malformed", "extra-key", "file-mode", "state-mode", "hardlink", "symlink", "owner", "fifo", "oversized", "missing-selection", "corrupt-selection", "fifo-selection"] {
-            let source = try setup(component: "engineering-platform-server")
+            let source = try await setup(component: "engineering-platform-server")
             defer { try? FileManager.default.removeItem(at: source.root) }
             switch variant {
             case "malformed": try Data("corrupt".utf8).write(to: source.journal)
             case "extra-key":
                 var value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: source.journal)) as? [String: Any])
                 value["extra"] = "untrusted"
-                try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]).write(to: source.journal)
+                try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes]).write(to: source.journal)
             case "file-mode": XCTAssertEqual(chmod(source.journal.path, 0o644), 0)
             case "state-mode": XCTAssertEqual(chmod(source.root.appendingPathComponent("state").path, 0o755), 0)
             case "hardlink": XCTAssertEqual(link(source.journal.path, source.root.appendingPathComponent("linked").path), 0)
@@ -86,16 +102,16 @@ final class ManagedInstallerHelperReleaseAcceptanceCohortTests: XCTestCase {
         }
     }
 
-    func testJournalSelectionMismatchCannotSupplyAccountAuthority() throws {
+    func testJournalSelectionMismatchCannotSupplyAccountAuthority() async throws {
         for key in ["operation_id", "session_id", "deployment_id", "stable_plan_fingerprint"] {
-            let source = try setup(component: "engineering-platform-server")
+            let source = try await setup(component: "engineering-platform-server")
             defer { try? FileManager.default.removeItem(at: source.root) }
             var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: source.journal)) as? [String: Any])
             let previous = try XCTUnwrap(fields[key] as? String)
             fields[key] = key == "stable_plan_fingerprint" ? String(repeating: "a", count: previous.count) : previous + "-other"
-            let bytes = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
+            let bytes = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes])
             let changed = try JSONDecoder().decode(ManagedPythonRuntimeParentJournalRecord.self, from: bytes)
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             try encoder.encode(changed).write(to: source.journal)
             let store = FileManagedInstallerHelperReviewedSelectionStore(rootDirectory: source.root, expectedOwner: geteuid())
             XCTAssertThrowsError(try store.loadSelection(for: changed), "Mismatch: \(key)")
@@ -106,12 +122,12 @@ final class ManagedInstallerHelperReleaseAcceptanceCohortTests: XCTestCase {
     }
 
     func testPendingEPAccountSuppliesNoUIDAndPreservesExistingOperatorAuthority() async throws {
-        let ep = try setup(component: "engineering-platform-server")
+        let ep = try await setup(component: "engineering-platform-server")
         defer { try? FileManager.default.removeItem(at: ep.root) }
         let epReader = ManagedInstallerHelperReleaseAcceptanceCohort(root: ep.root, expectedOwner: geteuid(),
             directory: CohortTestDirectory(expected: ep.expected, mode: .missing))
         XCTAssertEqual(try epReader.readAllowedUIDs().get(), [])
-        let both = try setup(component: nil)
+        let both = try await setup(component: nil)
         defer { try? FileManager.default.removeItem(at: both.root) }
         let user = try ManagedInstallerNamedOperator.resolve(uid: geteuid())
         guard user.isAdministrator else { throw XCTSkip("Requires the real local administrator source identity") }
@@ -159,7 +175,7 @@ final class ManagedInstallerHelperReleaseAcceptanceCohortTests: XCTestCase {
         let selection: ManagedInstallerReviewedSelection
         let expected: (user: ManagedInstallerLocalDirectoryUser, group: ManagedInstallerLocalDirectoryGroup)?
     }
-    private func setup(component: String?) throws -> Source {
+    private func setup(component: String?) async throws -> Source {
         let root = try freshRoot()
         try makePrivate(root.appendingPathComponent("state/deployments"))
         let fixture = try ReleasedRouteFixture(componentIdentity: component)
@@ -168,8 +184,10 @@ final class ManagedInstallerHelperReleaseAcceptanceCohortTests: XCTestCase {
         let record = try ManagedPythonRuntimeParentJournalRecord(plan: plan.activationPlan,
             stablePlanFingerprint: plan.fingerprint, requiresManagedToolReconciliation: true)
         let journal = root.appendingPathComponent("state/active-installer-operation.json")
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(record).write(to: journal); XCTAssertEqual(chmod(journal.path, 0o600), 0)
+        let writer = FileManagedPythonRuntimeRecoveryStore(rootDirectory: root.appendingPathComponent("state"))
+        _ = try await writer.startPlannedOperation(record).get()
+        let written = try await writer.loadOperation(operationID: record.operationID).get()
+        XCTAssertEqual(written, record)
         let generatedComponent = component ?? "engineering-platform-server"
         let instance = ManagedInstallerProductServiceAccountPlanner.instanceID(deploymentID: record.deploymentID, componentIdentity: generatedComponent)
         let name = ManagedInstallerProductServiceAccountPlanner.name(deploymentID: record.deploymentID, componentIdentity: generatedComponent, instanceID: instance)

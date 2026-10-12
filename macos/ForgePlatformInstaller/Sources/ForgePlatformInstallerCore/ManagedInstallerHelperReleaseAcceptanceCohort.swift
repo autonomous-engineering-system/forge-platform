@@ -114,7 +114,7 @@ struct ManagedInstallerHelperReleaseAcceptanceCohort: ManagedInstallerHelperRele
             throw ManagedInstallerHelperReleaseAcceptanceFailure.rejected
         }
         let record = try JSONDecoder().decode(ManagedPythonRuntimeParentJournalRecord.self, from: bytes)
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         guard try encoder.encode(record) == bytes else { throw ManagedInstallerHelperReleaseAcceptanceFailure.rejected }
         var after = stat(), named = stat(), afterRoot = stat(), rootNamed = stat()
         guard Darwin.fstat(file, &after) == 0,
