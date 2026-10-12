@@ -102,6 +102,37 @@ final class MacOSInstallerHelperBootstrapRootTests: XCTestCase {
         }
     }
 
+    func testProtectedStickyParentAdmitsOnlyExactProfileAndSecureExecutables() throws {
+        let fixture = try RootFile(); defer { fixture.remove() }
+        let bytes = try PropertyListSerialization.data(fromPropertyList: inputs(), format: .binary, options: 0)
+        let reader = MacOSInstallerHelperBootstrapMetadataReader(executable: fixture.binary, owner: geteuid(),
+            process: { _ in .init(processID: getpid(), startSeconds: 100, startMicroseconds: 3) }, info: { _ in
+                try? PropertyListSerialization.propertyList(from: bytes, options: [], format: nil) as? [String: Any]
+            })
+        for parent: mode_t in [0o700, 0o755, 0o1755, 0o1700, 0o1754, 0o1777, 0o775, 0o4755, 0o2755] {
+            XCTAssertEqual(chmod(fixture.root.path, parent), 0)
+            for executable: mode_t in [0o544, 0o755, 0o4755, 0o2544, 0o1544, 0o777] {
+                XCTAssertEqual(chmod(fixture.binary.path, executable), 0)
+                let admitted = [mode_t(0o700), mode_t(0o755), mode_t(0o1755)].contains(parent)
+                    && [mode_t(0o544), mode_t(0o755)].contains(executable)
+                XCTAssertEqual(reader.load() != nil, admitted,
+                    "parent=\(String(parent, radix: 8)) executable=\(String(executable, radix: 8))")
+            }
+        }
+    }
+    func testStickyParentCannotHideDirectoryDrift() throws {
+        let fixture = try RootFile(); defer { fixture.remove() }
+        let bytes = try PropertyListSerialization.data(fromPropertyList: inputs(), format: .binary, options: 0)
+        XCTAssertEqual(chmod(fixture.root.path, 0o1755), 0)
+        XCTAssertEqual(chmod(fixture.binary.path, 0o544), 0)
+        let reader = MacOSInstallerHelperBootstrapMetadataReader(executable: fixture.binary, owner: geteuid(),
+            process: { _ in .init(processID: getpid(), startSeconds: 100, startMicroseconds: 3) }, info: { _ in
+                _ = chmod(fixture.root.path, 0o755)
+                return try? PropertyListSerialization.propertyList(from: bytes, options: [], format: nil) as? [String: Any]
+            })
+        XCTAssertNil(reader.load())
+    }
+
     func testRuntimeKeepsAdmissionLeaseAndDoesNotActivateDuringPreparation() async throws {
         let metadata = try XCTUnwrap(MacOSInstallerHelperBootstrapMetadata.decodeSignedInfo(inputs()))
         let record = try record(metadata)

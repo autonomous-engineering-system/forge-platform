@@ -803,7 +803,12 @@ The standalone bootstrap admits exactly the protected SMJobBless executable
 profile `0544` and the staged `0755` profile. Root ownership, a regular single-link
 file, no extended ACL, no writable/special mode bits, static and running code
 identity, and before/after filesystem and process stability remain mandatory.
-The installer never repairs an installed bootstrap with `chmod`.
+The installer never repairs an installed bootstrap with `chmod`. The protected
+root-owned parent can use macOS's exact directory-only sticky profile `1755`.
+Ordinary previously accepted non-sticky directory modes remain valid; every
+writable or set-ID directory and every other sticky profile is rejected. The
+standalone file's special-bit restriction is unchanged. Parent descriptor/named
+identity, ownership, no ACL and before/after stability remain mandatory.
 
 The frontend reports observed stages: existing-helper readback, helper download,
 authenticity verification, normal macOS authorization, temporary-helper startup,
