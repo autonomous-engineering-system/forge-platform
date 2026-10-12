@@ -7232,7 +7232,13 @@
     "public_cli_and_gui_proof_required": true,
     "authorized_compact_141_receipt_required": true,
     "automation_removed_only_after_accepted_completion": true,
-    "current_vm_handoff": "Owner requested unopened installer for manual GUI E2E. This document neither starts it nor resets any host."
+    "current_vm_handoff": "Owner requested unopened installer for manual GUI E2E. This document neither starts it nor resets any host.",
+    "full_matrix_currently_complete": false,
+    "mvp_gate_results": {
+      "PUBLIC_CLI_INSTALL_PAIRING_READINESS": "NOT_RUN",
+      "PUBLIC_GUI_CLEAN_INSTALL_PAIRING_READINESS": "NOT_RUN",
+      "AUTHORIZED_COMPACT_141_RECEIPT": "NOT_RUN"
+    }
   },
   "observed_cli_surface": {
     "source": "macos/ForgePlatformInstaller/Sources/ForgePlatformInstallerCore/InstallerCLI.swift",

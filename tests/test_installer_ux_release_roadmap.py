@@ -205,10 +205,19 @@ class InstallerFeatureTestMatrixTests(unittest.TestCase):
                     self.assertEqual(record["interface"], case["interface"])
                     self.assertTrue(record["receipt_digest"])
                     self.assertTrue(record["independent_readback_digest"])
-        if matrix["completion"]["mvp_currently_complete"]:
+        if matrix["completion"]["full_matrix_currently_complete"]:
             self.assertTrue(all(case["public_0410_result"] == "LIVE_PASS" for case in applicable))
         else:
             self.assertTrue(any(case["public_0410_result"] != "LIVE_PASS" for case in applicable))
+        mvp_gates = matrix["completion"]["mvp_gate_results"]
+        self.assertEqual(set(mvp_gates), {"PUBLIC_CLI_INSTALL_PAIRING_READINESS", "PUBLIC_GUI_CLEAN_INSTALL_PAIRING_READINESS", "AUTHORIZED_COMPACT_141_RECEIPT"})
+        expected_mvp = {"PUBLIC_CLI_INSTALL_PAIRING_READINESS": "LIVE_PASS", "PUBLIC_GUI_CLEAN_INSTALL_PAIRING_READINESS": "LIVE_PASS", "AUTHORIZED_COMPACT_141_RECEIPT": "ACCEPTED"}
+        for gate, result in mvp_gates.items():
+            self.assertIn(result, {"NOT_RUN", "BLOCKED", "FAIL", expected_mvp[gate]})
+        if matrix["completion"]["mvp_currently_complete"]:
+            self.assertEqual(mvp_gates, expected_mvp)
+        else:
+            self.assertNotEqual(mvp_gates, expected_mvp)
         for record in evidence.values():
             if record["visibility"] == "PRIVATE":
                 self.assertIsNone(record["locator"])
