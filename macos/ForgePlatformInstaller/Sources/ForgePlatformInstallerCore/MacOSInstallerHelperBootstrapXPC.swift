@@ -1,6 +1,8 @@
 import Foundation
 
 @objc protocol MacOSInstallerHelperBootstrapImportXPCService {
+    /// Read-only: authenticated peer and root listener readiness, no installation.
+    func checkBootstrapReadiness(withReply reply: @escaping (Bool) -> Void)
     func importVerifiedHelperPackage(_ request: Data, withReply reply: @escaping (Data?) -> Void)
     func installVerifiedHelperPackage(_ request: Data, withReply reply: @escaping (Data?) -> Void)
 }
@@ -32,6 +34,14 @@ final class MacOSInstallerHelperBootstrapConnectionService: NSObject,
             return observed
         }
         self.handle = handle; self.install = install
+    }
+    func checkBootstrapReadiness(withReply reply: @escaping (Bool) -> Void) {
+        let response = BootstrapReadinessReply(reply)
+        Task {
+            guard install != nil, let peer = await readPeer(), peer.uid > 0,
+                  await readPeer() == peer else { response.complete(false); return }
+            response.complete(true)
+        }
     }
     func importVerifiedHelperPackage(_ request: Data, withReply reply: @escaping (Data?) -> Void) {
         let reply = BootstrapImportReply(reply)
@@ -115,4 +125,10 @@ private final class BootstrapImportReply: @unchecked Sendable {
     private let reply: (Data?) -> Void
     init(_ reply: @escaping (Data?) -> Void) { self.reply = reply }
     func complete(_ value: Data?) { reply(value) }
+}
+
+private final class BootstrapReadinessReply: @unchecked Sendable {
+    private let reply: (Bool) -> Void
+    init(_ reply: @escaping (Bool) -> Void) { self.reply = reply }
+    func complete(_ value: Bool) { reply(value) }
 }

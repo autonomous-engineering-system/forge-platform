@@ -82,7 +82,9 @@ struct MacOSInstallerHelperBootstrapMetadataReader: Sendable {
         var value = stat()
         guard fstat(descriptor, &value) == 0, value.st_uid == owner,
               value.st_mode & mode_t(S_IFMT) == (directory ? mode_t(S_IFDIR) : mode_t(S_IFREG)),
-              value.st_mode & 0o7022 == 0, directory || (value.st_nlink == 1 && value.st_mode & 0o7777 == 0o755),
+              value.st_mode & 0o7022 == 0, // SMJobBless installs its protected root-only executable as 0544.
+              // Retain the exact staged 0755 profile; no writable or arbitrary modes.
+              directory || (value.st_nlink == 1 && [mode_t(0o544), mode_t(0o755)].contains(value.st_mode & 0o7777)),
               MacOSInstallerHelperPackageVerifier.noACL(descriptor) else { return nil }
         return value
     }

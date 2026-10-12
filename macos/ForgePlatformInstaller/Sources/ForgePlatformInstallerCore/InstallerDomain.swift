@@ -1686,6 +1686,11 @@ public struct InstallerWizardState: Equatable, Sendable {
 /// trusted coordinator and must verify immutable artifacts before execution.
 public struct InstallerHelperPreparationAdmission: Sendable {
     let isCurrent: @Sendable () async -> Bool
+    let progress: InstallerHelperPreparationProgressObserver
+    init(isCurrent: @escaping @Sendable () async -> Bool,
+         progress: @escaping InstallerHelperPreparationProgressObserver = { _ in }) {
+        self.isCurrent = isCurrent; self.progress = progress
+    }
 }
 
 public enum InstallerHelperPreparationOutcome: Equatable, Sendable {
@@ -1695,6 +1700,7 @@ public enum InstallerHelperPreparationOutcome: Equatable, Sendable {
 public protocol InstallerWizardCoordinator: Sendable {
     /// Explicit operator installation intent; never called by status-only reads.
     func prepareCurrentInstallerHelper(allowAuthorization: Bool) async -> InstallerHelperPreparationOutcome
+    func prepareCurrentInstallerHelper(allowAuthorization: Bool, progress: @escaping InstallerHelperPreparationProgressObserver) async -> InstallerHelperPreparationOutcome
     func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult
     func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult
     /// Inventory existing managed deployments plus one coordinator-generated
@@ -1824,6 +1830,9 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func prepareCurrentInstallerHelper(allowAuthorization: Bool, progress: @escaping InstallerHelperPreparationProgressObserver) async -> InstallerHelperPreparationOutcome {
+        await prepareCurrentInstallerHelper(allowAuthorization: allowAuthorization)
+    }
     func prepareCurrentInstallerHelper(allowAuthorization: Bool) async -> InstallerHelperPreparationOutcome { .blocked }
     func prepareCurrentInstallerHelper() async -> InstallerHelperPreparationOutcome {
         await prepareCurrentInstallerHelper(allowAuthorization: true)

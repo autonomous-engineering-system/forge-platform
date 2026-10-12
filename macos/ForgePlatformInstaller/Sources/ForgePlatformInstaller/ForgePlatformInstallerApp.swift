@@ -5,13 +5,28 @@ import ForgePlatformInstallerCore
 
 @main
 struct ForgePlatformInstallerApp: App {
-    @StateObject private var startupModel = InstallerApplicationStartupModel()
-
     var body: some Scene {
         WindowGroup("Forge Platform Installer") {
-            InstallerApplicationRootView(startupModel: startupModel)
-                .frame(minWidth: 960, minHeight: 680)
+            #if DEBUG
+            if CommandLine.arguments == [CommandLine.arguments[0], "--helper-progress-visual-check"] {
+                InstallerHelperPreparationVisualCheckView()
+            } else {
+                InstallerLiveApplicationRootView()
+            }
+            #else
+            InstallerLiveApplicationRootView()
+            #endif
         }
+    }
+}
+
+/// Construct the live runtime only when the normal application route is selected.
+private struct InstallerLiveApplicationRootView: View {
+    @StateObject private var startupModel = InstallerApplicationStartupModel()
+
+    var body: some View {
+        InstallerApplicationRootView(startupModel: startupModel)
+            .frame(minWidth: 960, minHeight: 680)
     }
 }
 
@@ -84,6 +99,8 @@ final class InstallerWizardViewModel: ObservableObject {
 
     @Published private(set) var helperPreparation: InstallerHelperPreparationOutcome?
     @Published private(set) var isHelperPreparationInFlight = false
+    @Published private(set) var helperProgress = InstallerHelperPreparationProgress()
+    private var helperPreparationGeneration = 0
     var helperIsReady: Bool { helperPreparation == .ready || helperPreparation == .notRequired }
     private let coordinator: any InstallerWizardCoordinator
     @Published private(set) var isPreflightRequestInFlight = false
@@ -131,12 +148,24 @@ final class InstallerWizardViewModel: ObservableObject {
         guard state.selfUpdate.isCurrent, !isHelperPreparationInFlight,
               recheck || helperPreparation == nil else { return }
         isHelperPreparationInFlight = true
+        helperPreparationGeneration += 1
+        let generation = helperPreparationGeneration
+        helperProgress = InstallerHelperPreparationProgress()
         let coordinator = coordinator
         Task { @MainActor [weak self] in
-            let result = await coordinator.prepareCurrentInstallerHelper(allowAuthorization: true)
-            self?.helperPreparation = result
-            self?.isHelperPreparationInFlight = false
+            let result = await coordinator.prepareCurrentInstallerHelper(allowAuthorization: true, progress: { [weak self] event in
+                await self?.recordHelperProgress(event, generation: generation)
+            })
+            guard let self, self.helperPreparationGeneration == generation else { return }
+            if result != .ready && result != .notRequired { self.helperProgress.recordFailure() }
+            self.helperPreparation = result
+            self.isHelperPreparationInFlight = false
         }
+    }
+
+    private func recordHelperProgress(_ event: InstallerHelperPreparationProgressEvent, generation: Int) {
+        guard isHelperPreparationInFlight, generation == helperPreparationGeneration else { return }
+        helperProgress.record(event)
     }
 
     func prepareManagedDeploymentInventory() {
