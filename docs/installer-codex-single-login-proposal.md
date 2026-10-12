@@ -1,8 +1,12 @@
 # Codex single-login bootstrap proposal
 
-Status: user-approved bounded exception (2026-10-10); native implementation
-under source qualification. No real credentials read, copied or dispatched by
-this new route. The existing Mini credentials are excluded.
+Status updated 2026-10-12: the user-approved same-installation bounded exception
+is implemented in published installer 0.4.10. Actual clean public authentication
+fanout remains unqualified; source/artifact evidence is not a live dispatch
+receipt. Existing credentials from another machine remain excluded.
+See the [current acceptance matrix](roadmap/INSTALLER_FEATURE_TEST_MATRIX_V1.md).
+The SDK discussion below is the pinned design baseline, not a current/latest
+SDK claim and not new credential-transfer permission.
 
 ## Current supported interface
 

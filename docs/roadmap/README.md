@@ -87,5 +87,8 @@ with a release-pinned latest public stable SDK and GitHub Release readback.
 Reuse existing EP system-service, Forge HTTP/Postman/drift and product-release
 lanes; Workspace owns its PyPI transition. This refines FP-EP-CI-6/7/Q and the
 broader MVP installer lane without expanding the parked EP-only-clean scope or
-adding a first-Forge-canary prerequisite. All new implementation remains PLANNED;
-no runner registration, signing, release or installation is performed here.
+adding a first-Forge-canary prerequisite. Those statements describe the historical broader IUR baseline. The current
+LANE_1 overlay is the [complete feature/test matrix](INSTALLER_FEATURE_TEST_MATRIX_V1.md)
+and [case inventory](installer-feature-test-matrix-v1.json): public 0.4.10 artifact
+qualified, public installed E2E and scoped management acceptance still open.
+This documentary increment performs no runtime/release operation.

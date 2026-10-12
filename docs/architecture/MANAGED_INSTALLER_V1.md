@@ -2,7 +2,13 @@
 
 **Assignment:** `L1-FORGE-PLATFORM-MANAGED-INSTALLER-V1-20260923`  
 **Owning repository:** `autonomous-engineering-system/forge-platform`
-**Producer qualification (2026-09-29):** Forge 2.7.38
+**Current documentary snapshot (2026-10-12):** installer 0.4.10 is publicly
+artifact-qualified. Selected project-free installation/pairing baseline is
+Forge 2.8.1 + EP 2.3.113; their installation admission does not grant historical
+lifecycle authority. Public installed CLI/GUI and management E2E remain open.
+See the [complete matrix](../roadmap/INSTALLER_FEATURE_TEST_MATRIX_V1.md).
+
+**Historical producer qualification (2026-09-29):** Forge 2.7.38
 (`0a3d6e35b01da93bb5a674ae7795558655c16c7d`) and Engineering Platform
 2.3.106 (`7b99b578153ae5d72372a09db194306b49ec9f9c`) have exact
 `RELEASE_COMPLETE` receipts and released-wheel lifecycle evidence in
@@ -14,9 +20,8 @@ EP 2.3.105 retains its own qualified evidence and inherited-cwd defect; it is
 not the current consumer mutation baseline. Producer
 qualification alone does not approve a production composition or live installer
 claim; those remain held under [forge#141](https://github.com/pcvantol/forge/issues/141).
-**Status:** source implementation under protected qualification; public
-installer 0.2.4 is an earlier qualification release, not the first functional
-installer. No live Forge/EP lifecycle PASS is claimed.
+**Historical status:** 0.2.4 was an earlier qualification release. The current
+0.4.10 artifact result is recorded above; no public live lifecycle PASS is claimed.
 
 ## Purpose
 
