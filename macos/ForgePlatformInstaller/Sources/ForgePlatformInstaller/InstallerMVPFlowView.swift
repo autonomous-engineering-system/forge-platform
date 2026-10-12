@@ -48,52 +48,67 @@ struct InstallerMVPFlowView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(spacing: 14) {
+                Image(systemName: "shippingbox.fill")
+                    .font(.system(size: 28)).foregroundStyle(.tint)
+                    .frame(width: 52, height: 52)
+                    .background(.tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Forge Platform").font(.headline)
+                    Text("Forge Platform").font(.subheadline).foregroundStyle(.secondary)
                     Text("Engineering Platform en Forge installeren")
-                        .font(.largeTitle.bold())
-                }
-                Spacer()
-                if started {
-                    Text(phase.title)
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .font(.title.bold())
                 }
             }
 
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    if started { stepNavigation }
-                    if let snapshot = history.viewedSnapshot {
-                        Text("\(snapshot.step.title) — eerdere resultaten")
-                            .font(.title2.weight(.semibold))
-                        ForEach(snapshot.results, id: \.self) { result in Text(result) }
-                        Text("Dit is een terugblik. De huidige stap blijft actief.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Button("Terug naar huidige stap") { history.returnToCurrent() }
-                    } else {
-                        switch phase {
-                    case .welcome: welcome
-                    case .preparing: preparing
-                    case .providers: providers
-                    case .ready: ready
-                    case .installing: installing
-                    case .done: done
+            HStack(alignment: .top, spacing: 28) {
+                stepNavigation.frame(width: 210)
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if let snapshot = history.viewedSnapshot {
+                            Text("\(snapshot.step.title) — eerdere resultaten")
+                                .font(.title2.weight(.semibold))
+                            ForEach(snapshot.results, id: \.self) { result in Text(result) }
+                            Text("Dit is een terugblik. De huidige stap blijft actief.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Terug naar huidige stap") { history.returnToCurrent() }
+                        } else {
+                            switch phase {
+                            case .welcome: welcome
+                            case .preparing: preparing
+                            case .providers: providers
+                            case .ready: ready
+                            case .installing: installing
+                            case .done: done
+                            }
+                            DisclosureGroup("Technische details", isExpanded: $showTechnicalDetails) {
+                                technicalDetails
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 12)
+                        }
                     }
-                    DisclosureGroup("Technische details", isExpanded: $showTechnicalDetails) {
-                        technicalDetails
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 12)
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            Divider()
+            HStack {
+                if let previous = history.previousStep {
+                    Button { history.view(previous) } label: {
+                        Label("Vorige", systemImage: "chevron.left")
+                    }
+                    .help("Bekijk het vorige scherm zonder de stap opnieuw uit te voeren")
+                }
+                Spacer()
+                Text("Stap \((history.viewedStep ?? phase).rawValue + 1) van \(InstallerMVPFlowStep.allCases.count)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(minHeight: 30)
         }
         .padding(32)
         .onAppear { captureResults() }
@@ -449,22 +464,46 @@ struct InstallerMVPFlowView: View {
     }
 
     private var stepNavigation: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                ForEach(InstallerMVPFlowStep.allCases) { step in
-                    if step.rawValue < phase.rawValue && history.snapshots[step] != nil {
-                        Button(step.title) { history.view(step) }
-                            .help("Bekijk eerdere resultaten zonder de stap opnieuw uit te voeren")
-                    } else {
-                        Text(step.title)
-                            .fontWeight(step == phase ? .semibold : .regular)
-                            .foregroundStyle(step == phase ? .primary : .secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("INSTALLATIE")
+                .font(.caption.weight(.semibold)).tracking(1.1)
+                .foregroundStyle(.secondary).padding(.bottom, 8)
+            ForEach(InstallerMVPFlowStep.allCases) { step in
+                let completed = stepIsCompleted(step)
+                let selected = step == (history.viewedStep ?? phase)
+                HStack(spacing: 12) {
+                    Image(systemName: step.systemImage)
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(completed ? Color.green : selected ? Color.accentColor : Color.secondary)
+                        .frame(width: 38, height: 38)
+                        .background((completed ? Color.green : selected ? Color.accentColor : Color.secondary).opacity(0.09), in: Circle())
+                    Text(step.title)
+                        .font(.subheadline.weight(selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? .primary : .secondary)
+                    Spacer(minLength: 4)
+                    if completed {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green).font(.system(size: 15))
                     }
                 }
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .background(selected ? Color.accentColor.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 12))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(step.title), \(completed ? "afgerond" : step == phase ? "huidige stap" : "nog te doen")")
             }
-            if let previous = history.previousStep {
-                Button("Vorige stap bekijken") { history.view(previous) }
-            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func stepIsCompleted(_ step: InstallerMVPFlowStep) -> Bool {
+        switch step {
+        case .welcome: return started
+        case .preparing: return phase.rawValue > step.rawValue && viewModel.state.preflight.isPassed
+        case .providers: return phase.rawValue > step.rawValue && viewModel.state.enabledProvidersVerified
+        case .ready: return phase.rawValue > step.rawValue
+        case .installing, .done:
+            return phase == .done && !viewModel.state.executionStages.isEmpty
+                && viewModel.state.executionStages.allSatisfy { $0.state == .passed }
         }
     }
 

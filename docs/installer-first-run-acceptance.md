@@ -371,3 +371,13 @@ selection identity mismatches, pending EP with a valid Forge operator, and rejec
 of an unknown search ACE. These are source tests, not a runtime recovery or an
 installed E2E result. The existing failed VM operation remains unchanged until a
 separately supported and authorized recovery or clean qualification route is ready.
+
+## Customer wizard presentation (12 October 2026)
+
+Use a vertical step column with native glyphs, one highlighted viewed step and
+status checks derived from completed evidence. Do not present the steps as a
+horizontal row of buttons or a step-selection menu. Provide a plain **Vorige**
+action to view the previous completed screen and a return-to-current action;
+viewing results must not repeat helper, provider or product actions. An install
+or final readiness check is shown as complete only after all execution stages
+pass. Presentation changes grant no additional installation authority.
