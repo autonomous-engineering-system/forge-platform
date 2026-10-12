@@ -107,15 +107,20 @@ struct InstallerMVPFlowView: View {
     private var preparing: some View {
         if viewModel.state.step == .deployment && !viewModel.helperIsReady {
             if viewModel.isHelperPreparationInFlight {
-                ProgressView("macOS-installatiehulp voorbereiden…")
+                InstallerHelperPreparationProgressView(progress: viewModel.helperProgress)
             } else {
+                InstallerHelperPreparationProgressView(progress: viewModel.helperProgress)
                 switch viewModel.helperPreparation {
                 case .cancelled:
                     retryMessage("De macOS-autorisatie is geannuleerd.")
                 case .blocked:
                     retryMessage("De installatiehulp is niet beschikbaar. Gebruik een beheerdersaccount en controleer de installer.")
                 case .unresolved:
-                    retryMessage("De vorige helperpoging is nog niet bevestigd. Er wordt geen nieuwe poging gestart.")
+                    if viewModel.helperProgress.state(for: .startingTemporaryHelper) == .failed {
+                        retryMessage("De tijdelijke installatiehulp heeft zijn opstart niet bevestigd. De hoofdhelper is nog niet aangevraagd. Er wordt geen nieuwe poging gestart.")
+                    } else {
+                        retryMessage("De vorige helperpoging is nog niet bevestigd. Er wordt geen nieuwe poging gestart.")
+                    }
                     Button("Controleer installatiehulp") { viewModel.prepareInstallerHelper(recheck: true) }
                 default:
                     ProgressView("macOS-installatiehulp controleren…")

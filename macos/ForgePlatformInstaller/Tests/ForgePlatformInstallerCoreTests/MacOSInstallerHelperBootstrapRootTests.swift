@@ -85,6 +85,23 @@ final class MacOSInstallerHelperBootstrapRootTests: XCTestCase {
         XCTAssertFalse(MacOSInstallerHelperBootstrapAuthorization.namespaceAbsent("com.example.unknown"))
         _ = BootstrapRuntimeSources.mainNamespaceClean() // Fixed, read-only probe only.
     }
+    func testProtectedSMJobBlessExecutableProfileAndHostileModes() throws {
+        let fixture = try RootFile(); defer { fixture.remove() }
+        let bytes = try PropertyListSerialization.data(fromPropertyList: inputs(), format: .binary, options: 0)
+        let reader = MacOSInstallerHelperBootstrapMetadataReader(executable: fixture.binary, owner: geteuid(),
+            process: { _ in .init(processID: getpid(), startSeconds: 100, startMicroseconds: 3) }, info: { _ in
+                try? PropertyListSerialization.propertyList(from: bytes, options: [], format: nil) as? [String: Any]
+            })
+        for mode: mode_t in [0o544, 0o755, 0o444, 0o644, 0o744, 0o555, 0o777, 0o574, 0o547, 0o4544, 0o2544, 0o1544] {
+            XCTAssertEqual(chmod(fixture.binary.path, mode), 0)
+            if [mode_t(0o544), mode_t(0o755)].contains(mode) {
+                XCTAssertNotNil(reader.load(), String(mode, radix: 8))
+            } else {
+                XCTAssertNil(reader.load(), String(mode, radix: 8))
+            }
+        }
+    }
+
     func testRuntimeKeepsAdmissionLeaseAndDoesNotActivateDuringPreparation() async throws {
         let metadata = try XCTUnwrap(MacOSInstallerHelperBootstrapMetadata.decodeSignedInfo(inputs()))
         let record = try record(metadata)

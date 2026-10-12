@@ -795,3 +795,43 @@ package digest invalidates the signature. Independent scoped Quality/Security
 review found no remaining compatibility findings; committed-head attestation
 and protected CI remain delivery gates. No new signed public artifact or
 installed CLI/GUI acceptance is claimed by these source results.
+
+
+## First-start permissions and observable progress (2026-10-12, source only)
+
+The standalone bootstrap admits exactly the protected SMJobBless executable
+profile `0544` and the staged `0755` profile. Root ownership, a regular single-link
+file, no extended ACL, no writable/special mode bits, static and running code
+identity, and before/after filesystem and process stability remain mandatory.
+The installer never repairs an installed bootstrap with `chmod`.
+
+The frontend reports observed stages: existing-helper readback, helper download,
+authenticity verification, normal macOS authorization, temporary-helper startup,
+main-helper installation, and independent running-helper verification. A step
+finishes only on its own successful observation. Existing verified helpers skip
+effect stages explicitly; neither a percentage nor elapsed time grants readiness.
+The UI drops stale generation events and never advances after an unresolved result.
+
+A read-only XPC readiness method authenticates and rereads the same live peer
+before acknowledging that the root bootstrap listener is prepared. It invokes
+neither the importer nor the package installation handler. The client allows
+15 seconds for this acknowledgment and 180 seconds for an admitted installation.
+The installation deadline starts before progress callbacks, not after them.
+The original core epoch admission is checked again after every preceding await
+and immediately before enqueueing the installation request. Terminal timeout or
+connection invalidation excludes any later enqueue. No reconnect or installation
+retry is introduced. A missing readiness acknowledgment leaves the main-helper
+installation unrequested and is shown as an unconfirmed startup.
+
+The normal authorization route still requires absent bootstrap and main-helper
+namespaces. SMJobBless supports successor updates, but an exact predecessor
+signature and exit code alone do not prove the absence of private root effects.
+This correction does not authorize automatic replacement of a failed predecessor,
+clear protected history, remove jobs/files, or override unresolved journals.
+A pre-existing failed bootstrap needs a separately authorized, verified recovery
+step before another clean first-start qualification.
+
+Debug builds offer a presentation-only progress inspection window. It constructs
+no live startup model or coordinator, and release builds omit this route. Visual
+and anonymous-XPC source tests are distinct from actual signed startup, package
+installation, helper readiness, and public CLI/GUI installation evidence.

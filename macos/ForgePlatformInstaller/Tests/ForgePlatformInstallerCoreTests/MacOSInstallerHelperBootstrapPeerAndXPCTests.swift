@@ -75,6 +75,28 @@ final class MacOSInstallerHelperBootstrapPeerAndXPCTests: XCTestCase {
             XCTAssertEqual(calls.items.filter { $0 == "handle" }.count, ["valid", "changed"].contains(kind) ? 1 : 0)
         }
     }
+    func testReadinessUsesAuthenticatedPeerWithoutCallingEffectHandlers() async {
+        for kind in ["valid", "missing", "changed", "root", "unavailable", "revoked"] {
+            let done = expectation(description: "readiness " + kind), calls = Calls(), expected = peer
+            let state = MacOSInstallerHelperBootstrapConnectionState()
+            if kind == "revoked" { state.revoke() }
+            let install: MacOSInstallerHelperBootstrapConnectionService.InstallHandle = { _, _, _ in
+                XCTFail("Readiness must not install"); return nil
+            }
+            let service = MacOSInstallerHelperBootstrapConnectionService(readPeer: {
+                calls.add("peer")
+                if kind == "missing" { return nil }
+                if kind == "root" { return .init(uid: 0, process: expected.process, appCodeDirectorySHA256: expected.appCodeDirectorySHA256) }
+                if kind == "changed" && calls.items.count > 1 { return nil }
+                return expected
+            }, handle: { _, _ in XCTFail("Readiness must not import"); return nil },
+                install: kind == "unavailable" ? nil : install, connectionState: state)
+            service.checkBootstrapReadiness { ready in
+                XCTAssertEqual(ready, kind == "valid"); done.fulfill()
+            }
+            await fulfillment(of: [done], timeout: 2)
+        }
+    }
     func testExplicitInstallationMethodBindsCurrentPeerAndFailsWhenUnavailable() async {
         for kind in ["valid", "missing", "changed", "root", "oversize", "unavailable"] {
             let done = expectation(description: "install " + kind), calls = Calls(), expected = peer

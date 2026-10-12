@@ -769,12 +769,19 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     }
 
     public func prepareCurrentInstallerHelper(allowAuthorization: Bool = true) async -> InstallerHelperPreparationOutcome {
+        await prepareCurrentInstallerHelper(allowAuthorization: allowAuthorization, progress: { _ in })
+    }
+
+    public func prepareCurrentInstallerHelper(allowAuthorization: Bool, progress: @escaping InstallerHelperPreparationProgressObserver) async -> InstallerHelperPreparationOutcome {
         guard helperCurrencyAdmitted, let record = currentVerifiedReleaseRecord else { return .blocked }
         guard record.helperPackage != nil else { return .notRequired }
         guard let helperPreparation else { return .blocked }
         let generation = compositionSessionGeneration
         let epoch = helperAdmissionEpoch
-        let admission = InstallerHelperPreparationAdmission(isCurrent: { await self.helperContextIsCurrent(record, epoch: epoch) })
+        let admission = InstallerHelperPreparationAdmission(isCurrent: { await self.helperContextIsCurrent(record, epoch: epoch) }, progress: { event in
+            guard await self.helperContextIsCurrent(record, epoch: epoch) else { return }
+            await progress(event)
+        })
         let result = await helperPreparation(record, allowAuthorization, admission)
         guard generation == compositionSessionGeneration, helperContextIsCurrent(record, epoch: epoch) else { return .unresolved }
         return result

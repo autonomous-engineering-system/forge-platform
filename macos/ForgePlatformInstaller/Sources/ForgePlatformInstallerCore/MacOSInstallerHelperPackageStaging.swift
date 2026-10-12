@@ -27,16 +27,19 @@ struct MacOSInstallerHelperPackageStaging: Sendable {
     init(root: URL, download: @escaping Download, verifier: MacOSInstallerHelperPackageVerifier) {
         self.root = root; self.download = download; self.verifier = verifier
     }
-    func stage(release: VerifiedInstallerReleaseRecord) async -> MacOSInstallerStagedHelperPackage? {
+    func stage(release: VerifiedInstallerReleaseRecord, progress: @escaping InstallerHelperPreparationProgressObserver = { _ in }) async -> MacOSInstallerStagedHelperPackage? {
         guard let package = release.helperPackage, package.bytes > 0, package.bytes <= 512 * 1024 * 1024,
               root.isFileURL, root.baseURL == nil else { return nil }
         let fd = open(root.path, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW_ANY)
         guard fd >= 0 else { return nil }
         defer { _ = close(fd) }
-        guard let before = secure(fd, directory: true), sameRoot(before),
-              let bytes = await download(release), UInt64(bytes.count) == package.bytes,
+        guard let before = secure(fd, directory: true), sameRoot(before) else { return nil }
+        await progress(.began(.downloadingHelper))
+        guard let bytes = await download(release), UInt64(bytes.count) == package.bytes,
               secure(fd, directory: true).map({ MacOSInstallerHelperPackageVerifier.same(before, $0) }) == true,
               sameRoot(before) else { return nil }
+        await progress(.completed(.downloadingHelper))
+        await progress(.began(.verifyingAuthenticity))
         let name = "helper-package-stage-" + UUID().uuidString.lowercased()
         guard mkdirat(fd, name, 0o700) == 0 else { return nil }
         let stage = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
@@ -54,6 +57,7 @@ struct MacOSInstallerHelperPackageStaging: Sendable {
               let after = secure(fd, directory: true), sameRoot(after) else { return nil }
         let url = root.appendingPathComponent(name, isDirectory: true).appendingPathComponent(VerifiedInstallerHelperPackage.assetName)
         guard case .success(let evidence) = verifier.verify(at: url, release: release), sameRoot(after) else { return nil }
+        await progress(.completed(.verifyingAuthenticity))
         return .init(url: url, evidence: evidence)
     }
     private func secure(_ fd: Int32, directory: Bool) -> stat? {

@@ -401,17 +401,17 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
             XCTAssertEqual(request?.packageSHA256, release.helperPackage?.sha256)
             observed.add("request"); return claim
         }, readInstalled: { record in observed.add("read"); return await f.reader().read(release: record) })
-        let ready = await client.install(source: source, release: release)
+        let ready = await client.install(source: source, release: release, admission: .init(isCurrent: { true }))
         XCTAssertEqual(ready?.processID, 42); XCTAssertEqual(observed.items, ["request", "read"])
         for mismatch in [true, false] {
             let denied = MacOSInstallerHelperPackageBootstrapClient(request: { _ in claim }, readInstalled: { record in
                 mismatch ? .init(releaseSequence: record.sequence, appCodeDirectorySHA256: record.expectedCodeDirectorySHA256, processID: 43) : nil
             })
-            let result = await denied.install(source: source, release: release); XCTAssertNil(result)
+            let result = await denied.install(source: source, release: release, admission: .init(isCurrent: { true })); XCTAssertNil(result)
         }
-        let unsupported = await client.install(source: source, release: try f.record(package: false))
-        let invalidPath = await client.install(source: f.base.appendingPathComponent("other.pkg"), release: release)
-        let remote = await client.install(source: URL(string: "https://example.invalid/file.pkg")!, release: release)
+        let unsupported = await client.install(source: source, release: try f.record(package: false), admission: .init(isCurrent: { true }))
+        let invalidPath = await client.install(source: f.base.appendingPathComponent("other.pkg"), release: release, admission: .init(isCurrent: { true }))
+        let remote = await client.install(source: URL(string: "https://example.invalid/file.pkg")!, release: release, admission: .init(isCurrent: { true }))
         XCTAssertNil(unsupported); XCTAssertNil(invalidPath); XCTAssertNil(remote)
         XCTAssertEqual(observed.items, ["request", "read"])
         // Constructing production client does not connect, authorize or install.
@@ -440,11 +440,11 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
             let denied = MacOSInstallerHelperPackageBootstrapClient(request: { _ in bytes }, readInstalled: { _ in
                 XCTFail("Invalid helper claim must fail before installed read"); return nil
             })
-            let result = await denied.install(source: f.base.appendingPathComponent(VerifiedInstallerHelperPackage.assetName), release: release)
+            let result = await denied.install(source: f.base.appendingPathComponent(VerifiedInstallerHelperPackage.assetName), release: release, admission: .init(isCurrent: { true }))
             XCTAssertNil(result)
         }
         let unavailable = MacOSInstallerHelperPackageBootstrapClient(request: { _ in nil }, readInstalled: { _ in XCTFail("No reply"); return nil })
-        let nilResult = await unavailable.install(source: f.base.appendingPathComponent(VerifiedInstallerHelperPackage.assetName), release: release)
+        let nilResult = await unavailable.install(source: f.base.appendingPathComponent(VerifiedInstallerHelperPackage.assetName), release: release, admission: .init(isCurrent: { true }))
         XCTAssertNil(nilResult)
     }
     private func bootstrapClaim(_ release: VerifiedInstallerReleaseRecord) throws -> Data {

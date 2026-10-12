@@ -17,6 +17,8 @@ actor MacOSInstallerHelperPackagePreparation {
         let stage: @Sendable (VerifiedInstallerReleaseRecord) async -> MacOSInstallerStagedHelperPackage?
         let authorize: @Sendable (VerifiedInstallerReleaseRecord, InstallerHelperPreparationAdmission) async -> MacOSInstallerHelperBootstrapAuthorizationResult
         let install: @Sendable (MacOSInstallerStagedHelperPackage, VerifiedInstallerReleaseRecord) async -> MacOSInstallerPackageHelperReadback?
+        var stageWithProgress: (@Sendable (VerifiedInstallerReleaseRecord, InstallerHelperPreparationAdmission) async -> MacOSInstallerStagedHelperPackage?)? = nil
+        var installWithProgress: (@Sendable (MacOSInstallerStagedHelperPackage, VerifiedInstallerReleaseRecord, InstallerHelperPreparationAdmission) async -> MacOSInstallerPackageHelperReadback?)? = nil
     }
     private let actions: Actions
     private var busy = false
@@ -36,7 +38,9 @@ actor MacOSInstallerHelperPackagePreparation {
         }, installed: { await reader.read(release: $0) }, namespaceClean: {
             BootstrapRuntimeSources.mainNamespaceClean() && MacOSInstallerHelperBootstrapAuthorization.cleanNamespace()
         }, stage: { await staging.stage(release: $0) }, authorize: { await authorization.request(for: $0, admission: $1) },
-            install: { await client.install(source: $0.url, release: $1) })
+            install: { _, _ in nil },
+            stageWithProgress: { await staging.stage(release: $0, progress: $1.progress) },
+            installWithProgress: { await client.install(source: $0.url, release: $1, admission: $2) })
     }
     init(actions: Actions) { self.actions = actions }
     func prepare(release: VerifiedInstallerReleaseRecord, allowAuthorization: Bool = true, admission: InstallerHelperPreparationAdmission) async -> MacOSInstallerHelperPackagePreparationResult {
@@ -47,29 +51,44 @@ actor MacOSInstallerHelperPackagePreparation {
         return result
     }
     private func prepareLocked(_ release: VerifiedInstallerReleaseRecord, allowAuthorization: Bool, admission: InstallerHelperPreparationAdmission) async -> MacOSInstallerHelperPackagePreparationResult {
+        await admission.progress(.began(.checkingExistingHelper))
         guard await admission.isCurrent(), actions.operatorAdmitted(), await matchesCurrent(release) else { return .blocked }
         if let existing = await actions.installed(release) {
             guard matches(existing, release), await matchesCurrent(release), await admission.isCurrent() else { return .blocked }
+            await admission.progress(.completed(.checkingExistingHelper))
+            for stage in InstallerHelperPreparationStage.allCases where stage != .checkingExistingHelper {
+                await admission.progress(.notRequired(stage))
+            }
             return .ready(existing)
         }
         guard !submitted else { return .unresolved }
-        guard allowAuthorization, actions.operatorAdmitted(), actions.namespaceClean(), let staged = await actions.stage(release),
+        await admission.progress(.completed(.checkingExistingHelper))
+        guard allowAuthorization, actions.operatorAdmitted(), actions.namespaceClean(), let staged = await stage(release, admission: admission),
               staged.evidence.releaseSequence == release.sequence,
               staged.evidence.packageSHA256 == release.helperPackage?.sha256,
               staged.evidence.bytes == release.helperPackage?.bytes,
               await matchesCurrent(release), await admission.isCurrent(), actions.operatorAdmitted(), actions.namespaceClean() else { return .blocked }
         // Submission may have happened despite lost authorization observation.
         // Latch before the API call, not after a success-like return value.
+        await admission.progress(.began(.authorizing))
         submitted = true
         switch await actions.authorize(release, admission) {
         case .cancelled: return .cancelled
         case .rejected, .unavailable: return .unresolved
-        case .submitted: break
+        case .submitted: await admission.progress(.completed(.authorizing))
         }
         guard await admission.isCurrent(), actions.operatorAdmitted(), await matchesCurrent(release), await admission.isCurrent(),
-              let installed = await actions.install(staged, release), matches(installed, release),
+              let installed = await install(staged, release, admission: admission), matches(installed, release),
               await matchesCurrent(release), await admission.isCurrent() else { return .unresolved }
         return .ready(installed)
+    }
+    private func stage(_ release: VerifiedInstallerReleaseRecord, admission: InstallerHelperPreparationAdmission) async -> MacOSInstallerStagedHelperPackage? {
+        if let action = actions.stageWithProgress { return await action(release, admission) }
+        return await actions.stage(release)
+    }
+    private func install(_ staged: MacOSInstallerStagedHelperPackage, _ release: VerifiedInstallerReleaseRecord, admission: InstallerHelperPreparationAdmission) async -> MacOSInstallerPackageHelperReadback? {
+        if let action = actions.installWithProgress { return await action(staged, release, admission) }
+        return await actions.install(staged, release)
     }
     private func matchesCurrent(_ release: VerifiedInstallerReleaseRecord) async -> Bool {
         guard let current = await actions.current() else { return false }
