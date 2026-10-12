@@ -295,3 +295,79 @@ package digest invalidates the signature. Independent scoped Quality/Security
 review found no remaining compatibility findings; committed-head attestation
 and protected CI remain delivery gates. No new signed public artifact or
 installed CLI/GUI acceptance is claimed by these source results.
+
+
+## Provider-page and history increment (2026-10-12)
+
+The customer flow must present one continuous provider page. The first overview
+already groups Codex for EP and Forge, with GitHub for EP separately. A direct
+provider button performs the existing reviewed staging and currency checks before
+starting that selected provider's official authentication. Each target remains
+independently verified; one verified Codex target is not complete readiness.
+
+Previous completed steps are available through the visible step list and
+**Vorige stap bekijken**. These controls display immutable metadata snapshots;
+they never call the mutable wizard's `goBack`, stage providers, restart a login,
+or replay installation. **Terug naar huidige stap** restores active controls.
+Snapshots contain no authentication challenge, token or password. Their context
+includes the session, release, provenance, trust, catalog and deployment, so a
+new session with identical manifest bytes invalidates earlier results.
+
+Qualification must cover direct provider actions, one-time action consumption,
+independent target readiness, navigation while an action is pending, stale-session
+callbacks and session/release changes. Source/AppKit rendering evidence is only
+source assurance. The published signed GUI must still be operated through its
+actual screens through installation, pairing and readiness before owner handoff.
+No source or artifact result substitutes for that installed E2E result.
+
+A clean qualification environment must also exclude stale account ACLs on the
+installer's parent directories. Removing product files and a generated account
+alone does not establish a clean host. Unknown ACL identities remain a hard
+rejection: do not relax the trust guard, silently remove ACLs, or start a new
+operation to evade the failure. Preserve journals and obtain scoped authorization
+for any necessary metadata recovery, then use the existing operation's supported
+recheck. Record archive, identity, unchanged journal hashes and actual outcome.
+
+
+### Failed checks must be actionable
+
+A failed first-run check names the failed check and distinguishes unavailable
+observations from proven hardware/resource failures. Show an explanation, the
+supported next action and a stable bounded diagnostic code on the main page.
+Do not instruct the operator to "solve the problem" without identifying it.
+Installer/controller failures must not be presented as inadequate Mac hardware.
+The explicit **Kopieer diagnose** action contains only the installer version and
+closed diagnostic codes; arbitrary coordinator text, credentials and authentication
+challenges never enter that clipboard payload. Read-only history retains these
+safe check results. Unknown causes stay labelled unknown rather than being guessed.
+
+### Helper release acceptance and provider search grants
+
+The production helper's replay floor belongs in its private
+`release-acceptance-v1` directory (0700, no extended ACL); its canonical anchor
+remains 0600, single-linked and without an extended ACL. Provider accounts receive
+only search grants on shared ancestors. The general release-acceptance store's
+no-ACL policy, descriptor signatures, trust keys and companion binding are unchanged.
+
+Legacy migration reads the existing anchor through a non-following, nonblocking
+file descriptor and preserves its exact bytes in an immutable private receipt.
+The highest legacy/private sequence remains authoritative; an equal sequence with
+a different digest, changed or missing preserved history, malformed metadata,
+foreign ownership, unknown or inherited rights must fail closed. Reads are bounded
+and descriptor/namespace metadata is checked again after reading. Neither journal
+state nor an uncertainty flag is rewritten.
+
+Account authority comes only from protected helper deployment/worker metadata and
+the exact reviewed selection correlated with the active parent journal. Generated
+EP identities require the complete disabled OS account/group profile; Forge uses
+its peer-attested operator and a fresh native account readback. A pending EP account
+that does not exist contributes no UID. This preserves existing valid grants, while
+an ACL naming an absent or unknown account remains rejected. No caller credential,
+account choice or invented intent supplies migration authority.
+
+Qualification includes actual temporary macOS ACLs, FIFO and oversized-file
+rejection, malformed and linked anchors/journals, disappearing/changed history,
+selection identity mismatches, pending EP with a valid Forge operator, and rejection
+of an unknown search ACE. These are source tests, not a runtime recovery or an
+installed E2E result. The existing failed VM operation remains unchanged until a
+separately supported and authorized recovery or clean qualification route is ready.

@@ -66,9 +66,7 @@ struct ManagedInstallerHelperCurrentReleaseAdmission: Sendable {
                     sealedReleaseProvenance: resources.provenance,
                     architecture: MacOSInstallerPlatformContract.architecture,
                     fetcher: fetcher,
-                    acceptanceStore: FileInstallerReleaseAcceptanceStore(
-                        rootDirectory: stateRoot
-                    ),
+                    acceptanceStore: ManagedInstallerHelperReleaseAcceptanceStore(root: stateRoot),
                     helperAcceptanceStore: FileInstallerReleaseAcceptanceStore(rootDirectory: stateRoot.appendingPathComponent("helper-companion-acceptance-v1", isDirectory: true))
                 )
             }
