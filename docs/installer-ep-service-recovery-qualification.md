@@ -135,3 +135,16 @@ Recovery preserves the original operation, credentials, journals and sticky
 uncertainty. Installed qualification, protected delivery and the signed release
 remain separate gates. A recovered partial installation is not proof of a clean
 single-run CLI installation or a complete clean GUI installation.
+
+
+### Historical inventory RPC has a protected read-only precondition
+
+The original inventory producer can initialize a missing create candidate or
+rotate a consumed candidate. Bootstrap reconciliation therefore reads the exact
+existing private candidate for the original deployment and requires a genuine
+empty deployment-registry snapshot before contacting the old helper. It freezes
+and repeats both inputs under its exclusive host lease, before and after RPC,
+in each verification, and after journal confirmation. Missing or foreign IDs,
+nonempty or unknown registry contents and input drift deny before confirmation.
+The source regression covers genuine temporary protected IO and preserves those
+inputs; it does not exercise a live installed helper.

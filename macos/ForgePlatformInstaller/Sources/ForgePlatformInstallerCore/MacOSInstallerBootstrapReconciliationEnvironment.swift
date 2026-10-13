@@ -28,6 +28,26 @@ struct MacOSInstallerBootstrapReconciliationEnvironment: Sendable {
                 MacOSInstallerHelperPackageVerifier.observe("/bin/launchctl", ["print", "system/" + ManagedInstallerPrivilegedHelperContract.label])
             })
     }
+    struct InventoryInputs: Equatable, Sendable {
+        let candidate: Data
+        let registry: ManagedInstallerManagedDeploymentRegistrySnapshot
+    }
+    /// The historical inventory producer can initialize or rotate its candidate.
+    /// This bounded unfinished CREATE permits its RPC only with the exact existing
+    /// candidate and empty registry, so neither path is eligible to write.
+    func readInventoryInputs(deploymentID: String) throws -> InventoryInputs {
+        let state = helperRoot.appendingPathComponent("state", isDirectory: true)
+        let candidateURL = state.appendingPathComponent(FileManagedInstallerManagedDeploymentCreateCandidateStore.fileName)
+        let candidate = try MacOSInstallerBootstrapProtectedReadback.readFile(candidateURL, owner: owner)
+        guard candidate == Data((deploymentID + "\n").utf8),
+              case .success(let registry) = FileManagedInstallerManagedDeploymentRegistryReader(
+                rootDirectory: state.appendingPathComponent("deployments", isDirectory: true), expectedOwner: owner).read(),
+              registry.records.isEmpty,
+              try MacOSInstallerBootstrapProtectedReadback.readFile(candidateURL, owner: owner) == candidate else {
+            throw MacOSInstallerHelperPackageEffectFailure.unavailable
+        }
+        return .init(candidate: candidate, registry: registry)
+    }
     func readFloors() throws -> [String: Data] {
         try MacOSInstallerBootstrapProtectedReadback.readFloors(directories: [
             helperRoot.appendingPathComponent(ManagedInstallerHelperReleaseAcceptanceStore.privateDirectoryName),

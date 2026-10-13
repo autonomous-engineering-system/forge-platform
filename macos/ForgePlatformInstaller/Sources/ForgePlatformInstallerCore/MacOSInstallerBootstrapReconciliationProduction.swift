@@ -59,6 +59,7 @@ public enum MacOSInstallerBootstrapReconciliationMaintenance {
         let frozenEffects = try effects.historicalOriginalDigest().get()
         let inventoryURL = environment.helperRoot.appendingPathComponent(FileManagedInstallerReleasedRouteXPCService.inventoryFileName)
         let inventory = try MacOSInstallerBootstrapProtectedReadback.readFile(inventoryURL, owner: environment.owner)
+        let inventoryInputs = try environment.readInventoryInputs(deploymentID: original.selection.intent.deploymentID)
         let floors = acceptedFloors
         let reader = environment.reader
         let ipc = environment.ipc
@@ -67,11 +68,13 @@ public enum MacOSInstallerBootstrapReconciliationMaintenance {
                   owner.isAdministrator, try ManagedInstallerNamedOperator.resolve(uid: owner.uid) == owner,
                   try effects.historicalOriginalDigest().get() == frozenEffects,
                   try MacOSInstallerBootstrapProtectedReadback.readFile(inventoryURL, owner: environment.owner) == inventory, try environment.readFloors() == floors,
+                  try environment.readInventoryInputs(deploymentID: original.selection.intent.deploymentID) == inventoryInputs,
                   case .success(let reread) = await environment.currentRelease.admit(), reread == current,
                   await reader.readFiles(release: release) != nil,
                   registeredNamespace(job: environment.readJob()), try evidence.read() == original,
                   try effects.historicalOriginalDigest().get() == frozenEffects,
-                  try MacOSInstallerBootstrapProtectedReadback.readFile(inventoryURL, owner: environment.owner) == inventory, try environment.readFloors() == floors else { throw Failure.unavailable }
+                  try MacOSInstallerBootstrapProtectedReadback.readFile(inventoryURL, owner: environment.owner) == inventory, try environment.readFloors() == floors,
+                  try environment.readInventoryInputs(deploymentID: original.selection.intent.deploymentID) == inventoryInputs else { throw Failure.unavailable }
         }
         let readPeer: MacOSInstallerHelperBootstrapReconciliation.ReadPeer = {
             guard let remote = ipc.peer(), let installed = await reader.read(release: release),
@@ -81,14 +84,17 @@ public enum MacOSInstallerBootstrapReconciliationMaintenance {
         let coordinator = MacOSInstallerHelperBootstrapReconciliation(journal: .init(root: environment.bootstrapRoot, owner: environment.owner), binding: binding,
             lock: FileInstallerSelfUpdateOperationLock(rootDirectory: environment.bootstrapRoot), verify: verify,
             connectReadOnly: {
+                guard try environment.readInventoryInputs(deploymentID: original.selection.intent.deploymentID) == inventoryInputs else { throw Failure.unavailable }
                 let (reply, remote) = try await ipc.readInventory()
+                guard try environment.readInventoryInputs(deploymentID: original.selection.intent.deploymentID) == inventoryInputs else { throw Failure.unavailable }
                 guard reply == inventory, let installed = await reader.read(release: release),
                       installed.processID == remote.processID, ipc.peer() == remote else { throw Failure.unavailable }
                 return .init(installed: installed, process: remote)
             }, readPeer: readPeer)
         _ = try await coordinator.reconcile()
         guard try effects.historicalOriginalDigest().get() == frozenEffects, try evidence.read() == original,
-              try MacOSInstallerBootstrapProtectedReadback.readFile(inventoryURL, owner: environment.owner) == inventory, try environment.readFloors() == floors else { throw Failure.unavailable }
+              try MacOSInstallerBootstrapProtectedReadback.readFile(inventoryURL, owner: environment.owner) == inventory, try environment.readFloors() == floors,
+                  try environment.readInventoryInputs(deploymentID: original.selection.intent.deploymentID) == inventoryInputs else { throw Failure.unavailable }
         guard case .success = hostLease.releaseExclusiveManagedInstallerProviderOperationLock() else { throw Failure.unavailable }
         hostReleased = true
     }
