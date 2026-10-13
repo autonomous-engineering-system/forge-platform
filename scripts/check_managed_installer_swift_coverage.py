@@ -6,6 +6,7 @@ import argparse
 from decimal import Decimal
 import json
 import math
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -14,6 +15,7 @@ import sys
 
 SOURCE_PREFIX = "macos/ForgePlatformInstaller/Sources/"
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 
 def required_targets(base_ref: str | None) -> tuple[str, ...]:
@@ -115,6 +117,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         targets = required_targets(args.base_ref)
         payload = json.loads(args.coverage_json.read_text(encoding="utf-8"))
+        # Ordinary local/hosted runs always use their actual measured LLVM data.
+        # Isolated protected builds additionally require exact-source hosted
+        # administrator qualification, without adding rights to the builder.
+        from scripts.protected_root_qualification import protected_build
+        if protected_build(os.environ):
+            from scripts.protected_swift_qualification import protected_payload
+            payload = protected_payload(ROOT, os.environ, payload, targets, args.minimum)
         return validate(payload, targets, args.minimum)
     except (OSError, ValueError, ArithmeticError, subprocess.SubprocessError) as error:
         print(f"MANAGED_INSTALLER_SWIFT_COVERAGE=FAIL reason={type(error).__name__}: {error}", file=sys.stderr)

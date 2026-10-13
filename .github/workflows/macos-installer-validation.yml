@@ -75,6 +75,17 @@ jobs:
           ../../scripts/export_managed_installer_swift_coverage.sh "$coverage_path"
           python3 ../../scripts/check_managed_installer_swift_coverage.py "$coverage_path" \
             --minimum 80.2 --base-ref "$COVERAGE_BASE_SHA"
+      - name: Retain exact hosted Swift source qualification
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 -m scripts.protected_swift_qualification --export
+      - name: Upload exact hosted Swift source qualification
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source-swift-qualification-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/swift-qualification.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload exact source and measured coverage evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

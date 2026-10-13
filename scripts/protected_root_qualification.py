@@ -95,7 +95,7 @@ def workflow_path(value, expected):
     return value in (expected, expected + '@refs/heads/main')
 
 
-def read_counts(root, env, read_api=api, read_bytes=gh_bytes):
+def read_counts(root, env, read_api=api, read_bytes=gh_bytes, *, kind='root'):
     sha, tree, own_run, own_attempt, own_workflow = context(root, env)
     branch = read_api('branches/main')
     require(branch.get('protected') is True and branch['commit']['sha'] == sha)
@@ -108,18 +108,19 @@ def read_counts(root, env, read_api=api, read_bytes=gh_bytes):
         and own.get('head_sha') == sha and own.get('head_branch') == 'main'
         and own.get('event') == 'workflow_dispatch' and workflow_path(own.get('path'), own_workflow)
         and own.get('status') == 'in_progress' and own.get('conclusion') is None)
-    counts = read_hosted_counts(sha, tree, read_api, read_bytes)
+    counts = read_hosted_counts(sha, tree, read_api, read_bytes, kind=kind)
     require(context(root, env) == (sha, tree, own_run, own_attempt, own_workflow))
     require(read_api('branches/main')['commit']['sha'] == sha)
     return counts
 
 
-def read_hosted_counts(sha, tree, read_api=api, read_bytes=gh_bytes):
+def read_hosted_counts(sha, tree, read_api=api, read_bytes=gh_bytes, *, kind='root'):
     """Read-only qualification evidence, never a protected-build caller admission.
 
     Enables independent artifact preflight before spending the single dispatch.
     The build gate always enters through read_counts and its current-run guards.
     """
+    require(kind in ('root', 'swift'))
     require(re.fullmatch('[0-9a-f]{40}', sha) is not None and re.fullmatch('[0-9a-f]{40}', tree) is not None)
     branch = read_api('branches/main')
     require(branch.get('protected') is True and branch['commit']['sha'] == sha)
@@ -141,7 +142,7 @@ def read_hosted_counts(sha, tree, read_api=api, read_bytes=gh_bytes):
     for name in JOBS:
         matches = [j for j in jobs['jobs'] if j.get('name') == name]
         require(len(matches) == 1 and matches[0].get('status') == 'completed' and matches[0].get('conclusion') == 'success')
-    name = f'source-root-qualification-{sha}-{identifier}-{attempt}'
+    name = f'source-{kind}-qualification-{sha}-{identifier}-{attempt}'
     artifacts = read_api(f'actions/runs/{identifier}/artifacts?name={name}&per_page=100')
     require(type(artifacts.get('total_count')) is int and artifacts['total_count'] <= 100)
     matched = [a for a in artifacts['artifacts'] if a.get('name') == name]
@@ -155,13 +156,13 @@ def read_hosted_counts(sha, tree, read_api=api, read_bytes=gh_bytes):
     require(0 < len(raw) <= MAXIMUM and 'sha256:' + hashlib.sha256(raw).hexdigest() == artifact['digest'])
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         members = archive.infolist()
-        require(len(members) == 1 and members[0].filename == 'root-qualification.json'
+        require(len(members) == 1 and members[0].filename == f'{kind}-qualification.json'
                 and 0 < members[0].file_size <= MAXIMUM and members[0].flag_bits & 1 == 0
                 and (members[0].external_attr >> 16) & 0o170000 in (0, 0o100000))
         receipt = decode(archive.read(members[0]))
-    expected = dict(schema=SCHEMA, repository=REPOSITORY, source_sha=sha, source_tree=tree,
+    expected = dict(schema=SCHEMA if kind == 'root' else 'forge-platform.protected-swift-qualification/v1', repository=REPOSITORY, source_sha=sha, source_tree=tree,
         workflow=FOUNDATION, workflow_sha=sha, run_id=identifier, run_attempt=attempt,
-        qualification='PASS_ROOT_NO_SKIPS')
+        qualification='PASS_ROOT_NO_SKIPS' if kind == 'root' else 'PASS_EVERY_SWIFT_FILE')
     require(set(receipt) == set(expected) | {'counts'}
         and all(type(receipt[k]) is type(v) and receipt[k] == v for k, v in expected.items()))
     require(read_api('branches/main')['commit']['sha'] == sha)

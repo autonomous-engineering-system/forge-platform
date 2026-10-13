@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGETS = (
     "scripts/protected_root_qualification.py",
     "scripts/emit_protected_root_qualification.py",
+    "scripts/protected_swift_qualification.py",
     "forge_platform/managed_ep_partial_create.py",
     "forge_platform/managed_ep_service_preparation.py",
     "forge_platform/managed_historical_current_executor.py",
@@ -127,6 +128,7 @@ TARGETS = (
 
 TESTS = (
     "tests/installer/test_protected_root_qualification.py",
+    "tests/installer/test_protected_swift_qualification.py",
     "tests/installer/test_managed_ep_partial_create_evidence.py",
     "tests/installer/test_managed_ep_service_preparation.py",
     "tests/installer/test_managed_historical_current_executor.py",
