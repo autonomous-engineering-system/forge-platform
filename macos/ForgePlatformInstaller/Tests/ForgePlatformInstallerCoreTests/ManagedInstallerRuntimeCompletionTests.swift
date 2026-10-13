@@ -958,9 +958,9 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         guard case .completed(let stages, let summaries) = result else {
             return XCTFail("Expected a terminal completed result")
         }
-        XCTAssertEqual(stages.map(\.id), ["product-operations", "pairing", "readiness"])
+        XCTAssertEqual(stages.map(\.id), ["engineering-platform-server", "forge-runtime", "pairing", "readiness"])
         XCTAssertEqual(
-            stages[1].detail,
+            stages[2].detail,
             "Producteigen relatiebewijs voor de geselecteerde operatie"
         )
         XCTAssertTrue(stages.allSatisfy { $0.state == .passed })
@@ -1007,7 +1007,7 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         guard case .completed(let stages, let summary) = result else {
             return XCTFail("Expected exact single-product completion")
         }
-        XCTAssertEqual(stages.map(\.id), ["product-operations", "readiness"])
+        XCTAssertEqual(stages.map(\.id), ["forge-runtime", "readiness"])
         XCTAssertEqual(summary.map(\.componentID), ["forge-runtime"])
     }
 

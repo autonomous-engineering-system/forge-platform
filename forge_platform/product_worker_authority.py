@@ -24,6 +24,7 @@ from .engineering_platform_system_adapter import EPSystemInstanceTarget
 from .forge_ep_pairing_executor import ForgeEPProductPairingBinding, ForgeEPInstallationPairingBinding
 from .forge_server_adapter import ForgeServerTarget, ForgeUninstallBinding, ForgeServerProductAdapter, MacOSForgeLaunchDaemonSupervisor
 from .engineering_platform_system_adapter import EngineeringPlatformSystemProvisionerAdapter
+from .managed_ep_service_preparation import ManagedEPServicePreparation
 from .installation_credential_issuer import ManagedEPInstallationCredentialIssuer
 from .qualified_ep_lifecycle import qualified_ep_installation_pairing_artifact
 from .qualified_forge_lifecycle import qualified_forge_installation_pairing_artifact
@@ -165,7 +166,22 @@ class ProductWorkerAuthorityLoader:
         self.authority_path = root / PRODUCT_WORKER_AUTHORITY_FILE
 
     def load(self) -> ManagedProductOperationHelperService:
+        return self._load_snapshot(self._snapshot())
+
+    def load_historical(self, admission) -> ManagedProductOperationHelperService:
+        from .managed_historical_execution_admission import HistoricalExecutionAdmission
+        if type(admission) is not HistoricalExecutionAdmission or self.root != PRODUCT_WORKER_ROOT or self.expected_owner_uid != 0:
+            raise ProductWorkerAuthorityError("historical execution authority is unavailable")
+        admission.require_valid()
         snapshot = self._snapshot()
+        if "sha256:" + sha256(snapshot.raw_bytes).hexdigest() != admission.expected.protected_sha256_by_role["authority"]:
+            raise ProductWorkerAuthorityError("historical authority changed")
+        service = self._load_snapshot(snapshot, current_release=admission.current_release,
+                                      currency_guard=admission)
+        admission.require_valid()
+        return service
+
+    def _load_snapshot(self, snapshot, *, current_release=None, currency_guard=None):
         authority_digest = "sha256:" + sha256(snapshot.raw_bytes).hexdigest()
         configurations = tuple(
             self._route(value, snapshot.candidates, snapshot.installed,
@@ -230,7 +246,7 @@ class ProductWorkerAuthorityLoader:
             operations_root=self.root / "state/product-operations",
             component_operations_root=self.root / "state/component-operations",
             registry=registry,
-            currency_guard=_StableAuthorityCurrencyGuard(
+            currency_guard=currency_guard or _StableAuthorityCurrencyGuard(
                 self._read_secure_authority, authority_digest
             ),
             secure_store=(
@@ -250,13 +266,15 @@ class ProductWorkerAuthorityLoader:
                 if len(set(claims))!=len(claims):raise ProductWorkerAuthorityError("installation bindings overlap")
             configurations += tuple(self._installation_route(wire,snapshot,coordinator)
                                     for wire in snapshot.installation_routes)
-        return ManagedProductOperationHelperBuilder.build_pinned(
-            current_installer_release=snapshot.release,
+        service = ManagedProductOperationHelperBuilder.build_pinned(
+            current_installer_release=current_release or snapshot.release,
             candidate_manifests=snapshot.candidates,
             installed_manifests=snapshot.installed,
             coordinator=coordinator,
             route_configurations=configurations,
         )
+        service.dispatcher.progress_root = self.root
+        return service
 
     def _snapshot(self) -> _AuthoritySnapshot:
         raw = self._read_secure_authority()
@@ -396,9 +414,15 @@ class ProductWorkerAuthorityLoader:
             installed_artifact=forge_entry[1],staged_artifacts=staged,
             supervisor=MacOSForgeLaunchDaemonSupervisor(self.launch_daemons_directory),
             instance_bootstrap=self._forge_bootstrap(deployment,target,forge_entry[1],forge_executable,snapshot.candidates+snapshot.installed))
+        ep_preparation = ManagedEPServicePreparation(
+            product_root=self.root/"products/engineering-platform", instance_id=ep_id,
+            service_account=ep_account,
+            cohort_accounts=tuple(sorted(set(r["ep_service_account"] for r in snapshot.installation_routes))),
+            authority_sha256="sha256:"+sha256(snapshot.raw_bytes).hexdigest())
         ep=EngineeringPlatformSystemProvisionerAdapter(provisioner_executable=venvs/slots[1]/"bin/engineering-platform-system-provisioner",
             product_root=self.root/"products/engineering-platform",
-            target=EPSystemInstanceTarget(ep_id,_string(wire["ep_display_label"],"EP label"),ep_account,ep_port),staged_artifacts=staged)
+            target=EPSystemInstanceTarget(ep_id,_string(wire["ep_display_label"],"EP label"),ep_account,ep_port),staged_artifacts=staged,
+            service_preparation=ep_preparation)
         binding=ForgeEPInstallationPairingBinding(_safe_id(pairing["operation_id"],"installation operation"),
             _pairing_string(pairing,"binding_id"),f"http://127.0.0.1:{ep_port}",ep_id,
             _pairing_string(pairing,"consumer_id"),_pairing_string(pairing,"credential_reference"),True)

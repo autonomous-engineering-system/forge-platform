@@ -950,6 +950,7 @@ public enum ServiceScope: String, Equatable, Sendable {
 public enum ExecutionStageState: Equatable, Sendable {
     case pending
     case running
+    case awaitingPeer
     case passed
     case failed(String)
 
@@ -959,6 +960,8 @@ public enum ExecutionStageState: Equatable, Sendable {
             return "In afwachting"
         case .running:
             return "Bezig"
+        case .awaitingPeer:
+            return "Geïnstalleerd; wacht op verbinding"
         case .passed:
             return "Geslaagd"
         case .failed:
@@ -1107,6 +1110,7 @@ public struct InstallerWizardState: Equatable, Sendable {
     /// session/composition change.
     public private(set) var preMutationCurrency: PreMutationCurrencyGate
     public var executionStages: [ExecutionStage]
+    public internal(set) var managedDeploymentExecutionInFlight: Bool
     public var summaryItems: [InstallationSummaryItem]
 
     public init(currentInstallerVersion: InstallerVersion) {
@@ -1123,6 +1127,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         self.pairingTarget = nil
         self.preMutationCurrency = .pending
         self.executionStages = []
+        self.managedDeploymentExecutionInFlight = false
         self.summaryItems = []
     }
 
@@ -1233,6 +1238,8 @@ public struct InstallerWizardState: Equatable, Sendable {
                 && preMutationCurrency.isCurrent
         case .execution:
             return hasAcceptedSessionPlan
+                && !managedDeploymentExecutionInFlight
+                && !summaryItems.isEmpty
                 && preflight.isPassed
                 && enabledProvidersVerified
                 && composition.isReadyForExecution
@@ -1267,6 +1274,7 @@ public struct InstallerWizardState: Equatable, Sendable {
            providers.contains(where: { Self.isProviderActionInFlight($0.state) }) {
             return false
         }
+        if managedDeploymentExecutionInFlight { return false }
         if step == .execution,
            executionStages.contains(where: {
                if case .running = $0.state { return true }
@@ -1802,6 +1810,8 @@ public protocol InstallerWizardCoordinator: Sendable {
     func executeReviewedManagedDeployment(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedDeploymentExecutionResult
+    func readManagedComponentProgress(_ operation: ReviewedManagedDeploymentOperation) async
+        -> ManagedInstallerComponentProgress?
     /// Stages selected component-owned provider runtimes under the reviewed
     /// helper plan, without provider authentication or product execution.
     func stageReviewedProviders(
@@ -2022,6 +2032,9 @@ public extension InstallerWizardCoordinator {
         _ = operation
         return .failed(.coordinatorUnavailable, stages: [])
     }
+
+    func readManagedComponentProgress(_ operation: ReviewedManagedDeploymentOperation) async
+        -> ManagedInstallerComponentProgress? { nil }
 
     func performProviderAction(
         _ action: ProviderAction,

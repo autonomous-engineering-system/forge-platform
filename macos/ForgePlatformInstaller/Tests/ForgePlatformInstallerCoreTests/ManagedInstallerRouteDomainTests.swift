@@ -196,6 +196,7 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
 
         var fresh = try makeExecutionReadyState()
         let valid = try XCTUnwrap(fresh.beginManagedDeploymentExecution())
+        let beforeMismatchedResult = fresh.executionStages
         let mismatched = ReviewedManagedDeploymentOperation(
             sessionID: valid.sessionID,
             compositionIdentity: valid.compositionIdentity,
@@ -211,9 +212,28 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
             .failed(.executionFailed, stages: []),
             for: mismatched
         ))
-        guard case .running = fresh.executionStages.first?.state else {
-            return XCTFail("mismatched result must not alter running execution")
-        }
+        XCTAssertEqual(fresh.executionStages, beforeMismatchedResult,
+            "mismatched result must preserve every component and running execution stage")
+    }
+
+    func testReadOnlyGreenProgressCannotAuthorizeSummaryOrOverwriteTerminalFailure() throws {
+        var state = try makeExecutionReadyState()
+        let operation = try XCTUnwrap(state.beginManagedDeploymentExecution())
+        let ids = operation.components.map(\.componentID) +
+            (operation.components.count == 2 ? ["pairing", "readiness"] : ["readiness"])
+        let progress = ManagedInstallerComponentProgress(operationID: "source-progress",
+            stages: ids.map { ExecutionStage(id: $0, title: $0, detail: "Werking bevestigd", state: .passed) })
+        XCTAssertTrue(state.recordManagedComponentProgress(progress, for: operation))
+        XCTAssertTrue(state.managedDeploymentExecutionInFlight)
+        XCTAssertFalse(state.canGoBack)
+        XCTAssertFalse(state.canAdvance)
+        XCTAssertFalse(state.advance())
+        XCTAssertFalse(state.recordManagedDeploymentExecution(.failed(.executionFailed, stages: []), for: operation))
+        XCTAssertFalse(state.managedDeploymentExecutionInFlight)
+        let terminal = state.executionStages
+        XCTAssertFalse(state.recordManagedComponentProgress(progress, for: operation))
+        XCTAssertEqual(state.executionStages, terminal)
+        XCTAssertFalse(state.canAdvance)
     }
 
     private func makePreflightState(

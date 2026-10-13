@@ -18,11 +18,25 @@ import sys
 import trace
 import types
 import unittest
+import contextlib
+import io
+import os
+import subprocess
+import hashlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 TARGETS = (
+    "forge_platform/managed_ep_partial_create.py",
+    "forge_platform/managed_ep_service_preparation.py",
+    "forge_platform/managed_historical_current_executor.py",
+    "forge_platform/managed_historical_execution_admission.py",
+    "forge_platform/managed_historical_execution_evidence.py",
+    "forge_platform/managed_historical_execution_record_reader.py",
+    "forge_platform/managed_historical_product_evidence.py",
+    "forge_platform/managed_product_progress.py",
+
     "forge_platform/component_operations.py",
     "forge_platform/universal_installer.py",
     "forge_platform/installer_helper_companion.py",
@@ -110,6 +124,16 @@ TARGETS = (
 )
 
 TESTS = (
+    "tests/installer/test_managed_ep_partial_create_evidence.py",
+    "tests/installer/test_managed_ep_service_preparation.py",
+    "tests/installer/test_managed_historical_current_executor.py",
+    "tests/installer/test_managed_historical_execution_admission.py",
+    "tests/installer/test_managed_historical_execution_evidence.py",
+    "tests/installer/test_managed_historical_execution_record_reader.py",
+    "tests/installer/test_managed_historical_product_evidence.py",
+    "tests/installer/test_managed_historical_recovery_preflight.py",
+    "tests/installer/test_managed_product_progress.py",
+
     "tests/installer/test_managed_tool_pages.py",
     "tests/installer/test_verify_managed_tool_pages.py",
     "tests/installer/test_provider_runtime_pages.py",
@@ -256,15 +280,87 @@ def _run_tests() -> unittest.result.TestResult:
     return unittest.TextTestRunner(verbosity=1).run(suite)
 
 
+
+# Exact isolated root-only source qualification classes. No installer, service,
+# provider credentials, accounts or production paths are created or changed.
+ROOT_QUALIFICATION_CLASSES = (
+    ("tests/installer/test_managed_ep_partial_create_evidence.py", "ProtectedPartialCreateEvidenceTests"),
+    ("tests/installer/test_managed_ep_service_preparation.py", "EPServiceRootAssemblyTests"),
+    ("tests/installer/test_managed_historical_current_executor.py", "HistoricalNativeProofRootIOTests"),
+    ("tests/installer/test_managed_historical_execution_admission.py", "HistoricalRootFactoryIntegrationTests"),
+    ("tests/installer/test_managed_historical_product_evidence.py", "HistoricalProtectedArchiveTests"),
+    ("tests/installer/test_managed_product_progress.py", "ProtectedProgressFileTests"),
+)
+
+def _source_hashes() -> dict[str, str]:
+    return {relative: hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() for relative in TARGETS}
+
+
+def _require_source_snapshot(expected: dict[str, str]) -> None:
+    if _source_hashes() != expected:
+        raise ValueError("source changed during qualification")
+
+
+def _root_qualification_counts() -> dict[str, object]:
+    if os.geteuid() != 0 or sys.platform != "darwin":
+        raise RuntimeError("root-private Darwin qualification required")
+    source_before = _source_hashes()
+    for directory in (ROOT, ROOT / "tests" / "installer"):
+        sys.path.insert(0, str(directory))
+    def run():
+        suite = unittest.TestSuite(); loader = unittest.TestLoader()
+        for index, (path, name) in enumerate(ROOT_QUALIFICATION_CLASSES):
+            module = _load_test_module(ROOT / path, 10000 + index)
+            suite.addTests(loader.loadTestsFromTestCase(getattr(module, name)))
+        return unittest.TextTestRunner(stream=sys.stderr, verbosity=1).run(suite)
+    tracer = trace.Trace(count=1, trace=0, ignoredirs=(sys.prefix, sys.base_prefix))
+    with contextlib.redirect_stdout(io.StringIO()): result = tracer.runfunc(run)
+    if not result.wasSuccessful() or result.skipped:
+        raise RuntimeError("root-private qualification failed or skipped")
+    hit: dict[str, set[int]] = {}
+    for (filename, line), count in tracer.results().counts.items():
+        path = Path(filename).resolve()
+        if count > 0 and path.is_relative_to(ROOT) and path.relative_to(ROOT).as_posix() in TARGETS:
+            hit.setdefault(path.relative_to(ROOT).as_posix(), set()).add(line)
+    _require_source_snapshot(source_before)
+    return {"schema": "forge-platform.source-root-coverage/v1", "files": {
+        path: {"source_sha256": source_before[path], "lines": sorted(lines)}
+        for path, lines in hit.items()}}
+
+def _merge_root_qualification(counts: dict[Path, set[int]], source_before: dict[str, str]) -> None:
+    import json
+    _require_source_snapshot(source_before)
+    completed = subprocess.run(["sudo", "-n", sys.executable, str(Path(__file__).resolve()), "--root-private-qualification-counts"],
+        cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=None, check=True, timeout=300)
+    if not 0 < len(completed.stdout) <= 2 * 1024 * 1024: raise ValueError("root counts out of bounds")
+    _require_source_snapshot(source_before)
+    payload = json.loads(completed.stdout)
+    if set(payload) != {"schema", "files"} or payload["schema"] != "forge-platform.source-root-coverage/v1" or not isinstance(payload["files"], dict):
+        raise ValueError("invalid root counts")
+    for relative, record in payload["files"].items():
+        if relative not in TARGETS or set(record) != {"source_sha256", "lines"}: raise ValueError("foreign source counts")
+        path = (ROOT / relative).resolve()
+        if record["source_sha256"] != source_before[relative]: raise ValueError("source changed during qualification")
+        lines = record["lines"]
+        if not isinstance(lines, list) or len(lines) > 100000 or any(type(line) is not int or line <= 0 for line in lines): raise ValueError("invalid line counts")
+        counts.setdefault(path, set()).update(lines)
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--minimum", type=float, default=80.2)
+    parser.add_argument("--root-private-qualification-counts", action="store_true")
     args = parser.parse_args(argv)
+    if args.root_private_qualification_counts:
+        import json
+        print(json.dumps(_root_qualification_counts(), sort_keys=True, separators=(",", ":")))
+        return 0
     if not 0 <= args.minimum <= 100:
         raise ValueError("minimum coverage must be between zero and 100")
 
+    source_before = _source_hashes()
     tracer = trace.Trace(count=1, trace=0, ignoredirs=(sys.prefix, sys.base_prefix))
     result = tracer.runfunc(_run_tests)
+    _require_source_snapshot(source_before)
     if not result.wasSuccessful():
         print("MANAGED_INSTALLER_PYTHON_COVERAGE=TEST_FAILURE", file=sys.stderr)
         return 1
@@ -280,10 +376,14 @@ def main(argv: list[str] | None = None) -> int:
             continue
         counts.setdefault(resolved, set()).add(line)
 
+    _merge_root_qualification(counts, source_before)
+
     failures: list[str] = []
     for relative in TARGETS:
         path = (ROOT / relative).resolve()
+        _require_source_snapshot(source_before)
         executable = _executable_lines(path)
+        _require_source_snapshot(source_before)
         hit = counts.get(path, set()) & executable
         percentage = 100.0 if not executable else 100.0 * len(hit) / len(executable)
         print(

@@ -67,7 +67,13 @@ from .managed_ep_provider_registration import (
     SCHEMA as EP_PROVIDER_REGISTRATION_SCHEMA,
     EPProviderRegistrationRequest,
 )
-from .product_worker_authority import ProductWorkerAuthorityLoader
+from .product_worker_authority import ProductWorkerAuthorityLoader, PRODUCT_WORKER_ROOT
+from .managed_historical_product_evidence import (
+    INSPECTION_SCHEMA as HISTORICAL_PRODUCT_INSPECTION_SCHEMA,
+    decode_inspection_intent, reconstruct_original_product_evidence,
+    RECOVERY_PREFLIGHT_SCHEMA as HISTORICAL_RECOVERY_PREFLIGHT_SCHEMA,
+    decode_recovery_preflight_intent, inspect_original_recovery_preflight,
+)
 
 
 class InstallerProductWorkerUnavailable(RuntimeError):
@@ -436,6 +442,19 @@ def read_terminal_purge_recovery_request(
     return response
 
 
+def inspect_original_product_request(canonical_intent: bytes) -> bytes:
+    """Private root readback only. Never load a service or admit product effects."""
+    operation_id=decode_inspection_intent(canonical_intent)
+    return reconstruct_original_product_evidence(
+        PRODUCT_WORKER_ROOT,operation_id).canonical_readback()
+
+
+def inspect_original_recovery_request(canonical_intent: bytes) -> bytes:
+    """Physical read-only preflight. Never load a service or admit effects."""
+    operation_id = decode_recovery_preflight_intent(canonical_intent)
+    return inspect_original_recovery_preflight(PRODUCT_WORKER_ROOT, operation_id)
+
+
 def run(
     input_stream: BinaryIO,
     output_stream: BinaryIO,
@@ -448,7 +467,14 @@ def run(
             envelope = json.loads(request)
         except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
             envelope = None
-        if isinstance(envelope, dict) and envelope.get("schema") == PRODUCT_WHEEL_WORKER_SCHEMA:
+        if isinstance(envelope, dict) and envelope.get("schema") == HISTORICAL_PRODUCT_INSPECTION_SCHEMA:
+            response = inspect_original_product_request(request)
+        elif isinstance(envelope, dict) and envelope.get("schema") == HISTORICAL_RECOVERY_PREFLIGHT_SCHEMA:
+            response = inspect_original_recovery_request(request)
+        elif isinstance(envelope, dict) and envelope.get("schema") == "forge-platform.historical-product-execute/v1":
+            from .managed_historical_execution_admission import execute_historical_request
+            response = execute_historical_request(request, worker_path=Path(sys.argv[0]), base_python=Path(sys.executable))
+        elif isinstance(envelope, dict) and envelope.get("schema") == PRODUCT_WHEEL_WORKER_SCHEMA:
             response = execute_wheel_request(request)
         elif isinstance(envelope, dict) and envelope.get("schema") == EP_PROVIDER_REGISTRATION_SCHEMA:
             response = execute_ep_provider_registration(request, service_loader=service_loader)

@@ -239,6 +239,14 @@ public actor ManagedInstallerReleasedRouteCoordinator:
         }
     }
 
+    public func readManagedComponentProgress(_ operation: ReviewedManagedDeploymentOperation) async
+        -> ManagedInstallerComponentProgress? {
+        guard let plan = reviewedPlan, plan.reviewedOperation == operation,
+              let reader = loader as? any ManagedInstallerComponentProgressIntentReading,
+              let intent = try? ManagedInstallerReviewedExecutionIntent(stablePlan: plan) else { return nil }
+        return try? await reader.readComponentProgress(intent)
+    }
+
     public func stageReviewedProviders(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedInstallerProviderStagePreparationResult {

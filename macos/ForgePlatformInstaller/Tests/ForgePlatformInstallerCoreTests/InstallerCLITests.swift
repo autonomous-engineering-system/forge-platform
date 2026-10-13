@@ -3,6 +3,16 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class InstallerCLITests: XCTestCase {
+    func testBootstrapReconciliationHasClosedMaintenanceArgumentsAndRequiresExplicitYes() throws {
+        let base = ["helper", "reconcile-bootstrap"]
+        XCTAssertEqual(try InstallerCLIParser.parse(base + ["--yes", "--json", "--non-interactive"]).command, .helperReconcileBootstrap)
+        for args in [base, base + ["--yes", "--accept-installer-update"],
+            base + ["--yes", "--operation-id", "caller-selected"],
+            base + ["--yes", "--composition", "forge"], base + ["--yes", "--deployment", "caller-selected"]] {
+            XCTAssertThrowsError(try InstallerCLIParser.parse(args))
+        }
+    }
+
 
     func testRestoreParserRequiresExistingStandaloneEPAndReviewedAcknowledgement() throws {
         let args = ["deployment", "lifecycle", "restore", "--deployment", "saved-ep",

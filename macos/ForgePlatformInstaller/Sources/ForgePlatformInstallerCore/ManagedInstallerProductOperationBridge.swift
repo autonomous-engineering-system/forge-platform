@@ -162,6 +162,38 @@ public struct ManagedInstallerProductOperationRequest: Equatable, Sendable {
         )
     }
 
+    /// Correlation-only historical reconstruction; never an execution admission.
+    /// The separate recovery boundary must verify the original protected parent,
+    /// exact evidence set and existing product request ID before using these bytes.
+    static func reconstructHistoricalCreate(
+        stablePlan: ManagedInstallerStablePlan,
+        runtimeEvidenceReferences: [String]
+    ) throws -> Self {
+        guard !stablePlan.deployment.exists,
+              Set(stablePlan.reviewedOperation.components.map(\.componentID))
+                == Set(["engineering-platform-server", "forge-runtime"]),
+              stablePlan.reviewedOperation.components.count == 2,
+              stablePlan.reviewedOperation.components.allSatisfy({
+                  $0.change == .install && $0.installedVersion == nil
+                    && $0.updateAssessmentReference == nil
+              }) else { throw ManagedInstallerProductOperationBridgeFailure.invalidRequest }
+        return try Self(
+            stablePlanFingerprint: stablePlan.fingerprint,
+            operationID: stablePlan.activationPlan.operationID,
+            sessionID: stablePlan.session.sessionID, deploymentID: stablePlan.deployment.id,
+            deploymentExists: false, forgeInstanceID: nil, engineeringPlatformInstanceID: nil,
+            installedCompositionIdentity: nil, installedCompositionManifestSHA256: nil,
+            inventoryEvidenceReference: stablePlan.reviewedOperation.inventoryEvidenceReference,
+            compositionIdentity: stablePlan.session.compositionIdentity,
+            manifestSHA256: stablePlan.session.manifestSHA256,
+            installerRelease: stablePlan.reviewedOperation.currentInstallerRelease,
+            components: try stablePlan.reviewedOperation.components.map {
+                try ManagedInstallerProductComponentOperation(component: $0)
+            },
+            providerTargetIDs: stablePlan.enabledProviderRequirements.map(\.id.rawValue),
+            runtimeEvidenceReferences: runtimeEvidenceReferences)
+    }
+
     private init(
         stablePlanFingerprint: String,
         operationID: String,
@@ -825,14 +857,10 @@ public struct ManagedInstallerCanonicalProductOperationsExecutor:
             return .failed(.executionFailed, stages: [])
         }
 
-        var stages = [
-            ExecutionStage(
-                id: "product-operations",
-                title: "Productoperaties",
-                detail: "Forge en Engineering Platform",
-                state: .passed
-            ),
-        ]
+        var stages = receipt.completions.map { completion in
+            ExecutionStage(id: completion.componentID, title: Self.title(for: completion.componentID),
+                detail: "Terminal productbewijs en onafhankelijke werking bevestigd", state: .passed)
+        }
         if receipt.pairingReceiptReference != nil {
             stages.append(ExecutionStage(
                 id: "pairing",

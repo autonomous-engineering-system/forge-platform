@@ -5,6 +5,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case version
     case status
     case helperRegister
+    case helperReconcileBootstrap
     case helperReplaceQualification
     case helperReplaceIdle
     case helperReplaceMVP0314
@@ -26,6 +27,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentList
     case deploymentPlan(String)
     case deploymentApply(String)
+    case deploymentRecoverHistorical(String)
     case deploymentRemove(String, operationID: String, component: String?)
     case deploymentRemovePlan(String, operationID: String, component: String?)
     case deploymentPairingRepairPlan(String, operationID: String)
@@ -40,7 +42,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
 public extension InstallerCLICommand {
     var requiresAdministratorForMutation: Bool {
         switch self {
-        case .deploymentApply, .deploymentRemove, .deploymentLifecyclePreserve, .deploymentLifecycleRestore,
+        case .deploymentApply, .deploymentRecoverHistorical, .deploymentRemove, .deploymentLifecyclePreserve, .deploymentLifecycleRestore,
              .deploymentLifecyclePurge, .deploymentLifecycleRecover,
              .deploymentLifecycleRecoverPurge:
             true
@@ -160,6 +162,7 @@ public enum InstallerCLIParser {
     Usage:
       forge-platform-installer version [--json]
       forge-platform-installer status [--json]
+      forge-platform-installer helper reconcile-bootstrap --yes [--non-interactive] [--json]
       forge-platform-installer helper register [--yes] [--non-interactive] [--json]
       forge-platform-installer helper replace-qualification [--yes] [--non-interactive] [--json]
       forge-platform-installer helper replace-idle [--yes] [--non-interactive] [--json]
@@ -179,6 +182,7 @@ public enum InstallerCLIParser {
       forge-platform-installer helper replace-clean-vm-045 [--yes] [--non-interactive] [--json]
       forge-platform-installer self-update check [--json]
       forge-platform-installer self-update apply [--yes] [--json]
+      forge-platform-installer deployment recover-historical --operation-id <original-id> --yes [--non-interactive] [--json]
       forge-platform-installer deployment list [--json]
       forge-platform-installer deployment plan --deployment <id|new> [--composition <forge|ep|forge-ep>] [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--non-interactive] [--json]
       forge-platform-installer deployment apply --deployment <id|new> [--composition <forge|ep|forge-ep>] [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--yes] [--non-interactive] [--accept-installer-update] [--json]
@@ -313,6 +317,9 @@ public enum InstallerCLIParser {
             command = .version
         case ["status"]:
             command = .status
+        case ["helper", "reconcile-bootstrap"]:
+            guard assumeYes, arguments.allSatisfy({ ["helper", "reconcile-bootstrap", "--yes", "--json", "--non-interactive"].contains($0) }) else { throw InstallerCLIParseError.invalidArguments }
+            command = .helperReconcileBootstrap
         case ["helper", "register"]:
             command = .helperRegister
         case ["helper", "replace-qualification"]:
@@ -351,6 +358,13 @@ public enum InstallerCLIParser {
             command = .selfUpdateCheck
         case ["self-update", "apply"]:
             command = .selfUpdateApply
+        case ["deployment", "recover-historical"]:
+            guard let operationID, ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+                  deployment == nil, component == nil, reviewFingerprint == nil,
+                  confirmedInstanceID == nil, !acceptInstallerUpdate, assumeYes else {
+                throw InstallerCLIParseError.invalidArguments
+            }
+            command = .deploymentRecoverHistorical(operationID)
         case ["deployment", "list"]:
             command = .deploymentList
         case ["deployment", "plan"]:
@@ -489,7 +503,7 @@ public enum InstallerCLIParser {
         }
         if operationID != nil || component != nil || reviewFingerprint != nil {
             switch command {
-            case .deploymentRemovePlan, .deploymentRemove,
+            case .deploymentRecoverHistorical, .deploymentRemovePlan, .deploymentRemove,
                  .deploymentPairingRepairPlan, .deploymentLifecyclePlan,
                  .deploymentLifecyclePreserve, .deploymentLifecycleRestore, .deploymentLifecyclePurge,
                  .deploymentLifecycleRecover, .deploymentLifecycleRecoverPurge: break

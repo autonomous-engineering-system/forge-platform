@@ -702,6 +702,14 @@ public final class FileManagedInstallerReleasedRouteXPCService:
     }
 
 
+    public func readComponentProgress(_ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void) {
+        guard let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent else { reply(nil); return }
+        reply(FileManagedInstallerComponentProgressReader(root: rootDirectory,
+            expectedOwner: expectedOwner).read(intent))
+    }
+
     private func loadStoredRoute(
         _ canonicalRequest: Data,
         request: ManagedInstallerReleasedRouteRequest
@@ -1059,6 +1067,9 @@ public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
 }
 
 @objc public protocol ManagedInstallerReleasedRouteXPCService {
+    @objc optional func recoverHistoricalOperation(_ canonicalRequest: Data, withReply reply: @escaping (Data?) -> Void)
+    @objc optional func readComponentProgress(_ canonicalIntent: Data,
+        withReply reply: @escaping (Data?) -> Void)
     func loadManagedDeploymentInventory(withReply reply: @escaping (Data?) -> Void)
     func loadManagedDeploymentRegistryRecord(
         _ deploymentID: String,
@@ -1101,6 +1112,7 @@ public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
 public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     ManagedInstallerReleasedRouteSnapshotLoading,
     ManagedInstallerReviewedExecutionIntentSending,
+    ManagedInstallerComponentProgressIntentReading,
     ManagedInstallerReviewedProviderStageIntentSending,
     ManagedInstallerReviewedProviderReadbackIntentSending,
     ManagedInstallerReviewedProviderAuthenticationIntentSending,
@@ -1205,6 +1217,15 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
         )
     }
 
+    public func recoverHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryResult {
+        let request = try ManagedInstallerHistoricalRecoveryRequest(operationID: operationID)
+        let data = try await call { service, reply in
+            guard let recover = service.recoverHistoricalOperation else { reply(nil); return }
+            recover(request.canonicalJSONData(), reply)
+        }
+        return try ManagedInstallerHistoricalRecoveryResult.decode(data, operationID: operationID)
+    }
+
     public func executeReviewedIntent(
         _ intent: ManagedInstallerReviewedExecutionIntent
     ) async throws -> ManagedDeploymentExecutionResult {
@@ -1212,6 +1233,16 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
             service.executeReviewedIntent(intent.canonicalJSONData(), withReply: reply)
         }
         return try ManagedInstallerReviewedExecutionResultCodec.decode(data)
+    }
+
+    public func readComponentProgress(_ intent: ManagedInstallerReviewedExecutionIntent) async throws
+        -> ManagedInstallerComponentProgress {
+        let data = try await call(readOnly: true) { service, reply in
+            if let read = service.readComponentProgress {
+                read(intent.canonicalJSONData(), reply)
+            } else { reply(nil) }
+        }
+        return try ManagedInstallerComponentProgress.decode(data, intent: intent)
     }
 
     public func stageReviewedProviders(
@@ -1548,16 +1579,19 @@ public final class MacOSManagedInstallerReleasedRouteXPCListener:
     private let listener: NSXPCListener
     private let serviceHandler: any ManagedInstallerReleasedRouteXPCService
     private let installerUserStore: FileManagedInstallerHelperReviewedSelectionStore
+    private let historicalMutationGate: ManagedInstallerHelperUpgradeAdmissionGate?
 
     public convenience init(
         callerIdentity: ManagedInstallerProductOperationXPCCallerIdentity,
-        serviceHandler: any ManagedInstallerReleasedRouteXPCService
+        serviceHandler: any ManagedInstallerReleasedRouteXPCService,
+        historicalMutationGate: ManagedInstallerHelperUpgradeAdmissionGate? = nil
     ) {
         self.init(
             listener: NSXPCListener(machServiceName:
                 MacOSManagedInstallerReleasedRouteXPCTransport.machServiceName),
             callerIdentity: callerIdentity,
             serviceHandler: serviceHandler,
+            historicalMutationGate: historicalMutationGate,
             installCodeSigningRequirement: { listener, requirement in
                 listener.setConnectionCodeSigningRequirement(requirement)
             }
@@ -1568,12 +1602,14 @@ public final class MacOSManagedInstallerReleasedRouteXPCListener:
         listener: NSXPCListener,
         callerIdentity: ManagedInstallerProductOperationXPCCallerIdentity,
         serviceHandler: any ManagedInstallerReleasedRouteXPCService,
+        historicalMutationGate: ManagedInstallerHelperUpgradeAdmissionGate? = nil,
         installerUserStore: FileManagedInstallerHelperReviewedSelectionStore = .production(),
         installCodeSigningRequirement: (NSXPCListener, String) -> Void
     ) {
         self.listener = listener
         self.serviceHandler = serviceHandler
         self.installerUserStore = installerUserStore
+        self.historicalMutationGate = historicalMutationGate
         super.init()
         installCodeSigningRequirement(listener, callerIdentity.codeSigningRequirement)
         listener.delegate = self
@@ -1592,7 +1628,8 @@ public final class MacOSManagedInstallerReleasedRouteXPCListener:
             with: ManagedInstallerReleasedRouteXPCService.self
         )
         newConnection.exportedObject = ManagedInstallerUserBoundXPCService(
-            service: serviceHandler, peerUID: newConnection.effectiveUserIdentifier, store: installerUserStore
+            service: serviceHandler, peerUID: newConnection.effectiveUserIdentifier, store: installerUserStore,
+            historicalMutationGate: historicalMutationGate
         )
         newConnection.resume()
         return true

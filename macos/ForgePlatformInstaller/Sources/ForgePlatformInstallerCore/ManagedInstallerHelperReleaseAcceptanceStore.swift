@@ -132,6 +132,12 @@ struct ManagedInstallerHelperReleaseAcceptanceStore: InstallerReleaseAcceptanceS
         return Legacy(acceptance: acceptance, bytes: bytes, device: details.st_dev, inode: details.st_ino)
     }
 
+    /// Shared read-only policy for private evidence readers. It accepts only
+    /// existing cohort-bound search grants; it never creates or changes an ACL.
+    func validateSharedRoot(_ descriptor: Int32) throws -> stat {
+        try requireRoot(descriptor)
+    }
+
     private func requireRoot(_ descriptor: Int32) throws -> stat {
         var details = stat()
         guard Darwin.fstat(descriptor, &details) == 0, details.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),

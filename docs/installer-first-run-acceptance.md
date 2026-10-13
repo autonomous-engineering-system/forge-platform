@@ -377,7 +377,17 @@ separately supported and authorized recovery or clean qualification route is rea
 Use a vertical step column with native glyphs, one highlighted viewed step and
 status checks derived from completed evidence. Do not present the steps as a
 horizontal row of buttons or a step-selection menu. Provide a plain **Vorige**
-action to view the previous completed screen and a return-to-current action;
-viewing results must not repeat helper, provider or product actions. An install
+action to view the previous completed screen and a return-to-current action.
+Reached earlier steps are directly clickable for their recorded results; the
+current step returns to its live screen. Future steps remain disabled even when
+an older snapshot survives a same-context regression. Viewing results must not
+repeat helper, provider or product actions. Use ordinary step titles without
+“earlier results” suffixes or repetitive read-only explanations. Show the installer
+version permanently in the footer, including earlier screens, rather than only
+inside technical details. Single-provider progress names the selected provider
+(Codex or GitHub); it must not imply multiple human sign-ins. An install
 or final readiness check is shown as complete only after all execution stages
 pass. Presentation changes grant no additional installation authority.
+
+The complete operator-facing wizard requirements and open qualification boundaries
+are tracked in [Customer wizard contract](installer-customer-wizard-contract.md).

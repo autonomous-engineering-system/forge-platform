@@ -304,6 +304,7 @@ class ManagedForgeEPInstallationCoordinator:
         composition_manifest_digest: str,
         credential_issuer: EPInitialCredentialIssuer | None = None,
         credential_reference: str | None = None,
+        progress=None,
     ) -> ManagedForgeEPInstallationResult:
         desired = self._validate_route(
             plan,
@@ -355,13 +356,15 @@ class ManagedForgeEPInstallationCoordinator:
             operation_id, desired=desired, readback_requests=readback_requests,
             adapters=adapters, pairing_executor=pairing_executor, composition_id=composition_id,
             composition_manifest_digest=composition_manifest_digest, credential_issuer=credential_issuer,
-            credential_reference=credential_reference, currency=currency, guarded_registry=guarded_registry)
+            credential_reference=credential_reference, currency=currency,
+            guarded_registry=guarded_registry, progress=progress)
 
 
     def _pair_and_finalize(
         self, operation_id, *, desired, readback_requests, adapters, pairing_executor,
         composition_id, composition_manifest_digest, credential_issuer, credential_reference,
         currency, guarded_registry,
+        progress=None,
     ):
         current = self.registry.load(desired.deployment_id)
         if current is None:
@@ -424,6 +427,7 @@ class ManagedForgeEPInstallationCoordinator:
                 instance_id=None,
                 operation_id=operation_id,
             )
+            if progress is not None:progress.update("pairing","running","installing")
             pairing_evidence = pairing_executor.pair(
                 operation_id=operation_id,
                 deployment=current,
@@ -447,6 +451,9 @@ class ManagedForgeEPInstallationCoordinator:
             pairing_reference = paired.peer_binding.receipt_reference  # type: ignore[union-attr]
             current = paired
 
+        if progress is not None:
+            progress.update("pairing","passed","ready")
+            progress.update("readiness","running","preflight")
         readiness = self._final_readiness(
             desired,
             readback_requests=readback_requests,

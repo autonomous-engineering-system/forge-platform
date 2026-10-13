@@ -39,6 +39,10 @@ class EngineeringPlatformAdapterError(RuntimeError):
     """EP rejected, contradicted, or could not prove the exact target operation."""
 
 
+class EPIdentityHealthUnavailableError(EngineeringPlatformAdapterError):
+    """Only the exact published unavailable-health status, no generic fallback."""
+
+
 @dataclass(frozen=True)
 class EPSystemInstanceTarget:
     instance_id: str
@@ -124,6 +128,7 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
         staged_artifacts: Mapping[str, Path],
         launch_daemons_directory: Path | None = None,
         runner: ProductCommandRunner | None = None,
+        service_preparation=None,
     ) -> None:
         if (
             not provisioner_executable.is_absolute() or not product_root.is_absolute()
@@ -139,6 +144,17 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
         self.staged_artifacts = dict(staged_artifacts)
         self.launch_daemons_directory = launch_daemons_directory
         self.runner = runner or SubprocessProductCommandRunner()
+        self.service_preparation = service_preparation
+        self.create_operation_binding = None
+
+    def bind_admitted_create(self, admitted, artifact) -> None:
+        if self.service_preparation is None:
+            return
+        from .managed_ep_partial_create import BoundEPCreateOperation
+        self.create_operation_binding = BoundEPCreateOperation(
+            helper_root=self.product_root.parent.parent, target=self.target,
+            artifact=artifact, admitted=admitted)
+        self.service_preparation.bind_account()
 
     def _validate_request(self, request: ComponentOperationRequest) -> None:
         if not isinstance(request, ComponentOperationRequest):
@@ -189,6 +205,11 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
             if command not in {"inventory", "provider-register"}:
                 raise EngineeringPlatformAdapterError("EP provisioner contract mismatch")
         if result.returncode != 0:
+            if (command in {"status","create"} and result.returncode == 2
+                    and dict(wire) == {"contract": EP_SYSTEM_PROVISIONER_CONTRACT,
+                                       "status": "error",
+                                       "error": "EP instance identity-aware health is unavailable"}):
+                raise EPIdentityHealthUnavailableError("EP service readiness is unavailable")
             raise EngineeringPlatformAdapterError("EP provisioner rejected the exact operation")
         return wire
 
@@ -253,6 +274,7 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
                     "service_label", "state", "descriptor", "status",
                 }
                 and entry.get("schema_version") == 1
+                and type(entry.get("schema_version")) is int
                 and entry.get("state") == "PROVIDER_BOOTSTRAP_PENDING"
                 and entry.get("status") == "PROVIDER_BOOTSTRAP_PENDING"
                 and entry.get("display_label") == self.target.display_label
@@ -269,7 +291,12 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
                 "NONE" if exact_bootstrap else "UNKNOWN", inventory_ref,
             )
 
-        status = self._run("status", "--instance-id", self.target.instance_id)
+        try:
+            status = self._run("status", "--instance-id", self.target.instance_id)
+        except EPIdentityHealthUnavailableError:
+            if self.create_operation_binding is None:
+                raise
+            return self.create_operation_binding.pending_readback(request, inventory)
         descriptor = status.get("descriptor")
         if not isinstance(descriptor, Mapping):
             descriptor = entry
@@ -391,6 +418,14 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
     def execute(self, request: ComponentOperationRequest) -> ProductOperationReceipt:
         self._validate_request(request)
         if request.kind == "install":
+            if self.service_preparation is not None:
+                if self.create_operation_binding is None:
+                    raise EngineeringPlatformAdapterError("EP CREATE lacks admitted parent binding")
+                self.create_operation_binding.before_preparation(request,self.service_preparation)
+                self.service_preparation.prepare()
+                self.create_operation_binding.assert_current(request)
+                self.create_operation_binding.assert_worker_reservation()
+                self.create_operation_binding.assert_quiescent()
             result = self._run(
                 "create",
                 *self._target_arguments(),

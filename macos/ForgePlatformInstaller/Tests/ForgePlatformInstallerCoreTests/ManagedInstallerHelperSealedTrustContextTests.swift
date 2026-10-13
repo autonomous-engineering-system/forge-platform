@@ -1445,3 +1445,133 @@ private struct StubHelperMaterialPreparer:
         return result
     }
 }
+
+
+extension ManagedInstallerHelperSealedTrustContextTests {
+    /// Coherent unsigned source model, actual OS identity and durable private IO.
+    /// This exercises correlation/permit serialization, never a runtime permit.
+    func testHistoricalBindingAndReservedRecordUseActualOriginalRequestAndCurrentContext() async throws {
+        let uid = getuid()
+        guard uid > 0, let user = try? ManagedInstallerNamedOperator.resolve(uid: uid), user.isAdministrator else {
+            throw XCTSkip("existing named administrator required; no account is created")
+        }
+        let resources = try makeResources()
+        let sealed = ManagedInstallerHelperSealedTrustContext(codeSigning: try signingEvidence(version: resources.provenance.installerVersion), resources: resources)
+        let record = try makeReleaseRecord(for: sealed)
+        let current = ManagedInstallerHelperCurrentRelease(record: record, sealed: sealed)
+        let f = try ReleasedRouteFixture(installerTrustSHA256: resources.releaseTrust.configurationSHA256,
+            installerSigningKeyID: record.release.signingKeyID)
+        let plan = try ManagedInstallerHelperReviewedPlanAdmission().prepare(candidate: f.operation,
+            helperSnapshot: f.snapshot, helperCurrentRelease: f.release)
+        let references = ["receipt:original-terminal", "receipt:original-provider"]
+        let parent = try ManagedPythonRuntimeParentJournalRecord(plan: plan.activationPlan,
+            stablePlanFingerprint: plan.fingerprint, requiresManagedToolReconciliation: true).advancing(with:
+                ManagedPythonInstallerJournalEvidence(result: .toolsVerified, toolReceiptReferences: [references[0]],
+                    pythonRuntimeReceiptReference: references[0], pythonRuntimeIdentity: plan.activationPlan.runtimeIdentitySHA256,
+                    retainedPythonRuntimeIdentity: plan.activationPlan.rollbackRuntimeIdentitySHA256,
+                    postToolPlanFingerprint: String(repeating: "5", count: 64)))
+        let request = try ManagedInstallerProductOperationRequest.reconstructHistoricalCreate(stablePlan: plan, runtimeEvidenceReferences: references)
+        let operationMaterial = request.requestFingerprint + "\u{1f}engineering-platform-server\u{1f}mutation"
+        let productID = "product-" + SHA256.hash(data: Data(operationMaterial.utf8)).map { String(format: "%02x", $0) }.joined()
+        let original = try ManagedInstallerHistoricalOperationReconstruction(selection: .init(stablePlan: plan),
+            originalSnapshot: f.snapshot, historicalRelease: f.release, parent: parent,
+            originalRuntimeEvidenceReferences: references, existingEngineeringPlatformOperationID: productID)
+        let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("coherent-inspection-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let operators = FileManagedInstallerHelperReviewedSelectionStore(rootDirectory: root, expectedOwner: uid)
+        try operators.registerOperator(user, selection: .init(stablePlan: plan))
+        let inspectedExecutor = try await ManagedInstallerHistoricalRecoveryExecutorInspector(operators: operators,
+            currentRelease: SequenceCurrentRelease([.success(current)])).inspect(original, authenticatedPeerUID: uid)
+        let hashes = Dictionary(uniqueKeysWithValues: ["parent", "selection", "route", "authority", "operator", "git", "product_request"].map {
+            ($0, "sha256:" + String(repeating: "e", count: 64))
+        })
+        let inspected = ManagedInstallerHistoricalInspectedOperation(original: original, executor: inspectedExecutor,
+            originalDescriptorSHA256: String(repeating: "f", count: 64), protectedSHA256ByRole: hashes)
+        let binding = try ManagedInstallerHistoricalInspectionBinding(inspected: inspected)
+        XCTAssertTrue(binding.fileName.hasPrefix("historical-inspection-"))
+        let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: binding.canonicalData) as? [String: Any])
+        XCTAssertEqual(wire["execution_authorized"] as? Bool, false)
+        XCTAssertEqual(wire["preserve_historical_uncertainty"] as? Bool, true)
+        _ = try ManagedInstallerHistoricalExecutorIdentityCodec.value(current)
+        let bindings = FileManagedInstallerHistoricalInspectionBindingStore(state: root, owner: uid)
+        try bindings.publish(binding)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(binding.fileName)), binding.canonicalData)
+        let effects = FileManagedInstallerProductWorkerEffectJournal(stateRoot: root, expectedOwner: uid)
+        try effects.markUncertain().get()
+        let frozen = try effects.historicalOriginalDigest().get()
+        let child = UUID()
+        let reservation = try effects.beginHistoricalRecovery(child, expectedRecordSHA256: frozen).get()
+        let execution = try ManagedInstallerHistoricalExecutionRecord(inspected: inspected, reservation: reservation)
+        let store = FileManagedInstallerHistoricalExecutionRecordStore(state: root, owner: uid)
+        try store.publish(execution)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(execution.operationFileName)), execution.canonicalData)
+        XCTAssertThrowsError(try store.publish(execution))
+        try effects.finish(child, normalExit: true).get()
+        XCTAssertTrue(try effects.readRequired().get().uncertain)
+        XCTAssertEqual(try effects.readRequired().get().activeIDs, [])
+        let publicProof = try ManagedInstallerHistoricalCurrentExecutorProofBridge.encodeVerifiedExecutor(current)
+        XCTAssertLessThan(publicProof.count, 8192)
+        if geteuid() != 0 {
+            do { _ = try await ManagedInstallerHistoricalCurrentExecutorProofBridge.capture(); XCTFail("Unsigned nonroot proof accepted") } catch {}
+        }
+        // Real harmless child verifies pipe EOF, reservation, typed receipt and
+        // immutable completion. Signing/process admission is explicitly modeled.
+        let executionState = root.appendingPathComponent("execution", isDirectory: true)
+        try FileManager.default.createDirectory(at: executionState, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let runEffects = FileManagedInstallerProductWorkerEffectJournal(stateRoot: executionState, expectedOwner: uid)
+        try runEffects.markUncertain().get()
+        let receipt = try ManagedInstallerProductOperationReceipt(request: request,
+            productReceiptReferences: ["receipt:ep-modeled", "receipt:forge-modeled"], pairingReceiptReference: "receipt:pair-modeled",
+            readinessReceiptReferences: ["receipt:ep-ready-modeled", "receipt:forge-ready-modeled"],
+            completions: request.components.map { try .init(componentID: $0.componentID, state: .ready) })
+        let emitter = root.appendingPathComponent("source-receipt-emitter.py")
+        let script = "import sys,json,base64\nintent=json.loads(sys.stdin.buffer.read())\nassert intent['schema']=='forge-platform.historical-product-execute/v1'\nsys.stdout.buffer.write(base64.b64decode('" + receipt.canonicalJSONData().base64EncodedString() + "'))\n"
+        try Data(script.utf8).write(to: emitter)
+        let invocation = ManagedInstallerProductWorkerInvocation(interpreterURL: URL(fileURLWithPath: "/usr/bin/python3"),
+            trustedStateRootURL: executionState, workerURL: emitter, workerSHA256: String(repeating: "a", count: 64),
+            expectedInterpreterOwner: 0, requireSingleInterpreterLink: false, timeoutNanoseconds: 3_000_000_000)
+        let boundary = ManagedInstallerHistoricalRunnerProcessBoundary(effectiveUID: { 0 }, expectedRoot: executionState,
+            interpreter: { $0.interpreterURL.path == "/usr/bin/python3" }, worker: { $0.workerURL == emitter })
+        let runner = ManagedInstallerHistoricalExecutionRunner(processBoundary: boundary,
+            resolver: HistoricalSourceInvocation(invocation: invocation), children: ManagedInstallerHelperChildExitRegistry(), effects: runEffects,
+            store: FileManagedInstallerHistoricalExecutionRecordStore(state: executionState, owner: uid))
+        let emitted = try await runner.execute(inspected); XCTAssertEqual(emitted, receipt.canonicalJSONData())
+        XCTAssertTrue(try runEffects.readRequired().get().uncertain)
+        XCTAssertEqual(try runEffects.readRequired().get().activeIDs, [])
+        do { _ = try await runner.execute(inspected); XCTFail("Second child must not launch") } catch {}
+        XCTAssertTrue(try runEffects.readRequired().get().uncertain)
+        // Independent read-only runner: canonical report, no effect journal.
+        let report: StrictJSONResourceValue = .object([
+            "schema": .string(ManagedInstallerHistoricalProductReadback.schema),
+            "request": try { var r = try StrictJSONResourceReader(data: request.canonicalJSONData()); return try r.parseDocument() }(),
+            "engineering_platform_operation_id": .string(productID),
+            "protected_sha256_by_role": .object(hashes.mapValues { .string($0) })])
+        let readbackBytes = StrictSignedJSON.canonicalPayload(from: report)
+        let preflightBytes = StrictSignedJSON.canonicalPayload(from: .object([
+            "schema": .string(ManagedInstallerHistoricalRecoveryPreflight.schema), "quiescent": .boolean(true), "original_evidence": report]))
+        let inspectionEmitter = root.appendingPathComponent("source-readonly-emitter.py")
+        let readonlyScript = "import sys,json,base64\nintent=json.loads(sys.stdin.buffer.read())\nbody='" + readbackBytes.base64EncodedString() + "' if intent['schema']=='forge-platform.historical-product-inspection/v1' else '" + preflightBytes.base64EncodedString() + "'\nsys.stdout.buffer.write(base64.b64decode(body))\n"
+        try Data(readonlyScript.utf8).write(to: inspectionEmitter)
+        let inspectInvocation = ManagedInstallerProductWorkerInvocation(interpreterURL: invocation.interpreterURL,
+            trustedStateRootURL: executionState, workerURL: inspectionEmitter, workerSHA256: invocation.workerSHA256,
+            expectedInterpreterOwner: 0, requireSingleInterpreterLink: false, timeoutNanoseconds: 3_000_000_000)
+        let inspectorBoundary = ManagedInstallerHistoricalRunnerProcessBoundary(effectiveUID: { 0 }, expectedRoot: executionState,
+            interpreter: { $0.interpreterURL == invocation.interpreterURL }, worker: { $0.workerURL == inspectionEmitter })
+        let readonly = ManagedInstallerHistoricalInspectionRunner(processBoundary: inspectorBoundary,
+            resolver: HistoricalSourceInvocation(invocation: inspectInvocation), children: ManagedInstallerHelperChildExitRegistry())
+        let readResult = try await readonly.inspect(.init(operationID: request.operationID))
+        XCTAssertEqual(readResult.request, request)
+        let preflight = try await readonly.recoveryPreflight(operationID: request.operationID)
+        XCTAssertEqual(preflight.originalEvidence.request, request)
+        XCTAssertTrue(try runEffects.readRequired().get().uncertain)
+        let wrong = ManagedInstallerHistoricalInspectedOperation(original: original, executor: inspectedExecutor,
+            originalDescriptorSHA256: "invalid", protectedSHA256ByRole: hashes)
+        XCTAssertThrowsError(try ManagedInstallerHistoricalInspectionBinding(inspected: wrong))
+    }
+}
+
+private struct HistoricalSourceInvocation: ManagedInstallerProductWorkerInvocationResolving {
+    let invocation: ManagedInstallerProductWorkerInvocation
+    func resolveProductWorkerInvocation() async -> Result<ManagedInstallerProductWorkerInvocation, ManagedInstallerProductWorkerFailure> { .success(invocation) }
+}

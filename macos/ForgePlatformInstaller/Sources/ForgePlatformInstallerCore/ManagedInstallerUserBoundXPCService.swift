@@ -7,9 +7,41 @@ final class ManagedInstallerUserBoundXPCService: NSObject, ManagedInstallerRelea
     private let service: any ManagedInstallerReleasedRouteXPCService
     private let uid: UInt32
     private let store: FileManagedInstallerHelperReviewedSelectionStore
-    init(service: any ManagedInstallerReleasedRouteXPCService, peerUID: UInt32, store: FileManagedInstallerHelperReviewedSelectionStore) {
-        self.service = service; uid = peerUID; self.store = store; super.init()
+    private let historicalMutationGate: ManagedInstallerHelperUpgradeAdmissionGate?
+    private let historicalCoordinator: @Sendable () -> ManagedInstallerHistoricalInspectionCoordinator?
+    private let historicalExecute: @Sendable (ManagedInstallerHistoricalInspectedOperation) async throws -> Data
+    init(service: any ManagedInstallerReleasedRouteXPCService, peerUID: UInt32, store: FileManagedInstallerHelperReviewedSelectionStore,
+         historicalMutationGate: ManagedInstallerHelperUpgradeAdmissionGate? = nil,
+         historicalCoordinator: @escaping @Sendable () -> ManagedInstallerHistoricalInspectionCoordinator? = { .production() },
+         historicalExecute: @escaping @Sendable (ManagedInstallerHistoricalInspectedOperation) async throws -> Data = {
+             try await ManagedInstallerHistoricalExecutionRunner().execute($0)
+         }) {
+        self.service = service; uid = peerUID; self.store = store
+        self.historicalMutationGate = historicalMutationGate
+        self.historicalCoordinator = historicalCoordinator; self.historicalExecute = historicalExecute; super.init()
     }
+    func recoverHistoricalOperation(_ data: Data, withReply reply: @escaping (Data?) -> Void) {
+        guard let request = try? ManagedInstallerHistoricalRecoveryRequest.decode(data),
+              isNamedAdministrator,
+              let coordinator = historicalCoordinator(),
+              let terminalReply = historicalMutationGate?.admittedReply(reply) else { reply(nil); return }
+        let authenticatedUID = uid
+        let execute = historicalExecute
+        let terminal = ManagedInstallerHistoricalRecoveryReply(terminalReply)
+        Task {
+            do {
+                let result = try await coordinator.withRecoveryPreflight(authenticatedPeerUID: authenticatedUID) { inspected, _ in
+                    guard request.operationID == inspected.original.request.operationID else {
+                        throw ManagedInstallerHistoricalOperationReconstructionFailure.unavailable
+                    }
+                    let receipt = try await execute(inspected)
+                    return try ManagedInstallerHistoricalRecoveryResult(request: inspected.original.request, receiptData: receipt).canonicalJSONData()
+                }
+                terminal.deliver(result)
+            } catch { terminal.deliver(nil) }
+        }
+    }
+
     func loadManagedDeploymentInventory(withReply reply: @escaping (Data?) -> Void) {
         service.loadManagedDeploymentInventory(withReply: reply)
     }
@@ -34,6 +66,10 @@ final class ManagedInstallerUserBoundXPCService: NSObject, ManagedInstallerRelea
     func readReviewedProviders(_ data: Data, withReply reply: @escaping (Data?) -> Void) {
         guard owns(data) else { reply(nil); return }
         service.readReviewedProviders(data, withReply: reply)
+    }
+    func readComponentProgress(_ data: Data, withReply reply: @escaping (Data?) -> Void) {
+        guard owns(data), let read = service.readComponentProgress else { reply(nil); return }
+        read(data, reply)
     }
     func beginReviewedProviderAuthentication(_ data: Data, providerTargetID id: String, withReply reply: @escaping (Data?) -> Void) {
         guard owns(data) else { reply(nil); return }
@@ -64,4 +100,12 @@ final class ManagedInstallerUserBoundXPCService: NSObject, ManagedInstallerRelea
         } catch { reply(nil); return }
         service.registerReviewedSelection(data, withReply: reply)
     }
+}
+
+// The enclosed callback is already guarded once by the mutation gate. Only
+// this transport box crosses the task boundary; it never releases early.
+private final class ManagedInstallerHistoricalRecoveryReply: @unchecked Sendable {
+    private let callback: (Data?) -> Void
+    init(_ callback: @escaping (Data?) -> Void) { self.callback = callback }
+    func deliver(_ data: Data?) { callback(data) }
 }
