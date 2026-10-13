@@ -87,6 +87,20 @@ class RequiredCIAggregationTests(unittest.TestCase):
         self.assertIn(command, native)
         self.assertIn(command, (ROOT / "scripts/validate.sh").read_text(encoding="utf-8"))
 
+    def test_native_qualification_export_never_makes_tests_or_coverage_conditional(self) -> None:
+        native = NATIVE.read_text(encoding="utf-8")
+        steps = native.split("      - ")[1:]
+        for name in ("Run native installer tests with coverage", "Enforce every changed production-file coverage"):
+            matched = [step for step in steps if step.startswith("name: " + name + "\n")]
+            self.assertEqual(len(matched), 1)
+            self.assertNotIn("        if:", matched[0])
+        for name in ("Retain exact hosted Swift source qualification", "Upload exact hosted Swift source qualification"):
+            matched = [step for step in steps if step.startswith("name: " + name + "\n")]
+            self.assertEqual(len(matched), 1)
+            self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/main'", matched[0])
+            self.assertNotIn("swift test", matched[0])
+        self.assertLess(native.index("Enforce every changed production-file coverage"), native.index("Retain exact hosted Swift source qualification"))
+
     def test_actual_shell_accepts_only_success_success_across_the_result_matrix(self) -> None:
         script = actual_gate_script()
         states = ("success", "failure", "cancelled", "skipped", "neutral", "timed_out", "", "unknown")

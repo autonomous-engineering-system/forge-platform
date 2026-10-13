@@ -148,3 +148,27 @@ in each verification, and after journal confirmation. Missing or foreign IDs,
 nonempty or unknown registry contents and input drift deny before confirmation.
 The source regression covers genuine temporary protected IO and preserves those
 inputs; it does not exercise a live installed helper.
+
+
+## Protected build qualification handoff
+
+The isolated unsigned build account remains a non-administrator without sudo or
+Developer ID access. Local Python and native tests remain mandatory. Some native
+source tests require a genuine named administrator and therefore cannot execute
+on that account. The protected Foundation macOS job executes those tests and
+must pass strict executable-line coverage greater than 80.2% for every tracked
+production Swift file before exporting a compact source-hashed measurement.
+
+Only the fixed protected build workflows admit that measurement. They check
+current protected main, their own exact in-progress run/attempt, the successful
+owning Foundation push and all required jobs, the unique immutable artifact ID
+and ZIP digest, exact source/tree/run binding and each production-file hash.
+The existing strict coverage validator validates every admitted file. A local
+caller cannot select an artifact, file, URL or threshold exemption. This is
+source qualification; it grants no account, helper or product authority and is
+not installed CLI/GUI evidence.
+
+The original 0.4.15 build run 38457126604 stopped at the native coverage gate
+before packaging/signing. Its failure is retained. The additional native
+handoff correction and one build recovery were separately authorized; signing,
+VM maintenance and original-operation recovery retain their existing limits.
