@@ -9,6 +9,8 @@ Forge+EP saga can mutate anything.
 
 from __future__ import annotations
 
+from .engineering_platform_system_adapter import EngineeringPlatformSystemProvisionerAdapter
+
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -251,6 +253,7 @@ class ManagedProductOperationDispatcher:
         *,
         coordinator: ManagedForgeEPInstallationCoordinator,
         resolver: ManagedProductRouteResolver,
+        progress_root: Path | None = None,
     ) -> None:
         if not isinstance(coordinator, ManagedForgeEPInstallationCoordinator):
             raise TypeError("managed Forge+EP coordinator is required")
@@ -264,6 +267,7 @@ class ManagedProductOperationDispatcher:
             currency_guard=coordinator.currency_guard,
         )
         self.resolver = resolver
+        self.progress_root = progress_root
 
     def completed_create_plan(self, request, manifest, current):
         """Read-only recovery admission from this exact completed product saga.
@@ -336,6 +340,17 @@ class ManagedProductOperationDispatcher:
         return original_plan
 
     def dispatch(
+        self, admitted: AdmittedNativeProductOperation
+    ) -> NativeProductOperationDispatchReceipt:
+        self._active_progress = None
+        try:
+            return self._dispatch(admitted)
+        except Exception:
+            if self._active_progress is not None:
+                self._active_progress.fail_active()
+            raise
+
+    def _dispatch(
         self, admitted: AdmittedNativeProductOperation
     ) -> NativeProductOperationDispatchReceipt:
         if not isinstance(admitted, AdmittedNativeProductOperation):
@@ -420,6 +435,22 @@ class ManagedProductOperationDispatcher:
             for component in components
             if operations[component].change != "retain"
         }
+        ep_adapter = route.adapters.get("engineering-platform-server")
+        if (isinstance(ep_adapter, EngineeringPlatformSystemProvisionerAdapter)
+                and "engineering-platform-server" in mutations
+                and mutations["engineering-platform-server"].kind == "install"):
+            ep_adapter.bind_admitted_create(admitted,
+                mutations["engineering-platform-server"].artifact)
+        progress = None
+        execution_adapters = route.adapters
+        if self.progress_root is not None:
+            from .managed_product_progress import FileProductProgress, ProgressProductAdapter
+            progress = FileProductProgress(self.progress_root,admitted)
+            self._active_progress = progress
+            first = sorted(execution_adapters)[0]
+            progress.update(first,"pending","none")
+            execution_adapters = {component:ProgressProductAdapter(adapter,progress,component)
+                                  for component,adapter in route.adapters.items()}
         if len(components) == 2:
             credential_issuer = None
             credential_reference = None
@@ -452,17 +483,18 @@ class ManagedProductOperationDispatcher:
             result = self.coordinator.execute(
                 request.operation_id, plan,
                 mutation_requests=mutations, readback_requests=readbacks,
-                adapters=route.adapters, pairing_executor=route.pairing_executor,
+                adapters=execution_adapters, pairing_executor=route.pairing_executor,
                 composition_id=admitted.manifest.composition_id,
                 composition_manifest_digest=admitted.manifest.manifest_digest,
                 credential_issuer=credential_issuer,
                 credential_reference=credential_reference,
+                progress=progress,
             )
         else:
             result = self.single_coordinator.execute(
                 request.operation_id, plan,
                 mutation_requests=mutations, readback_requests=readbacks,
-                adapters=route.adapters,
+                adapters=execution_adapters,
                 composition_id=admitted.manifest.composition_id,
                 composition_manifest_digest=admitted.manifest.manifest_digest,
             )
@@ -478,7 +510,7 @@ class ManagedProductOperationDispatcher:
             raise ManagedProductOperationDispatchError(
                 "terminal product saga evidence is incomplete"
             )
-        return NativeProductOperationDispatchReceipt(
+        receipt = NativeProductOperationDispatchReceipt(
             request.request_fingerprint,
             request.stable_plan_fingerprint,
             request.operation_id,
@@ -487,6 +519,13 @@ class ManagedProductOperationDispatcher:
             tuple(sorted(result.readiness_receipt_references)),
             components,
         )
+        if len(receipt.canonical_json_bytes()) > 128*1024:
+            raise ManagedProductOperationDispatchError("terminal product receipt exceeds bound")
+        if progress is not None:
+            if len(components)==2:progress.update("pairing","passed","ready")
+            for component in components:progress.update(component,"passed","ready")
+            progress.update("readiness","passed","ready")
+        return receipt
 
 
 def _component_request(

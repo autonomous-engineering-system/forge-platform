@@ -610,6 +610,11 @@ final class ManagedInstallerProductWorkerProcess: @unchecked Sendable {
         self.registry = registry
         self.effectJournal = effectJournal
         token = registry.reserve(process)
+        // Correlate the sealed child with its sole durable reservation. This
+        // identifier is helper-selected metadata, never a provider credential.
+        var environment = process.environment ?? [:]
+        environment["FORGE_PLATFORM_PRODUCT_WORKER_EFFECT_ID"] = token.uuidString.lowercased()
+        process.environment = environment
         // Register before run(): a short-lived worker must not exit between
         // launch and installation of the completion observer.
         process.terminationHandler = { [exit, registry, effectJournal, token] terminated in

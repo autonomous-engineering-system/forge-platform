@@ -699,7 +699,11 @@ struct ReleasedRouteFixture {
          existingDeployment: ManagedDeploymentTarget? = nil,
          reuseActiveRuntime: Bool = false,
          reuseActiveGit: Bool = false,
-         qualifiedCurrentCandidates: Bool = false) throws {
+         qualifiedCurrentCandidates: Bool = false,
+         installerTrustSHA256: String = String(repeating: "c", count: 64),
+         installerSigningKeyID: String = "forge-platform-installer-release-v1",
+         originalRecord: VerifiedInstallerReleaseRecord? = nil,
+         manifestDigest: String = "sha256:" + String(repeating: "a", count: 64)) throws {
         guard !reuseActiveGit || includeManagedGit else {
             throw ManagedPythonRuntimeActivationFailure.invalidRequest
         }
@@ -719,11 +723,11 @@ struct ReleasedRouteFixture {
         session = try VerifiedCompositionSessionPlan(
             sessionID: "released-route-session",
             compositionIdentity: "forge-ep-managed-v3",
-            manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
-            installerReleaseSequence: 1,
-            installerProvenanceSHA256: String(repeating: "b", count: 64),
-            installerReleaseTrustConfigurationSHA256: String(repeating: "c", count: 64),
-            compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator(
+            manifestSHA256: manifestDigest,
+            installerReleaseSequence: originalRecord?.sequence ?? 1,
+            installerProvenanceSHA256: originalRecord?.provenanceSHA256 ?? String(repeating: "b", count: 64),
+            installerReleaseTrustConfigurationSHA256: originalRecord?.expectedReleaseTrustConfigurationSHA256 ?? installerTrustSHA256,
+            compositionCatalogFeed: originalRecord?.compositionCatalogFeed ?? VerifiedCompositionCatalogFeedLocator(
                 url: "https://catalog.example.test/feed.json"
             ),
             compositionCatalog: VerifiedCompositionCatalogIdentity(
@@ -812,12 +816,12 @@ struct ReleasedRouteFixture {
                 )
             )
         }
-        release = VerifiedInstallerRelease(
+        release = try originalRecord?.release ?? VerifiedInstallerRelease(
             version: try InstallerVersion("0.2.4"),
             releasePage: "https://github.com/autonomous-engineering-system/forge-platform/releases/tag/forge-platform-installer-v0.2.4",
             assetName: "ForgePlatformInstaller-macos-arm64.zip",
             sha256: String(repeating: "f", count: 64),
-            signingKeyID: "forge-platform-installer-release-v1"
+            signingKeyID: installerSigningKeyID
         )
         snapshot = try ManagedInstallerReleasedRouteSnapshot(
             inventory: inventory,

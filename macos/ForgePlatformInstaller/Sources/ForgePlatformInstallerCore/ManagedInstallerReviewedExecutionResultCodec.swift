@@ -100,6 +100,8 @@ public enum ManagedInstallerReviewedExecutionResultCodec {
             switch stage.state {
             case .pending: state = .object(["kind": .string("pending")])
             case .running: state = .object(["kind": .string("running")])
+            // Progress-only state; never extend the existing terminal wire schema.
+            case .awaitingPeer: return nil
             case .passed: state = .object(["kind": .string("passed")])
             case .failed(let detail):
                 guard valid(detail) else { return nil }

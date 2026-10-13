@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import XCTest
@@ -13,6 +14,56 @@ final class ManagedInstallerProductWorkerEffectJournalTests: XCTestCase {
         XCTAssertTrue(try fixture.store.readRequired().get().hasUnresolvedEffects)
         try fixture.store.finish(worker, normalExit: true).get()
         XCTAssertFalse(try fixture.store.readRequired().get().hasUnresolvedEffects)
+    }
+
+    func testHistoricalReservationRequiresExactQuietUncertaintyAndKeepsItSticky() throws {
+        let f = try Fixture(); defer { f.remove() }
+        let id = UUID(), wrong = "sha256:" + String(repeating: "a", count: 64)
+        XCTAssertNotNil(f.store.beginHistoricalRecovery(id, expectedRecordSHA256: wrong).failure)
+        try f.store.markUncertain().get()
+        let file = f.root.appendingPathComponent("product-worker-effects.json")
+        let frozen = try Data(contentsOf: file)
+        let digest = "sha256:" + SHA256.hash(data: frozen).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(f.store.beginHistoricalRecovery(id, expectedRecordSHA256: wrong).failure, .conflict)
+        XCTAssertEqual(try Data(contentsOf: file), frozen)
+        let proof = try f.store.beginHistoricalRecovery(id, expectedRecordSHA256: digest).get()
+        XCTAssertEqual(proof.id, id)
+        XCTAssertEqual(proof.originalRecordSHA256, digest)
+        let reserved = try Data(contentsOf: file)
+        XCTAssertEqual(proof.reservedRecordSHA256, "sha256:" + SHA256.hash(data: reserved).map { String(format: "%02x", $0) }.joined())
+        XCTAssertEqual(f.store.beginHistoricalRecovery(UUID(), expectedRecordSHA256: digest).failure, .conflict)
+        XCTAssertEqual(try Data(contentsOf: file), reserved)
+        XCTAssertEqual(try f.store.readRequired().get(), .init(activeIDs: [id], uncertain: true))
+        try f.store.cancelBeforeLaunch(id).get()
+        XCTAssertEqual(try f.store.readRequired().get(), .init(activeIDs: [], uncertain: true))
+        // Isolated bookkeeping retry; execution admission must independently deny replay.
+        try f.store.beginHistoricalRecovery(id, expectedRecordSHA256: digest).get()
+        try f.store.finish(id, normalExit: true).get()
+        XCTAssertEqual(try f.store.readRequired().get(), .init(activeIDs: [], uncertain: true))
+        let clean = try Fixture(); defer { clean.remove() }
+        let other = UUID(); try clean.store.begin(other).get(); try clean.store.finish(other, normalExit: true).get()
+        let bytes = try Data(contentsOf: clean.root.appendingPathComponent("product-worker-effects.json"))
+        let cleanDigest = "sha256:" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(clean.store.beginHistoricalRecovery(id, expectedRecordSHA256: cleanDigest).failure, .conflict)
+    }
+
+    func testHistoricalReservationRejectsUnknownRecordFlagsAndDirectoryACLWithoutChangingBytes() throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.store.markUncertain().get()
+        let file = f.root.appendingPathComponent("product-worker-effects.json")
+        let raw = try Data(contentsOf: file)
+        let digest = "sha256:" + SHA256.hash(data: raw).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(Darwin.chflags(file.path, UInt32(UF_HIDDEN)), 0)
+        XCTAssertNotNil(f.store.beginHistoricalRecovery(UUID(), expectedRecordSHA256: digest).failure)
+        XCTAssertEqual(try Data(contentsOf: file), raw)
+        XCTAssertEqual(Darwin.chflags(file.path, 0), 0)
+        guard getuid() > 0 else { throw XCTSkip("named nonroot directory ACL IO check") }
+        let account = try ManagedInstallerNamedOperator.resolve(uid: getuid()).accountName
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        process.arguments = ["+a", "user:\(account) allow search", f.root.path]
+        try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertNotNil(f.store.beginHistoricalRecovery(UUID(), expectedRecordSHA256: digest).failure)
+        XCTAssertEqual(try Data(contentsOf: file), raw)
     }
 
     func testNormalExitAndFailedLaunchRemoveOnlyTheirOwnWriteAheadIDs() throws {

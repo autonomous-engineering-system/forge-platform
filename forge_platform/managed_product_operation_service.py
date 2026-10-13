@@ -515,6 +515,33 @@ class ManagedProductOperationHelperService:
                 "native product operation was rejected"
             ) from error
 
+    def execute_historical(self, admission) -> bytes:
+        """Separate private admission; ordinary release equality stays intact."""
+        from .managed_historical_execution_admission import HistoricalExecutionAdmission
+        from .managed_product_operation_admission import _admit_verified_product_topology
+        try:
+            if type(admission) is not HistoricalExecutionAdmission or self.dispatcher.coordinator.currency_guard is not admission:
+                raise TypeError("private historical admission required")
+            admission.require_valid()
+            request = admission.expected.request
+            authorities = self.authority_resolver.resolve(request)
+            if authorities.current_installer_release != admission.current_release:
+                raise ValueError("current executor changed")
+            admitted = _admit_verified_product_topology(
+                request, manifest=authorities.candidate_manifest,
+                installed_manifest=authorities.installed_manifest,
+                registry=self.dispatcher.coordinator.registry,
+                completed_create_plan_reader=self.dispatcher.completed_create_plan,
+            )
+            admission.require_valid()
+            response = self.dispatcher.dispatch(admitted).canonical_json_bytes()
+            admission.require_valid()
+            if not response or len(response) > MAXIMUM_NATIVE_PRODUCT_OPERATION_RECEIPT_BYTES:
+                raise ValueError("historical receipt exceeded bound")
+            return response
+        except Exception as error:
+            raise ManagedProductOperationServiceError("historical product operation was rejected") from error
+
     def prepare_preserved_lifecycle_review(self, canonical_intent: bytes) -> bytes:
         """Read one exact product lifecycle proposal from helper-owned state."""
         try:

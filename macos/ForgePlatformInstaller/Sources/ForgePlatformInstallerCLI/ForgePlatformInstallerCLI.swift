@@ -129,6 +129,16 @@ enum ForgePlatformInstallerCLIApplication {
             return result.exitCode.rawValue
         }
 
+        if invocation.command == .helperReconcileBootstrap {
+            let confirmed = await MacOSInstallerBootstrapReconciliationMaintenance.reconcile()
+            let result = InstallerCLIResult(exitCode: confirmed ? .success : .blocked,
+                status: confirmed ? "bootstrap-readback-confirmed" : "bootstrap-reconciliation-blocked",
+                message: confirmed ? "De bestaande installatiehulp is onafhankelijk bevestigd."
+                    : "De bestaande installatiehulp kon niet onafhankelijk worden bevestigd. De oorspronkelijke poging blijft behouden.")
+            render(result, json: invocation.options.json, stdout: stdout, stderr: stderr)
+            return result.exitCode.rawValue
+        }
+
         if invocation.command.requiresAdministratorForMutation {
             let user = try? ManagedInstallerNamedOperator.resolve(uid: Darwin.getuid())
             guard user?.isAdministrator == true else {
@@ -236,6 +246,8 @@ enum ForgePlatformInstallerCLIApplication {
             switch invocation.command {
             case .status:
                 result = await workflow.status()
+            case .helperReconcileBootstrap:
+                result = InstallerCLIResult(exitCode: .blocked, status: "blocked", message: "Onderhoud vereist de afzonderlijke geverifieerde route.")
             case .helperRegister:
                 result = await InstallerCLIHelperRegistration.run(
                     startup: startup,
@@ -406,6 +418,16 @@ enum ForgePlatformInstallerCLIApplication {
                     register: replaceCleanVM045Helper,
                     replacingCleanVM045: true
                 )
+            case .deploymentRecoverHistorical(let operationID):
+                do {
+                    let identity = try ManagedInstallerPostToolXPCHelperIdentity(teamIdentifier: "ZEML4LPXH4")
+                    let transport = MacOSManagedInstallerReleasedRouteXPCTransport(helperIdentity: identity, expectedParentVersion: currentRelease.version)
+                    let receipt = try await transport.recoverHistoricalOperation(operationID: operationID)
+                    result = InstallerCLIResult(exitCode: .success, status: "complete", message: "EP en Forge zijn geïnstalleerd, verbonden en gereed.",
+                        details: ["operation_id": operationID, "receipt": String(decoding: receipt.receipt.canonicalJSONData(), as: UTF8.self)])
+                } catch {
+                    result = InstallerCLIResult(exitCode: .executionFailed, status: "recovery-blocked", message: "Herstel is niet bevestigd. Controleer de componentstatus; start geen nieuwe installatie.")
+                }
             case .deploymentList:
                 result = await workflow.listDeployments()
             case .deploymentPlan(let deployment):

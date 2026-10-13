@@ -28,6 +28,7 @@ final class ManagedInstallerUserBoundXPCServiceTests: XCTestCase {
             ("execute", { service.executeReviewedIntent(intent, withReply: $0) }),
             ("stage", { service.stageReviewedProviders(intent, withReply: $0) }),
             ("read", { service.readReviewedProviders(intent, withReply: $0) }),
+            ("progress", { service.readComponentProgress(intent, withReply: $0) }),
             ("begin", { service.beginReviewedProviderAuthentication(intent, providerTargetID: "target", withReply: $0) }),
             ("finish", { service.finishReviewedProviderAuthentication(intent, providerTargetID: "target", withReply: $0) }),
             ("ep", { service.registerReviewedEPProvider(intent, providerTargetID: "target", withReply: $0) }),
@@ -45,6 +46,8 @@ final class ManagedInstallerUserBoundXPCServiceTests: XCTestCase {
         XCTAssertNil(response)
         let rootPeer = ManagedInstallerUserBoundXPCService(service: backend, peerUID: 0, store: store)
         rootPeer.executeReviewedIntent(intent) { response = $0 }
+        XCTAssertNil(response)
+        rootPeer.readComponentProgress(intent) { response = $0 }
         XCTAssertNil(response)
         rootPeer.registerReviewedSelection(selection.canonicalJSONData()) { response = $0 }
         XCTAssertNil(response)
@@ -80,6 +83,7 @@ private final class UserBoundQualificationService: NSObject, ManagedInstallerRel
     func executeReviewedIntent(_ data: Data, withReply reply: @escaping (Data?) -> Void) { answer("execute", reply) }
     func stageReviewedProviders(_ data: Data, withReply reply: @escaping (Data?) -> Void) { answer("stage", reply) }
     func readReviewedProviders(_ data: Data, withReply reply: @escaping (Data?) -> Void) { answer("read", reply) }
+    func readComponentProgress(_ data: Data, withReply reply: @escaping (Data?) -> Void) { answer("progress", reply) }
     func beginReviewedProviderAuthentication(_ data: Data, providerTargetID id: String, withReply reply: @escaping (Data?) -> Void) { answer("begin", reply) }
     func finishReviewedProviderAuthentication(_ data: Data, providerTargetID id: String, withReply reply: @escaping (Data?) -> Void) { answer("finish", reply) }
     func registerReviewedEPProvider(_ data: Data, providerTargetID id: String, withReply reply: @escaping (Data?) -> Void) { answer("ep", reply) }

@@ -300,6 +300,28 @@ def admit_native_product_operation(
         raise TypeError("managed deployment registry is required")
     if request.installer_release != current_installer_release:
         raise ManagedProductOperationAdmissionError("installer release authority changed")
+    return _admit_verified_product_topology(
+        request, manifest=manifest, registry=registry,
+        installed_manifest=installed_manifest,
+        completed_create_plan_reader=completed_create_plan_reader,
+    )
+
+
+def _admit_verified_product_topology(
+    request: NativeProductOperationRequest,
+    *,
+    manifest: CompositionManifest,
+    registry: ManagedDeploymentRegistry,
+    installed_manifest: CompositionManifest | None,
+    completed_create_plan_reader: Callable[[NativeProductOperationRequest, CompositionManifest, ManagedDeployment], ManagedDeploymentPlan | None] | None,
+) -> AdmittedNativeProductOperation:
+    """Shared topology validation, NOT a release or execution admission API.
+
+    Only an admission gate may call this after independently establishing its
+    release authority. Ordinary admission above retains exact current equality.
+    Historical execution must use a separately private, current-executor permit;
+    an inspection binding or an unchanged old snapshot cannot supply that gate.
+    """
     if (
         manifest.composition_id != request.composition_identity
         or manifest.manifest_digest != request.manifest_sha256

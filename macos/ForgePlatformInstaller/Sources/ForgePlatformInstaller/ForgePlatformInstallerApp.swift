@@ -775,7 +775,21 @@ final class InstallerWizardViewModel: ObservableObject {
                 }
                 if let operation = self.state.beginManagedDeploymentExecution() {
                     self.isExecutionRequestInFlight = true
+                    let progressTask = Task { @MainActor [weak self] in
+                        while !Task.isCancelled {
+                            if let progress = await coordinator.readManagedComponentProgress(operation) {
+                                guard !Task.isCancelled else { break }
+                                _ = self?.state.recordManagedComponentProgress(progress, for: operation)
+                            }
+                            do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                            catch { break }
+                        }
+                    }
                     let execution = await coordinator.executeReviewedManagedDeployment(operation)
+                    progressTask.cancel()
+                    if let progress = await coordinator.readManagedComponentProgress(operation) {
+                        _ = self.state.recordManagedComponentProgress(progress, for: operation)
+                    }
                     _ = self.state.recordManagedDeploymentExecution(execution, for: operation)
                     self.isExecutionRequestInFlight = false
                 }
@@ -2080,7 +2094,7 @@ private struct StatusIcon: View {
         switch state {
         case .pending:
             self.state = .pending
-        case .running:
+        case .running, .awaitingPeer:
             self.state = .pending
         case .passed:
             self.state = .passed

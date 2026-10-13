@@ -133,6 +133,8 @@ public protocol ManagedDeploymentRouteCoordinating: Sendable {
     func executeReviewedManagedDeployment(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedDeploymentExecutionResult
+    func readManagedComponentProgress(_ operation: ReviewedManagedDeploymentOperation) async
+        -> ManagedInstallerComponentProgress?
     func stageReviewedProviders(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedInstallerProviderStagePreparationResult
@@ -150,6 +152,8 @@ public protocol ManagedDeploymentRouteCoordinating: Sendable {
 }
 
 public extension ManagedDeploymentRouteCoordinating {
+    func readManagedComponentProgress(_ operation: ReviewedManagedDeploymentOperation) async
+        -> ManagedInstallerComponentProgress? { nil }
     func registerReviewedEPProvider(
         _ operation: ReviewedManagedDeploymentOperation,
         providerTargetID: ProviderTargetID
@@ -331,7 +335,10 @@ public extension InstallerWizardState {
             pairingTarget: pairingTarget
         )
         step = .execution
-        executionStages = [
+        managedDeploymentExecutionInFlight = true
+        executionStages = operation.components.map {
+            ExecutionStage(id: $0.componentID, title: $0.title, detail: "Nog niet gestart", state: .pending)
+        } + [
             ExecutionStage(
                 id: "managed-deployment",
                 title: "Managed deployment",
@@ -364,6 +371,7 @@ public extension InstallerWizardState {
             return false
         }
 
+        managedDeploymentExecutionInFlight = false
         switch result {
         case .completed(let stages, let items):
             guard !stages.isEmpty,
@@ -387,7 +395,17 @@ public extension InstallerWizardState {
             summaryItems = items
             return true
         case .failed(let failure, let stages):
-            executionStages = stages.isEmpty
+            let observed = executionStages.filter { $0.id != "managed-deployment" }.map { stage in
+                var value = stage
+                if case .running = value.state {
+                    value.state = .failed("Deze stap kon niet worden afgerond. Hervat pas na controle van het installatiebewijs.")
+                }
+                return value
+            }
+            executionStages = stages.isEmpty && !observed.isEmpty
+                ? observed + [ExecutionStage(id: "managed-deployment", title: "Installatie",
+                    detail: failure.userFacingMessage, state: .failed(failure.userFacingMessage))]
+                : stages.isEmpty
                 ? [
                     ExecutionStage(
                         id: "managed-deployment",
@@ -404,6 +422,23 @@ public extension InstallerWizardState {
             step = .selfUpdate
             return false
         }
+    }
+
+    mutating func recordManagedComponentProgress(_ progress: ManagedInstallerComponentProgress,
+        for operation: ReviewedManagedDeploymentOperation) -> Bool {
+        guard step == .execution, managedDeploymentExecutionInFlight, let plan = acceptedSessionPlan,
+              let selected = selectedDeploymentRouteContext,
+              plan.sessionID == operation.sessionID,
+              plan.compositionIdentity == operation.compositionIdentity,
+              plan.manifestSHA256 == operation.manifestSHA256,
+              selected.target.id == operation.deploymentID,
+              selected.evidenceReference == operation.inventoryEvidenceReference,
+              composition.components == operation.components else { return false }
+        let expected = Set(operation.components.map(\.componentID)).union(
+            operation.components.count == 2 ? ["pairing", "readiness"] : ["readiness"])
+        guard Set(progress.stages.map(\.id)) == expected else { return false }
+        executionStages = progress.stages
+        return true
     }
 
     private var selectedDeploymentRouteContext: (

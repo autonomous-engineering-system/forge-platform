@@ -13,9 +13,9 @@ struct InstallerMVPFlowView: View {
     @State private var project = ""
     @State private var repository = ""
     @State private var repositoryIdentity = ""
-    @State private var showTechnicalDetails = false
     @State private var history = InstallerMVPResultHistory()
     @State private var pendingConnection: InstallerMVPProviderConnectionIntent?
+    @State private var installationStartedAt: Date?
 
     init(viewModel: InstallerWizardViewModel, initiallyStarted: Bool = false,
          resultHistory: InstallerMVPResultHistory = .init()) {
@@ -69,11 +69,9 @@ struct InstallerMVPFlowView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         if let snapshot = history.viewedSnapshot {
-                            Text("\(snapshot.step.title) — eerdere resultaten")
+                            Text(snapshot.step.title)
                                 .font(.title2.weight(.semibold))
                             ForEach(snapshot.results, id: \.self) { result in Text(result) }
-                            Text("Dit is een terugblik. De huidige stap blijft actief.")
-                                .font(.caption).foregroundStyle(.secondary)
                             Button("Terug naar huidige stap") { history.returnToCurrent() }
                         } else {
                             switch phase {
@@ -84,12 +82,7 @@ struct InstallerMVPFlowView: View {
                             case .installing: installing
                             case .done: done
                             }
-                            DisclosureGroup("Technische details", isExpanded: $showTechnicalDetails) {
-                                technicalDetails
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 12)
+
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -105,6 +98,8 @@ struct InstallerMVPFlowView: View {
                     .help("Bekijk het vorige scherm zonder de stap opnieuw uit te voeren")
                 }
                 Spacer()
+                Text("Installerversie: \(viewModel.state.currentInstallerVersion.description)")
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 Text("Stap \((history.viewedStep ?? phase).rawValue + 1) van \(InstallerMVPFlowStep.allCases.count)")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -281,9 +276,9 @@ struct InstallerMVPFlowView: View {
                     providerOverview
                 }
             case .staging, .authenticating:
-                ProgressView("Providers verbinden…")
+                ProgressView("\(connectingProviderTitle) verbinden…")
             case .prepared:
-                ProgressView("Providerstatus controleren…")
+                ProgressView("\(connectingProviderTitle) controleren…")
             case .observed(let readback):
                 ForEach(InstallerMVPProviderAuthenticationGroup.groups(
                     targets: readback.targets,
@@ -341,6 +336,7 @@ struct InstallerMVPFlowView: View {
                     .foregroundStyle(.secondary)
             }
             Button("Installeer Engineering Platform en Forge") {
+                installationStartedAt = Date()
                 viewModel.setCompositionAcknowledged(true)
                 viewModel.advance()
             }
@@ -353,11 +349,35 @@ struct InstallerMVPFlowView: View {
     private var installing: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Installeren").font(.title2.weight(.semibold))
+            if viewModel.state.executionStages.contains(where: { $0.state == .running }) {
+                ProgressView().progressViewStyle(.linear)
+            }
+            if let installationStartedAt {
+                TimelineView(.periodic(from: installationStartedAt, by: 1)) { timeline in
+                    let seconds = max(0, Int(timeline.date.timeIntervalSince(installationStartedAt)))
+                    Text(String(format: "Verstreken tijd: %d:%02d", seconds / 60, seconds % 60))
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
             ForEach(viewModel.state.executionStages) { stage in
-                HStack {
-                    Text(InstallerMVPStagePresentation.title(for: stage))
-                    Spacer()
-                    Text(stage.state.displayName)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(InstallerMVPStagePresentation.title(for: stage))
+                        Spacer()
+                        switch stage.state {
+                        case .running: ProgressView().controlSize(.small)
+                        case .passed: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+                        case .pending: Image(systemName: "clock").foregroundStyle(.secondary)
+                        case .awaitingPeer: Image(systemName: "link").foregroundStyle(.orange)
+                        }
+                        Text(stage.state == .pending ? "Nog niet gestart" : stage.state.displayName)
+                    }
+                    if case .failed(let reason) = stage.state {
+                        Text(reason).font(.callout).foregroundStyle(.red)
+                    } else if stage.state != .pending {
+                        Text(stage.detail).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
             if viewModel.state.executionStages.isEmpty {
@@ -379,19 +399,6 @@ struct InstallerMVPFlowView: View {
                     }
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private var technicalDetails: some View {
-        Text("Installerversie: \(viewModel.state.currentInstallerVersion.description)")
-        if let plan = viewModel.state.acceptedSessionPlan {
-            Text("Manifest: \(plan.manifestSHA256)").textSelection(.enabled)
-            Text("Catalogus: \(plan.catalogSHA256)").textSelection(.enabled)
-        }
-        if case .selected(let target, let evidence) = viewModel.state.deploymentSelection {
-            Text("Installatiedoel: \(target.id)").textSelection(.enabled)
-            Text("Inventarisbewijs: \(evidence)").textSelection(.enabled)
         }
     }
 
@@ -436,6 +443,20 @@ struct InstallerMVPFlowView: View {
         }
     }
 
+    private var connectingProviderTitle: String {
+        let provider: ProviderID?
+        if let pendingConnection { provider = pendingConnection.provider }
+        else if case .authenticating(let target) = viewModel.providerStage {
+            provider = viewModel.state.providers.first { $0.id == target }?.requirement.provider
+        } else { provider = nil }
+        switch provider {
+        case .codex: return "Codex"
+        case .githubCLI: return "GitHub"
+        case .some(let value): return value.displayName
+        case .none: return "Provider"
+        }
+    }
+
     private var providerOverview: some View {
         ForEach(InstallerMVPProviderOverviewGroup.groups(viewModel.state.providers)) { group in
             HStack {
@@ -471,23 +492,31 @@ struct InstallerMVPFlowView: View {
             ForEach(InstallerMVPFlowStep.allCases) { step in
                 let completed = stepIsCompleted(step)
                 let selected = step == (history.viewedStep ?? phase)
-                HStack(spacing: 12) {
-                    Image(systemName: step.systemImage)
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(completed ? Color.green : selected ? Color.accentColor : Color.secondary)
-                        .frame(width: 38, height: 38)
-                        .background((completed ? Color.green : selected ? Color.accentColor : Color.secondary).opacity(0.09), in: Circle())
-                    Text(step.title)
-                        .font(.subheadline.weight(selected ? .semibold : .regular))
-                        .foregroundStyle(selected ? .primary : .secondary)
-                    Spacer(minLength: 4)
-                    if completed {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green).font(.system(size: 15))
+                Button {
+                    if step == phase { history.returnToCurrent() }
+                    else { history.view(step) }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: step.systemImage)
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(completed ? Color.green : selected ? Color.accentColor : Color.secondary)
+                            .frame(width: 38, height: 38)
+                            .background((completed ? Color.green : selected ? Color.accentColor : Color.secondary).opacity(0.09), in: Circle())
+                        Text(step.title)
+                            .font(.subheadline.weight(selected ? .semibold : .regular))
+                            .foregroundStyle(selected ? .primary : .secondary)
+                        Spacer(minLength: 4)
+                        if completed {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green).font(.system(size: 15))
+                        }
                     }
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(selected ? Color.accentColor.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 12))
                 }
-                .padding(.horizontal, 10).padding(.vertical, 8)
-                .background(selected ? Color.accentColor.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 12))
+                .buttonStyle(.plain)
+                .disabled(step.rawValue > phase.rawValue
+                    || step != phase && history.snapshots[step] == nil)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(step.title), \(completed ? "afgerond" : step == phase ? "huidige stap" : "nog te doen")")
             }
@@ -514,13 +543,12 @@ struct InstallerMVPFlowView: View {
         case .welcome:
             results = ["Gekozen installatie: Engineering Platform en Forge op deze Mac."]
         case .preparing:
-            results = ["Installerversie: \(state.currentInstallerVersion.description)",
-                       viewModel.helperIsReady ? "macOS-installatiehulp gecontroleerd." : "macOS-installatiehulp nog niet bevestigd.",
+            results = [viewModel.helperIsReady ? "macOS-installatiehulp gecontroleerd." : "macOS-installatiehulp nog niet bevestigd.",
                        state.preflight.isPassed ? "Mac-controle geslaagd." : "Mac-controle nog niet afgerond."]
             results += InstallerMVPPreflightProblem.problems(in: state.preflight)
                 .map { $0.title + " · " + $0.diagnosticCode }
-            if let plan = state.acceptedSessionPlan {
-                results.append("Installatiebestanden gecontroleerd: \(plan.manifestSHA256)")
+            if state.acceptedSessionPlan != nil {
+                results.append("Installatiebestanden gecontroleerd.")
             }
         case .providers, .ready:
             results = InstallerMVPProviderOverviewGroup.groups(state.providers).map { "\($0.title): \($0.status)" }
@@ -569,6 +597,8 @@ struct InstallerMVPFlowView: View {
 enum InstallerMVPStagePresentation {
     static func title(for stage: ExecutionStage) -> String {
         switch stage.id {
+        case "engineering-platform-server": return "Engineering Platform"
+        case "forge-runtime": return "Forge"
         case "managed-deployment":
             return "Engineering Platform en Forge installeren"
         case "product-operations":

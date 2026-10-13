@@ -408,6 +408,21 @@ class SigningReadinessContractTests(unittest.TestCase):
                 self.assertNotIn("READINESS=PASS", result.stdout)
 
 
+class RootCoverageSourceBindingTests(unittest.TestCase):
+    def test_source_snapshot_rejects_changed_bytes_before_merge(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory(prefix="root-coverage-source-") as tmp:
+            root = Path(tmp); target = root / "source.py"; target.write_text("value = 1\n")
+            with patch.object(python_gate, "ROOT", root), patch.object(python_gate, "TARGETS", ("source.py",)):
+                snapshot = python_gate._source_hashes()
+                python_gate._require_source_snapshot(snapshot)
+                target.write_text("value = 2\n")
+                with self.assertRaises(ValueError): python_gate._require_source_snapshot(snapshot)
+                with patch.object(python_gate.subprocess, "run") as run:
+                    with self.assertRaises(ValueError): python_gate._merge_root_qualification({}, snapshot)
+                    run.assert_not_called()
+
+
 class WorkflowWiringTests(unittest.TestCase):
     """Static wiring checks supplement, not replace, live GitHub policy readback."""
     def test_regressions_are_mandatory_in_foundation_and_native_hosted_ci(self) -> None:

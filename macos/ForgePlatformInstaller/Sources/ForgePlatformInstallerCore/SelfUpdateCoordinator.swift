@@ -1396,6 +1396,10 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     ) async -> ManagedDeploymentExecutionResult {
         await managedDeploymentRouteCoordinator.executeReviewedManagedDeployment(operation)
     }
+    public func readManagedComponentProgress(_ operation: ReviewedManagedDeploymentOperation) async
+        -> ManagedInstallerComponentProgress? {
+        await managedDeploymentRouteCoordinator.readManagedComponentProgress(operation)
+    }
 
     public func stageReviewedProviders(
         _ operation: ReviewedManagedDeploymentOperation

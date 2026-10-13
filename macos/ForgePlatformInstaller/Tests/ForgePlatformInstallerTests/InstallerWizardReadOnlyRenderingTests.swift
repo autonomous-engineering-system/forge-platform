@@ -252,6 +252,8 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
 
     func testCustomerProgressDoesNotExposeInternalStageNames() {
         let stages = [
+            ("engineering-platform-server", "Engineering Platform"),
+            ("forge-runtime", "Forge"),
             ("managed-deployment", "Engineering Platform en Forge installeren"),
             ("product-operations", "Producten installeren"),
             ("pairing", "Producten verbinden"),
@@ -266,6 +268,21 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
                 expected
             )
         }
+    }
+
+    func testCustomerComponentFailureAndNotStartedForgeRenderSeparately() throws {
+        var state = try reviewState(acknowledged: true)
+        state.step = .execution
+        state.executionStages = [
+            ExecutionStage(id: "engineering-platform-server", title: "Engineering Platform",
+                detail: "Service starten", state: .failed("EP kon zijn service niet starten. Controleer de servicemappen en toegangsrechten via installatieherstel.")),
+            ExecutionStage(id: "forge-runtime", title: "Forge", detail: "Nog niet gestart", state: .pending),
+            ExecutionStage(id: "pairing", title: "EP en Forge verbinden", detail: "Nog niet gestart", state: .pending),
+            ExecutionStage(id: "readiness", title: "Werking controleren", detail: "Nog niet gestart", state: .pending),
+        ]
+        let png = try renderCustomerFlow(state: state, started: true)
+        try png.write(to: artifactRoot().appendingPathComponent("customer-ep-failed-forge-not-started.png"))
+        XCTAssertEqual(state.executionStages[1].state, .pending)
     }
 
     func testUnavailableHostCheckRendersGuidanceAndSafeDiagnosticAction() throws {

@@ -999,7 +999,7 @@ private final class ReleasedRouteRequirementRecorder: @unchecked Sendable {
     func value() -> String? { lock.withLock { requirement } }
 }
 
-private final class RawReleasedRouteXPCService:
+final class RawReleasedRouteXPCService:
     NSObject, NSXPCListenerDelegate, ManagedInstallerReleasedRouteXPCService,
     @unchecked Sendable {
     private let listener = NSXPCListener.anonymous()

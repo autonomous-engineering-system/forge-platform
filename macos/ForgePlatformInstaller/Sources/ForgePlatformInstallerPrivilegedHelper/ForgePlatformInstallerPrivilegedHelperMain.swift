@@ -180,7 +180,8 @@ final class MacOSManagedInstallerPrivilegedHelperRuntime:
         )
         let routeListener = MacOSManagedInstallerReleasedRouteXPCListener(
             callerIdentity: productIdentity,
-            serviceHandler: releasedRouteBackend
+            serviceHandler: releasedRouteBackend,
+            historicalMutationGate: mutationGate
         )
         self.init(
             activateListeners: [
@@ -238,6 +239,13 @@ public enum ForgePlatformInstallerPrivilegedHelperMain {
     }
 
     public static func main() {
+        if CommandLine.arguments.dropFirst().first == ManagedInstallerHistoricalCurrentExecutorProofChild.flag {
+            let arguments = CommandLine.arguments
+            Task {
+                Darwin.exit(await ManagedInstallerHistoricalCurrentExecutorProofChild.run(arguments))
+            }
+            dispatchMain()
+        }
         if CommandLine.arguments.dropFirst().first
             == ManagedInstallerKeychainStoreChild.flag {
             Darwin.exit(ManagedInstallerKeychainStoreChild.run(CommandLine.arguments))

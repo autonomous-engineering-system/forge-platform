@@ -499,7 +499,7 @@ extension FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeParentJourn
     private func decodeParentJournal(
         _ data: Data
     ) throws -> ManagedPythonRuntimeParentJournalRecord {
-        try validateStrictParentJournalShape(data)
+        try Self.validateStrictParentJournalShape(data)
         let record = try JSONDecoder().decode(
             ManagedPythonRuntimeParentJournalRecord.self,
             from: data
@@ -510,7 +510,23 @@ extension FileManagedPythonRuntimeRecoveryStore: ManagedPythonRuntimeParentJourn
         return record
     }
 
-    private func validateStrictParentJournalShape(_ data: Data) throws {
+    /// Pure strict decoding for protected historical evidence readers. It does
+    /// not load, lock, seed, transition or rewrite any journal.
+    static func decodeHistoricalEvidence(_ data: Data) throws -> ManagedPythonRuntimeParentJournalRecord {
+        guard !data.isEmpty, data.count <= Self.maximumRecordBytes else {
+            throw ManagedPythonRuntimeTerminalReceiptFailure.rejected
+        }
+        try Self.validateStrictParentJournalShape(data)
+        let record = try JSONDecoder().decode(ManagedPythonRuntimeParentJournalRecord.self, from: data)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard try encoder.encode(record) == data else {
+            throw ManagedPythonRuntimeTerminalReceiptFailure.rejected
+        }
+        return record
+    }
+
+    private static func validateStrictParentJournalShape(_ data: Data) throws {
         var reader = try StrictJSONResourceReader(data: data)
         guard let fields = try reader.parseDocument().objectValue,
               Set(fields.keys) == Set([
