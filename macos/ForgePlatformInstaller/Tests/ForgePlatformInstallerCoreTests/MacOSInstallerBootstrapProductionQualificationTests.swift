@@ -46,12 +46,30 @@ final class MacOSInstallerBootstrapProductionQualificationTests: XCTestCase {
             currentRelease: HistoricalSourceCurrent(value: f.current), evidence: f.evidence, operators: f.operators,
             fetcher: HistoricalPublishedSourceFetch(root: f.published), helperRoot: f.root, bootstrapRoot: f.bootstrap,
             reader: reader, ipc: ipc, readJob: { namespace })
+        let candidate = f.state.appendingPathComponent(FileManagedInstallerManagedDeploymentCreateCandidateStore.fileName)
+        let candidateBytes = Data((f.selection.intent.deploymentID + "\n").utf8)
+        // Deny BEFORE the historical RPC can initialize a missing candidate.
+        do { _ = try environment.readInventoryInputs(deploymentID: f.selection.intent.deploymentID); XCTFail("Missing candidate must deny") } catch {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: candidate.path))
+        try HistoricalPublishedSourceFixture.write(candidateBytes, candidate)
+        let registry = f.state.appendingPathComponent("deployments")
+        try HistoricalPublishedSourceFixture.directory(registry)
+        _ = try environment.readInventoryInputs(deploymentID: f.selection.intent.deploymentID)
+        try HistoricalPublishedSourceFixture.write(Data("wrong-candidate\n".utf8), candidate)
+        do { _ = try environment.readInventoryInputs(deploymentID: f.selection.intent.deploymentID); XCTFail("Changed candidate must deny") } catch {}
+        try HistoricalPublishedSourceFixture.write(candidateBytes, candidate)
+        let unknown = registry.appendingPathComponent("unknown-entry")
+        try HistoricalPublishedSourceFixture.write(Data("unknown".utf8), unknown)
+        do { _ = try environment.readInventoryInputs(deploymentID: f.selection.intent.deploymentID); XCTFail("Unknown registry must deny") } catch {}
+        try FileManager.default.removeItem(at: unknown)
         let original = try (0..<4).map { try Data(contentsOf: f.bootstrap.appendingPathComponent("helper-package-effect-\($0).json")) }
         let frozen = try f.evidence.read()
         let floors = try environment.readFloors()
         try await MacOSInstallerBootstrapReconciliationMaintenance.reconcileVerified(environment: environment)
         XCTAssertEqual(try MacOSInstallerHelperPackageEffectJournal(root: f.bootstrap, owner: getuid()).read().get().last?.phase, .readbackRecorded)
         for index in 0..<4 { XCTAssertEqual(try Data(contentsOf: f.bootstrap.appendingPathComponent("helper-package-effect-\(index).json")), original[index]) }
+        XCTAssertEqual(try Data(contentsOf: candidate), candidateBytes)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: registry.path), [])
         XCTAssertEqual(try f.evidence.read(), frozen); XCTAssertEqual(try environment.readFloors(), floors)
         XCTAssertTrue(try FileManagedInstallerProductWorkerEffectJournal(stateRoot: f.state, expectedOwner: getuid()).readRequired().get().uncertain)
         do { try await MacOSInstallerBootstrapReconciliationMaintenance.reconcileVerified(environment: environment); XCTFail("Second confirmation must deny") } catch {}
