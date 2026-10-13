@@ -182,3 +182,26 @@ Still deliberately open:
 matching public trust facts exist. The exact production installer release has
 now also passed and is published as 0.2.4. That result does not make the
 composition catalog live and does not qualify a fresh-host installation.
+
+## Protected hosted root-source qualification handoff
+
+The expanded Python source gate includes real isolated root-owned file and ACL
+qualification. The credentialless build account retains its existing lack of sudo.
+The owning Foundation job performs these tests on hosted macOS and retains a
+source-bound root-trace artifact for protected-main push runs only.
+
+The build gate has no caller-selected receipt file, URL or skip flag. Its internal
+protected-workflow assembly independently reads back the exact current build run,
+protected main, the owning Foundation workflow and exact successful run/attempt,
+repository/native/aggregate job results, and the uniquely bound artifact ID and
+SHA-256. Download, ZIP membership and receipt schema are bounded and closed.
+Every source hash is checked before and after qualification; foreign, duplicate
+or nonexecutable line counts fail. Every target still requires coverage strictly
+above 80.2%. Local and ordinary hosted validation retain direct root qualification.
+
+The build job uses only its ephemeral Actions read token in the fixed GitHub API
+route, with the host pinned to github.com. It receives no Apple, descriptor-signing,
+publication or provider credential and gains no account or sudo permission.
+Source models exercise the provenance denial gates; temporary real JSON/ZIP/file
+and child-process IO supplement them. They do not prove artifact handoff or an
+installed CLI/GUI. Those proofs are recorded separately after protected delivery.

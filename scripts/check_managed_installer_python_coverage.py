@@ -28,6 +28,8 @@ import hashlib
 ROOT = Path(__file__).resolve().parents[1]
 
 TARGETS = (
+    "scripts/protected_root_qualification.py",
+    "scripts/emit_protected_root_qualification.py",
     "forge_platform/managed_ep_partial_create.py",
     "forge_platform/managed_ep_service_preparation.py",
     "forge_platform/managed_historical_current_executor.py",
@@ -124,6 +126,7 @@ TARGETS = (
 )
 
 TESTS = (
+    "tests/installer/test_protected_root_qualification.py",
     "tests/installer/test_managed_ep_partial_create_evidence.py",
     "tests/installer/test_managed_ep_service_preparation.py",
     "tests/installer/test_managed_historical_current_executor.py",
@@ -323,6 +326,8 @@ def _root_qualification_counts() -> dict[str, object]:
         if count > 0 and path.is_relative_to(ROOT) and path.relative_to(ROOT).as_posix() in TARGETS:
             hit.setdefault(path.relative_to(ROOT).as_posix(), set()).add(line)
     _require_source_snapshot(source_before)
+    hit = {path: lines & _executable_lines(ROOT / path) for path, lines in hit.items()}
+    _require_source_snapshot(source_before)
     return {"schema": "forge-platform.source-root-coverage/v1", "files": {
         path: {"source_sha256": source_before[path], "lines": sorted(lines)}
         for path, lines in hit.items()}}
@@ -330,20 +335,31 @@ def _root_qualification_counts() -> dict[str, object]:
 def _merge_root_qualification(counts: dict[Path, set[int]], source_before: dict[str, str]) -> None:
     import json
     _require_source_snapshot(source_before)
-    completed = subprocess.run(["sudo", "-n", sys.executable, str(Path(__file__).resolve()), "--root-private-qualification-counts"],
-        cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=None, check=True, timeout=300)
-    if not 0 < len(completed.stdout) <= 2 * 1024 * 1024: raise ValueError("root counts out of bounds")
+    from scripts.protected_root_qualification import protected_build, read_counts, decode
+    if protected_build(os.environ):
+        payload = read_counts(ROOT, os.environ)
+    else:
+        completed = subprocess.run(["sudo", "-n", sys.executable, str(Path(__file__).resolve()), "--root-private-qualification-counts"],
+            cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=None, check=True, timeout=300)
+        payload = decode(completed.stdout)
     _require_source_snapshot(source_before)
-    payload = json.loads(completed.stdout)
+    _merge_root_counts(counts, source_before, payload)
+
+
+def _merge_root_counts(counts: dict[Path, set[int]], source_before: dict[str, str], payload: dict) -> None:
+    _require_source_snapshot(source_before)
     if set(payload) != {"schema", "files"} or payload["schema"] != "forge-platform.source-root-coverage/v1" or not isinstance(payload["files"], dict):
         raise ValueError("invalid root counts")
+    if not payload["files"]: raise ValueError("empty root qualification")
     for relative, record in payload["files"].items():
         if relative not in TARGETS or set(record) != {"source_sha256", "lines"}: raise ValueError("foreign source counts")
         path = (ROOT / relative).resolve()
         if record["source_sha256"] != source_before[relative]: raise ValueError("source changed during qualification")
         lines = record["lines"]
         if not isinstance(lines, list) or len(lines) > 100000 or any(type(line) is not int or line <= 0 for line in lines): raise ValueError("invalid line counts")
+        if lines != sorted(set(lines)) or not set(lines).issubset(_executable_lines(path)): raise ValueError("nonexecutable or duplicate line counts")
         counts.setdefault(path, set()).update(lines)
+    _require_source_snapshot(source_before)
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()

@@ -27,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # The native installer has its own tag and durable operation identity. It must
 # never contend with the separately versioned Forge Platform composition flow.
@@ -161,6 +162,7 @@ jobs:
           printf '%s\n' "$python_bin" >> "$GITHUB_PATH"
       - id: candidate
         env:
+          GH_TOKEN: ${{ github.token }}
           COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
           CHANNEL: ${{ needs.release-context.outputs.channel }}
           RELEASE_SEQUENCE: ${{ needs.release-context.outputs.release_sequence }}

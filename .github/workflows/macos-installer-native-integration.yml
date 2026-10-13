@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: forge-platform-macmini-build
@@ -52,6 +53,7 @@ jobs:
       labels: forge-platform-build
     timeout-minutes: 45
     env:
+      GH_TOKEN: ${{ github.token }}
       SOURCE_SHA: ${{ inputs.source_sha }}
       COVERAGE_BASE_SHA: ${{ inputs.coverage_base_sha }}
     steps:

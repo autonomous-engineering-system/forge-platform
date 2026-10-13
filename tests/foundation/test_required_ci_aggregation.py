@@ -60,7 +60,16 @@ class RequiredCIAggregationTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", python_job)
         self.assertIn("uses: ./.github/workflows/macos-installer-validation.yml", native_job)
         self.assertIn("coverage_base_sha: ${{ github.event.pull_request.base.sha || github.event.before }}", native_job)
-        self.assertNotIn("    if:", python_job + native_job)
+        # Job gates and mandatory validation remain unconditional. Only the
+        # post-validation evidence export/upload may be limited to main pushes.
+        self.assertIsNone(re.search(r"^    if:", python_job + native_job, re.MULTILINE))
+        for step in python_job.split("      - ")[1:]:
+            if re.search(r"^        if:", step, re.MULTILINE):
+                self.assertTrue(step.startswith("name: Retain exact hosted root source qualification\n")
+                    or step.startswith("uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"))
+                self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/main'", step)
+                self.assertNotIn("sh scripts/validate.sh", step)
+        self.assertIn("run: sh scripts/validate.sh", python_job)
         self.assertIn("  workflow_call:\n", native)
         self.assertIn("      coverage_base_sha:\n", native)
         self.assertIn("        required: true\n        type: string\n", native)
