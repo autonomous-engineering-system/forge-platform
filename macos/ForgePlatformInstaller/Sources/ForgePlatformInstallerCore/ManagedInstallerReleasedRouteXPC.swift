@@ -1067,6 +1067,7 @@ public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
 }
 
 @objc public protocol ManagedInstallerReleasedRouteXPCService {
+    @objc optional func inspectHistoricalOperation(_ canonicalRequest: Data, withReply reply: @escaping (Data?) -> Void)
     @objc optional func recoverHistoricalOperation(_ canonicalRequest: Data, withReply reply: @escaping (Data?) -> Void)
     @objc optional func readComponentProgress(_ canonicalIntent: Data,
         withReply reply: @escaping (Data?) -> Void)
@@ -1218,12 +1219,23 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
         )
     }
 
+    public func inspectHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryInspectionResult {
+        let request = try ManagedInstallerHistoricalRecoveryRequest(operationID: operationID)
+        let data = try await call(readOnly: true, historicalInspection: true) { service, reply in
+            guard let inspect = service.inspectHistoricalOperation else { reply(nil); return }
+            inspect(request.canonicalJSONData(), reply)
+        }
+        if let failure = ManagedInstallerHistoricalRecoveryStageFailure.decode(data) { throw failure }
+        return try ManagedInstallerHistoricalRecoveryInspectionResult.decode(data, operationID: operationID)
+    }
+
     public func recoverHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryResult {
         let request = try ManagedInstallerHistoricalRecoveryRequest(operationID: operationID)
         let data = try await call { service, reply in
             guard let recover = service.recoverHistoricalOperation else { reply(nil); return }
             recover(request.canonicalJSONData(), reply)
         }
+        if let failure = ManagedInstallerHistoricalRecoveryStageFailure.decode(data) { throw failure }
         return try ManagedInstallerHistoricalRecoveryResult.decode(data, operationID: operationID)
     }
 
@@ -1346,6 +1358,7 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
 
     private func call(
         readOnly: Bool = false,
+        historicalInspection: Bool = false,
         _ invoke: @escaping (
             ManagedInstallerReleasedRouteXPCService,
             @escaping (Data?) -> Void
@@ -1357,7 +1370,7 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
             // A failed helper launch can leave a Mach read queued indefinitely.
             // Bound observation only: mutation completion remains journal-owned.
             if readOnly {
-                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + readOnlyReplyTimeout) {
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + (historicalInspection ? 180 : readOnlyReplyTimeout)) {
                     gate.complete(.failure(.unavailable))
                 }
             }

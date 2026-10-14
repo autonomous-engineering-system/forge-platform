@@ -49,4 +49,11 @@ public struct ManagedInstallerHistoricalRecoveryResult: Equatable, Sendable {
 /// The production runtime binds the full verified helper release reader.
 public protocol ManagedInstallerHistoricalRecoveryTransporting: Sendable {
     func recoverHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryResult
+    func inspectHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryInspectionResult
+}
+
+public extension ManagedInstallerHistoricalRecoveryTransporting {
+    func inspectHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryInspectionResult {
+        throw ManagedInstallerHistoricalRecoveryStageFailure(.helperAdmission)
+    }
 }

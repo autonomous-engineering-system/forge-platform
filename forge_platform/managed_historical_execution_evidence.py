@@ -21,6 +21,7 @@ from .managed_product_operation_admission import (
 from .universal_installer import SemanticVersion
 
 SCHEMA = "forge-platform.historical-product-execution-permit/v1"
+CONTINUATION_SCHEMA = "forge-platform.historical-product-continuation-permit/v1"
 MAXIMUM_BYTES = 256 * 1024
 ROLES = frozenset({"parent", "selection", "route", "authority", "operator", "git", "product_request"})
 _EXECUTOR = frozenset({"version", "release_page", "asset_name", "sha256", "signing_key_id", "sequence", "source_revision", "release_trust_sha256", "code_directory_sha256", "team_identifier"})
@@ -44,6 +45,13 @@ def _canonical(value):
 def _digest(value):
     _require(isinstance(value, str) and len(value) == 71 and value.startswith("sha256:")
              and all(c in "0123456789abcdef" for c in value[7:]))
+    return value
+
+
+def _trust_digest(value):
+    """Native release/provenance trust identities use canonical bare SHA256."""
+    _require(isinstance(value, str) and len(value) == 64
+             and all(c in "0123456789abcdef" for c in value))
     return value
 
 
@@ -79,8 +87,13 @@ class HistoricalExecutionExpectedBinding:
     nonce: str
     original_effect_sha256: str
     reserved_effect_sha256: str
+    previous_record_sha256: str | None = None
+    denial_proof_sha256: str | None = None
 
     def __post_init__(self):
+        _require((self.previous_record_sha256 is None) == (self.denial_proof_sha256 is None))
+        if self.previous_record_sha256 is not None:
+            _digest(self.previous_record_sha256); _digest(self.denial_proof_sha256)
         request = self.request
         _require(isinstance(request, NativeProductOperationRequest)
                  and not request.deployment_exists
@@ -91,9 +104,10 @@ class HistoricalExecutionExpectedBinding:
         roles = dict(self.protected_sha256_by_role)
         _require(frozenset(roles) == ROLES)
         for value in roles.values(): _digest(value)
-        for value in (self.descriptor_sha256, self.operator_sha256, self.original_trust_sha256,
+        for value in (self.descriptor_sha256, self.operator_sha256,
                       self.original_effect_sha256, self.reserved_effect_sha256): _digest(value)
         _require(self.original_effect_sha256 != self.reserved_effect_sha256)
+        _trust_digest(self.original_trust_sha256)
         _uuid(self.worker_id); _uuid(self.nonce)
         current = dict(self.current_executor)
         _shape(current, _EXECUTOR)
@@ -102,7 +116,7 @@ class HistoricalExecutionExpectedBinding:
                  and all(c in "0123456789abcdef" for c in current["source_revision"]))
         _require(isinstance(current["team_identifier"], str) and len(current["team_identifier"]) == 10
                  and all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" for c in current["team_identifier"]))
-        _digest(current["code_directory_sha256"]); _digest(current["release_trust_sha256"])
+        _digest(current["code_directory_sha256"]); _trust_digest(current["release_trust_sha256"])
         try:
             release = NativeInstallerReleaseBinding(*(current[k] for k in ("version", "release_page", "asset_name", "sha256", "signing_key_id")))
             old = SemanticVersion.parse(request.installer_release.version)
@@ -139,8 +153,12 @@ def decode_historical_execution_evidence(raw: bytes, *, expected: HistoricalExec
     try:
         value = json.loads(raw, object_pairs_hook=pairs, parse_constant=invalid)
         _require(_canonical(value) == raw)
-        value = _shape(value, _FIELDS)
-        _require(value["schema"] == SCHEMA and value["state"] == "RESERVED"
+        continuation = expected.previous_record_sha256 is not None
+        value = _shape(value, _FIELDS | ({"previous_record_sha256", "denial_proof_sha256"} if continuation else set()))
+        if continuation:
+            _require(value["previous_record_sha256"] == expected.previous_record_sha256
+                     and value["denial_proof_sha256"] == expected.denial_proof_sha256)
+        _require(value["schema"] == (CONTINUATION_SCHEMA if continuation else SCHEMA) and value["state"] == "RESERVED"
                  and value["execution_authorized"] is True)
         inspection = _shape(value["inspection"], _INSPECTION)
         _require(inspection["schema"] == "forge-platform.historical-inspection-binding/v1"

@@ -33,6 +33,7 @@ TARGETS = (
     "scripts/protected_swift_qualification.py",
     "forge_platform/managed_ep_partial_create.py",
     "forge_platform/managed_ep_service_preparation.py",
+    "forge_platform/managed_historical_denied_attempt.py",
     "forge_platform/managed_historical_current_executor.py",
     "forge_platform/managed_historical_execution_admission.py",
     "forge_platform/managed_historical_execution_evidence.py",
@@ -131,6 +132,7 @@ TESTS = (
     "tests/installer/test_protected_swift_qualification.py",
     "tests/installer/test_managed_ep_partial_create_evidence.py",
     "tests/installer/test_managed_ep_service_preparation.py",
+    "tests/installer/test_managed_historical_denied_attempt.py",
     "tests/installer/test_managed_historical_current_executor.py",
     "tests/installer/test_managed_historical_execution_admission.py",
     "tests/installer/test_managed_historical_execution_evidence.py",
@@ -289,6 +291,8 @@ def _run_tests() -> unittest.result.TestResult:
 # Exact isolated root-only source qualification classes. No installer, service,
 # provider credentials, accounts or production paths are created or changed.
 ROOT_QUALIFICATION_CLASSES = (
+    ("tests/installer/test_managed_historical_denied_attempt.py", "HistoricalDeniedAttemptRootIOTests"),
+    ("tests/installer/test_managed_historical_denied_attempt.py", "HistoricalArchiveIdentityRootIOTests"),
     ("tests/installer/test_managed_ep_partial_create_evidence.py", "ProtectedPartialCreateEvidenceTests"),
     ("tests/installer/test_managed_ep_service_preparation.py", "EPServiceRootAssemblyTests"),
     ("tests/installer/test_managed_historical_current_executor.py", "HistoricalNativeProofRootIOTests"),

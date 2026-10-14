@@ -5,6 +5,7 @@ struct ManagedInstallerHistoricalInspectionIntent: Equatable, Sendable {
     static let schema = "forge-platform.historical-product-inspection/v1"
     let operationID: String
     private let recoveryPreflight: Bool
+    private var deniedAttempt: Bool = false
 
     init(operationID: String) throws {
         guard ManagedPythonRuntimeStagingValidation.isOperationID(operationID) else {
@@ -24,9 +25,15 @@ struct ManagedInstallerHistoricalInspectionIntent: Equatable, Sendable {
         try .init(operationID: operationID, recoveryPreflight: true)
     }
 
+    static func deniedAttempt(operationID: String) throws -> Self {
+        var result = try Self(operationID: operationID)
+        result.deniedAttempt = true
+        return result
+    }
+
     func canonicalJSONData() -> Data {
         StrictSignedJSON.canonicalPayload(from: .object([
-            "schema": .string(recoveryPreflight ? ManagedInstallerHistoricalRecoveryPreflight.schema : Self.schema), "operation_id": .string(operationID),
+            "schema": .string(deniedAttempt ? ManagedInstallerHistoricalDeniedAttemptProof.schema : (recoveryPreflight ? ManagedInstallerHistoricalRecoveryPreflight.schema : Self.schema)), "operation_id": .string(operationID),
         ]))
     }
 }
@@ -66,6 +73,12 @@ struct ManagedInstallerHistoricalInspectionRunner: ManagedInstallerHistoricalIns
         guard result.originalEvidence.request.operationID == operationID else {
             throw ManagedInstallerHistoricalOperationReconstructionFailure.unavailable
         }
+        return result
+    }
+
+    func deniedAttempt(operationID: String) async throws -> ManagedInstallerHistoricalDeniedAttemptProof {
+        let result = try ManagedInstallerHistoricalDeniedAttemptProof.decode(await run(.deniedAttempt(operationID: operationID)))
+        guard result.operationID == operationID else { throw ManagedInstallerHistoricalOperationReconstructionFailure.unavailable }
         return result
     }
 

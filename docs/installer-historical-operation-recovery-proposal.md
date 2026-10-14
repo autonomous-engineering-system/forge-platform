@@ -1,9 +1,29 @@
 # Bounded historical-operation recovery admission proposal
 
-Date: 2026-10-12; updated 2026-10-13. Source scope explicitly approved on
-2026-10-13 within the same increment. Runtime and publication remain unauthorized.
+Date: 2026-10-12; current checkpoint 2026-10-14. The human explicitly approved
+one trust-contract/denied-attempt correction, unsigned qualification, protected
+delivery, one signed release cycle, one same-VM helper transition and at most one
+continuation of the original operation. This document itself grants no authority.
 
-## Implementation checkpoint
+## Current checkpoint — 2026-10-14
+
+The public 0.4.20 helper registration passed. Its one authorized original recovery
+failed; EP remains partial/quiesced, Forge absent and inventory empty. A RESERVED
+immutable historical execution record exists with executor 0.4.20/sequence42;
+consumption and completion are absent. Unchanged ordinary effect bytes are **not**
+proof that no reservation occurred.
+
+The native codec produces canonical bare64 release-trust identity; the Python
+historical expected-binding decoder required tagged71. The actual sealed worker
+rejects the actual record before consumption/adapters. The corrective source
+increment aligns only the trust fields and adds a separate immutable continuation
+record, linked to the rejected predecessor and independently established denial.
+Original records, journals and uncertainty are preserved. See
+[trust contract and continuation](installer-trust-contract-continuation.md).
+Unsigned source qualification is in progress; successor publication and actual
+continuation are NOT_RUN. Installed CLI/GUI PASS and MVP closure remain OPEN.
+
+## Previous checkpoint — 2026-10-13
 
 Implemented and source-qualified: fixed private evidence reader with strict
 canonical parent decoding; original plan/native request correlation and exact

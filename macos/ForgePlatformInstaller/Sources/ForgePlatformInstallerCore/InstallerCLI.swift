@@ -27,6 +27,7 @@ public enum InstallerCLICommand: Equatable, Sendable {
     case deploymentList
     case deploymentPlan(String)
     case deploymentApply(String)
+    case deploymentInspectHistorical(String)
     case deploymentRecoverHistorical(String)
     case deploymentRemove(String, operationID: String, component: String?)
     case deploymentRemovePlan(String, operationID: String, component: String?)
@@ -182,6 +183,7 @@ public enum InstallerCLIParser {
       forge-platform-installer helper replace-clean-vm-045 [--yes] [--non-interactive] [--json]
       forge-platform-installer self-update check [--json]
       forge-platform-installer self-update apply [--yes] [--json]
+      forge-platform-installer deployment inspect-historical --operation-id <original-id> [--non-interactive] [--json]
       forge-platform-installer deployment recover-historical --operation-id <original-id> --yes [--non-interactive] [--json]
       forge-platform-installer deployment list [--json]
       forge-platform-installer deployment plan --deployment <id|new> [--composition <forge|ep|forge-ep>] [--pairing-project <id> --pairing-repository <id> --pairing-repository-identity <id>] [--non-interactive] [--json]
@@ -358,6 +360,10 @@ public enum InstallerCLIParser {
             command = .selfUpdateCheck
         case ["self-update", "apply"]:
             command = .selfUpdateApply
+        case ["deployment", "inspect-historical"]:
+            guard let operationID, ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
+                  deployment == nil, component == nil else { throw InstallerCLIParseError.invalidArguments }
+            command = .deploymentInspectHistorical(operationID)
         case ["deployment", "recover-historical"]:
             guard let operationID, ManagedPythonRuntimeStagingValidation.isOperationID(operationID),
                   deployment == nil, component == nil, reviewFingerprint == nil,
@@ -503,7 +509,7 @@ public enum InstallerCLIParser {
         }
         if operationID != nil || component != nil || reviewFingerprint != nil {
             switch command {
-            case .deploymentRecoverHistorical, .deploymentRemovePlan, .deploymentRemove,
+            case .deploymentInspectHistorical, .deploymentRecoverHistorical, .deploymentRemovePlan, .deploymentRemove,
                  .deploymentPairingRepairPlan, .deploymentLifecyclePlan,
                  .deploymentLifecyclePreserve, .deploymentLifecycleRestore, .deploymentLifecyclePurge,
                  .deploymentLifecycleRecover, .deploymentLifecycleRecoverPurge: break

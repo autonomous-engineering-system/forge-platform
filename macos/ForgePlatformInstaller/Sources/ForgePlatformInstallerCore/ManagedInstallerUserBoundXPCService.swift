@@ -9,17 +9,39 @@ final class ManagedInstallerUserBoundXPCService: NSObject, ManagedInstallerRelea
     private let store: FileManagedInstallerHelperReviewedSelectionStore
     private let historicalMutationGate: ManagedInstallerHelperUpgradeAdmissionGate?
     private let historicalCoordinator: @Sendable () -> ManagedInstallerHistoricalInspectionCoordinator?
+    private let historicalInspect: @Sendable (ManagedInstallerHistoricalInspectedOperation) async throws -> ManagedInstallerHistoricalRecoveryInspectionResult
     private let historicalExecute: @Sendable (ManagedInstallerHistoricalInspectedOperation) async throws -> Data
     init(service: any ManagedInstallerReleasedRouteXPCService, peerUID: UInt32, store: FileManagedInstallerHelperReviewedSelectionStore,
          historicalMutationGate: ManagedInstallerHelperUpgradeAdmissionGate? = nil,
          historicalCoordinator: @escaping @Sendable () -> ManagedInstallerHistoricalInspectionCoordinator? = { .production() },
+         historicalInspect: @escaping @Sendable (ManagedInstallerHistoricalInspectedOperation) async throws -> ManagedInstallerHistoricalRecoveryInspectionResult = {
+             try await ManagedInstallerHistoricalExecutionRunner().inspectOnly($0)
+         },
          historicalExecute: @escaping @Sendable (ManagedInstallerHistoricalInspectedOperation) async throws -> Data = {
              try await ManagedInstallerHistoricalExecutionRunner().execute($0)
          }) {
         self.service = service; uid = peerUID; self.store = store
         self.historicalMutationGate = historicalMutationGate
-        self.historicalCoordinator = historicalCoordinator; self.historicalExecute = historicalExecute; super.init()
+        self.historicalCoordinator = historicalCoordinator; self.historicalInspect = historicalInspect; self.historicalExecute = historicalExecute; super.init()
     }
+    func inspectHistoricalOperation(_ data: Data, withReply reply: @escaping (Data?) -> Void) {
+        guard let request = try? ManagedInstallerHistoricalRecoveryRequest.decode(data),
+              isNamedAdministrator, let coordinator = historicalCoordinator(),
+              let terminalReply = historicalMutationGate?.admittedReply(reply) else { reply(nil); return }
+        let authenticatedUID = uid; let inspect = historicalInspect
+        let terminal = ManagedInstallerHistoricalRecoveryReply(terminalReply)
+        Task {
+            do {
+                let result = try await coordinator.withRecoveryPreflight(authenticatedPeerUID: authenticatedUID) { inspected, _ in
+                    guard request.operationID == inspected.original.request.operationID else { throw ManagedInstallerHistoricalOperationReconstructionFailure.unavailable }
+                    return try await inspect(inspected)
+                }
+                terminal.deliver(result.canonicalData)
+            } catch let failure as ManagedInstallerHistoricalRecoveryStageFailure { terminal.deliver(failure.canonicalData) }
+            catch { terminal.deliver(ManagedInstallerHistoricalRecoveryStageFailure(.originalInspection).canonicalData) }
+        }
+    }
+
     func recoverHistoricalOperation(_ data: Data, withReply reply: @escaping (Data?) -> Void) {
         guard let request = try? ManagedInstallerHistoricalRecoveryRequest.decode(data),
               isNamedAdministrator,
@@ -38,7 +60,8 @@ final class ManagedInstallerUserBoundXPCService: NSObject, ManagedInstallerRelea
                     return try ManagedInstallerHistoricalRecoveryResult(request: inspected.original.request, receiptData: receipt).canonicalJSONData()
                 }
                 terminal.deliver(result)
-            } catch { terminal.deliver(nil) }
+            } catch let failure as ManagedInstallerHistoricalRecoveryStageFailure { terminal.deliver(failure.canonicalData) }
+            catch { terminal.deliver(ManagedInstallerHistoricalRecoveryStageFailure(.originalInspection).canonicalData) }
         }
     }
 

@@ -471,7 +471,10 @@ def run(
             response = inspect_original_product_request(request)
         elif isinstance(envelope, dict) and envelope.get("schema") == HISTORICAL_RECOVERY_PREFLIGHT_SCHEMA:
             response = inspect_original_recovery_request(request)
-        elif isinstance(envelope, dict) and envelope.get("schema") == "forge-platform.historical-product-execute/v1":
+        elif isinstance(envelope, dict) and envelope.get("schema") == "forge-platform.historical-denied-attempt-inspection/v1":
+            from .managed_historical_denied_attempt import decode_denied_intent,denied_attempt_proof
+            response=denied_attempt_proof(decode_denied_intent(request))
+        elif isinstance(envelope, dict) and envelope.get("schema") in {"forge-platform.historical-product-execute/v1", "forge-platform.historical-product-continue/v1"}:
             from .managed_historical_execution_admission import execute_historical_request
             response = execute_historical_request(request, worker_path=Path(sys.argv[0]), base_python=Path(sys.executable))
         elif isinstance(envelope, dict) and envelope.get("schema") == PRODUCT_WHEEL_WORKER_SCHEMA:
@@ -511,7 +514,12 @@ def run(
         output_stream.write(response)
         output_stream.flush()
         return 0
-    except Exception:
+    except Exception as error:
+        from .managed_historical_execution_admission import HistoricalExecutionStageError
+        if isinstance(error,HistoricalExecutionStageError):
+            response=json.dumps({'schema':'forge-platform.historical-recovery-stage-failure/v1','stage':error.stage},
+                sort_keys=True,separators=(',',':')).encode()
+            output_stream.write(response);output_stream.flush()
         return 1
 
 

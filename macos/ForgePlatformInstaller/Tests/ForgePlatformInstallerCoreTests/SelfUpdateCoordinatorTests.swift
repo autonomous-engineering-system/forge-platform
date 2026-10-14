@@ -38,7 +38,11 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             if mode != "uncurrent" { _ = await coordinator.enforceCurrentInstaller(currentVersion: identity.version) }
             let id = mode == "invalid-id" ? "bad/id" : mode == "foreign" ? "another-operation" : terminal.request.operationID
             do { _ = try await coordinator.recoverHistoricalOperation(operationID: id); XCTFail("Must reject \(mode)") }
-            catch { XCTAssertNotNil(error as? ManagedInstallerReleasedRouteXPCFailure) }
+            catch {
+                if ["failure", "foreign"].contains(mode) {
+                    XCTAssertEqual((error as? ManagedInstallerHistoricalRecoveryStageFailure)?.stage, .helperAdmission)
+                } else { XCTAssertNotNil(error as? ManagedInstallerReleasedRouteXPCFailure) }
+            }
             let operations = await transport.operations()
             XCTAssertEqual(operations.count, ["failure", "foreign"].contains(mode) ? 1 : 0)
         }
@@ -67,7 +71,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         _ = await coordinator.checkForUpdate(currentVersion: identity.version)
         await gate.finish()
         do { _ = try await task.value; XCTFail("An invalidated currency must never report success") }
-        catch { XCTAssertEqual(error as? ManagedInstallerReleasedRouteXPCFailure, .rejected) }
+        catch { XCTAssertEqual((error as? ManagedInstallerHistoricalRecoveryStageFailure)?.stage, .helperAdmission) }
         XCTAssertEqual(lock.activeLeases(), 0)
         let ids = await transport.operations(); XCTAssertEqual(ids.count, 1)
     }
@@ -85,8 +89,82 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         _ = await coordinator.enforceCurrentInstaller(currentVersion: identity.version)
         lock.block()
         do { _ = try await coordinator.recoverHistoricalOperation(operationID: terminal.request.operationID); XCTFail("Unavailable lease must deny") }
-        catch { XCTAssertEqual(error as? ManagedInstallerReleasedRouteXPCFailure, .unavailable) }
+        catch { XCTAssertEqual((error as? ManagedInstallerHistoricalRecoveryStageFailure)?.stage, .helperAdmission) }
         let ids = await transport.operations(); XCTAssertEqual(ids, [])
+    }
+
+    func testHistoricalRecoveryPreservesClosedStageFailureThroughCoordinator() async throws {
+        struct StageTransport: ManagedInstallerHistoricalRecoveryTransporting {
+            func recoverHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryResult {
+                throw ManagedInstallerHistoricalRecoveryStageFailure(.deniedAttempt)
+            }
+        }
+        let terminal = try historicalRecoveryTerminal()
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: true)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let coordinator = makeCoordinator(feed: FeedSpy(result: .success(record)),
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())), historicalRecoveryTransport: StageTransport())
+        _ = await coordinator.enforceCurrentInstaller(currentVersion: identity.version)
+        do { _ = try await coordinator.recoverHistoricalOperation(operationID: terminal.request.operationID); XCTFail("denial must survive") }
+        catch { XCTAssertEqual((error as? ManagedInstallerHistoricalRecoveryStageFailure)?.stage, .deniedAttempt) }
+    }
+
+    func testReadOnlyHistoricalInspectionUsesCurrentBindingWithoutRecoveryAndRejectsUnavailableConditions() async throws {
+        let terminal = try historicalRecoveryTerminal()
+        let op = terminal.request.operationID
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: true)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        for mode in ["ready", "uncurrent", "missing", "invalid", "failure", "lease"] {
+            let transport = HistoricalRecoveryTransportSpy(result: mode == "failure" ? nil : terminal)
+            let selection = ManagedInstallerHelperBackendReleaseSelection()
+            let lock = HistoricalRecoverySwitchableLock()
+            let coordinator = makeCoordinator(feed: FeedSpy(result: .success(record)),
+                inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+                staging: StagingSpy(result: .success(try makeStagedAsset())), operationLock: lock,
+                historicalRecoveryTransport: mode == "missing" ? nil : transport,
+                helperReleaseBinding: { selection.bind($0) })
+            if mode != "uncurrent" { _ = await coordinator.enforceCurrentInstaller(currentVersion: identity.version) }
+            if mode == "lease" { lock.block() }
+            do {
+                let result = try await coordinator.inspectHistoricalOperation(operationID: mode == "invalid" ? "bad/id" : op)
+                XCTAssertEqual(mode, "ready")
+                XCTAssertEqual(result.operationID, op)
+                XCTAssertTrue(result.continuationRequired)
+            } catch {
+                XCTAssertNotEqual(mode, "ready")
+                XCTAssertEqual((error as? ManagedInstallerHistoricalRecoveryStageFailure)?.stage, .helperAdmission)
+            }
+            let ids = await transport.operations()
+            XCTAssertEqual(ids, ["ready", "failure"].contains(mode) ? ["inspect:" + op] : [])
+        }
+    }
+
+    func testReadOnlyHistoricalInspectionRejectsCurrencyDriftAndDoesNotCallRecovery() async throws {
+        let terminal = try historicalRecoveryTerminal()
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: true)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let feed = FeedSpy(result: .success(record))
+        let entered = expectation(description: "read only suspended")
+        let gate = HelperStageGate(entered: entered)
+        let transport = HistoricalRecoveryTransportSpy(result: terminal, beforeResult: { await gate.wait() })
+        let lock = OperationLockSpy()
+        let coordinator = makeCoordinator(feed: feed,
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())), operationLock: lock,
+            historicalRecoveryTransport: transport)
+        _ = await coordinator.enforceCurrentInstaller(currentVersion: identity.version)
+        let task = Task { try await coordinator.inspectHistoricalOperation(operationID: terminal.request.operationID) }
+        await fulfillment(of: [entered], timeout: 2)
+        XCTAssertEqual(lock.activeLeases(), 1)
+        await feed.setResult(.failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable)))
+        _ = await coordinator.checkForUpdate(currentVersion: identity.version)
+        await gate.finish()
+        do { _ = try await task.value; XCTFail("stale read-only verdict must deny") }
+        catch { XCTAssertEqual((error as? ManagedInstallerHistoricalRecoveryStageFailure)?.stage, .helperAdmission) }
+        XCTAssertEqual(lock.activeLeases(), 0)
+        let ids = await transport.operations()
+        XCTAssertEqual(ids, ["inspect:" + terminal.request.operationID])
     }
 
     private func historicalRecoveryTerminal() throws -> ManagedInstallerHistoricalRecoveryResult {
@@ -3391,6 +3469,12 @@ private actor HistoricalRecoveryTransportSpy: ManagedInstallerHistoricalRecovery
         await beforeResult()
         guard let result else { throw ManagedInstallerReleasedRouteXPCFailure.unavailable }
         return result
+    }
+    func inspectHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryInspectionResult {
+        ids.append("inspect:" + operationID); observed = reader()
+        await beforeResult()
+        guard result != nil else { throw ManagedInstallerReleasedRouteXPCFailure.unavailable }
+        return try .init(operationID: operationID, continuationRequired: true)
     }
     func observedRelease() -> VerifiedInstallerReleaseRecord? { observed }
     func operations() -> [String] { ids }
