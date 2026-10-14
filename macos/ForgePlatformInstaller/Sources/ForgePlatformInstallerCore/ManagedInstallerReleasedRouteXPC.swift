@@ -1118,7 +1118,8 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
     ManagedInstallerReviewedProviderAuthenticationIntentSending,
     ManagedInstallerReviewedEPProviderRegistrationIntentSending,
     ManagedInstallerReviewedSelectionRegistering,
-    ManagedInstallerPreservedRegistryReading {
+    ManagedInstallerPreservedRegistryReading,
+    ManagedInstallerHistoricalRecoveryTransporting {
     public static let machServiceName = InstallerBuildProfile.helperLabel
         + ".released-route"
 

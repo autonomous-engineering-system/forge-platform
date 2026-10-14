@@ -1706,6 +1706,7 @@ public enum InstallerHelperPreparationOutcome: Equatable, Sendable {
 }
 
 public protocol InstallerWizardCoordinator: Sendable {
+    func recoverHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryResult
     /// Explicit operator installation intent; never called by status-only reads.
     func prepareCurrentInstallerHelper(allowAuthorization: Bool) async -> InstallerHelperPreparationOutcome
     func prepareCurrentInstallerHelper(allowAuthorization: Bool, progress: @escaping InstallerHelperPreparationProgressObserver) async -> InstallerHelperPreparationOutcome
@@ -1840,6 +1841,9 @@ public protocol InstallerWizardCoordinator: Sendable {
 /// trusted composition runtime can opt in explicitly; it never turns a source
 /// build into a catalog/network client.
 public extension InstallerWizardCoordinator {
+    func recoverHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryResult {
+        throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+    }
     func prepareCurrentInstallerHelper(allowAuthorization: Bool, progress: @escaping InstallerHelperPreparationProgressObserver) async -> InstallerHelperPreparationOutcome {
         await prepareCurrentInstallerHelper(allowAuthorization: allowAuthorization)
     }

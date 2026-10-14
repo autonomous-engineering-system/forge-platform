@@ -4,6 +4,21 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
+    func testHistoricalRecoveryUsesTheStartupOwnedCoordinatorExactlyOnce() async throws {
+        let coordinator = CLIReadyCoordinator()
+        let current = try release("1.2.3")
+        let startup = CLIStartupSpy(outcome: .ready(currentRelease: current, coordinator: coordinator))
+        let result = await run(["deployment", "recover-historical", "--operation-id", "original-operation", "--yes", "--non-interactive", "--json"], startup: startup, version: "1.2.3")
+        XCTAssertEqual(result.code, InstallerCLIExitCode.executionFailed.rawValue)
+        XCTAssertTrue(result.stdout.joined().contains("recovery-blocked"))
+        let requests = await coordinator.historicalRecoveryRequests()
+        XCTAssertEqual(requests, ["original-operation"])
+        let inventoryCalls = await coordinator.inventoryCalls()
+        XCTAssertEqual(inventoryCalls, 0)
+        let authorizations = await coordinator.helperAuthorizationRequests()
+        XCTAssertEqual(authorizations, [])
+    }
+
     func testDeviceChallengeWritesOnlyToExplicitTerminalDescriptor() throws {
         let payload = Data("""
         {"operationID":"operation-one","stablePlanFingerprint":"fingerprint-one",\
@@ -1668,6 +1683,13 @@ private actor CLITestTrustedRuntime: TrustedInstallerRuntime {
 }
 
 private actor CLIReadyCoordinator: InstallerWizardCoordinator {
+    private var recoveryRequests: [String] = []
+    func recoverHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryResult {
+        recoveryRequests.append(operationID)
+        throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+    }
+    func historicalRecoveryRequests() -> [String] { recoveryRequests }
+
     private var authorizationRequests: [Bool] = []
     private let helperOutcome: InstallerHelperPreparationOutcome
     init(helperOutcome: InstallerHelperPreparationOutcome = .notRequired) { self.helperOutcome = helperOutcome }
