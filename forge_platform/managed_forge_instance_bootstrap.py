@@ -246,6 +246,7 @@ class ManagedForgeInstanceBootstrap:
                  executable: Path, codex_executable: Path, codex_home: Path, codex_digest: str):
         self.root=root;self.target=target;self.artifact=artifact;self.executable=executable
         self.codex_executable=codex_executable;self.codex_home=codex_home;self.codex_digest=codex_digest
+        self.runtime_service_access = None
         if ((artifact.version!="2.7.39" and not qualified_forge_installation_pairing_artifact(artifact))
             or artifact.version=="2.8.1" and target.service_user_identity_sha256 is None
             or target.instances_root!=root/"instances/forge"
@@ -361,6 +362,8 @@ except Exception as error:
         return runtime
 
     def ensure(self,operation_id):
+        if self.runtime_service_access is not None:
+            self.runtime_service_access.prepare()
         account=pwd.getpwnam(self.target.service_account)
         fd = _open(self.codex_executable, modes=(0o500,))
         try:
