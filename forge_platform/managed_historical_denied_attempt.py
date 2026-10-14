@@ -92,7 +92,7 @@ def _archive_worker(state,record_digest,executor,stable):
     stable.verify()
     policy='anchor apple generic and identifier "com.autonomous-engineering-system.forge-platform-installer" and certificate leaf[subject.OU] = "ZEML4LPXH4"'
     env={'HOME':'/var/empty','LANG':'C','LC_ALL':'C','PATH':'/usr/bin:/bin:/usr/sbin:/sbin'}
-    check=subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict','-R',policy,str(app)],
+    check=subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict','-R='+policy,str(app)],
         stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30,env=env)
     _require(check.returncode==0)
     result=subprocess.run(['/usr/bin/codesign','--display','--verbose=4',str(app)],
@@ -108,7 +108,7 @@ def _archive_worker(state,record_digest,executor,stable):
     stable.verify()
     # Revalidate the whole signed namespace while all selected inodes remain
     # held. A different directory generation or leaf is always rejected.
-    confirmed=subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict','-R',policy,str(app)],
+    confirmed=subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict','-R='+policy,str(app)],
         stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30,env=env)
     _require(confirmed.returncode==0);stable.verify()
     return expected_worker

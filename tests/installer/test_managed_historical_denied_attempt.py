@@ -149,6 +149,31 @@ class HistoricalPhysicalProcessBoundaryTests(unittest.TestCase):
 
 @unittest.skipUnless(os.geteuid()==0,'isolated root-private archive IO qualification')
 class HistoricalArchiveIdentityRootIOTests(unittest.TestCase):
+    def testRealPublishedLegacyArchiveRepeatsExactInlineRequirementAndRejectsForeignCodeDirectory(self):
+        import shutil,subprocess
+        from forge_platform import managed_historical_denied_attempt as module
+        from forge_platform.managed_historical_product_evidence import _StableReadback
+        from tests.installer.historical_public_signed_artifacts import public_signed_app,require_wrong_identity_rejected,POLICY
+        source,cd=public_signed_app('0.4.20');require_wrong_identity_rejected(source)
+        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp:
+            state=Path(tmp);state.chmod(0o700)
+            base=state/'historical-denied-executors';base.mkdir(mode=0o700)
+            directory=base/('a'*64);directory.mkdir(mode=0o700)
+            app=directory/'ForgePlatformInstaller.app';shutil.copytree(source,app)
+            actual_run=subprocess.run;verifications=[]
+            def observed(args,**kwargs):
+                if args[0]=='/usr/bin/codesign' and '--verify' in args:
+                    self.assertEqual(args,['/usr/bin/codesign','--verify','--deep','--strict','-R='+POLICY,str(app)])
+                    verifications.append(args)
+                return actual_run(args,**kwargs)
+            # Genuine Apple verification, metadata and pinned legacy modules.
+            # This isolated root-private copy never mints execution authority.
+            with patch.object(module.subprocess,'run',side_effect=observed),_StableReadback() as held:
+                self.assertEqual(module._archive_worker(state,digest('a'),{'code_directory_sha256':'sha256:'+cd},held),'sha256:a9dc3dfadc432f6826b62632e26011c219897a5aab9fe59f0c0bbcc3bc701b7a')
+            self.assertEqual(len(verifications),2)
+            with _StableReadback() as held:
+                with self.assertRaises(HistoricalExecutionEvidenceError):module._archive_worker(state,digest('a'),{'code_directory_sha256':digest('0')},held)
+
     def testHeldPrivateArchiveBindsWholeWorkerToSealedMetadataAndPinnedModules(self):
         import io,plistlib,subprocess,zipfile
         from forge_platform import managed_historical_denied_attempt as module

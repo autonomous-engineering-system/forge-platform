@@ -57,3 +57,25 @@ an old permit and no hand-written denial authority is accepted.
 
 Current result: source qualification in progress; new signed release and actual
 VM continuation NOT_RUN. Clean public CLI/GUI E2E and MVP closure remain OPEN.
+
+## 2026-10-14 actual 0.4.21 inspection finding
+
+Public 0.4.21 signed app/package and actual VM helper activation passed. The
+authenticated read-only historical inspection denied before product reservation.
+The actual sealed worker failed archived-app codesign verification: split argv
+`-R`, inline-policy makes codesign interpret the policy as a filename. The same
+signed archive, policy and environment succeeds with `-R=inline-policy`.
+
+The separately authorized correction changes exactly four argument construction
+sites in the historical archive and current-executor readers. All policies,
+fixed tools, team/identifiers, root ownership/ACL/FD checks, process guards,
+descriptor/legacy-source checks and one-shot continuation remain unchanged.
+
+Genuine frozen public 0.4.20/0.4.21 carriers qualify real Apple app/helper
+verification and exact argv, with wrong identifier/team/CodeDirectory denial.
+Only native current-proof capture in the source test is modeled, so the test
+cannot invoke installed helper authority or acceptance-store mutation. No
+source qualification is an installed PASS. Historical original records and the
+signed 0.4.20 denied-executor archive remain unchanged; the original product
+continuation allowance is still 0/1. The successor release and VM continuation
+remain NOT_RUN until protected delivery and fresh authenticated inspection.

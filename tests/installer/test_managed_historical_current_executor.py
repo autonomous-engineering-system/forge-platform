@@ -23,6 +23,35 @@ class HistoricalCurrentExecutorProofTests(unittest.TestCase):
 
 @unittest.skipUnless(__import__('os').geteuid()==0,'isolated root-owned native-proof IO qualification')
 class HistoricalNativeProofRootIOTests(unittest.TestCase):
+    def testRealPublicParentAndHelperRequireInlinePolicyWhileProofCaptureIsOnlyModeled(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        import subprocess
+        from forge_platform import managed_historical_current_executor as module
+        from tests.installer.historical_public_signed_artifacts import public_signed_app,require_wrong_identity_rejected,POLICY
+        app,cd=public_signed_app('0.4.21');helper=app/'Contents/Resources/forge-platform-installer-helper'
+        require_wrong_identity_rejected(app)
+        expected,_=fixture();current=dict(expected.current_executor);current['code_directory_sha256']='sha256:'+cd
+        raw=canonical({'schema':SCHEMA,'current_executor':current})
+        actual_run=subprocess.run;verifications=[]
+        def observed(args,**kwargs):
+            if args[0]=='/usr/bin/codesign' and '--verify' in args:
+                self.assertNotIn('-R',args)
+                requirements=[arg for arg in args if arg.startswith('-R=')]
+                self.assertEqual(len(requirements),1)
+                self.assertIn('certificate leaf[subject.OU] = "ZEML4LPXH4"',requirements[0])
+                verifications.append(args)
+            return actual_run(args,**kwargs)
+        # Every Apple verification is REAL against the frozen signed carrier.
+        # Only current proof capture is modeled to avoid invoking any installed
+        # helper/acceptance-store authority during these source tests.
+        with patch.object(module,'APP',app),patch.object(module,'HELPER',helper),patch.object(module,'_capture_helper_proof',return_value=raw),patch.object(module.subprocess,'run',side_effect=observed):
+            self.assertTrue(module.require_current_native_executor(current).startswith('sha256:'))
+        self.assertEqual(len(verifications),3)
+        self.assertEqual(verifications[0],['/usr/bin/codesign','--verify','--deep','--strict','-R='+POLICY,str(app)])
+        self.assertEqual(verifications[1][-1],str(helper))
+        self.assertEqual(verifications[2],verifications[0])
+
     def testActualBoundedChildAndFileProfilesWithModeledAppleSigning(self):
         from unittest.mock import patch
         from pathlib import Path
