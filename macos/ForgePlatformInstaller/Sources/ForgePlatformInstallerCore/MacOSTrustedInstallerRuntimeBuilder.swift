@@ -317,6 +317,11 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
                         expectedParentVersion: sealedReleaseProvenance.installerVersion,
                 currentHelperRelease: helperReader.read
                     ),
+                historicalRecoveryTransport: MacOSManagedInstallerReleasedRouteXPCTransport(
+                    helperIdentity: helperIdentity,
+                    expectedParentVersion: sealedReleaseProvenance.installerVersion,
+                    currentHelperRelease: helperReader.read
+                ),
                 helperReleaseBinding: { helperSelection.bind($0) },
                 helperPreparation: { release, allowAuthorization, admission in
                     switch await helperPreparation.prepare(release: release, allowAuthorization: allowAuthorization, admission: admission) {

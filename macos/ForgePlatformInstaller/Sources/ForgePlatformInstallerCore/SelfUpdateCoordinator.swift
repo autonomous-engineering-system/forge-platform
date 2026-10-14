@@ -584,6 +584,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         (any ManagedInstallerPurgeRecoveryStoring)?
     private let preservedRegistryReadTransport:
         (any ManagedInstallerPreservedRegistryReading)?
+    private let historicalRecoveryTransport: (any ManagedInstallerHistoricalRecoveryTransporting)?
     private var productMutationInFlight = false
 
     private var pendingUpdate: PendingUpdate?
@@ -640,9 +641,11 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             (any ManagedInstallerPurgeRecoveryStoring)? = nil,
         preservedRegistryReadTransport:
             (any ManagedInstallerPreservedRegistryReading)? = nil,
+        historicalRecoveryTransport: (any ManagedInstallerHistoricalRecoveryTransporting)? = nil,
         helperReleaseBinding: (@Sendable (VerifiedInstallerReleaseRecord?) -> Void)? = nil,
         helperPreparation: (@Sendable (VerifiedInstallerReleaseRecord, Bool, InstallerHelperPreparationAdmission) async -> InstallerHelperPreparationOutcome)? = nil
     ) {
+        self.historicalRecoveryTransport = historicalRecoveryTransport
         self.helperReleaseBinding = helperReleaseBinding
         self.helperPreparation = helperPreparation
         self.releaseFeed = releaseFeed
@@ -789,6 +792,29 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
 
     private func helperContextIsCurrent(_ record: VerifiedInstallerReleaseRecord, epoch: UInt64) -> Bool {
         helperCurrencyAdmitted && helperAdmissionEpoch == epoch && currentVerifiedReleaseRecord == record
+    }
+
+    public func recoverHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryResult {
+        guard !productMutationInFlight, helperCurrencyAdmitted,
+              let record = currentVerifiedReleaseRecord,
+              let transport = historicalRecoveryTransport,
+              (try? ManagedInstallerHistoricalRecoveryRequest(operationID: operationID)) != nil else {
+            throw ManagedInstallerReleasedRouteXPCFailure.unavailable
+        }
+        let epoch = helperAdmissionEpoch
+        productMutationInFlight = true
+        defer { productMutationInFlight = false }
+        let result: Result<ManagedInstallerHistoricalRecoveryResult, ManagedInstallerReleasedRouteXPCFailure> =
+            await whileExclusivelyLocked(unavailable: { _ in .failure(.unavailable) }) {
+                guard self.helperContextIsCurrent(record, epoch: epoch) else { return .failure(.rejected) }
+                do {
+                    let receipt = try await transport.recoverHistoricalOperation(operationID: operationID)
+                    guard self.helperContextIsCurrent(record, epoch: epoch),
+                          receipt.request.operationID == operationID else { return .failure(.rejected) }
+                    return .success(receipt)
+                } catch { return .failure(.unavailable) }
+            }
+        return try result.get()
     }
 
     public func prepareManagedDeploymentInventory() async -> ManagedDeploymentInventoryResult {

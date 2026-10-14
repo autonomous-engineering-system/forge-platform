@@ -4,6 +4,105 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class SelfUpdateCoordinatorTests: XCTestCase {
+    func testHistoricalRecoveryRetainsTheFullRuntimeHelperBindingForV1AndV2() async throws {
+        let terminal = try historicalRecoveryTerminal()
+        for package in [false, true] {
+            let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: package)
+            let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+            let selection = ManagedInstallerHelperBackendReleaseSelection()
+            let transport = HistoricalRecoveryTransportSpy(result: terminal, reader: { selection.read() })
+            let coordinator = makeCoordinator(feed: FeedSpy(result: .success(record)),
+                inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+                staging: StagingSpy(result: .success(try makeStagedAsset())),
+                historicalRecoveryTransport: transport, helperReleaseBinding: { selection.bind($0) })
+            _ = await coordinator.enforceCurrentInstaller(currentVersion: identity.version)
+            let recovered = try await coordinator.recoverHistoricalOperation(operationID: terminal.request.operationID)
+            XCTAssertEqual(recovered, terminal)
+            let observed = await transport.observedRelease()
+            XCTAssertEqual(observed, record)
+            let operations = await transport.operations()
+            XCTAssertEqual(operations, [terminal.request.operationID])
+        }
+    }
+
+    func testHistoricalRecoveryRejectsUnavailableCurrencyTransportAndForeignReceipt() async throws {
+        let terminal = try historicalRecoveryTerminal()
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: true)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        for mode in ["uncurrent", "missing", "invalid-id", "failure", "foreign"] {
+            let transport = HistoricalRecoveryTransportSpy(result: mode == "failure" ? nil : terminal)
+            let coordinator = makeCoordinator(feed: FeedSpy(result: .success(record)),
+                inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+                staging: StagingSpy(result: .success(try makeStagedAsset())),
+                historicalRecoveryTransport: mode == "missing" ? nil : transport)
+            if mode != "uncurrent" { _ = await coordinator.enforceCurrentInstaller(currentVersion: identity.version) }
+            let id = mode == "invalid-id" ? "bad/id" : mode == "foreign" ? "another-operation" : terminal.request.operationID
+            do { _ = try await coordinator.recoverHistoricalOperation(operationID: id); XCTFail("Must reject \(mode)") }
+            catch { XCTAssertNotNil(error as? ManagedInstallerReleasedRouteXPCFailure) }
+            let operations = await transport.operations()
+            XCTAssertEqual(operations.count, ["failure", "foreign"].contains(mode) ? 1 : 0)
+        }
+    }
+
+    func testHistoricalRecoveryRejectsBusyAndCurrencyDriftWhileRPCIsSuspended() async throws {
+        let terminal = try historicalRecoveryTerminal()
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: true)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let feed = FeedSpy(result: .success(record))
+        let entered = expectation(description: "historical RPC suspended")
+        let gate = HelperStageGate(entered: entered)
+        let transport = HistoricalRecoveryTransportSpy(result: terminal, beforeResult: { await gate.wait() })
+        let lock = OperationLockSpy()
+        let coordinator = makeCoordinator(feed: feed,
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())), operationLock: lock,
+            historicalRecoveryTransport: transport)
+        _ = await coordinator.enforceCurrentInstaller(currentVersion: identity.version)
+        let task = Task { try await coordinator.recoverHistoricalOperation(operationID: terminal.request.operationID) }
+        await fulfillment(of: [entered], timeout: 2)
+        XCTAssertEqual(lock.activeLeases(), 1)
+        do { _ = try await coordinator.recoverHistoricalOperation(operationID: terminal.request.operationID); XCTFail("Busy recovery must deny") }
+        catch { XCTAssertEqual(error as? ManagedInstallerReleasedRouteXPCFailure, .unavailable) }
+        await feed.setResult(.failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable)))
+        _ = await coordinator.checkForUpdate(currentVersion: identity.version)
+        await gate.finish()
+        do { _ = try await task.value; XCTFail("An invalidated currency must never report success") }
+        catch { XCTAssertEqual(error as? ManagedInstallerReleasedRouteXPCFailure, .rejected) }
+        XCTAssertEqual(lock.activeLeases(), 0)
+        let ids = await transport.operations(); XCTAssertEqual(ids.count, 1)
+    }
+
+    func testHistoricalRecoveryLeaseFailureDoesNotCallTransport() async throws {
+        let terminal = try historicalRecoveryTerminal()
+        let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: true)
+        let identity = try makeCurrentIdentity(version: "1.2.3", sequence: 20)
+        let lock = HistoricalRecoverySwitchableLock()
+        let transport = HistoricalRecoveryTransportSpy(result: terminal)
+        let coordinator = makeCoordinator(feed: FeedSpy(result: .success(record)),
+            inspector: InspectorSpy(responses: [.success(identity), .success(identity)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())), operationLock: lock,
+            historicalRecoveryTransport: transport)
+        _ = await coordinator.enforceCurrentInstaller(currentVersion: identity.version)
+        lock.block()
+        do { _ = try await coordinator.recoverHistoricalOperation(operationID: terminal.request.operationID); XCTFail("Unavailable lease must deny") }
+        catch { XCTAssertEqual(error as? ManagedInstallerReleasedRouteXPCFailure, .unavailable) }
+        let ids = await transport.operations(); XCTAssertEqual(ids, [])
+    }
+
+    private func historicalRecoveryTerminal() throws -> ManagedInstallerHistoricalRecoveryResult {
+        let f = try ReleasedRouteFixture()
+        let plan = try ManagedInstallerHelperReviewedPlanAdmission().prepare(candidate: f.operation,
+            helperSnapshot: f.snapshot, helperCurrentRelease: f.release)
+        let request = try ManagedInstallerProductOperationRequest.reconstructHistoricalCreate(stablePlan: plan,
+            runtimeEvidenceReferences: ["receipt:original-terminal", "receipt:original-provider"])
+        let receipt = try ManagedInstallerProductOperationReceipt(request: request,
+            productReceiptReferences: ["receipt:ep-source", "receipt:forge-source"],
+            pairingReceiptReference: "receipt:pair-source",
+            readinessReceiptReferences: ["receipt:ep-ready", "receipt:forge-ready"],
+            completions: request.components.map { try ManagedInstallerProductCompletion(componentID: $0.componentID, state: .ready) })
+        return try ManagedInstallerHistoricalRecoveryResult(request: request, receiptData: receipt.canonicalJSONData())
+    }
+
 
     func testFailedCurrencyRecheckCannotReadmitOldHelperRelease() async throws {
         let record = try makeReleaseRecord(version: "1.2.3", sequence: 20, package: true)
@@ -2312,6 +2411,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             (any ManagedInstallerPurgeRecoveryStoring)? = AcceptingPurgeRecoveryStore(),
         preservedRegistryReadTransport:
             (any ManagedInstallerPreservedRegistryReading)? = nil,
+        historicalRecoveryTransport: (any ManagedInstallerHistoricalRecoveryTransporting)? = nil,
         helperReleaseBinding: (@Sendable (VerifiedInstallerReleaseRecord?) -> Void)? = nil,
         helperPreparation: (@Sendable (VerifiedInstallerReleaseRecord, Bool, InstallerHelperPreparationAdmission) async -> InstallerHelperPreparationOutcome)? = nil
     ) -> VerifiedInstallerSelfUpdateCoordinator {
@@ -2335,6 +2435,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             purgeRecoveryTransport: purgeRecoveryTransport,
             purgeRecoveryStore: purgeRecoveryStore,
             preservedRegistryReadTransport: preservedRegistryReadTransport,
+            historicalRecoveryTransport: historicalRecoveryTransport,
             helperReleaseBinding: helperReleaseBinding, helperPreparation: helperPreparation
         )
     }
@@ -3273,5 +3374,36 @@ private actor BlockingRemovalTransportSpy: ManagedInstallerProductRemovalTranspo
     ) {
         pending?.resume(returning: response)
         pending = nil
+    }
+}
+
+private actor HistoricalRecoveryTransportSpy: ManagedInstallerHistoricalRecoveryTransporting {
+    let result: ManagedInstallerHistoricalRecoveryResult?
+    let reader: @Sendable () -> VerifiedInstallerReleaseRecord?
+    private let beforeResult: @Sendable () async -> Void
+    private var ids: [String] = []
+    private var observed: VerifiedInstallerReleaseRecord?
+    init(result: ManagedInstallerHistoricalRecoveryResult?, reader: @escaping @Sendable () -> VerifiedInstallerReleaseRecord? = { nil }, beforeResult: @escaping @Sendable () async -> Void = {}) {
+        self.result = result; self.reader = reader; self.beforeResult = beforeResult
+    }
+    func recoverHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryResult {
+        ids.append(operationID); observed = reader()
+        await beforeResult()
+        guard let result else { throw ManagedInstallerReleasedRouteXPCFailure.unavailable }
+        return result
+    }
+    func observedRelease() -> VerifiedInstallerReleaseRecord? { observed }
+    func operations() -> [String] { ids }
+}
+
+private final class HistoricalRecoverySwitchableLock: InstallerSelfUpdateOperationLocking, @unchecked Sendable {
+    private let mutex = NSLock()
+    private let underlying = OperationLockSpy()
+    private var denied = false
+    func block() { mutex.lock(); denied = true; mutex.unlock() }
+    func acquireExclusiveSelfUpdateOperationLock() -> Result<any InstallerSelfUpdateOperationLock, InstallerSelfUpdateFailure> {
+        mutex.lock(); defer { mutex.unlock() }
+        if denied { return .failure(InstallerSelfUpdateFailure(.selfUpdateOperationInProgress)) }
+        return underlying.acquireExclusiveSelfUpdateOperationLock()
     }
 }

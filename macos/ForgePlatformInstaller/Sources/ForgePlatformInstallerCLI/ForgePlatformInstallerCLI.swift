@@ -420,9 +420,7 @@ enum ForgePlatformInstallerCLIApplication {
                 )
             case .deploymentRecoverHistorical(let operationID):
                 do {
-                    let identity = try ManagedInstallerPostToolXPCHelperIdentity(teamIdentifier: "ZEML4LPXH4")
-                    let transport = MacOSManagedInstallerReleasedRouteXPCTransport(helperIdentity: identity, expectedParentVersion: currentRelease.version)
-                    let receipt = try await transport.recoverHistoricalOperation(operationID: operationID)
+                    let receipt = try await coordinator.recoverHistoricalOperation(operationID: operationID)
                     result = InstallerCLIResult(exitCode: .success, status: "complete", message: "EP en Forge zijn geïnstalleerd, verbonden en gereed.",
                         details: ["operation_id": operationID, "receipt": String(decoding: receipt.receipt.canonicalJSONData(), as: UTF8.self)])
                 } catch {

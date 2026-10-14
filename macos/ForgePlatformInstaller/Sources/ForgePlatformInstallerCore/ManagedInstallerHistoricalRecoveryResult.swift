@@ -43,3 +43,10 @@ public struct ManagedInstallerHistoricalRecoveryResult: Equatable, Sendable {
         return try .init(request: request, receiptData: StrictSignedJSON.canonicalPayload(from: receipt))
     }
 }
+
+
+/// Runtime-owned transport; callers supply only the original operation ID.
+/// The production runtime binds the full verified helper release reader.
+public protocol ManagedInstallerHistoricalRecoveryTransporting: Sendable {
+    func recoverHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryResult
+}
