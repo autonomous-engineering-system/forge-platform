@@ -34,13 +34,31 @@ class NativeQualificationTests(unittest.TestCase):
             for bad in bads:
                 with self.assertRaises(ValueError):subject.admitted_payload(bad,root,(TARGET,))
             for change in ({'source_sha256':'bad'}, {'lines':{'count':True,'covered':1,'percent':100}},
-                           {'lines':{'count':2,'covered':2,'percent':100}}, {'lines':{'count':1}}, {'extra':True}):
+                           {'lines':{'count':2**63,'covered':2**63,'percent':100}}, {'lines':{'count':1}}, {'extra':True}):
                 bad=copy.deepcopy(counts);bad['files'][TARGET].update(change)
                 with self.assertRaises(ValueError):subject.admitted_payload(bad,root,(TARGET,))
             file.write_text('let changed = 2\n')
             with self.assertRaises(ValueError):subject.admitted_payload(counts,root,(TARGET,))
             low=copy.deepcopy(PAYLOAD);low['data'][0]['files'][0]['summary']['lines'].update(covered=0,percent=0)
             with self.assertRaises(ValueError):subject.compact(low,root,(TARGET,),80.2)
+
+    def testMeasuredMultiplicityUsesUnchangedStrictCountValidation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve();self.source(root)
+            counts=subject.compact(PAYLOAD,root,(TARGET,),80.2)
+            # Exported LLVM summaries can count more measured lines than source
+            # text rows. Do not replace that denominator with text-line counts.
+            counts['files'][TARGET]['lines']={'count':4226,'covered':3467,'percent':100*3467/4226}
+            admitted=subject.admitted_payload(counts,root,(TARGET,))
+            self.assertEqual(admitted['data'][0]['files'][0]['summary']['lines']['count'],4226)
+            for lines in ({'count':0,'covered':0,'percent':0},
+                          {'count':True,'covered':1,'percent':100},
+                          {'count':2**63,'covered':2**63,'percent':100},
+                          {'count':1,'covered':2,'percent':100},
+                          {'count':1000,'covered':802,'percent':80.2},
+                          {'count':4226,'covered':3467,'percent':100}):
+                bad=copy.deepcopy(counts);bad['files'][TARGET]['lines']=lines
+                with self.subTest(lines=lines),self.assertRaises(ValueError):subject.admitted_payload(bad,root,(TARGET,))
 
     def testLiveConsumerRequiresContextAndPreservesSourceSnapshot(self):
         with tempfile.TemporaryDirectory() as temp:
