@@ -40,10 +40,10 @@ def admitted_payload(counts, root, targets):
         provenance.require(type(item) is dict and set(item) == {'source_sha256','lines'}
             and item['source_sha256'] == hashes[target] and type(item['lines']) is dict
             and set(item['lines']) == {'count','covered','percent'})
-        maximum = len((root/'macos/ForgePlatformInstaller'/target.lstrip('/')).read_bytes().splitlines())
-        provenance.require(type(item['lines']['count']) is int and 0 < item['lines']['count'] <= maximum)
         records.append(dict(filename=target, summary=dict(lines=item['lines'])))
-    return dict(data=[dict(files=records)])
+    payload = dict(data=[dict(files=records)])
+    provenance.require(gate.validate(payload, targets, 80.2) == 0)
+    return payload
 
 
 def protected_payload(root, env, local_payload, targets, minimum):
