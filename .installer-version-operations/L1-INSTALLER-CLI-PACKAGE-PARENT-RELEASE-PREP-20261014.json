@@ -1,0 +1,25 @@
+{
+  "allowed_projection_paths": [
+    "installer-version.json"
+  ],
+  "baseline_version": "0.4.18",
+  "event_lineage": "L1-CLI-PACKAGE-PARENT-CORRECTION-20261014",
+  "expected_source_revision": "8e1764c18d61fcb53f71728dfe8c10e205bb976e",
+  "manifest_sha256_after": "f4f8a790daf66efc7e0b39957e4197c2f89730d4a3f82547a8317a062d293f0e",
+  "manifest_sha256_before": "ab8e69c9e185ccf8c185645adc26b7762ce4cf0b6d0d02461c3ddaef03efb922",
+  "operation_id": "L1-INSTALLER-CLI-PACKAGE-PARENT-RELEASE-PREP-20261014",
+  "packager_sha256_after": "3b8b1e6d5233539430243bfd3f4bd310716e8ebfc4bb0f2a46766020c4c43ea7",
+  "packager_sha256_before": "3b8b1e6d5233539430243bfd3f4bd310716e8ebfc4bb0f2a46766020c4c43ea7",
+  "policy_revision": "forge-platform-installer-version-v2",
+  "product": "forge-platform-installer",
+  "release_class": "PATCH",
+  "requested_bump": "patch",
+  "requested_exact_version": null,
+  "runtime_info_plist_path": "Contents/Info.plist",
+  "runtime_projection_schema": "forge-platform-installer-info-plist-version-projection/v1",
+  "runtime_projection_sha256_after": "ed95369bf40b365c10a2413f9afc3cce4dde58f17476cce78a268aa6042c3826",
+  "runtime_projection_sha256_before": "d03f40c3cd49492f074c0b31b55da85518cae3abec3cbd9159308b8b24ea3390",
+  "schema": "forge-platform.installer-version-operation/v2",
+  "state": "APPLIED",
+  "target_version": "0.4.19"
+}
