@@ -25,7 +25,15 @@ from .managed_historical_product_evidence import (
 from .product_worker_authority import PRODUCT_WORKER_ROOT
 
 SCHEMA = 'forge-platform.historical-product-execute/v1'
+CONTINUATION_SCHEMA = 'forge-platform.historical-product-continue/v1'
 _SEAL = object()
+
+class HistoricalExecutionStageError(RuntimeError):
+    def __init__(self,stage):
+        _require(stage in {'worker-admission','component-execution'})
+        self.stage=stage
+        super().__init__('historical execution stage failed')
+
 
 
 def decode_execution_intent(raw):
@@ -36,7 +44,7 @@ def decode_execution_intent(raw):
     value=json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     _require(_canonical(value)==raw and isinstance(value,dict)
              and set(value)=={'schema','operation_id','nonce','record_sha256'}
-             and value['schema']==SCHEMA)
+             and value['schema'] in {SCHEMA,CONTINUATION_SCHEMA})
     from .managed_historical_execution_evidence import _uuid, _digest
     from .managed_historical_product_evidence import decode_inspection_intent, INSPECTION_SCHEMA
     decode_inspection_intent(_canonical({'schema':INSPECTION_SCHEMA,'operation_id':value['operation_id']}))
@@ -109,7 +117,8 @@ def _consume_once(state, name, raw, *, owner=0):
 def admit_historical_execution(raw):
     _require(os.geteuid()==0)
     intent=decode_execution_intent(raw);op=intent['operation_id']
-    name='historical-execution-'+sha256(op.encode()).hexdigest()+'.json'
+    continuation=intent['schema']==CONTINUATION_SCHEMA
+    name=('historical-continuation-' if continuation else 'historical-execution-')+sha256(op.encode()).hexdigest()+'.json'
     with _PrivateHistoricalRecordReadback(PRODUCT_WORKER_ROOT/'state') as private:
         record=private.read(name,256*1024)
     _require('sha256:'+sha256(record).hexdigest()==intent['record_sha256'])
@@ -127,11 +136,18 @@ def admit_historical_execution(raw):
         original.request,dict(original.protected_sha256_by_role),
         inspection['original_descriptor_sha256'],resolve_identity_sha256(wires[0]['forge_service_account']),
         inspection['current_executor']['release_trust_sha256'],inspection['current_executor'],
-        value['worker_id'],intent['nonce'],value['original_effect_sha256'],value['reserved_effect_sha256'])
+        value['worker_id'],intent['nonce'],value['original_effect_sha256'],value['reserved_effect_sha256'],
+        value.get('previous_record_sha256') if continuation else None,
+        value.get('denial_proof_sha256') if continuation else None)
     require_current_native_executor(expected.current_executor)
     decoded=read_historical_execution_evidence(expected)
     _require(decoded.record_sha256==intent['record_sha256'])
     inspect_original_recovery_preflight(PRODUCT_WORKER_ROOT,op)
+    if continuation:
+        from .managed_historical_denied_attempt import denied_attempt_proof
+        proof=denied_attempt_proof(op,reserved_effect=(expected.worker_id,expected.reserved_effect_sha256))
+        _require('sha256:'+sha256(proof).hexdigest()==expected.denial_proof_sha256
+                 and json.loads(proof)['previous_record_sha256']==expected.previous_record_sha256)
     claim_name='historical-consumed-'+sha256(op.encode()).hexdigest()+'.json'
     claim=_canonical({'schema':'forge-platform.historical-execution-consumption/v1',
                       'nonce':expected.nonce,'record_sha256':decoded.record_sha256})
@@ -144,6 +160,9 @@ def admit_historical_execution(raw):
 
 def execute_historical_request(raw, *, worker_path, base_python):
     from .product_worker_authority import ProductWorkerAuthorityLoader
-    admission=admit_historical_execution(raw)
-    service=ProductWorkerAuthorityLoader(worker_path=worker_path,base_python=base_python).load_historical(admission)
-    return service.execute_historical(admission)
+    try:admission=admit_historical_execution(raw)
+    except Exception as error:raise HistoricalExecutionStageError('worker-admission') from error
+    try:
+        service=ProductWorkerAuthorityLoader(worker_path=worker_path,base_python=base_python).load_historical(admission)
+        return service.execute_historical(admission)
+    except Exception as error:raise HistoricalExecutionStageError('component-execution') from error

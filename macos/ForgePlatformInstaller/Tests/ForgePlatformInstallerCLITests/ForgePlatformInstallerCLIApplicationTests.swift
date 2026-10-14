@@ -4,6 +4,21 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ForgePlatformInstallerCLIApplicationTests: XCTestCase {
+    func testReadOnlyHistoricalCLIRequiresNoYesAndDoesNotExecuteRecovery() async throws {
+        let coordinator = CLIReadyCoordinator()
+        let startup = CLIStartupSpy(outcome: .ready(currentRelease: try release("1.2.3"), coordinator: coordinator))
+        let result = await run(["deployment", "inspect-historical", "--operation-id", "original-operation", "--non-interactive", "--json"], startup: startup, version: "1.2.3")
+        XCTAssertEqual(result.code, 0)
+        XCTAssertTrue(result.stdout.joined().contains("recovery-inspected"))
+        XCTAssertTrue(result.stdout.joined().contains("execution_authorized"))
+        let inspections = await coordinator.historicalInspectionRequests()
+        let executions = await coordinator.historicalRecoveryRequests()
+        let inventories = await coordinator.inventoryCalls()
+        XCTAssertEqual(inspections, ["original-operation"])
+        XCTAssertEqual(executions, [])
+        XCTAssertEqual(inventories, 0)
+    }
+
     func testHistoricalRecoveryUsesTheStartupOwnedCoordinatorExactlyOnce() async throws {
         let coordinator = CLIReadyCoordinator()
         let current = try release("1.2.3")
@@ -1684,6 +1699,12 @@ private actor CLITestTrustedRuntime: TrustedInstallerRuntime {
 }
 
 private actor CLIReadyCoordinator: InstallerWizardCoordinator {
+    private var inspectionRequests: [String] = []
+    func inspectHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryInspectionResult {
+        inspectionRequests.append(operationID)
+        return try .init(operationID: operationID, continuationRequired: true)
+    }
+    func historicalInspectionRequests() -> [String] { inspectionRequests }
     private var recoveryRequests: [String] = []
     func recoverHistoricalOperation(operationID: String) async throws -> ManagedInstallerHistoricalRecoveryResult {
         recoveryRequests.append(operationID)

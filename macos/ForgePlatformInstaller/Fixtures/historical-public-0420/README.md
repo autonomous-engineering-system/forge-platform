@@ -1,0 +1,1 @@
+Actual public 0.4.20 signed descriptor and sealed public provenance, retained byte-identically for source signature/correlation tests. These files are not current execution authority, provider data, credentials or installed E2E evidence. Public descriptor SHA256 c57789cd6a15886d64b581f27f27cf311bf553239fc17811775fdfd8bb560f22.

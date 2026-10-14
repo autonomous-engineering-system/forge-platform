@@ -26,8 +26,8 @@ def fixture():
     manifest = composition_manifest(composition_id="forge-ep-managed-v1", forge_version="2.8.1", forge_digest=digest("7"), ep_version="2.3.113", ep_digest=digest("8"))
     payload = request_payload(manifest, installed=None, exists=False)
     request = decode_native_product_operation_request(canonical(payload))
-    current = {"version": "1.2.4", "release_page": "https://github.com/autonomous-engineering-system/forge-platform/releases/tag/v1.2.4", "asset_name": "ForgePlatformInstaller-1.2.4-arm64.zip", "sha256": digest("5"), "signing_key_id": request.installer_release.signing_key_id, "sequence": 1, "source_revision": "a" * 40, "release_trust_sha256": digest("a"), "code_directory_sha256": digest("b"), "team_identifier": "ZEML4LPXH4"}
-    expected = HistoricalExecutionExpectedBinding(request, {r: digest("c") for r in ROLES}, digest("d"), digest("e"), digest("a"), current, str(uuid4()), str(uuid4()), digest("f"), digest("0"))
+    current = {"version": "1.2.4", "release_page": "https://github.com/autonomous-engineering-system/forge-platform/releases/tag/v1.2.4", "asset_name": "ForgePlatformInstaller-1.2.4-arm64.zip", "sha256": digest("5"), "signing_key_id": request.installer_release.signing_key_id, "sequence": 1, "source_revision": "a" * 40, "release_trust_sha256": "a" * 64, "code_directory_sha256": digest("b"), "team_identifier": "ZEML4LPXH4"}
+    expected = HistoricalExecutionExpectedBinding(request, {r: digest("c") for r in ROLES}, digest("d"), digest("e"), "a" * 64, current, str(uuid4()), str(uuid4()), digest("f"), digest("0"))
     ep = "product-" + sha256((request.request_fingerprint + "\x1fengineering-platform-server\x1fmutation").encode()).hexdigest()
     forge = "product-" + sha256((request.request_fingerprint + "\x1fforge-runtime\x1fmutation").encode()).hexdigest()
     inspection = {"schema": "forge-platform.historical-inspection-binding/v1", "state": "INSPECTED", "execution_authorized": False, "scope": "original-dual-create-and-installation-pairing", "original_request": payload, "original_ep_operation_id": ep, "original_descriptor_sha256": expected.descriptor_sha256, "original_operator_identity_sha256": expected.operator_sha256, "protected_sha256_by_role": dict(expected.protected_sha256_by_role), "current_executor": current, "preserve_original_journals": True, "preserve_historical_uncertainty": True}
@@ -85,6 +85,20 @@ class HistoricalExecutionEvidenceTests(unittest.TestCase):
             with self.assertRaises(HistoricalExecutionEvidenceError): replace(expected, **kwargs)
         # Mutating source dictionaries cannot change the validated expectation.
         with self.assertRaises(TypeError): expected.current_executor["version"] = "9.9.9"
+
+    def testNativeBareTrustContractIsStrictAndOtherDigestsRemainTagged(self):
+        expected, _ = fixture()
+        self.assertEqual(len(expected.original_trust_sha256), 64)
+        for bad in (digest("a"), "A" * 64, "a" * 63, "a" * 65, True, None):
+            with self.subTest(trust=bad):
+                with self.assertRaises(HistoricalExecutionEvidenceError):
+                    replace(expected, original_trust_sha256=bad)
+                with self.assertRaises(HistoricalExecutionEvidenceError):
+                    replace(expected, current_executor=dict(expected.current_executor, release_trust_sha256=bad))
+        with self.assertRaises(HistoricalExecutionEvidenceError):
+            replace(expected, current_executor=dict(expected.current_executor, release_trust_sha256="0" * 64))
+        with self.assertRaises(HistoricalExecutionEvidenceError):
+            replace(expected, current_executor=dict(expected.current_executor, code_directory_sha256="b" * 64))
 
     def testUnknownDuplicateNoncanonicalAndOversizedJsonIsDenied(self):
         expected, value = fixture(); raw = canonical(value)

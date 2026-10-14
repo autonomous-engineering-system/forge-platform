@@ -418,13 +418,27 @@ enum ForgePlatformInstallerCLIApplication {
                     register: replaceCleanVM045Helper,
                     replacingCleanVM045: true
                 )
+            case .deploymentInspectHistorical(let operationID):
+                do {
+                    let readback = try await coordinator.inspectHistoricalOperation(operationID: operationID)
+                    result = InstallerCLIResult(exitCode: .success, status: "recovery-inspected",
+                        message: "De herstelvoorwaarden zijn gecontroleerd; er is niets uitgevoerd.",
+                        details: ["operation_id": readback.operationID, "continuation_required": readback.continuationRequired ? "true" : "false", "execution_authorized": "false"])
+                } catch let failure as ManagedInstallerHistoricalRecoveryStageFailure {
+                    result = InstallerCLIResult(exitCode: .executionFailed, status: "recovery-inspection-blocked", message: failure.stage.message, details: ["stage": failure.stage.rawValue])
+                } catch {
+                    result = InstallerCLIResult(exitCode: .executionFailed, status: "recovery-inspection-blocked", message: ManagedInstallerHistoricalRecoveryStage.helperAdmission.message)
+                }
             case .deploymentRecoverHistorical(let operationID):
                 do {
                     let receipt = try await coordinator.recoverHistoricalOperation(operationID: operationID)
                     result = InstallerCLIResult(exitCode: .success, status: "complete", message: "EP en Forge zijn geïnstalleerd, verbonden en gereed.",
                         details: ["operation_id": operationID, "receipt": String(decoding: receipt.receipt.canonicalJSONData(), as: UTF8.self)])
+                } catch let failure as ManagedInstallerHistoricalRecoveryStageFailure {
+                    result = InstallerCLIResult(exitCode: .executionFailed, status: "recovery-blocked", message: failure.stage.message,
+                        details: ["stage": failure.stage.rawValue])
                 } catch {
-                    result = InstallerCLIResult(exitCode: .executionFailed, status: "recovery-blocked", message: "Herstel is niet bevestigd. Controleer de componentstatus; start geen nieuwe installatie.")
+                    result = InstallerCLIResult(exitCode: .executionFailed, status: "recovery-blocked", message: ManagedInstallerHistoricalRecoveryStage.helperAdmission.message)
                 }
             case .deploymentList:
                 result = await workflow.listDeployments()

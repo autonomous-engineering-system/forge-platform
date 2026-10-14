@@ -21,6 +21,35 @@ struct FileManagedInstallerHistoricalExecutionRecordStore: Sendable {
         try publishPrivateBytes(record.canonicalData, named: record.operationFileName)
     }
 
+    func originalRecord(operationID: String) throws -> Data? {
+        try readPrivateBytes(named: "historical-execution-" + Self.operationHash(operationID) + ".json")
+    }
+
+    func requireUnconsumed(operationID: String) throws {
+        for prefix in ["historical-consumed-", "historical-completion-", "historical-continuation-"] {
+            guard try readPrivateBytes(named: prefix + Self.operationHash(operationID) + ".json") == nil else {
+                throw ManagedInstallerHistoricalOperationReconstructionFailure.unavailable
+            }
+        }
+    }
+
+    private static func operationHash(_ operationID: String) throws -> String {
+        guard ManagedPythonRuntimeStagingValidation.isOperationID(operationID) else { throw ManagedInstallerHistoricalOperationReconstructionFailure.unavailable }
+        return SHA256.hash(data: Data(operationID.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func readPrivateBytes(named name: String) throws -> Data? {
+        let fd = state.path.withCString { Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY) }
+        guard fd >= 0 else { throw ManagedInstallerHistoricalOperationReconstructionFailure.unavailable }
+        defer { Darwin.close(fd) }
+        try directory(fd)
+        var initial = stat(); guard Darwin.fstat(fd, &initial) == 0 else { throw ManagedInstallerHistoricalOperationReconstructionFailure.unavailable }
+        try namedDirectory(fd, initial: initial)
+        let bytes = try read(name, root: fd)
+        try namedDirectory(fd, initial: initial)
+        return bytes
+    }
+
     func publishCompletion(_ receipt: ManagedInstallerProductOperationReceipt) throws {
         let name = "historical-completion-" + SHA256.hash(data: Data(receipt.operationID.utf8)).map { String(format: "%02x", $0) }.joined() + ".json"
         try publishPrivateBytes(receipt.canonicalJSONData(), named: name)
@@ -30,7 +59,7 @@ struct FileManagedInstallerHistoricalExecutionRecordStore: Sendable {
     // accepts these bytes, and persisted bytes alone are not execution authority.
     func publishPrivateBytes(_ data: Data, named name: String) throws {
         typealias Failure = ManagedInstallerHistoricalOperationReconstructionFailure
-        let prefix = name.hasPrefix("historical-execution-") ? "historical-execution-" : "historical-completion-"
+        let prefix = name.hasPrefix("historical-execution-") ? "historical-execution-" : (name.hasPrefix("historical-continuation-") ? "historical-continuation-" : "historical-completion-")
         guard geteuid() == owner, state.isFileURL, state.baseURL == nil,
               !data.isEmpty, data.count <= 256 * 1024,
               name.hasPrefix(prefix), name.hasSuffix(".json"),

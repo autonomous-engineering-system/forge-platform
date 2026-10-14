@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import XCTest
@@ -37,6 +38,39 @@ final class ManagedInstallerHistoricalExecutionRecordStoreTests: XCTestCase {
         XCTAssertThrowsError(try healthy.publishPrivateBytes(data, named: name))
         XCTAssertEqual(try Data(contentsOf: state.appendingPathComponent(name)), data)
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: state.path).contains { $0.hasPrefix(".") })
+    }
+
+    func testContinuationIsSeparateImmutableAndNeverReopensConsumption() throws {
+        let (state, data, _) = try fixture()
+        let store = FileManagedInstallerHistoricalExecutionRecordStore(state: state, owner: getuid())
+        let operation = "managed-python-source-continuation"
+        let suffix = SHA256.hash(data: Data(operation.utf8)).map { String(format: "%02x", $0) }.joined() + ".json"
+        XCTAssertNil(try store.originalRecord(operationID: operation))
+        try store.requireUnconsumed(operationID: operation)
+        let originalName = "historical-execution-" + suffix
+        try store.publishPrivateBytes(data, named: originalName)
+        XCTAssertEqual(try store.originalRecord(operationID: operation), data)
+        try store.requireUnconsumed(operationID: operation)
+        let continuation = "historical-continuation-" + suffix
+        try store.publishPrivateBytes(Data("source-successor".utf8), named: continuation)
+        XCTAssertThrowsError(try store.publishPrivateBytes(Data("retry".utf8), named: continuation))
+        XCTAssertThrowsError(try store.requireUnconsumed(operationID: operation))
+        XCTAssertEqual(try Data(contentsOf: state.appendingPathComponent(originalName)), data)
+        XCTAssertEqual(try Data(contentsOf: state.appendingPathComponent(continuation)), Data("source-successor".utf8))
+        XCTAssertThrowsError(try store.originalRecord(operationID: "../other"))
+        XCTAssertThrowsError(try store.requireUnconsumed(operationID: "/other"))
+    }
+
+    func testConsumptionOrCompletionAloneKeepsContinuationBlocked() throws {
+        for prefix in ["historical-consumed-", "historical-completion-"] {
+            let (state, data, _) = try fixture()
+            let operation = "managed-python-source-consumed"
+            let suffix = SHA256.hash(data: Data(operation.utf8)).map { String(format: "%02x", $0) }.joined() + ".json"
+            try HistoricalPublishedSourceFixture.write(data, state.appendingPathComponent(prefix + suffix))
+            let store = FileManagedInstallerHistoricalExecutionRecordStore(state: state, owner: getuid())
+            XCTAssertThrowsError(try store.requireUnconsumed(operationID: operation))
+            XCTAssertEqual(try Data(contentsOf: state.appendingPathComponent(prefix + suffix)), data)
+        }
     }
 
     func testBroadDirectoryAndSymlinkedRecordCannotBeUsed() throws {

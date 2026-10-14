@@ -144,4 +144,66 @@ class HistoricalRootFactoryIntegrationTests(unittest.TestCase):
                 self.assertEqual((state/name).read_bytes(),record)
                 self.assertEqual((state/'product-worker-effects.json').read_bytes(),effects)
 
+    def testContinuationConsumesTheSharedClaimAndRetainsPredecessorOnlyAfterDenialProof(self):
+        from dataclasses import replace
+        from hashlib import sha256
+        from forge_platform.managed_historical_product_evidence import HistoricalProductEvidence
+        from forge_platform.managed_historical_execution_admission import admit_historical_execution
+        expected,value=fixture()
+        wire={'deployment_id':expected.request.deployment_id,'forge_service_account':'source-operator',
+              'ep_instance_id':'ep-source','forge_instance_id':'forge-source',
+              'installation_pairing':{'operation_id':'pair-source'}}
+        authority=canonical({'installation_routes':[wire]})
+        effects=canonical({'schema':'forge-platform.product-worker-effects/v1','uncertain':True,'activeIDs':[expected.worker_id]})
+        roles=dict(expected.protected_sha256_by_role);roles['authority']='sha256:'+sha256(authority).hexdigest()
+        expected=replace(expected,protected_sha256_by_role=roles,reserved_effect_sha256='sha256:'+sha256(effects).hexdigest())
+        value['inspection']['protected_sha256_by_role']=roles
+        value['inspection_sha256']='sha256:'+sha256(canonical(value['inspection'])).hexdigest()
+        value['reserved_effect_sha256']=expected.reserved_effect_sha256
+        predecessor=canonical(value)
+        proof=canonical({'previous_record_sha256':'sha256:'+sha256(predecessor).hexdigest()})
+        value['schema']='forge-platform.historical-product-continuation-permit/v1'
+        value['previous_record_sha256']='sha256:'+sha256(predecessor).hexdigest()
+        value['denial_proof_sha256']='sha256:'+sha256(proof).hexdigest()
+        record=canonical(value);record_digest='sha256:'+sha256(record).hexdigest()
+        intent=canonical({'schema':'forge-platform.historical-product-continue/v1','operation_id':expected.request.operation_id,'nonce':expected.nonce,'record_sha256':record_digest})
+        original=HistoricalProductEvidence(expected.request,canonical(value['inspection']['original_request']),
+            value['inspection']['original_ep_operation_id'],tuple(sorted(roles.items())))
+        with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp:
+            root=Path(tmp);root.chmod(0o700);state=root/'state';state.mkdir(mode=0o700)
+            name='historical-continuation-'+sha256(expected.request.operation_id.encode()).hexdigest()+'.json'
+            old_name='historical-execution-'+sha256(expected.request.operation_id.encode()).hexdigest()+'.json'
+            for n,raw in [(old_name,predecessor),(name,record),('product-worker-effects.json',effects)]:
+                (state/n).write_bytes(raw);(state/n).chmod(0o600)
+            with patch('forge_platform.managed_historical_denied_attempt.denied_attempt_proof',return_value=proof) as denied, \
+                 patch('forge_platform.managed_historical_execution_admission.PRODUCT_WORKER_ROOT',root), \
+                 patch('forge_platform.managed_historical_execution_record_reader.PRODUCT_WORKER_ROOT',root), \
+                 patch('forge_platform.managed_historical_execution_admission.reconstruct_original_product_evidence',return_value=original), \
+                 patch('forge_platform.managed_historical_execution_record_reader.reconstruct_original_product_evidence',return_value=original), \
+                 patch('forge_platform.managed_historical_execution_admission.inspect_original_recovery_preflight',return_value=None) as preflight, \
+                 patch('forge_platform.managed_historical_execution_admission.require_current_native_executor',return_value=digest('b')) as current, \
+                 patch('forge_platform.product_worker_authority.ProductWorkerAuthorityLoader._read_secure_authority',return_value=authority), \
+                 patch('forge_platform.managed_installer_user_identity.resolve_identity_sha256',return_value=expected.operator_sha256), \
+                 patch.dict(os.environ,{'FORGE_PLATFORM_PRODUCT_WORKER_EFFECT_ID':expected.worker_id}):
+                # The real closed private reader and O_EXCL/fsync claim run.
+                # Only signed-executor/physical-original observations are
+                # modeled; this is explicitly source qualification.
+                with patch('forge_platform.managed_historical_execution_admission.require_current_native_executor',side_effect=HistoricalExecutionEvidenceError('unavailable')):
+                    with self.assertRaises(HistoricalExecutionEvidenceError):admit_historical_execution(intent)
+                self.assertFalse(list(state.glob('historical-consumed-*')))
+                with patch('forge_platform.managed_historical_denied_attempt.denied_attempt_proof',return_value=canonical({'previous_record_sha256':digest('0')})):
+                    with self.assertRaises(HistoricalExecutionEvidenceError):admit_historical_execution(intent)
+                self.assertFalse(list(state.glob('historical-consumed-*')))
+                cap=admit_historical_execution(intent)
+                self.assertEqual(cap.expected.request,expected.request)
+                self.assertNotEqual(cap.current_release,expected.request.installer_release)
+                self.assertTrue(current.called);self.assertTrue(preflight.called);self.assertTrue(denied.called)
+                self.assertEqual((state/old_name).read_bytes(),predecessor)
+                claims=list(state.glob('historical-consumed-*'));self.assertEqual(len(claims),1)
+                frozen=claims[0].read_bytes()
+                with self.assertRaises(FileExistsError):admit_historical_execution(intent)
+                self.assertEqual(claims[0].read_bytes(),frozen)
+                self.assertEqual((state/name).read_bytes(),record)
+                self.assertEqual((state/'product-worker-effects.json').read_bytes(),effects)
+
 if __name__ == "__main__": unittest.main()

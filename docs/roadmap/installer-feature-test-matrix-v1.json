@@ -7259,5 +7259,20 @@
       "installation-scope detach/repair execution",
       "complete current two-component lifecycle orchestration"
     ]
+  },
+  "current_checkpoint": {
+    "recorded_at": "2026-10-14",
+    "latest_public_installer": "0.4.20",
+    "public_helper_registration": "PASS",
+    "original_historical_recovery": "FAIL_TRUST_FORMAT_CONTRACT",
+    "immutable_reserved_record_present": true,
+    "consumption_or_completion_present": false,
+    "trust_contract_continuation_source": "QUALIFICATION_IN_PROGRESS",
+    "successor_release": "NOT_RUN",
+    "actual_continuation": "NOT_RUN",
+    "clean_cli_e2e": "OPEN",
+    "clean_gui_e2e": "OPEN",
+    "mvp_complete": false,
+    "document": "docs/installer-trust-contract-continuation.md"
   }
 }

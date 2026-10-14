@@ -97,12 +97,15 @@ def read_historical_execution_evidence(expected: HistoricalExecutionExpectedBind
     """Return correlated Evidence only; no loader, consumption or product effects."""
     _require(os.geteuid()==0 and isinstance(expected,HistoricalExecutionExpectedBinding)
              and os.environ.get("FORGE_PLATFORM_PRODUCT_WORKER_EFFECT_ID")==expected.worker_id)
-    name="historical-execution-"+sha256(expected.request.operation_id.encode()).hexdigest()+".json"
+    name=("historical-continuation-" if expected.previous_record_sha256 is not None else "historical-execution-")+sha256(expected.request.operation_id.encode()).hexdigest()+".json"
     with _PrivateHistoricalRecordReadback(PRODUCT_WORKER_ROOT/"state") as private:
         raw=private.read(name,256*1024)
         effects=private.read("product-worker-effects.json",8192)
         _effects(effects,expected)
         decoded=decode_historical_execution_evidence(raw,expected=expected)
+        if expected.previous_record_sha256 is not None:
+            prior=private.read("historical-execution-"+sha256(expected.request.operation_id.encode()).hexdigest()+".json",256*1024)
+            _require("sha256:"+sha256(prior).hexdigest()==expected.previous_record_sha256)
         original=reconstruct_original_product_evidence(PRODUCT_WORKER_ROOT,expected.request.operation_id)
         _require(original.request==expected.request
                  and dict(original.protected_sha256_by_role)==dict(expected.protected_sha256_by_role))
