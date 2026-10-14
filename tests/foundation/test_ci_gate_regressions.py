@@ -52,7 +52,9 @@ class CoverageContractTests(unittest.TestCase):
             path = Path(tmp) / "coverage.json"
             path.write_text(json.dumps(value), encoding="utf-8")
             output = io.StringIO()
-            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            # This method exercises local measurement models. The protected
+            # hosted admission has its own explicit context/provenance tests.
+            with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}), contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                 code = gate.main([str(path), *args])
             return code, output.getvalue()
 
@@ -60,6 +62,14 @@ class CoverageContractTests(unittest.TestCase):
         code, output = self.invoke(value, *args)
         self.assertNotEqual(code, 0, output)
         self.assertNotIn("COVERAGE=PASS", output)
+
+    def test_local_models_do_not_inherit_real_build_authority(self) -> None:
+        env = {"GITHUB_ACTIONS": "true", "GITHUB_WORKFLOW": "Forge Platform installer release framework"}
+        with mock.patch.dict(os.environ, env), mock.patch("scripts.protected_root_qualification.read_counts") as hosted:
+            self.assertEqual(self.invoke(payload())[0], 0)
+            self.assertEqual(self.invoke({"data": [{"files": [record(name, 802, 1000, 80.2) for name in FILES]}]})[0], 1)
+            hosted.assert_not_called()
+            self.assertEqual(os.environ["GITHUB_ACTIONS"], "true")
 
     def test_happy_path_has_every_production_swift_file(self) -> None:
         code, output = self.invoke(payload())
