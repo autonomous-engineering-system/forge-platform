@@ -89,7 +89,7 @@ def _capture_helper_proof():
 def _verify_sealed_parent(expected_executor):
     environment={'HOME':'/var/empty','LANG':'C','LC_ALL':'C','PATH':'/usr/bin:/bin:/usr/sbin:/sbin'}
     policy='anchor apple generic and identifier "com.autonomous-engineering-system.forge-platform-installer" and certificate leaf[subject.OU] = "ZEML4LPXH4"'
-    result=subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict','-R',policy,str(APP)],
+    result=subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict','-R='+policy,str(APP)],
         stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30,env=environment)
     _require(result.returncode==0)
     result=subprocess.run(['/usr/bin/codesign','--display','--verbose=4',str(APP)],
@@ -112,8 +112,8 @@ def require_current_native_executor(expected_executor):
         parent_before=APP.lstat()
         _verify_sealed_parent(expected_executor)
         # Existing Developer ID team, no new trustkey or caller-supplied policy.
-        checked=subprocess.run(['/usr/bin/codesign','--verify','--strict','-R',
-            'anchor apple generic and identifier "com.autonomous-engineering-system.forge-platform-installer.helper" and certificate leaf[subject.OU] = "ZEML4LPXH4"',str(HELPER)],
+        checked=subprocess.run(['/usr/bin/codesign','--verify','--strict',
+            '-R=anchor apple generic and identifier "com.autonomous-engineering-system.forge-platform-installer.helper" and certificate leaf[subject.OU] = "ZEML4LPXH4"',str(HELPER)],
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             timeout=30,env={'HOME':'/var/empty','LANG':'C','LC_ALL':'C','PATH':'/usr/bin:/bin:/usr/sbin:/sbin'})
         _require(checked.returncode==0 and _profile(before)==_profile(os.fstat(fd))
