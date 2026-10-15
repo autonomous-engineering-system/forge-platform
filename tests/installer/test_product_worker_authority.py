@@ -168,6 +168,31 @@ class ProductWorkerAuthorityLoaderTests(unittest.TestCase):
         self.assertIsNone(service.preserved_dispatcher)
         self.assertEqual(dict(service.repair_route_configurations),{})
 
+    def test_canonical_v7_assembles_runtime_preparation_without_executing_it(self):
+        from forge_platform.product_worker_authority import ManagedProductOperationHelperBuilder
+        from forge_platform.managed_product_runtime_service_access import ManagedProductRuntimeServiceAccess
+        payload=self.installation_authority()
+        manifest=json.loads(Path('compositions/forge-ep-2.8.1-2.3.113.json').read_bytes())
+        payload['candidate_manifests']=[{'payload':manifest,'digest':'sha256:'+sha256(_canonical(manifest)).hexdigest()}]
+        wire=payload['installation_routes'][0]
+        wire.update(ep_instance_id='fpi-'+'a'*40, forge_instance_id='fpi-'+'b'*40)
+        self.write(payload)
+        real=ManagedProductOperationHelperBuilder.build_pinned
+        with patch('forge_platform.product_worker_authority.resolve_identity_sha256',return_value='sha256:'+'1'*64), \
+             patch('forge_platform.managed_forge_instance_bootstrap.resolve_identity_sha256',return_value='sha256:'+'1'*64), \
+             patch.object(ManagedProductRuntimeServiceAccess,'prepare',side_effect=AssertionError('construction must be inert')), \
+             patch.object(ManagedProductOperationHelperBuilder,'build_pinned',wraps=real) as build:
+            self.installation_loader().load()
+        config=build.call_args.kwargs['route_configurations'][0]
+        ep=config.ep.service_preparation.runtime_service_access
+        forge=config.forge.instance_bootstrap.runtime_service_access
+        self.assertIsInstance(ep,ManagedProductRuntimeServiceAccess)
+        self.assertIsInstance(forge,ManagedProductRuntimeServiceAccess)
+        self.assertEqual(ep.selected_account,wire['ep_service_account'])
+        self.assertEqual(forge.selected_account,wire['forge_service_account'])
+        self.assertEqual(ep.authority_sha256,'sha256:'+sha256(_canonical(payload)).hexdigest())
+        self.assertEqual(ep.authority_sha256,forge.authority_sha256)
+
     def test_v7_denies_legacy_fields_unqualified_release_and_identity_drift(self):
         for key,value in (('pairing',{}),('project_id','forbidden'),
                           ('forge_artifact_sha256','sha256:'+'0'*64)):

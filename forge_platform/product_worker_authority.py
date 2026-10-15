@@ -266,6 +266,18 @@ class ProductWorkerAuthorityLoader:
                 if len(set(claims))!=len(claims):raise ProductWorkerAuthorityError("installation bindings overlap")
             configurations += tuple(self._installation_route(wire,snapshot,coordinator)
                                     for wire in snapshot.installation_routes)
+        # Attach only to the explicit mutating preparation gates. Loading or
+        # reading a route never grants runtime access or executes a UID probe.
+        from .managed_product_runtime_service_access import ManagedProductRuntimeServiceAccess
+        for config in configurations:
+            if isinstance(config, ReleasedManagedInstallationRouteConfiguration):
+                config.ep.service_preparation.runtime_service_access = ManagedProductRuntimeServiceAccess(
+                    root=self.root, base_python=self.base_python, authority_sha256=authority_digest,
+                    selected_account=config.ep.target.service_account)
+                if config.forge.instance_bootstrap is not None:
+                    config.forge.instance_bootstrap.runtime_service_access = ManagedProductRuntimeServiceAccess(
+                        root=self.root, base_python=self.base_python, authority_sha256=authority_digest,
+                        selected_account=config.forge.target.service_account)
         service = ManagedProductOperationHelperBuilder.build_pinned(
             current_installer_release=current_release or snapshot.release,
             candidate_manifests=snapshot.candidates,

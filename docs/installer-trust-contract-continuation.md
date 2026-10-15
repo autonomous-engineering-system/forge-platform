@@ -79,3 +79,15 @@ source qualification is an installed PASS. Historical original records and the
 signed 0.4.20 denied-executor archive remain unchanged; the original product
 continuation allowance is still 0/1. The successor release and VM continuation
 remain NOT_RUN until protected delivery and fresh authenticated inspection.
+
+## 0.4.22 actual consumed continuation and runtime defect
+
+The signed 0.4.22 console inspection passed and the one admitted continuation was
+executed. Its claim is consumed; component execution failed with partial EP
+service registration and Forge absent. No completion exists. The older NOT_RUN
+and 0/1 statements above describe earlier checkpoints, not the current outcome.
+
+The independently observed interpreter-access defect and source-only correction
+are recorded in [runtime service access qualification](installer-runtime-service-access-qualification.md).
+The old claim is never reused. Current post-consumption execution remains DENY;
+no new signed release, helper transition or VM retry is authorized by this scope.

@@ -144,7 +144,8 @@ class ManagedEPServicePreparation:
 
     def __init__(self, *, product_root: Path, instance_id: str,
                  service_account: str, uid: int | None = None, gid: int | None = None,
-                 cohort_accounts: tuple[str,...] = (), authority_sha256: str | None = None):
+                 cohort_accounts: tuple[str,...] = (), authority_sha256: str | None = None,
+                 runtime_service_access=None):
         _require(product_root.is_absolute() and product_root.name == "engineering-platform"
                  and product_root.parent.name == "products")
         _require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", instance_id) is not None
@@ -156,6 +157,7 @@ class ManagedEPServicePreparation:
         self.uid, self.gid = uid, gid
         self.account_identity = None
         self.cohort_accounts, self.authority_sha256 = cohort_accounts, authority_sha256
+        self.runtime_service_access = runtime_service_access
 
     def bind_account(self):
         _require(re.fullmatch(r"_fpi_[0-9a-f]{20}", self.service_account) is not None)
@@ -201,6 +203,8 @@ class ManagedEPServicePreparation:
     def prepare(self) -> None:
         _require(os.geteuid() == 0 and sys.platform == "darwin")
         self._account()
+        if self.runtime_service_access is not None:
+            self.runtime_service_access.prepare()
         from .managed_ep_partial_create import _json
         from .managed_forge_instance_bootstrap import _search
         authority_path = self.product_root.parent.parent/"product-worker-authority.json"
