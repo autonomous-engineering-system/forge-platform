@@ -11,7 +11,6 @@ struct InstallerMVPFlowView: View {
     @State private var choice: ManagedInstallerCompositionChoice = .forgeAndEngineeringPlatform
     @State private var providerWaitStartedAt: Date?
     @State private var eventLog: InstallerMVPEventLog
-    @State private var showingReport = false
     @State private var started: Bool
     @State private var preparation = InstallerMVPPreparationProgress()
     @State private var project = ""
@@ -106,7 +105,7 @@ struct InstallerMVPFlowView: View {
                     .help("Bekijk het vorige scherm zonder de stap opnieuw uit te voeren")
                 }
                 if started {
-                    Button("Installatierapport", systemImage: "doc.text.magnifyingglass") { showingReport = true }
+                    Button("Installatierapport", systemImage: "doc.text.magnifyingglass", action: viewModel.presentInstallationReport)
                 }
                 Spacer()
                 Text("Installerversie: \(viewModel.state.currentInstallerVersion.description)")
@@ -117,7 +116,10 @@ struct InstallerMVPFlowView: View {
             .frame(minHeight: 30)
         }
         .padding(32)
-        .sheet(isPresented: $showingReport) {
+        .sheet(isPresented: Binding(
+            get: { viewModel.isInstallationReportPresented },
+            set: { if !$0 { viewModel.dismissInstallationReport() } }
+        )) {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Installatierapport").font(.title2.bold())
                 Text("Overzicht van de gecontroleerde verbindingen en installatiestappen.")
@@ -134,7 +136,7 @@ struct InstallerMVPFlowView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Sluiten") { showingReport = false }.keyboardShortcut(.cancelAction)
+                    Button("Sluiten", action: viewModel.dismissInstallationReport).keyboardShortcut(.cancelAction)
                 }
             }.padding(24).frame(width: 620, height: 430)
         }

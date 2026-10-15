@@ -212,6 +212,36 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         XCTAssertFalse(model.state.enabledProvidersVerified)
     }
 
+    func testCustomerReportPresentationOpensAndClosesRealSheetEvenWhenLogUnavailable() throws {
+        for unavailable in [false, true] {
+            let state = try reviewState(acknowledged: false)
+            let model = InstallerWizardViewModel(state: state, coordinator: UnavailableInstallerWizardCoordinator())
+            let log = InstallerMVPEventLog(directory: unavailable ? URL(string: "https://example.invalid")!
+                : try artifactRoot().appendingPathComponent("report-interaction-logs"))
+            model.presentInstallationReport()
+            XCTAssertTrue(model.isInstallationReportPresented)
+            let png = try renderCustomerFlow(state: state, started: true, suppliedModel: model, eventLog: log) { window in
+                let openDeadline = Date().addingTimeInterval(1)
+                while window.attachedSheet == nil && Date() < openDeadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+                }
+                XCTAssertNotNil(window.attachedSheet, "The report commands must present a real AppKit sheet")
+                XCTAssertEqual(log.fileURL != nil, !unavailable)
+                model.dismissInstallationReport()
+                let closeDeadline = Date().addingTimeInterval(1)
+                while window.attachedSheet != nil && Date() < closeDeadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+                }
+                XCTAssertFalse(model.isInstallationReportPresented)
+                XCTAssertNil(window.attachedSheet)
+            }
+            XCTAssertFalse(png.isEmpty)
+            XCTAssertEqual(log.unavailable, unavailable)
+            XCTAssertEqual(model.state.step, .review)
+            XCTAssertFalse(model.isExecutionRequestInFlight)
+        }
+    }
+
     private func stagedProviderModel() async throws -> (InstallerWizardViewModel, ProviderStageGUICoordinator, ProviderTargetID) {
         let requirement = ProviderRequirement(provider: .codex, isRequired: true, credentialScope: .component,
             ownerComponent: .forgeRuntime, targetIdentity: "deployment-new")
@@ -1040,7 +1070,9 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         started: Bool,
         suppliedModel: InstallerWizardViewModel? = nil,
         history: InstallerMVPResultHistory = .init(),
-        choice: ManagedInstallerCompositionChoice = .forgeAndEngineeringPlatform
+        choice: ManagedInstallerCompositionChoice = .forgeAndEngineeringPlatform,
+        eventLog: InstallerMVPEventLog? = nil,
+        interact: ((NSWindow) -> Void)? = nil
     ) throws -> Data {
         let model = suppliedModel ?? InstallerWizardViewModel(
             state: state,
@@ -1050,27 +1082,29 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
             viewModel: model,
             initiallyStarted: started,
             initialChoice: choice,
-            eventLog: InstallerMVPEventLog(directory: try artifactRoot().appendingPathComponent("event-logs")),
+            eventLog: try eventLog ?? InstallerMVPEventLog(directory: artifactRoot().appendingPathComponent("event-logs")),
             resultHistory: history
         )
         .frame(width: 960, height: 680)
         .preferredColorScheme(.light)
         .background(Color(nsColor: .windowBackgroundColor))
         // Native controls/ScrollView are not reliably drawn by ImageRenderer.
-        // Render the actual AppKit-hosted hierarchy without showing a window.
+        // Snapshot cases stay offscreen; explicit report presentation briefly
+        // shows an isolated source-test window to exercise a real AppKit sheet.
         let hosting = NSHostingView(rootView: view)
         hosting.frame = NSRect(x: 0, y: 0, width: 960, height: 680)
         let window = NSWindow(contentRect: hosting.frame,
-                              styleMask: [.borderless], backing: .buffered, defer: false)
+                              styleMask: interact == nil ? [.borderless] : [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = hosting
         window.appearance = NSAppearance(named: .aqua)
         hosting.appearance = NSAppearance(named: .aqua)
         window.title = "Broncontrole — geen installatie"
-        window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
-        window.orderFront(nil)
+        window.setFrameOrigin(interact == nil ? NSPoint(x: -10_000, y: -10_000) : NSPoint(x: 80, y: 80))
+        if interact == nil { window.orderFront(nil) } else { window.makeKeyAndOrderFront(nil) }
         defer { window.close() }
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        interact?(window)
         hosting.layoutSubtreeIfNeeded()
         hosting.displayIfNeeded()
         guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {

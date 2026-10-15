@@ -85,6 +85,11 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     @Published private(set) var state: InstallerWizardState
+    // Presentation state only, shared by report commands and the sheet binding.
+    @Published private(set) var isInstallationReportPresented = false
+    func presentInstallationReport() { isInstallationReportPresented = true }
+    func dismissInstallationReport() { isInstallationReportPresented = false }
+
     @Published private(set) var removalReview: RemovalReviewState = .idle
     @Published private(set) var pairingRepairReview: PairingRepairReviewState = .idle
     @Published private(set) var lifecycleReview: LifecycleReviewState = .idle
