@@ -569,6 +569,9 @@ public enum InstallerCLIParser {
 
 public struct InstallerCLIWorkflow: Sendable {
     public typealias Confirmation = @Sendable (String) async -> Bool
+    public typealias ProviderInteraction = @Sendable (
+        ManagedInstallerProviderAuthenticationChallengeResponse
+    ) async -> Bool
 
     private let currentRelease: VerifiedInstallerRelease
     private let coordinator: any InstallerWizardCoordinator
@@ -1236,7 +1239,8 @@ public struct InstallerCLIWorkflow: Sendable {
     public func applyDeployment(
         _ deploymentSelector: String,
         options: InstallerCLIOptions,
-        confirm: Confirmation
+        confirm: Confirmation,
+        providerInteraction: ProviderInteraction? = nil
     ) async -> InstallerCLIResult {
         var state = InstallerWizardState(currentInstallerVersion: currentRelease.version)
         state.recordSelfUpdateCheck(.verifiedGitHubRelease(currentRelease))
@@ -1352,18 +1356,22 @@ public struct InstallerCLIWorkflow: Sendable {
                     guard receipt.providerTargetIDs == expected else {
                         return Self.blocked("De providerfase gaf andere doelinstanties terug.")
                     }
-                    guard case .observed(let readback) = await coordinator
+                    guard case .observed(var readback) = await coordinator
                         .readReviewedProviders(operation),
                           state.recordReviewedProviderReadback(
                               readback, after: receipt, for: operation
                           ) else {
                         return Self.blocked("De helper kon de exacte providerstatus niet onafhankelijk teruglezen.")
                     }
-                    if !readback.allVerified {
+                    // One bounded ceremony per selected target in this invocation. A
+                    // human acknowledgement is never evidence of authentication:
+                    // only the same operation's independently read receipt is.
+                    var attemptedTargets = Set<String>()
+                    while !readback.allVerified {
                         let challenge: ManagedInstallerProviderAuthenticationChallengeResponse?
                         if !options.nonInteractive, !options.json,
                            let target = readback.targets.first(where: {
-                               $0.state == .authenticationRequired
+                               $0.state == .authenticationRequired && !attemptedTargets.contains($0.id.rawValue)
                            }) {
                             guard state.beginPreMutationCurrencyCheck() else {
                                 return Self.blocked("De installercontrole kon niet opnieuw starten.")
@@ -1382,6 +1390,58 @@ public struct InstallerCLIWorkflow: Sendable {
                             )
                         } else {
                             challenge = nil
+                        }
+                        if let challenge {
+                            guard challenge.operationID == receipt.operationID,
+                                  challenge.stablePlanFingerprint == receipt.stablePlanFingerprint,
+                                  operation.enabledProviderRequirements.contains(where: {
+                                      $0.id.rawValue == challenge.providerTargetID && $0.provider == challenge.provider
+                                  }),
+                                  readback.targets.contains(where: {
+                                      $0.id.rawValue == challenge.providerTargetID && $0.state == .authenticationRequired
+                                  }) else {
+                                return Self.blocked("De aanmeldcode hoort niet bij de beoordeelde provideroperatie.")
+                            }
+                        }
+                        if let challenge, let providerInteraction,
+                           attemptedTargets.insert(challenge.providerTargetID).inserted {
+                            guard await providerInteraction(challenge) else {
+                                return InstallerCLIResult(exitCode: .interactionRequired,
+                                    status: "provider-authentication-paused",
+                                    message: "De aanmelding is onderbroken. Er is geen productinstallatie gestart.",
+                                    details: ["deployment_id": deploymentID, "operation_id": receipt.operationID])
+                            }
+                            guard state.beginPreMutationCurrencyCheck() else {
+                                return Self.blocked("De installercontrole kon na aanmelding niet starten.")
+                            }
+                            let current = await coordinator.recheckInstallerBeforeMutation(
+                                currentVersion: state.currentInstallerVersion
+                            )
+                            guard state.recordPreMutationCurrencyCheck(current),
+                                  state.reviewedProviderStageOperation() == operation else {
+                                return Self.blocked("De installer of het beoordeelde providertarget is na aanmelding gewijzigd.")
+                            }
+                            guard case .observed(let updated) = await coordinator.readReviewedProviders(operation),
+                                  state.recordReviewedProviderReadback(updated, after: receipt, for: operation) else {
+                                return Self.blocked("De helper kon de aanmelding niet onafhankelijk bevestigen.")
+                            }
+                            let previouslyVerified = Set(readback.targets.filter { $0.state == .verified }.map(\.id))
+                            let nowVerified = Set(updated.targets.filter { $0.state == .verified }.map(\.id))
+                            guard previouslyVerified.isSubset(of: nowVerified) else {
+                                return Self.blocked("Een eerder bevestigde providerverbinding is gewijzigd. Er is geen productinstallatie gestart.")
+                            }
+                            readback = updated
+                            // No new ceremony or product attempt when the same
+                            // target remains unverified after the bounded check.
+                            if readback.targets.contains(where: {
+                                $0.id.rawValue == challenge.providerTargetID && $0.state != .verified
+                            }) {
+                                return InstallerCLIResult(exitCode: .interactionRequired,
+                                    status: "provider-verification-pending",
+                                    message: "De aanmelding is nog niet onafhankelijk bevestigd. Er is geen productinstallatie gestart.",
+                                    details: ["deployment_id": deploymentID, "operation_id": receipt.operationID])
+                            }
+                            continue
                         }
                         return InstallerCLIResult(
                             exitCode: .interactionRequired,

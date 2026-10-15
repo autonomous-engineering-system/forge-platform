@@ -171,6 +171,46 @@ class InstallationPairingExecutorTests(unittest.TestCase):
         self.forge.preflight_installation_peer.assert_not_called()
 
 
+    def test_progress_decorator_does_not_grant_concrete_product_authority(self):
+        from forge_platform.managed_product_progress import ProgressProductAdapter
+        from forge_platform.forge_ep_pairing_executor import InstallationPairingStageError, InstallationPairingStage
+        progress=SimpleNamespace(rows={})
+        original=self.forge
+        self.forge=ProgressProductAdapter(original,progress,"forge-runtime")
+        with self.assertRaises(InstallationPairingStageError) as caught: self.pair()
+        self.assertIs(caught.exception.stage,InstallationPairingStage.ROUTE)
+        self.ep.readback.assert_not_called()
+        original.configure_installation_peer.assert_not_called()
+
+    def test_closed_substage_masks_product_output_and_stops_later_commands(self):
+        from forge_platform.forge_ep_pairing_executor import InstallationPairingStageError, InstallationPairingStage
+        secret_stream = "SOURCE_TEST_UNTRUSTED_PRODUCT_OUTPUT"
+        cases = [(self.ep.readback, InstallationPairingStage.EP_READINESS),
+                 (self.forge.configure_installation_peer, InstallationPairingStage.FORGE_CONFIGURE),
+                 (self.forge.read_installation_peer, InstallationPairingStage.CONFIGURATION_READBACK),
+                 (self.forge.preflight_installation_peer, InstallationPairingStage.AUTHENTICATED_PREFLIGHT)]
+        for method, stage in cases:
+            with self.subTest(stage=stage):
+                method.side_effect = RuntimeError(secret_stream)
+                with self.assertRaises(InstallationPairingStageError) as caught:
+                    self.pair()
+                self.assertIs(caught.exception.stage, stage)
+                self.assertEqual(str(caught.exception), stage.failure_code)
+                self.assertNotIn(secret_stream, repr(caught.exception))
+                self.assertIsNone(caught.exception.__cause__)
+                method.side_effect = None
+
+    def test_final_ep_failure_is_distinct_from_initial_readiness(self):
+        from forge_platform.forge_ep_pairing_executor import InstallationPairingStageError, InstallationPairingStage
+        self.ep.readback.side_effect = [self.ep_status, RuntimeError("untrusted detail")]
+        with self.assertRaises(InstallationPairingStageError) as caught: self.pair()
+        self.assertIs(caught.exception.stage, InstallationPairingStage.EP_FINAL_READINESS)
+
+    def test_closed_stage_rejects_arbitrary_diagnostics(self):
+        from forge_platform.forge_ep_pairing_executor import InstallationPairingStageError
+        with self.assertRaises(TypeError): InstallationPairingStageError("raw product output")
+
+
 class InstallationReadinessProfileTests(unittest.TestCase):
     def setUp(self):
         from forge_platform.component_operations import QualifiedArtifact

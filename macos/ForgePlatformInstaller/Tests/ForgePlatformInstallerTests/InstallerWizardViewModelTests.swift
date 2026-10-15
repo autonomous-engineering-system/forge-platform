@@ -867,6 +867,18 @@ actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
     private var authenticationStarts = 0
 
     private let renderChallenge: Bool
+    private var reads = 0
+    private var verified = false
+    private var foreignReadback = false
+    private var currencyUpdate: VerifiedInstallerRelease?
+    private var holdNextRead = false
+    private var readContinuation: CheckedContinuation<Void, Never>?
+    func verifyTargets() { verified = true }
+    func rejectReadbackBinding() { foreignReadback = true }
+    func requireInstallerUpdate(_ release: VerifiedInstallerRelease) { currencyUpdate = release }
+    func holdProviderRead() { holdNextRead = true }
+    func releaseProviderRead() { readContinuation?.resume(); readContinuation = nil }
+    func readCalls() -> Int { reads }
     init(release: VerifiedInstallerRelease, renderChallenge: Bool = false) {
         self.release = release
         self.renderChallenge = renderChallenge
@@ -889,7 +901,8 @@ actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
     func recheckInstallerBeforeMutation(
         currentVersion: InstallerVersion
     ) async -> InstallerCurrencyCheckResult {
-        .current(release)
+        if let currencyUpdate { return .updateRequired(currencyUpdate) }
+        return .current(release)
     }
 
     func stageReviewedProviders(
@@ -908,15 +921,20 @@ actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
     func readReviewedProviders(
         _ operation: ReviewedManagedDeploymentOperation
     ) async -> ManagedInstallerProviderReadbackResult {
+        reads += 1
+        if holdNextRead {
+            holdNextRead = false
+            await withCheckedContinuation { readContinuation = $0 }
+        }
         guard let targets = try? operation.enabledProviderRequirements.map({
             try ManagedInstallerReviewedProviderReadback.Target(
-                id: $0.id, state: .authenticationRequired,
+                id: $0.id, state: verified ? .verified : .authenticationRequired,
                 evidenceReference: "receipt:gui-provider-readback"
             )
         }).sorted(by: { $0.id.rawValue < $1.id.rawValue }),
               let receipt = try? ManagedInstallerReviewedProviderReadback(
                 operationID: "gui-provider-stage",
-                stablePlanFingerprint: String(repeating: "a", count: 64),
+                stablePlanFingerprint: String(repeating: foreignReadback ? "b" : "a", count: 64),
                 targets: targets
               ) else { return .unavailable(.executionFailed) }
         return .observed(receipt)

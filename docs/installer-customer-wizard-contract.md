@@ -2,7 +2,7 @@
 
 Status: requirements from operator E2E feedback on 12 October 2026. This document
 does not claim shipped support or expand source, release, credential or VM budgets.
-The currently published customer GUI 0.4.14 offers only combined EP + Forge.
+The original feedback concerned customer GUI 0.4.14 and its combined EP + Forge flow. Later source qualification is recorded separately below; it is not installed acceptance.
 
 ## Order and component selection
 
@@ -76,10 +76,10 @@ started, and pairing has not started. A combined generic failed row hides these
 facts and is insufficient. This requires real component phase/result transport;
 the frontend must not infer successful installation from timers or files.
 
-The existing provider confirmation button currently invokes advance(), causing
-provider preparation to repeat before official independent readback and ceremony
-completion. A dedicated supported check/finish path and measured admission-cost
-review are open work. Preserve current trust, race, target/evidence, uncertain
+The original provider confirmation button invoked advance(), causing provider
+preparation to repeat before official independent readback and ceremony
+completion. The 15 October source correction below separates that read/finish
+path. Measured signed-runtime admission-cost review remains open. Preserve current trust, race, target/evidence, uncertain
 historical effect and one-login fanout guards; do not bypass them to make the UI fast.
 
 ## Logs and errors
@@ -106,3 +106,65 @@ remaining partial-CREATE recovery boundaries are recorded in
 Component-choice flow, exact review-path/account/space summary, backend substep/
 percentage/ETA transport, readable log and latency correction remain open.
 Each requires reviewed source and relevant installed E2E evidence before PASS.
+
+
+## 15 October source increment: selection, waiting and status report
+
+Unsigned source qualification now covers component choice on Welcome, before
+any verified composition preparation or provider work. EP, EP + Forge and Forge
+are passed as exact component identities to the existing coordinator. Titles,
+provider explanation and confirmation follow that choice. Once preparation
+begins, earlier Welcome results are read-only and cannot change the bound plan.
+Future Workspace/Agent components are not offered.
+
+Provider preparation/verification shows an active indicator and elapsed phase
+time; after 30 seconds it explains that the check is still running. This timer
+is not a backend substep or estimated completion time. Existing operation-bound
+component events remain the authority for installation status.
+
+The footer keeps the version visible and offers a selectable installation status
+report during and after the run. It contains closed customer-facing component and
+provider states. It deliberately does not export privileged journals, raw helper
+streams, failure exception text, codes, credentials or operation identifiers.
+This on-screen report is a snapshot, not a PASS receipt. The follow-up source
+increment below adds a bounded persistent customer log.
+
+Confirmation now includes candidate versions and planned component actions when
+the reviewed plan provides them. Exact physical paths, account creation facts,
+volume-aware storage estimates, measured ETA and a redacted durable event log
+remain OPEN: the current customer review model does not carry those facts.
+They must come from a reviewed authenticated contract; presentation code must
+not guess the helper's layout or invent byte/time estimates.
+
+See [performance qualification](installer-performance-investigation.md) for the
+single-invocation CLI change. These are source/AppKit rendering results only;
+clean signed CLI and GUI acceptance remain OPEN.
+
+
+## 15 October follow-up: GUI confirmation read and persistent log
+
+The authentication confirmation button now calls a dedicated read/finish method.
+It retains the exact staged receipt and immutable reviewed operation, checks
+installer currentness again, and accepts only a readback bound to that same
+operation, fingerprint and target set. It never stages environments, starts a
+ceremony or executes products. Existing generic navigation also selects this
+read-only path when an unverified staged context is present. A prepared read is
+in-flight, so duplicate clicks cannot issue concurrent finish requests. Review
+invalidation clears the context; a late response cannot restore old authority.
+Challenges are checked against the staged operation, fingerprint and provider.
+
+A customer log is written by the logged-in GUI user under
+`~/Library/Logs/ForgePlatformInstaller/installation-<random-id>.log`. It records
+changed functional step/component/provider snapshots with timestamps and elapsed
+time. The report sheet offers **Open logbestand**, during or after the run.
+The owning directory must be private 0700; files are new, exclusive 0600 files.
+Append checks reject symlinks, hardlinks, inode replacement and changed ownership
+or modes. Unchanged snapshots are deduplicated; logs are bounded to 256 events
+and 128 KiB. Failure disables logging, while the visible snapshot remains
+available and installer authority is unchanged. No privileged journal is copied.
+
+Source tests use explicit temporary destinations and synthetic coordinator
+responses. They cover actual filesystem permissions/replacement and asynchronous
+GUI operation/readback binding. They are not a signed VM login/install proof.
+Service/port/path/account facts and durable safe diagnostic codes remain open
+until the helper supplies a reviewed non-secret facts contract.

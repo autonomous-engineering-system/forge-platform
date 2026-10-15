@@ -82,4 +82,31 @@ final class ManagedInstallerComponentProgressTests: XCTestCase {
         XCTAssertEqual(link(file.path, root.appendingPathComponent("alias").path), 0); XCTAssertNil(reader.read(intent))
     }
 
+
+    func testClosedPairingFailureStagesCannotAttachToProductsOrPassingState() throws {
+        let intent = try intent()
+        let codes = ["route", "ep-readiness", "forge-configure", "configuration-validation",
+                     "configuration-readback", "authenticated-preflight", "ep-final-readiness"]
+        for stage in codes {
+            for (component, state, accepted) in [("pairing", "failed", true),
+                ("forge-runtime", "failed", false), ("pairing", "passed", false)] {
+                var fields = payload(intent)
+                fields["rows"] = .array([
+                    .object(["component_id": .string("engineering-platform-server"), "state": .string("passed"), "code": .string("ready")]),
+                    .object(["component_id": .string(component), "state": .string(state), "code": .string("pairing-" + stage + "-failed")]),
+                    .object(["component_id": .string("readiness"), "state": .string("pending"), "code": .string("none")]),
+                ])
+                let bytes = StrictSignedJSON.canonicalPayload(from: .object(fields))
+                if accepted {
+                    let progress = try ManagedInstallerComponentProgress.decode(bytes, intent: intent)
+                    guard case .failed(let reason) = progress.stages.first(where: { $0.id == "pairing" })?.state else {
+                        return XCTFail("pairing failure must remain explicit")
+                    }
+                    XCTAssertTrue(reason.contains("controleren") || reason.contains("herstel"))
+                    XCTAssertFalse(reason.contains("sha256"))
+                } else { XCTAssertThrowsError(try ManagedInstallerComponentProgress.decode(bytes, intent: intent)) }
+            }
+        }
+    }
+
 }

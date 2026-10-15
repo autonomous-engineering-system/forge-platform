@@ -13,6 +13,10 @@ STATES={"pending","running","installed","passed","failed"}
 CODES={"none","preflight","installing","awaiting-pairing","ready",
        "ep-service-start-failed","forge-service-start-failed","component-failed","pairing-failed","readiness-failed",
        "preparing-service","creating-component","registering-service","starting-service","checking-service"}
+PAIRING_FAILURE_CODES = frozenset("pairing-" + stage + "-failed" for stage in (
+    "route", "ep-readiness", "forge-configure", "configuration-validation",
+    "configuration-readback", "authenticated-preflight", "ep-final-readiness"))
+CODES |= PAIRING_FAILURE_CODES
 class ProductProgressError(RuntimeError):pass
 
 class FileProductProgress:
@@ -42,12 +46,12 @@ class FileProductProgress:
         allowed={"pending":{"none"},"running":{"preflight","installing","preparing-service","creating-component",
                             "registering-service","starting-service","checking-service"},
                  "installed":{"awaiting-pairing"},"passed":{"ready"},
-                 "failed":{"ep-service-start-failed","forge-service-start-failed","component-failed","pairing-failed","readiness-failed"}}
+                 "failed":{"ep-service-start-failed","forge-service-start-failed","component-failed","pairing-failed","readiness-failed"} | PAIRING_FAILURE_CODES}
         if (code not in allowed[state]
                 or code=="awaiting-pairing" and component!="forge-runtime"
                 or code=="ep-service-start-failed" and component!="engineering-platform-server"
                 or code=="forge-service-start-failed" and component!="forge-runtime"
-                or code=="pairing-failed" and component!="pairing"
+                or (code=="pairing-failed" or code in PAIRING_FAILURE_CODES) and component!="pairing"
                 or code=="readiness-failed" and component!="readiness"):
             raise ProductProgressError("component progress state/code mismatch")
         self.rows[component]={"component_id":component,"state":state,"code":code}

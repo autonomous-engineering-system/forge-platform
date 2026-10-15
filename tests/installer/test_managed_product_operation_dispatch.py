@@ -98,6 +98,36 @@ def route(*, forge="forge-new", ep="ep-new", pending_ep=False, degrade_ep=False)
 
 
 class ManagedProductOperationDispatchTests(unittest.TestCase):
+    @unittest.skipUnless(os.geteuid()==0, "real protected progress IO requires root")
+    def test_progress_dispatch_preserves_exact_pairing_products_and_final_readiness(self):
+        """Source saga + real writer IO; never installed product acceptance."""
+        _installed,candidate=manifests()
+        with tempfile.TemporaryDirectory(prefix="pairing-progress-boundary-",dir="/private/tmp") as directory:
+            root=Path(directory);(root/"state").mkdir(mode=0o700)
+            registry=ManagedDeploymentRegistry(root/"registry")
+            req=decoded(request_payload(candidate,installed=None,exists=False))
+            admitted=admit_native_product_operation(req,manifest=candidate,registry=registry,
+                current_installer_release=installer_release())
+            selected=route(); original=dict(selected.adapters); test=self
+            class ExactPairer(Pairer):
+                def pair(self,**kwargs):
+                    test.assertIs(kwargs["forge_adapter"],original["forge-runtime"])
+                    test.assertIs(kwargs["ep_adapter"],original["engineering-platform-server"])
+                    return super().pair(**kwargs)
+            selected=replace(selected,pairing_executor=ExactPairer(forge=selected.forge_instance_id,
+                ep=selected.engineering_platform_instance_id))
+            dispatcher=ManagedProductOperationDispatcher(coordinator=coordinator(root,registry),
+                resolver=Resolver(selected),progress_root=root)
+            receipt=dispatcher.dispatch(admitted)
+            self.assertIsNotNone(receipt.pairing_receipt_reference)
+            self.assertEqual(len(receipt.readiness_receipt_references),2)
+            raw=(root/"state/product-progress"/(req.operation_id+".json")).read_bytes()
+            rows=json.loads(raw)["rows"]
+            self.assertEqual({row["component_id"] for row in rows},
+                {"engineering-platform-server","forge-runtime","pairing","readiness"})
+            self.assertTrue(all(row["state"]=="passed" for row in rows))
+            self.assertTrue(all(adapter.execute_calls==1 for adapter in original.values()))
+
     def test_released_pairing_fails_before_mutation_without_private_secure_store(self) -> None:
         _installed, candidate = manifests()
         with tempfile.TemporaryDirectory() as directory:

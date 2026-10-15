@@ -171,3 +171,58 @@ struct InstallerMVPPreflightProblem: Identifiable, Equatable {
         return (["Forge Platform Installer " + version.description] + codes).joined(separator: "\n")
     }
 }
+
+
+extension ManagedInstallerCompositionChoice {
+    var customerTitle: String {
+        switch self {
+        case .engineeringPlatform: "Engineering Platform"
+        case .forge: "Forge"
+        case .forgeAndEngineeringPlatform: "Engineering Platform en Forge"
+        }
+    }
+
+    var customerProviderExplanation: String {
+        switch self {
+        case .engineeringPlatform: "Engineering Platform gebruikt Codex en GitHub."
+        case .forge: "Forge gebruikt Codex."
+        case .forgeAndEngineeringPlatform:
+            "Eén Codex-aanmelding voor EP en Forge, en één GitHub-aanmelding voor EP."
+        }
+    }
+
+    var customerInstallationSummary: String {
+        self == .forgeAndEngineeringPlatform
+            ? "Engineering Platform en Forge worden op deze Mac geïnstalleerd en verbonden."
+            : "\(customerTitle) wordt op deze Mac geïnstalleerd. Je kunt het andere component later installeren en verbinden."
+    }
+}
+
+
+/// Deliberately excludes raw helper/provider output, challenge values, paths,
+/// operation identifiers and exception details. This is a visible status report,
+/// not a privileged journal export or an installed acceptance receipt.
+enum InstallerMVPSafeReport {
+    static func text(state: InstallerWizardState, choice: ManagedInstallerCompositionChoice) -> String {
+        var lines = ["Installerversie: \(state.currentInstallerVersion)",
+                     "Componenten: \(choice.customerTitle)", "", "Providers"]
+        lines += InstallerMVPProviderOverviewGroup.groups(state.providers).map { "\($0.title): \($0.status)" }
+        lines += ["", "Installatie"]
+        lines += state.executionStages.filter { $0.id != "managed-deployment" }.map {
+            "\(InstallerMVPStagePresentation.title(for: $0)): \($0.state.displayName)"
+        }
+        if state.executionStages.isEmpty { lines.append("Nog geen productresultaten.") }
+        return lines.joined(separator: "\n")
+    }
+}
+
+
+enum InstallerMVPComponentTitle {
+    static func title(_ component: String) -> String {
+        switch component {
+        case "engineering-platform-server": "Engineering Platform"
+        case "forge-runtime": "Forge"
+        default: "Component"
+        }
+    }
+}

@@ -63,7 +63,7 @@ enum ForgePlatformInstallerCLIApplication {
         arguments: [String],
         startup: any InstallerCLIStarting,
         versionReader: @Sendable () -> InstallerVersion?,
-        confirm: Confirmation,
+        confirm: @escaping Confirmation,
         registerHelper: @escaping InstallerCLIHelperRegistration.Registrar =
             InstallerCLIHelperRegistration.liveRegistrar,
         replaceQualificationHelper: @escaping InstallerCLIHelperRegistration.Registrar =
@@ -102,7 +102,8 @@ enum ForgePlatformInstallerCLIApplication {
             InstallerCLIHelperRegistration.liveMVP0329Replacer,
         replaceCleanVM045Helper: @escaping InstallerCLIHelperRegistration.Registrar =
             InstallerCLIHelperRegistration.liveCleanVM045Replacer,
-        challengeWriter: ChallengeWriter = writeChallengeToTTY,
+        challengeWriter: @escaping ChallengeWriter = writeChallengeToTTY,
+        waitForProviderAuthentication: Bool = false,
         stdout: Writer,
         stderr: Writer
     ) async -> Int32 {
@@ -448,10 +449,20 @@ enum ForgePlatformInstallerCLIApplication {
                     options: invocation.options
                 )
             case .deploymentApply(let deployment):
+                let interaction: InstallerCLIWorkflow.ProviderInteraction?
+                if waitForProviderAuthentication && !invocation.options.json && !invocation.options.nonInteractive {
+                    interaction = { challenge in
+                        guard challengeWriter(challenge) else { return false }
+                        return await confirm("Rond de officiële aanmelding af. Ben je aangemeld? De installer controleert de verbinding daarna onafhankelijk.")
+                    }
+                } else {
+                    interaction = nil
+                }
                 result = await workflow.applyDeployment(
                     deployment,
                     options: invocation.options,
-                    confirm: confirm
+                    confirm: confirm,
+                    providerInteraction: interaction
                 )
             case .deploymentRemove(let deployment, let operationID, let component):
                 result = await workflow.removeDeployment(
@@ -657,6 +668,7 @@ struct ForgePlatformInstallerCLIMain {
                     line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 )
             },
+            waitForProviderAuthentication: true,
             stdout: { text in
                 print(text)
             },
