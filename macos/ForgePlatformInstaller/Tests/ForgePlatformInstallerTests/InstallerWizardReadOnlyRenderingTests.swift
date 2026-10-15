@@ -212,6 +212,108 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         XCTAssertFalse(model.state.enabledProvidersVerified)
     }
 
+    private func stagedProviderModel() async throws -> (InstallerWizardViewModel, ProviderStageGUICoordinator, ProviderTargetID) {
+        let requirement = ProviderRequirement(provider: .codex, isRequired: true, credentialScope: .component,
+            ownerComponent: .forgeRuntime, targetIdentity: "deployment-new")
+        var state = try providerState(allVerified: false, customRequirements: [requirement], deploymentID: "deployment-new")
+        XCTAssertTrue(state.advance())
+        state.composition = CompositionReview(manifestIdentity: "forge-only", status: .compatible,
+            components: [ComponentDiff(componentID: "forge-runtime", title: "Forge", change: .install,
+                candidateVersion: "2.8.1", artifactDigest: ManagedInstallerProductServiceAccountPlanner.installationForgeArtifactSHA256,
+                detail: "model-only provider review")])
+        let coordinator = ProviderStageGUICoordinator(release: try makeRelease("1.2.3"), renderChallenge: true)
+        let model = InstallerWizardViewModel(state: state, coordinator: coordinator)
+        model.setCompositionAcknowledged(true)
+        model.advance()
+        for _ in 0..<200 {
+            if case .observed = model.providerStage { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard case .observed = model.providerStage else { throw NSError(domain: "source-provider-not-staged", code: 1) }
+        return (model, coordinator, requirement.id)
+    }
+
+    func testCustomerGUIFinishesAuthenticationByReadbackWithoutRestagingAndRejectsDuplicateClicks() async throws {
+        let (model, coordinator, target) = try await stagedProviderModel()
+        model.beginReviewedProviderAuthentication(target)
+        for _ in 0..<200 {
+            if case .challenge = model.providerStage { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard case .challenge = model.providerStage else { return XCTFail("Expected model-only challenge") }
+        await coordinator.verifyTargets()
+        await coordinator.holdProviderRead()
+        model.recheckReviewedProviderConnections()
+        model.recheckReviewedProviderConnections()
+        model.advance()
+        XCTAssertTrue(model.isProviderStageInFlight)
+        XCTAssertEqual(model.lastProviderAuthenticationTarget, target)
+        for _ in 0..<200 {
+            if await coordinator.readCalls() == 2 { break }
+            await Task.yield()
+        }
+        let readsWhileHeld = await coordinator.readCalls()
+        XCTAssertEqual(readsWhileHeld, 2, "One initial read and exactly one confirmation read")
+        await coordinator.releaseProviderRead()
+        for _ in 0..<200 {
+            if case .observed = model.providerStage { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let stages = await coordinator.stageCalls()
+        let starts = await coordinator.authenticationStartCount()
+        let executions = await coordinator.executionCalls()
+        XCTAssertEqual(stages, 1)
+        XCTAssertEqual(starts, 1)
+        XCTAssertEqual(executions, 0)
+        XCTAssertTrue(model.state.enabledProvidersVerified)
+        XCTAssertEqual(model.state.step, .review)
+    }
+
+    func testCustomerGUIConfirmationFailsClosedOnInstallerOrReadbackDrift() async throws {
+        for changeInstaller in [false, true] {
+            let (model, coordinator, _) = try await stagedProviderModel()
+            await coordinator.verifyTargets()
+            if changeInstaller { await coordinator.requireInstallerUpdate(try makeRelease("1.2.4")) }
+            else { await coordinator.rejectReadbackBinding() }
+            model.recheckReviewedProviderConnections()
+            for _ in 0..<200 {
+                if case .blocked = model.providerStage { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            guard case .blocked = model.providerStage else { return XCTFail("Drift must block") }
+            let stages = await coordinator.stageCalls()
+            let executions = await coordinator.executionCalls()
+            let reads = await coordinator.readCalls()
+            XCTAssertEqual(stages, 1)
+            XCTAssertEqual(executions, 0)
+            XCTAssertEqual(reads, changeInstaller ? 1 : 2)
+            XCTAssertFalse(model.state.enabledProvidersVerified)
+        }
+    }
+
+    func testCustomerGUIReviewInvalidationDuringReadbackCannotRestoreOldAuthority() async throws {
+        let (model, coordinator, _) = try await stagedProviderModel()
+        await coordinator.verifyTargets()
+        await coordinator.holdProviderRead()
+        model.recheckReviewedProviderConnections()
+        for _ in 0..<200 {
+            if await coordinator.readCalls() == 2 { break }
+            await Task.yield()
+        }
+        model.setCompositionAcknowledged(false)
+        await coordinator.releaseProviderRead()
+        for _ in 0..<200 {
+            if case .blocked = model.providerStage { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard case .blocked = model.providerStage else { return XCTFail("Old read must not survive review invalidation") }
+        XCTAssertFalse(model.state.enabledProvidersVerified)
+        let executions = await coordinator.executionCalls()
+        let stages = await coordinator.stageCalls()
+        XCTAssertEqual(executions, 0)
+        XCTAssertEqual(stages, 1)
+    }
+
     func testProviderGroupingKeepsIndependentReadinessAndSeparateEPGitHubAction() throws {
         let requirements = [
             ProviderRequirement(provider: .codex, isRequired: true, credentialScope: .component,
@@ -340,6 +442,33 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         XCTAssertTrue(model.state.step == .providers || model.state.step == .review)
         if case .idle = model.providerStage {} else { XCTFail("Viewing history must not stage or authenticate") }
         XCTAssertFalse(model.state.enabledProvidersVerified)
+    }
+
+    func testCustomerChoicesAreBoundBeforeSessionPreparationAndNeverStageProviders() async throws {
+        for choice in ManagedInstallerCompositionChoice.allCases {
+            var state = try selfUpdateCurrent()
+            XCTAssertTrue(state.advance())
+            XCTAssertTrue(state.beginManagedDeploymentInventory())
+            XCTAssertTrue(state.recordManagedDeploymentInventory(.available(try ManagedDeploymentInventory(
+                existing: [], createCandidate: ManagedDeploymentTarget(id: "deployment-new", label: "Nieuw", exists: false),
+                evidenceReference: "inventory:clean"))))
+            XCTAssertTrue(state.selectManagedDeployment("deployment-new"))
+            XCTAssertTrue(state.advance())
+            let spy = CustomerCompositionSelectionSpy()
+            let model = InstallerWizardViewModel(state: state, coordinator: spy)
+            var progress = InstallerMVPPreparationProgress()
+            progress.continuePreparation(viewModel: model, started: true, choice: choice)
+            for _ in 0..<100 {
+                if !(await spy.selections()).isEmpty { break }
+                await Task.yield()
+            }
+            let selections = await spy.selections()
+            XCTAssertEqual(selections, [choice.componentIdentities])
+            XCTAssertFalse(model.state.enabledProvidersVerified)
+            if case .idle = model.providerStage {} else { XCTFail("Selection must not start provider work") }
+            let png = try renderCustomerFlow(state: selfUpdateCurrent(), started: false, choice: choice)
+            try png.write(to: artifactRoot().appendingPathComponent("customer-selection-\(choice.rawValue).png"))
+        }
     }
 
     func testCustomerPreparationUsesExistingEvidenceGates() throws {
@@ -910,7 +1039,8 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         state: InstallerWizardState,
         started: Bool,
         suppliedModel: InstallerWizardViewModel? = nil,
-        history: InstallerMVPResultHistory = .init()
+        history: InstallerMVPResultHistory = .init(),
+        choice: ManagedInstallerCompositionChoice = .forgeAndEngineeringPlatform
     ) throws -> Data {
         let model = suppliedModel ?? InstallerWizardViewModel(
             state: state,
@@ -919,6 +1049,8 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         let view = InstallerMVPFlowView(
             viewModel: model,
             initiallyStarted: started,
+            initialChoice: choice,
+            eventLog: InstallerMVPEventLog(directory: try artifactRoot().appendingPathComponent("event-logs")),
             resultHistory: history
         )
         .frame(width: 960, height: 680)
@@ -974,5 +1106,25 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
 
     private enum ScreenshotError: Error {
         case renderFailed
+    }
+}
+
+
+private actor CustomerCompositionSelectionSpy: InstallerWizardCoordinator {
+    private var requested: [[String]] = []
+    func selections() -> [[String]] { requested }
+    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult { .rejected("unused") }
+    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult { .failed("unused") }
+    func prepareVerifiedCompositionSession(for deployment: ManagedDeploymentTarget) async -> InstallerSessionPreparationResult {
+        XCTFail("Must pass exact selected components")
+        return .unavailable(.coordinatorUnavailable)
+    }
+    func prepareVerifiedCompositionSession(for deployment: ManagedDeploymentTarget, componentIdentities: [String]) async -> InstallerSessionPreparationResult {
+        requested.append(componentIdentities)
+        return .unavailable(.coordinatorUnavailable)
+    }
+    func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult {
+        XCTFail("No provider work before selected session")
+        return .failed(.coordinatorUnavailable)
     }
 }

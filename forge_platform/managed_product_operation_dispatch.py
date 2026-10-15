@@ -449,8 +449,11 @@ class ManagedProductOperationDispatcher:
             self._active_progress = progress
             first = sorted(execution_adapters)[0]
             progress.update(first,"pending","none")
-            execution_adapters = {component:ProgressProductAdapter(adapter,progress,component)
-                                  for component,adapter in route.adapters.items()}
+            # The two-product coordinator owns progress only for component
+            # execution/readback. Pairing retains the exact admitted products.
+            if len(components) == 1:
+                execution_adapters = {component:ProgressProductAdapter(adapter,progress,component)
+                                      for component,adapter in route.adapters.items()}
         if len(components) == 2:
             credential_issuer = None
             credential_reference = None

@@ -89,10 +89,22 @@ final class InstallerWizardViewModel: ObservableObject {
     @Published private(set) var pairingRepairReview: PairingRepairReviewState = .idle
     @Published private(set) var lifecycleReview: LifecycleReviewState = .idle
     @Published private(set) var purgeRecovery: PurgeRecoveryState = .idle
-    @Published private(set) var providerStage: ProviderStageState = .idle
+    // Display continuity only; execution authority remains the exact staged context.
+    private(set) var lastProviderAuthenticationTarget: ProviderTargetID?
+    private var providerStageContext: (operation: ReviewedManagedDeploymentOperation,
+                                       receipt: ManagedInstallerReviewedProviderStageReceipt)?
+    @Published private(set) var providerStage: ProviderStageState = .idle {
+        didSet {
+            if case .idle = providerStage {
+                providerStageContext = nil
+                lastProviderAuthenticationTarget = nil
+            }
+        }
+    }
 
     var isProviderStageInFlight: Bool {
         if case .staging = providerStage { return true }
+        if case .prepared = providerStage { return true }
         if case .authenticating = providerStage { return true }
         return false
     }
@@ -728,6 +740,10 @@ final class InstallerWizardViewModel: ObservableObject {
 
     func advance() {
         if state.step == .review {
+            if !state.enabledProvidersVerified, providerStageContext != nil {
+                recheckReviewedProviderConnections()
+                return
+            }
             guard !isExecutionRequestInFlight, !isProviderStageInFlight else { return }
             guard state.beginPreMutationCurrencyCheck() else { return }
             let currentVersion = state.currentInstallerVersion
@@ -758,6 +774,7 @@ final class InstallerWizardViewModel: ObservableObject {
                             self.providerStage = .blocked("De helper gaf andere providertargets terug.")
                             return
                         }
+                        self.providerStageContext = (operation, receipt)
                         self.providerStage = .prepared(receipt)
                         switch await coordinator.readReviewedProviders(operation) {
                         case .observed(let readback):
@@ -799,13 +816,54 @@ final class InstallerWizardViewModel: ObservableObject {
         _ = state.advance()
     }
 
+    /// A status/finish read of the existing staged operation. Never stages,
+    /// begins a new ceremony, executes products, or interprets a click as proof.
+    func recheckReviewedProviderConnections() {
+        guard state.step == .review, !isExecutionRequestInFlight,
+              !isProviderStageInFlight, let context = providerStageContext,
+              state.beginPreMutationCurrencyCheck() else { return }
+        providerStage = .prepared(context.receipt)
+        let coordinator = coordinator
+        let version = state.currentInstallerVersion
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let currency = await coordinator.recheckInstallerBeforeMutation(currentVersion: version)
+            guard self.state.recordPreMutationCurrencyCheck(currency),
+                  self.state.reviewedProviderStageOperation() == context.operation,
+                  self.providerStageContext?.operation == context.operation,
+                  self.providerStageContext?.receipt == context.receipt else {
+                self.providerStage = .blocked("De installer of het beoordeelde providerplan is gewijzigd. Er is geen nieuwe voorbereiding gestart.")
+                return
+            }
+            let observed = await coordinator.readReviewedProviders(context.operation)
+            guard self.state.step == .review,
+                  self.state.reviewedProviderStageOperation() == context.operation,
+                  self.providerStageContext?.receipt == context.receipt else {
+                self.providerStage = .blocked("De doelinstantie of review is gewijzigd tijdens de verbindingscontrole.")
+                return
+            }
+            switch observed {
+            case .observed(let readback):
+                self.providerStage = self.state.recordReviewedProviderReadback(
+                    readback, after: context.receipt, for: context.operation
+                ) ? .observed(readback) : .blocked("De providerstatus past niet bij de bestaande voorbereidingsoperatie.")
+            case .unavailable:
+                self.providerStage = .blocked("De verbinding kon nog niet onafhankelijk worden bevestigd. Controleer opnieuw; er is geen nieuwe aanmelding gestart.")
+            }
+        }
+    }
+
     func beginReviewedProviderAuthentication(_ targetID: ProviderTargetID) {
         guard state.step == .review,
               case .observed(let readback) = providerStage,
+              let context = providerStageContext,
+              readback.operationID == context.receipt.operationID,
+              readback.stablePlanFingerprint == context.receipt.stablePlanFingerprint,
               readback.targets.contains(where: {
                   $0.id == targetID && $0.state == .authenticationRequired
               }),
               !isProviderStageInFlight else { return }
+        lastProviderAuthenticationTarget = targetID
         providerStage = .authenticating(targetID)
         let coordinator = coordinator
         let currentVersion = state.currentInstallerVersion
@@ -819,7 +877,9 @@ final class InstallerWizardViewModel: ObservableObject {
                 currentVersion: currentVersion
             )
             guard self.state.recordPreMutationCurrencyCheck(currency),
-                  let operation = self.state.reviewedProviderStageOperation()
+                  let operation = self.state.reviewedProviderStageOperation(),
+                  operation == context.operation,
+                  self.providerStageContext?.receipt == context.receipt
             else {
                 self.providerStage = .blocked(
                     "De installer of het beoordeelde doel is gewijzigd. Bouw het plan opnieuw op."
@@ -832,7 +892,14 @@ final class InstallerWizardViewModel: ObservableObject {
             guard self.state.step == .review,
                   self.state.reviewedProviderStageOperation() == operation,
                   let challenge,
-                  challenge.providerTargetID == targetID.rawValue else {
+                  self.providerStageContext?.operation == operation,
+                  self.providerStageContext?.receipt == context.receipt,
+                  challenge.operationID == context.receipt.operationID,
+                  challenge.stablePlanFingerprint == context.receipt.stablePlanFingerprint,
+                  challenge.providerTargetID == targetID.rawValue,
+                  operation.enabledProviderRequirements.contains(where: {
+                      $0.id == targetID && $0.provider == challenge.provider
+                  }) else {
                 self.providerStage = .blocked(
                     "De beoordeelde aanmelding kon niet veilig worden gestart. Controleer het doel opnieuw."
                 )

@@ -53,6 +53,19 @@ final class InstallerMVPFlowPresentationTests: XCTestCase {
         XCTAssertEqual(InstallerMVPFlowStep.done.id, .done)
     }
 
+    func testStatusReportExcludesRawExecutionStreamsAndUnverifiedEndpoints() throws {
+        var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
+        state.executionStages = [ExecutionStage(id: "forge-runtime", title: "SECRET_TITLE",
+            detail: "SECRET_DETAIL", state: .failed("SECRET_ERROR"))]
+        let text = InstallerMVPSafeReport.text(state: state, choice: .forge)
+        XCTAssertTrue(text.contains("Forge: Mislukt"))
+        XCTAssertTrue(text.contains("Installerversie: 1.2.3"))
+        XCTAssertFalse(text.contains("SECRET"))
+        XCTAssertFalse(text.contains("Engineering Platform en Forge"))
+        XCTAssertEqual(ManagedInstallerCompositionChoice.forge.customerProviderExplanation, "Forge gebruikt Codex.")
+        XCTAssertTrue(ManagedInstallerCompositionChoice.engineeringPlatform.customerProviderExplanation.contains("GitHub"))
+    }
+
     func testInitialOverviewGroupsBothCodexTargetsAndKeepsGitHubSeparate() {
         let owners: [ProviderOwnerComponent] = [.engineeringPlatformServer, .forgeRuntime]
         var targets = owners.map {

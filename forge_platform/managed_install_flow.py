@@ -324,9 +324,14 @@ class ManagedForgeEPInstallationCoordinator:
         guarded_registry = _CurrencyGuardedRegistry(
             self.registry, currency, operation_id
         )
+        execution_views = adapters
+        if progress is not None:
+            from .managed_product_progress import ProgressProductAdapter
+            execution_views = {component: ProgressProductAdapter(adapter, progress, component)
+                               for component, adapter in adapters.items()}
         guarded_adapters = {
             component: _CurrencyGuardedAdapter(adapter, currency, plan.deployment_id)
-            for component, adapter in adapters.items()
+            for component, adapter in execution_views.items()
         }
         mutating_components = {
             diff.component for diff in plan.component_diffs
@@ -354,14 +359,15 @@ class ManagedForgeEPInstallationCoordinator:
 
         return self._pair_and_finalize(
             operation_id, desired=desired, readback_requests=readback_requests,
-            adapters=adapters, pairing_executor=pairing_executor, composition_id=composition_id,
+            adapters=adapters, readback_adapters=execution_views,
+            pairing_executor=pairing_executor, composition_id=composition_id,
             composition_manifest_digest=composition_manifest_digest, credential_issuer=credential_issuer,
             credential_reference=credential_reference, currency=currency,
             guarded_registry=guarded_registry, progress=progress)
 
 
     def _pair_and_finalize(
-        self, operation_id, *, desired, readback_requests, adapters, pairing_executor,
+        self, operation_id, *, desired, readback_requests, adapters, readback_adapters, pairing_executor,
         composition_id, composition_manifest_digest, credential_issuer, credential_reference,
         currency, guarded_registry,
         progress=None,
@@ -428,14 +434,20 @@ class ManagedForgeEPInstallationCoordinator:
                 operation_id=operation_id,
             )
             if progress is not None:progress.update("pairing","running","installing")
-            pairing_evidence = pairing_executor.pair(
-                operation_id=operation_id,
-                deployment=current,
-                forge_request=readback_requests[FORGE_COMPONENT],
-                ep_request=readback_requests[EP_COMPONENT],
-                forge_adapter=adapters[FORGE_COMPONENT],
-                ep_adapter=adapters[EP_COMPONENT],
-            )
+            try:
+                pairing_evidence = pairing_executor.pair(
+                    operation_id=operation_id,
+                    deployment=current,
+                    forge_request=readback_requests[FORGE_COMPONENT],
+                    ep_request=readback_requests[EP_COMPONENT],
+                    forge_adapter=adapters[FORGE_COMPONENT],
+                    ep_adapter=adapters[EP_COMPONENT],
+                )
+            except Exception as error:
+                from .forge_ep_pairing_executor import InstallationPairingStageError
+                if progress is not None and isinstance(error, InstallationPairingStageError):
+                    progress.update("pairing", "failed", error.stage.failure_code)
+                raise
             if (
                 pairing_evidence.forge_instance_id != expected_forge
                 or pairing_evidence.ep_instance_id != expected_ep
@@ -457,7 +469,7 @@ class ManagedForgeEPInstallationCoordinator:
         readiness = self._final_readiness(
             desired,
             readback_requests=readback_requests,
-            adapters=adapters,
+            adapters=readback_adapters,
         )
         if readiness is None:
             return ManagedForgeEPInstallationResult(

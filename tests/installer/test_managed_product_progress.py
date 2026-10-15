@@ -102,6 +102,21 @@ class ProtectedProgressFileTests(unittest.TestCase):
         with self.assertRaises(ProductProgressError):
             self.progress.update("engineering-platform-server","failed","forge-service-start-failed")
 
+    def test_pairing_stage_failure_survives_real_IO_and_outer_failure_handler(self):
+        from forge_platform.forge_ep_pairing_executor import InstallationPairingStage
+        for stage in InstallationPairingStage:
+            self.progress.update("pairing", "running", "installing")
+            self.progress.update("pairing", "failed", stage.failure_code)
+            self.progress.fail_active()
+            p=self.root/"state/product-progress"/(self.admitted.request.operation_id+".json")
+            value,_=_json(p,maximum=8192)
+            row=next(row for row in value["rows"] if row["component_id"]=="pairing")
+            self.assertEqual(row,{"component_id":"pairing","state":"failed","code":stage.failure_code})
+            with self.assertRaises(ProductProgressError):
+                self.progress.update("forge-runtime","failed",stage.failure_code)
+            with self.assertRaises(ProductProgressError):
+                self.progress.update("pairing","passed",stage.failure_code)
+
     def test_rejects_arbitrary_message_and_foreign_write_ACL(self):
         with self.assertRaises(ProductProgressError):self.progress.update("forge-runtime","failed","raw private message")
         self.progress.update("engineering-platform-server","running","installing")

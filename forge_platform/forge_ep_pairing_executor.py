@@ -9,11 +9,12 @@ product database or credential value crosses this boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from hashlib import sha256
 import ipaddress
 import json
 import re
-from typing import Mapping
+from typing import Callable, Mapping, TypeVar
 from urllib.parse import urlparse
 
 from .component_operations import ComponentOperationRequest, ProductOperationAdapter
@@ -453,6 +454,39 @@ def _reference(label: str, value: Mapping[str, object]) -> str:
     return f"{label}:sha256:{sha256(encoded).hexdigest()}"
 
 
+class InstallationPairingStage(str, Enum):
+    ROUTE = "route"
+    EP_READINESS = "ep-readiness"
+    FORGE_CONFIGURE = "forge-configure"
+    CONFIGURATION_VALIDATION = "configuration-validation"
+    CONFIGURATION_READBACK = "configuration-readback"
+    AUTHENTICATED_PREFLIGHT = "authenticated-preflight"
+    EP_FINAL_READINESS = "ep-final-readiness"
+
+    @property
+    def failure_code(self) -> str:
+        return "pairing-" + self.value + "-failed"
+
+
+class InstallationPairingStageError(ForgeEPProductPairingError):
+    """Closed substage only; never carries a product exception or stream."""
+    def __init__(self, stage: InstallationPairingStage) -> None:
+        if not isinstance(stage, InstallationPairingStage):
+            raise TypeError("closed installation pairing stage required")
+        self.stage = stage
+        super().__init__(stage.failure_code)
+
+
+_StageResult = TypeVar("_StageResult")
+
+
+def _pairing_stage(stage: InstallationPairingStage, action: Callable[[], _StageResult]) -> _StageResult:
+    try:
+        return action()
+    except Exception:
+        raise InstallationPairingStageError(stage) from None
+
+
 class ForgeEPInstallationPairingExecutor:
     """Require durable installation binding and readback without project authority."""
 
@@ -472,7 +506,7 @@ class ForgeEPInstallationPairingExecutor:
                 or not isinstance(ep_request, ComponentOperationRequest)
                 or not isinstance(forge_adapter, ForgeServerProductAdapter)
                 or not isinstance(ep_adapter, EngineeringPlatformSystemProvisionerAdapter)):
-            raise TypeError("exact deployment, product requests and adapters are required")
+            raise InstallationPairingStageError(InstallationPairingStage.ROUTE)
         forge = deployment.by_component.get(FORGE_COMPONENT)
         ep = deployment.by_component.get(EP_COMPONENT)
         if (operation_id != self.binding.operation_id or forge is None or ep is None
@@ -485,12 +519,15 @@ class ForgeEPInstallationPairingExecutor:
                 or ep.instance_id != self.binding.expected_ep_instance_id
                 or forge_request.artifact != forge_adapter.installed_artifact
                 or not qualified_forge_installation_pairing_artifact(forge_request.artifact)):
-            raise ForgeEPProductPairingError("installation pairing route changed")
-        runtime_id = forge_adapter.target.product_runtime_id
-        _identifier(runtime_id, "Forge runtime")
-        self._require_ep(ep_adapter.readback(ep_request), ep_request)
-        configured = forge_adapter.configure_installation_peer(self.binding)
-        configuration = _mapping(configured.get("configuration"), "installation configuration")
+            raise InstallationPairingStageError(InstallationPairingStage.ROUTE)
+        runtime_id = _pairing_stage(InstallationPairingStage.ROUTE, lambda: forge_adapter.target.product_runtime_id)
+        _pairing_stage(InstallationPairingStage.ROUTE, lambda: _identifier(runtime_id, "Forge runtime"))
+        _pairing_stage(InstallationPairingStage.EP_READINESS,
+                       lambda: self._require_ep(ep_adapter.readback(ep_request), ep_request))
+        configured = _pairing_stage(InstallationPairingStage.FORGE_CONFIGURE,
+                                    lambda: forge_adapter.configure_installation_peer(self.binding))
+        configuration = _pairing_stage(InstallationPairingStage.CONFIGURATION_VALIDATION,
+                                       lambda: _mapping(configured.get("configuration"), "installation configuration"))
         expected = dict(binding_id=self.binding.binding_id, endpoint=self.binding.endpoint,
                         ep_instance_id=self.binding.expected_ep_instance_id, forge_instance_id=runtime_id,
                         consumer_id=self.binding.consumer_id, credential_reference=self.binding.credential_reference,
@@ -505,15 +542,17 @@ class ForgeEPInstallationPairingExecutor:
                 or configuration["operator_binding_version"] < 1
                 or type(configuration.get("timeout_seconds")) not in (int, float)
                 or not 0 < configuration["timeout_seconds"] <= 60):
-            raise ForgeEPProductPairingError("installation configuration authority changed")
+            raise InstallationPairingStageError(InstallationPairingStage.CONFIGURATION_VALIDATION)
         digest = "sha256:" + sha256(json.dumps(dict(configuration), sort_keys=True,
                           separators=(",", ":"), allow_nan=False).encode()).hexdigest()
         if configured.get("configuration_digest") != digest:
-            raise ForgeEPProductPairingError("installation configuration digest changed")
-        readback = forge_adapter.read_installation_peer()
+            raise InstallationPairingStageError(InstallationPairingStage.CONFIGURATION_VALIDATION)
+        readback = _pairing_stage(InstallationPairingStage.CONFIGURATION_READBACK,
+                                  forge_adapter.read_installation_peer)
         if readback != configured:
-            raise ForgeEPProductPairingError("durable installation configuration changed")
-        preflight = forge_adapter.preflight_installation_peer()
+            raise InstallationPairingStageError(InstallationPairingStage.CONFIGURATION_READBACK)
+        preflight = _pairing_stage(InstallationPairingStage.AUTHENTICATED_PREFLIGHT,
+                                   forge_adapter.preflight_installation_peer)
         expected_preflight = dict(status="CONNECTED", binding_id=self.binding.binding_id,
                                  ep_instance_id=self.binding.expected_ep_instance_id, forge_instance_id=runtime_id,
                                  consumer_id=self.binding.consumer_id, contract_version="1.0",
@@ -521,9 +560,9 @@ class ForgeEPInstallationPairingExecutor:
                                  execution_ready=False, configuration_digest=digest)
         if (preflight != expected_preflight or preflight.get("project_authorized") is not False
                 or preflight.get("execution_ready") is not False):
-            raise ForgeEPProductPairingError("authenticated installation connectivity did not pass")
-        ep_readback = ep_adapter.readback(ep_request)
-        self._require_ep(ep_readback, ep_request)
+            raise InstallationPairingStageError(InstallationPairingStage.AUTHENTICATED_PREFLIGHT)
+        ep_readback = _pairing_stage(InstallationPairingStage.EP_FINAL_READINESS, lambda: ep_adapter.readback(ep_request))
+        _pairing_stage(InstallationPairingStage.EP_FINAL_READINESS, lambda: self._require_ep(ep_readback, ep_request))
         return ManagedPairingEvidence(
             forge.instance_id, ep.instance_id,
             _reference("forge-installation-configuration", readback),

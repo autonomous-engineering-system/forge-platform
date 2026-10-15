@@ -7,6 +7,16 @@ public struct ManagedInstallerComponentProgress: Equatable, Sendable {
     public let operationID: String
     public let stages: [ExecutionStage]
 
+    private static let pairingFailureDetails: [String: String] = [
+        "pairing-route-failed": "De installatiegegevens voor de koppeling zijn gewijzigd. Laat het installatieresultaat controleren voordat je hervat.",
+        "pairing-ep-readiness-failed": "EP kon vóór het verbinden niet als gereed worden bevestigd. Laat EP controleren; start geen nieuwe installatie.",
+        "pairing-forge-configure-failed": "Forge heeft de EP-koppeling niet opgeslagen. Laat de Forge-beheerrechten en het installatieresultaat controleren voordat je hervat.",
+        "pairing-configuration-validation-failed": "Forge gaf andere koppelingsgegevens terug dan verwacht. Laat het installatieresultaat controleren voordat je hervat.",
+        "pairing-configuration-readback-failed": "De opgeslagen EP-koppeling kon niet worden bevestigd. Hervat pas na gecontroleerd herstel.",
+        "pairing-authenticated-preflight-failed": "De beveiligde verbinding van Forge naar EP kon niet worden bevestigd. Laat de verbinding en toegangsrechten controleren voordat je hervat.",
+        "pairing-ep-final-readiness-failed": "EP kon na het verbinden niet als gereed worden bevestigd. Laat EP controleren voordat je hervat.",
+    ]
+
     public static func decode(_ data: Data, intent: ManagedInstallerReviewedExecutionIntent) throws -> Self {
         guard !data.isEmpty, data.count <= 8192 else { throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest }
         var reader = try StrictJSONResourceReader(data: data)
@@ -46,7 +56,7 @@ public struct ManagedInstallerComponentProgress: Equatable, Sendable {
             case "running": state = .running; allowedCodes = ["preflight", "installing", "preparing-service", "creating-component", "registering-service", "starting-service", "checking-service"]
             case "installed": state = .awaitingPeer; allowedCodes = ["awaiting-pairing"]
             case "passed": state = .passed; allowedCodes = ["ready"]
-            case "failed": state = .failed(detail); allowedCodes = ["ep-service-start-failed", "forge-service-start-failed", "component-failed", "pairing-failed", "readiness-failed"]
+            case "failed": state = .failed(detail); allowedCodes = Set(["ep-service-start-failed", "forge-service-start-failed", "component-failed", "pairing-failed", "readiness-failed"]).union(pairingFailureDetails.keys)
             default: throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
             }
             guard allowedCodes.contains(code),
@@ -54,6 +64,7 @@ public struct ManagedInstallerComponentProgress: Equatable, Sendable {
                   code != "ep-service-start-failed" || id == "engineering-platform-server",
                   code != "forge-service-start-failed" || id == "forge-runtime",
                   code != "pairing-failed" || id == "pairing",
+                  !pairingFailureDetails.keys.contains(code) || id == "pairing",
                   code != "readiness-failed" || id == "readiness" else {
                 throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
             }
@@ -76,6 +87,7 @@ public struct ManagedInstallerComponentProgress: Equatable, Sendable {
     }
 
     private static func detail(for code: String) -> String? {
+        if let reason = pairingFailureDetails[code] { return reason }
         switch code {
         case "none": return "Nog niet gestart"
         case "preflight": return "Installatie controleren"

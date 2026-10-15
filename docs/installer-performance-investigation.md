@@ -105,3 +105,53 @@ the same targets with seven versus two full initial group reads. Fresh material,
 currentness, account, executable, home and drift checks remain; this is not a
 signed-runtime speedup claim. See the
 [admission qualification](installer-provider-admission-consolidation-proposal.md).
+
+
+## Single-invocation interactive CLI provider continuation (15 October)
+
+The normal interactive CLI frontend now keeps `deployment apply` in the same
+verified composition session while the operator completes official provider
+sign-in. The ephemeral challenge is still written only to the controlling TTY.
+Human confirmation is followed by a fresh installer-currentness check and an
+independent helper readback bound to the original operation, target set and
+stable plan. A final fresh currentness check still precedes product execution.
+
+There is at most one ceremony per selected target per invocation; no polling
+loop, authentication retry, new operation or product retry is added. A target
+that remains unverified, changed prior verification, a foreign challenge,
+installer drift, unavailable readback or cancellation stops before execution.
+Codex fanout remains helper-owned and independently verified. JSON and
+non-interactive callers retain the one-step interaction-required result and
+never enter a human callback. Existing callers without the optional interaction
+callback retain their previous behavior; the shipping CLI main enables it.
+
+The source coordinator regression demonstrates two distinct provider ceremonies
+with one inventory/session/preflight/review/stage sequence and one product call,
+rather than rerunning preparation for each login. Negative regressions cover
+cancellation, unverified human acknowledgement, foreign operation binding,
+installer drift and non-interactive isolation. This removes application-level
+repetition; it does not cache release trust or remove helper admission gates.
+
+Unsigned Swift tests and offscreen AppKit rendering pass. There is no signed
+runtime before/after timing for this change yet. Parallel mutations, shared-lock
+admissions and provider ceremonies remain sequential. Required path/account/
+space presentation and measured ETA are tracked as OPEN in the
+[customer wizard contract](installer-customer-wizard-contract.md).
+
+
+## GUI authentication confirmation: no repeated staging (15 October follow-up)
+
+The GUI's confirmation path previously entered the general advance action and
+called provider staging again before each independent readback. The source now
+retains the exact operation/receipt context and performs only a fresh currency
+check followed by the existing helper read/finish operation. Environment staging
+and a new login ceremony are not part of this action. A prepared read counts as
+in-flight; duplicate clicks are ignored until it completes. A changed review,
+installer or foreign readback blocks without creating another operation.
+
+A coordinator regression holds the read response in flight, clicks confirmation
+and navigation repeatedly, then releases independent verified evidence. It
+observes exactly one initial stage, one initial read plus one confirmation read,
+one original ceremony, and zero product executions. Negative cases cover
+installer updates, foreign fingerprint and review invalidation while awaiting
+the response. Actual signed GUI elapsed-time improvement remains unmeasured.

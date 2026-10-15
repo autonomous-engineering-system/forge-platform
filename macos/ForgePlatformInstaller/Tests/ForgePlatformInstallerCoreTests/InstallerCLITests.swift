@@ -927,6 +927,89 @@ final class InstallerCLITests: XCTestCase {
         XCTAssertTrue(interactiveCalls.contains("provider-authentication"))
     }
 
+    func testInteractiveApplyContinuesSameSessionOnlyAfterIndependentVerification() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let coordinator = CLIWizardCoordinator(session: try session(providers: [provider]),
+            providerAuthenticationRequired: true, interactiveAuthentication: true)
+        let result = await InstallerCLIWorkflow(currentRelease: try release("1.2.3"), coordinator: coordinator)
+            .applyDeployment("new", options: pairedOptions(assumeYes: true), confirm: { _ in false },
+                providerInteraction: { challenge in
+                    XCTAssertEqual(challenge.providerTargetID, provider.id.rawValue)
+                    return true
+                })
+        XCTAssertEqual(result.exitCode, .success)
+        let calls = await coordinator.calls()
+        XCTAssertEqual(calls, ["inventory", "session", "preflight", "review", "currency",
+            "provider-stage", "provider-readback", "currency", "provider-authentication", "currency",
+            "provider-readback", "currency", "execute"])
+        let count = await coordinator.executionCallCount()
+        XCTAssertEqual(count, 1)
+    }
+
+    func testHumanCancellationAndInstallerDriftCannotFinishOrExecute() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        for cancel in [true, false] {
+            let coordinator = CLIWizardCoordinator(session: try session(providers: [provider]),
+                providerAuthenticationRequired: true, interactiveAuthentication: true,
+                currencyAfterAuthentication: cancel ? nil : .updateRequired(try release("1.2.4")))
+            let result = await InstallerCLIWorkflow(currentRelease: try release("1.2.3"), coordinator: coordinator)
+                .applyDeployment("new", options: pairedOptions(assumeYes: true), confirm: { _ in false },
+                    providerInteraction: { _ in !cancel })
+            XCTAssertNotEqual(result.exitCode, .success)
+            XCTAssertNil(result.authenticationChallenge)
+            let reads = await coordinator.providerReadCount()
+            let executions = await coordinator.executionCallCount()
+            XCTAssertEqual(reads, 1, "Must stop before verification when human cancels or installer changes")
+            XCTAssertEqual(executions, 0)
+        }
+    }
+
+    func testTwoProviderCeremoniesShareOnePlanAndExecuteProductsOnce() async throws {
+        let coordinator = CLIWizardCoordinator(session: try session(providers: [
+            ProviderRequirement(provider: .codex, isRequired: true),
+            ProviderRequirement(provider: .githubCLI, isRequired: true),
+        ]), providerAuthenticationRequired: true, interactiveAuthentication: true)
+        let result = await InstallerCLIWorkflow(currentRelease: try release("1.2.3"), coordinator: coordinator)
+            .applyDeployment("new", options: pairedOptions(assumeYes: true), confirm: { _ in false },
+                providerInteraction: { _ in true })
+        XCTAssertEqual(result.exitCode, .success)
+        let calls = await coordinator.calls()
+        for boundary in ["inventory", "session", "preflight", "review", "provider-stage", "execute"] {
+            XCTAssertEqual(calls.filter { $0 == boundary }.count, 1)
+        }
+        XCTAssertEqual(calls.filter { $0 == "provider-authentication" }.count, 2)
+        XCTAssertEqual(calls.filter { $0 == "provider-readback" }.count, 3)
+    }
+
+    func testHumanConfirmationNeverSubstitutesForVerifiedReadbackOrRetriesAuthentication() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        let coordinator = CLIWizardCoordinator(session: try session(providers: [provider]),
+            providerAuthenticationRequired: true, interactiveAuthentication: true, verifyAfterInteraction: false)
+        let result = await InstallerCLIWorkflow(currentRelease: try release("1.2.3"), coordinator: coordinator)
+            .applyDeployment("new", options: pairedOptions(assumeYes: true), confirm: { _ in false },
+                providerInteraction: { _ in true })
+        XCTAssertEqual(result.status, "provider-verification-pending")
+        let count = await coordinator.executionCallCount()
+        XCTAssertEqual(count, 0)
+        let calls = await coordinator.calls()
+        XCTAssertEqual(calls.filter { $0 == "provider-authentication" }.count, 1)
+        XCTAssertEqual(calls.filter { $0 == "session" }.count, 1)
+    }
+
+    func testForeignChallengeAndNoninteractiveModeCannotEnterHumanCallback() async throws {
+        let provider = ProviderRequirement(provider: .codex, isRequired: true)
+        for noninteractive in [false, true] {
+            let coordinator = CLIWizardCoordinator(session: try session(providers: [provider]),
+                providerAuthenticationRequired: true, interactiveAuthentication: true, challengeOperationID: "foreign")
+            let result = await InstallerCLIWorkflow(currentRelease: try release("1.2.3"), coordinator: coordinator)
+                .applyDeployment("new", options: pairedOptions(nonInteractive: noninteractive, assumeYes: true),
+                    confirm: { _ in false }, providerInteraction: { _ in XCTFail("No authorized interaction"); return true })
+            XCTAssertNotEqual(result.exitCode, .success)
+            let count = await coordinator.executionCallCount()
+            XCTAssertEqual(count, 0)
+        }
+    }
+
     func testVerifiedProviderReadbackNeedsFreshCurrencyBeforeProductExecution() async throws {
         let provider = ProviderRequirement(provider: .codex, isRequired: true)
         let coordinator = CLIWizardCoordinator(
@@ -1105,6 +1188,10 @@ final class InstallerCLITests: XCTestCase {
 private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private let selectedSession: VerifiedCompositionSessionPlan
     private let providerAuthenticationRequired: Bool
+    private let interactiveAuthentication: Bool
+    private let verifyAfterInteraction: Bool
+    private let challengeOperationID: String
+    private let currencyAfterAuthentication: InstallerCurrencyCheckResult?
     private let currency: InstallerCurrencyCheckResult?
     private let execution: ManagedDeploymentExecutionResult
     private let inventoryUnavailable: Bool
@@ -1122,11 +1209,17 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     private var removals = 0
     private var stages = 0
     private var providerReads = 0
+    private var lastAuthenticationTarget: ProviderTargetID?
+    private var verifiedInteractiveTargets = Set<ProviderTargetID>()
     private var lifecycleExecutions = 0
 
     init(
         session: VerifiedCompositionSessionPlan,
         providerAuthenticationRequired: Bool = false,
+        interactiveAuthentication: Bool = false,
+        verifyAfterInteraction: Bool = true,
+        challengeOperationID: String = "cli-provider-stage",
+        currencyAfterAuthentication: InstallerCurrencyCheckResult? = nil,
         currency: InstallerCurrencyCheckResult? = nil,
         execution: ManagedDeploymentExecutionResult? = nil,
         inventoryUnavailable: Bool = false,
@@ -1139,6 +1232,10 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     ) {
         selectedSession = session
         self.providerAuthenticationRequired = providerAuthenticationRequired
+        self.interactiveAuthentication = interactiveAuthentication
+        self.verifyAfterInteraction = verifyAfterInteraction
+        self.challengeOperationID = challengeOperationID
+        self.currencyAfterAuthentication = currencyAfterAuthentication
         self.currency = currency
         self.inventoryUnavailable = inventoryUnavailable
         self.removalInventory = removalInventory
@@ -1528,6 +1625,7 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
         currentVersion: InstallerVersion
     ) async -> InstallerCurrencyCheckResult {
         recordedCalls.append("currency")
+        if lastAuthenticationTarget != nil, let currencyAfterAuthentication { return currencyAfterAuthentication }
         return currency ?? .current(try! VerifiedInstallerRelease(
             version: currentVersion,
             releasePage: "https://github.com/pcvantol/forge-platform/releases/tag/current",
@@ -1564,10 +1662,13 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
     ) async -> ManagedInstallerProviderReadbackResult {
         recordedCalls.append("provider-readback")
         providerReads += 1
+        if interactiveAuthentication && verifyAfterInteraction, let lastAuthenticationTarget {
+            verifiedInteractiveTargets.insert(lastAuthenticationTarget)
+        }
         let targets = try? operation.enabledProviderRequirements.map {
             try ManagedInstallerReviewedProviderReadback.Target(
                 id: $0.id,
-                state: providerAuthenticationRequired
+                state: providerAuthenticationRequired && !verifiedInteractiveTargets.contains($0.id)
                     ? .authenticationRequired : .verified,
                 evidenceReference: "receipt:cli-provider-readback"
             )
@@ -1588,7 +1689,17 @@ private actor CLIWizardCoordinator: InstallerWizardCoordinator {
             $0.id == providerTargetID
         }) else { return nil }
         recordedCalls.append("provider-authentication")
-        return nil
+        guard interactiveAuthentication else { return nil }
+        lastAuthenticationTarget = providerTargetID
+        let bytes = try? JSONSerialization.data(withJSONObject: [
+            "operationID": challengeOperationID,
+            "stablePlanFingerprint": String(repeating: "a", count: 64),
+            "providerTargetID": providerTargetID.rawValue,
+            "provider": operation.enabledProviderRequirements.first(where: { $0.id == providerTargetID })!.provider.rawValue,
+            "verificationURL": "https://auth.openai.com/codex/device",
+            "userCode": "ABCD-EF12",
+        ])
+        return bytes.flatMap { try? JSONDecoder().decode(ManagedInstallerProviderAuthenticationChallengeResponse.self, from: $0) }
     }
 
     func performProviderAction(
