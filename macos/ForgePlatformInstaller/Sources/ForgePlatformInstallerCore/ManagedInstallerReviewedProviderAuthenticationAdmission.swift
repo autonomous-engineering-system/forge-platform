@@ -47,6 +47,60 @@ struct ManagedInstallerReviewedProviderAuthenticationAdmission: Sendable {
         )
     }
 
+    /// One read-only admission transaction for the entire ceremony. Keep fresh
+    /// plan/material/currency/physical checks on both sides of target resolution,
+    /// instead of recursively repeating them for each Codex destination. No
+    /// authentication or bootstrap copy occurs inside this transaction.
+    func admitCeremonyTargets(canonicalIntent: Data, providerTargetID: ProviderTargetID) async
+        -> [ManagedInstallerReviewedProviderAuthenticationLaunchContext]? {
+        let timing = ManagedInstallerPhaseTiming(.providerAdmission)
+        defer { timing.finish() }
+        guard let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent,
+              let trusted = try? await loader.loadStablePlan(for: intent), intent.matches(trusted),
+              let plan = try? await loader.loadStablePlan(for: intent),
+              plan == trusted, intent.matches(plan),
+              !plan.deployment.exists,
+              let source = plan.enabledProviderRequirements.first(where: { $0.id == providerTargetID })
+        else { return nil }
+        let group = source.provider == .codex
+            ? plan.enabledProviderRequirements.filter { $0.provider == .codex } : [source]
+        guard !group.isEmpty, group.count <= 2,
+              Set(group.compactMap(\.ownerComponent)).count == group.count,
+              group.allSatisfy({ $0.credentialScope == .component
+                  && $0.targetIdentity == plan.deployment.id && $0.runtime != nil
+                  && ($0.ownerComponent == .forgeRuntime || $0.ownerComponent == .engineeringPlatformServer)
+              }),
+              group.count == 1 || group.allSatisfy({
+                  $0.runtime == source.runtime && $0.runtime?.version.description == "0.157.1"
+              }),
+              let before = await reader.read(stablePlan: plan), before.matches(plan),
+              before.targets.first(where: { $0.id == source.id })?.state == .authenticationRequired
+        else { return nil }
+        var result: [ManagedInstallerReviewedProviderAuthenticationLaunchContext] = []
+        // Source first: the one official human ceremony runs in this account.
+        for requirement in [source] + group.filter({ $0.id != source.id }) {
+            guard let observed = before.targets.first(where: { $0.id == requirement.id }) else { return nil }
+            if observed.state == .verified { continue }
+            guard observed.state == .authenticationRequired,
+                  let target = await prepareTarget(plan, requirement),
+                  target.provider == requirement.provider,
+                  target.priorEvidenceReference == observed.evidenceReference else { return nil }
+            result.append(.init(reviewed: .init(stablePlan: plan, requirement: requirement,
+                priorEvidenceReference: observed.evidenceReference), physicalTarget: target))
+        }
+        guard let physicalAfter = await reader.read(stablePlan: plan), physicalAfter == before else { return nil }
+        // Re-resolve each physical account/executable/home after the full fresh
+        // group read. A matching status digest cannot hide changed launch data.
+        for frozen in result {
+            guard let confirmed = await prepareTarget(plan, frozen.reviewed.requirement),
+                  confirmed == frozen.physicalTarget else { return nil }
+        }
+        guard let planAfter = try? await loader.loadStablePlan(for: intent),
+              planAfter == plan, intent.matches(planAfter), !result.isEmpty else { return nil }
+        return result
+    }
+
     func admit(canonicalIntent: Data, providerTargetID: ProviderTargetID) async
         -> ManagedInstallerReviewedProviderAuthenticationContext? {
         guard let intent = try? ManagedInstallerReviewedExecutionIntent
@@ -79,6 +133,8 @@ struct ManagedInstallerReviewedProviderAuthenticationAdmission: Sendable {
     func admitLaunchTarget(
         canonicalIntent: Data, providerTargetID: ProviderTargetID
     ) async -> ManagedInstallerReviewedProviderAuthenticationLaunchContext? {
+        let timing = ManagedInstallerPhaseTiming(.providerAdmission)
+        defer { timing.finish() }
         guard let reviewed = await admit(
             canonicalIntent: canonicalIntent, providerTargetID: providerTargetID
         ),

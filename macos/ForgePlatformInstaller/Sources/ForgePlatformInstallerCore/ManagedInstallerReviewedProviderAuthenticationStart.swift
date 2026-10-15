@@ -88,22 +88,36 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
                 .decodeJSON(canonicalIntent),
               intent.canonicalJSONData() == canonicalIntent else { return nil }
         let key = key(for: intent)
+        if let expired = sessions[key], expired.session.status() == .expired {
+            // Preserve the old reservation until its original target has been
+            // physically re-admitted, including account and home identity.
+            guard !finishing.contains(key), !reserved.contains(key) else { return nil }
+            reserved.insert(key)
+            let fresh = await admission.admitLaunchTarget(
+                canonicalIntent: canonicalIntent, providerTargetID: providerTargetID
+            )
+            reserved.remove(key)
+            guard fresh == expired.source,
+                  sessions[key]?.session === expired.session,
+                  expired.session.completeExpiredReadback() else { return nil }
+            sessions.removeValue(forKey: key)
+            publishedTargets.removeValue(forKey: key)
+        }
         sessions = sessions.filter {
             $0.value.session.status() == .running
                 || $0.value.session.status() == .exited(0)
+                || $0.value.session.status() == .expired
         }
         publishedTargets = publishedTargets.filter { sessions[$0.key] != nil }
         guard !reserved.contains(key), sessions[key] == nil,
               sessions.count < 8 else { return nil }
         reserved.insert(key)
         defer { reserved.remove(key) }
-        guard let admitted = await admission.admitLaunchTarget(
+        guard let targets = await admission.admitCeremonyTargets(
             canonicalIntent: canonicalIntent, providerTargetID: providerTargetID
-        ), admitted.reviewed.stablePlan.activationPlan.operationID
-            == intent.operationID,
-              let targets = await admission.admitFanoutTargets(
-                  canonicalIntent: canonicalIntent, source: admitted
-              ), let session = makeSession(admitted.physicalTarget) else { return nil }
+        ), let admitted = targets.first,
+              admitted.reviewed.stablePlan.activationPlan.operationID == intent.operationID,
+              let session = makeSession(admitted.physicalTarget) else { return nil }
         sessions[key] = RunningCeremony(session: session, reviewed: admitted.reviewed,
                                        source: admitted, fanoutTargets: targets)
         let challenge = await Task.detached(priority: .userInitiated) {
@@ -112,7 +126,9 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
         guard let challenge,
               challenge.provider == admitted.physicalTarget.provider else {
             session.cancel()
-            sessions.removeValue(forKey: key)
+            // Expiry can win before the first challenge reaches its caller.
+            // Retain the only session-bound proof for a later renewal request.
+            if session.status() != .expired { sessions.removeValue(forKey: key) }
             return nil
         }
         let response = ManagedInstallerProviderAuthenticationChallengeResponse(
@@ -123,7 +139,9 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
                   bytes, intent: intent, targetID: providerTargetID
               ) == response else {
             session.cancel()
-            sessions.removeValue(forKey: key)
+            // Expiry can win before the first challenge reaches its caller.
+            // Retain the only session-bound proof for a later renewal request.
+            if session.status() != .expired { sessions.removeValue(forKey: key) }
             return nil
         }
         return bytes
@@ -136,9 +154,10 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
               let session = sessions[key(for: intent)],
               session.reviewed.requirement.id == providerTargetID,
               !finishing.contains(key(for: intent)) else { return false }
+        session.session.cancel()
+        guard session.session.status() != .expired else { return false }
         sessions.removeValue(forKey: key(for: intent))
         publishedTargets.removeValue(forKey: key(for: intent))
-        session.session.cancel()
         return true
     }
 

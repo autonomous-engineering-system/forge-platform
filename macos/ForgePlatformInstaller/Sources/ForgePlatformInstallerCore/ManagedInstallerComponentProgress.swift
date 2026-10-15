@@ -43,15 +43,16 @@ public struct ManagedInstallerComponentProgress: Equatable, Sendable {
             let allowedCodes: Set<String>
             switch rawState {
             case "pending": state = .pending; allowedCodes = ["none"]
-            case "running": state = .running; allowedCodes = ["preflight", "installing"]
+            case "running": state = .running; allowedCodes = ["preflight", "installing", "preparing-service", "creating-component", "registering-service", "starting-service", "checking-service"]
             case "installed": state = .awaitingPeer; allowedCodes = ["awaiting-pairing"]
             case "passed": state = .passed; allowedCodes = ["ready"]
-            case "failed": state = .failed(detail); allowedCodes = ["ep-service-start-failed", "component-failed", "pairing-failed", "readiness-failed"]
+            case "failed": state = .failed(detail); allowedCodes = ["ep-service-start-failed", "forge-service-start-failed", "component-failed", "pairing-failed", "readiness-failed"]
             default: throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
             }
             guard allowedCodes.contains(code),
                   code != "awaiting-pairing" || id == "forge-runtime",
                   code != "ep-service-start-failed" || id == "engineering-platform-server",
+                  code != "forge-service-start-failed" || id == "forge-runtime",
                   code != "pairing-failed" || id == "pairing",
                   code != "readiness-failed" || id == "readiness" else {
                 throw ManagedInstallerReleasedRouteXPCFailure.invalidRequest
@@ -79,9 +80,15 @@ public struct ManagedInstallerComponentProgress: Equatable, Sendable {
         case "none": return "Nog niet gestart"
         case "preflight": return "Installatie controleren"
         case "installing": return "Installeren en service controleren"
+        case "preparing-service": return "Servicemappen en accounttoegang voorbereiden"
+        case "creating-component": return "Component aanmaken via de officiële installatieroute"
+        case "registering-service": return "Achtergrondservice registreren"
+        case "starting-service": return "Achtergrondservice starten"
+        case "checking-service": return "Service en providerverbinding controleren"
         case "awaiting-pairing": return "Geïnstalleerd; wacht op verbinding met EP"
         case "ready": return "Werking bevestigd"
         case "ep-service-start-failed": return "De EP-service is niet bereikbaar. Laat installatieherstel de servicemappen, toegangsrechten en service controleren voordat je hervat."
+        case "forge-service-start-failed": return "De Forge-servicecontrole is niet geslaagd. De installatie is nog niet gereed. Laat de service, Codex-verbinding en pairing controleren voordat je hervat; start niet opnieuw met installeren."
         case "component-failed": return "Deze component kon niet worden afgerond. Controleer het installatieresultaat voordat je hervat."
         case "pairing-failed": return "EP en Forge konden niet worden verbonden. De componentresultaten blijven behouden."
         case "readiness-failed": return "De eindcontrole is niet geslaagd. De installatie is nog niet gereed."

@@ -275,8 +275,12 @@ struct InstallerMVPFlowView: View {
                 if !viewModel.state.enabledProvidersVerified {
                     providerOverview
                 }
-            case .staging, .authenticating:
-                ProgressView("\(connectingProviderTitle) verbinden…")
+            case .staging:
+                ProgressView("Provideromgevingen voorbereiden en verbindingen controleren…")
+            case .authenticating:
+                ProgressView("\(connectingProviderTitle)-aanmelding voorbereiden en controleren…")
+                Text("De installer controleert de ondertekende bestanden en de geselecteerde accounts. Daarna verschijnt de officiële aanmeldcode.")
+                    .font(.caption).foregroundStyle(.secondary)
             case .prepared:
                 ProgressView("\(connectingProviderTitle) controleren…")
             case .observed(let readback):
@@ -349,8 +353,18 @@ struct InstallerMVPFlowView: View {
     private var installing: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Installeren").font(.title2.weight(.semibold))
-            if viewModel.state.executionStages.contains(where: { $0.state == .running }) {
-                ProgressView().progressViewStyle(.linear)
+            let stages = viewModel.state.executionStages.filter { $0.id != "managed-deployment" }
+            let completed = stages.filter { $0.state == .passed }.count
+            if viewModel.state.managedDeploymentExecutionInFlight {
+                ProgressView(value: Double(completed), total: Double(max(1, stages.count)))
+                    .progressViewStyle(.linear)
+                Text("\(completed) van \(stages.count) stappen afgerond")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let overall = viewModel.state.executionStages.first(where: { $0.id == "managed-deployment" }),
+               case .failed(let reason) = overall.state {
+                Label(reason, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
             }
             if let installationStartedAt {
                 TimelineView(.periodic(from: installationStartedAt, by: 1)) { timeline in
@@ -359,7 +373,7 @@ struct InstallerMVPFlowView: View {
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
             }
-            ForEach(viewModel.state.executionStages) { stage in
+            ForEach(stages) { stage in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
                         Text(InstallerMVPStagePresentation.title(for: stage))
@@ -371,7 +385,7 @@ struct InstallerMVPFlowView: View {
                         case .pending: Image(systemName: "clock").foregroundStyle(.secondary)
                         case .awaitingPeer: Image(systemName: "link").foregroundStyle(.orange)
                         }
-                        Text(stage.state == .pending ? "Nog niet gestart" : stage.state.displayName)
+                        Text(stage.state == .pending ? stage.detail : stage.state.displayName)
                     }
                     if case .failed(let reason) = stage.state {
                         Text(reason).font(.callout).foregroundStyle(.red)
@@ -599,6 +613,7 @@ enum InstallerMVPStagePresentation {
         switch stage.id {
         case "engineering-platform-server": return "Engineering Platform"
         case "forge-runtime": return "Forge"
+        case "preparation": return "Installatie voorbereiden"
         case "managed-deployment":
             return "Engineering Platform en Forge installeren"
         case "product-operations":

@@ -664,6 +664,271 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         ))
     }
 
+    func testCeremonyBatchKeepsTwoFreshReadsAndRejectsStatePlanAndTargetDrift() async throws {
+        let fixture = try CodexFanoutFixture()
+        let targets = fixture.targets
+        let reader = CeremonyCountingReader(first: fixture.prior, after: fixture.prior)
+        let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.fixture.plan), reader: reader,
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let result = await admission.admitCeremonyTargets(canonicalIntent: fixture.intent.canonicalJSONData(),
+                                                        providerTargetID: fixture.ep.id)
+        XCTAssertEqual(result?.map { $0.reviewed.requirement.id }, [fixture.ep.id, fixture.forge.id])
+        let reads = await reader.calls()
+        XCTAssertEqual(reads, 2, "Fresh readback must bracket the whole read-only target transaction")
+        XCTAssertEqual(result?.first?.physicalTarget, targets[fixture.ep.id])
+        for changed in [fixture.sourceVerified, fixture.verified] {
+            let drifting = ManagedInstallerReviewedProviderAuthenticationAdmission(
+                loader: ProviderStagePlanLoader(plan: fixture.fixture.plan),
+                reader: CeremonyCountingReader(first: fixture.prior, after: changed),
+                prepareTarget: { _, requirement in targets[requirement.id] })
+            let rejected = await drifting.admitCeremonyTargets(canonicalIntent: fixture.intent.canonicalJSONData(),
+                                                             providerTargetID: fixture.ep.id)
+            XCTAssertNil(rejected)
+        }
+        let driftedPlan = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderAuthDriftingLoader(plan: fixture.fixture.plan),
+            reader: ProviderAuthStatusReader(status: fixture.prior),
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let planResult = await driftedPlan.admitCeremonyTargets(canonicalIntent: fixture.intent.canonicalJSONData(),
+                                                             providerTargetID: fixture.ep.id)
+        XCTAssertNil(planResult)
+        let swapped = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.fixture.plan),
+            reader: ProviderAuthStatusReader(status: fixture.prior),
+            prepareTarget: { _, _ in targets[fixture.forge.id] })
+        let targetResult = await swapped.admitCeremonyTargets(canonicalIntent: fixture.intent.canonicalJSONData(),
+                                                            providerTargetID: fixture.ep.id)
+        XCTAssertNil(targetResult)
+        let malformed = await admission.admitCeremonyTargets(
+            canonicalIntent: fixture.intent.canonicalJSONData() + Data([10]), providerTargetID: fixture.ep.id)
+        XCTAssertNil(malformed)
+        let incompatible = try CodexFanoutFixture(version: "0.158.0")
+        let wrongRuntime = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: incompatible.fixture.plan),
+            reader: ProviderAuthStatusReader(status: incompatible.prior),
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let runtimeResult = await wrongRuntime.admitCeremonyTargets(
+            canonicalIntent: incompatible.intent.canonicalJSONData(), providerTargetID: incompatible.ep.id)
+        XCTAssertNil(runtimeResult)
+        let verifiedSource = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.fixture.plan),
+            reader: ProviderAuthStatusReader(status: fixture.sourceVerified),
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let verifiedResult = await verifiedSource.admitCeremonyTargets(
+            canonicalIntent: fixture.intent.canonicalJSONData(), providerTargetID: fixture.ep.id)
+        XCTAssertNil(verifiedResult)
+        let forgeOnlyCeremony = await verifiedSource.admitCeremonyTargets(
+            canonicalIntent: fixture.intent.canonicalJSONData(), providerTargetID: fixture.forge.id)
+        XCTAssertEqual(forgeOnlyCeremony?.map { $0.reviewed.requirement.id }, [fixture.forge.id])
+    }
+
+    func testCeremonyBatchReducesFullGroupReadsWithoutReusingAdmissionAcrossEffects() async throws {
+        let fixture = try CodexFanoutFixture()
+        let targets = fixture.targets
+        let oldReader = CeremonyCountingReader(first: fixture.prior, after: fixture.prior)
+        let old = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.fixture.plan), reader: oldReader,
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let intent = fixture.intent.canonicalJSONData()
+        let observedSource = await old.admitLaunchTarget(canonicalIntent: intent, providerTargetID: fixture.ep.id)
+        let source = try XCTUnwrap(observedSource)
+        let previous = await old.admitFanoutTargets(canonicalIntent: intent, source: source)
+        let originalReads = await oldReader.calls()
+        XCTAssertEqual(originalReads, 7)
+        let newReader = CeremonyCountingReader(first: fixture.prior, after: fixture.prior)
+        let updated = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.fixture.plan), reader: newReader,
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let selected = await updated.admitCeremonyTargets(canonicalIntent: intent, providerTargetID: fixture.ep.id)
+        XCTAssertEqual(selected, previous)
+        let currentReads = await newReader.calls()
+        XCTAssertEqual(currentReads, 2)
+        // A later renewal/completion/copy admission is still a separate, fresh
+        // transaction. The first-ceremony result is not a reusable trust cache.
+        let later = await updated.admitLaunchTarget(canonicalIntent: intent, providerTargetID: fixture.ep.id)
+        XCTAssertEqual(later, source)
+        let afterSeparateAdmission = await newReader.calls()
+        XCTAssertEqual(afterSeparateAdmission, 4)
+    }
+
+    func testCeremonyBatchRejectsAccountExecutableAndHomeDriftEvenWithMatchingStatusEvidence() async throws {
+        let fixture = try CodexFanoutFixture()
+        for kind in 0..<4 {
+            let targets = fixture.targets
+            let resolver = CeremonyTargetDrift(targets: targets, kind: kind)
+            let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+                loader: ProviderStagePlanLoader(plan: fixture.fixture.plan),
+                reader: ProviderAuthStatusReader(status: fixture.prior),
+                prepareTarget: { _, requirement in await resolver.target(requirement.id) })
+            let result = await admission.admitCeremonyTargets(canonicalIntent: fixture.intent.canonicalJSONData(),
+                                                            providerTargetID: fixture.ep.id)
+            XCTAssertNil(result, "Changed account, executable, home or missing physical proof must block")
+        }
+    }
+
+    func testConcurrentBeginCannotLaunchSecondCeremonyWhileBatchAdmissionIsSuspended() async throws {
+        let fixture = try CodexFanoutFixture()
+        let targets = fixture.targets
+        let reader = CeremonyPausedReader(status: fixture.prior)
+        let counts = CodexFanoutCounts()
+        let effects = TestManagedInstallerProductWorkerEffectJournal()
+        let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fixture.fixture.plan), reader: reader,
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let starter = ManagedInstallerReviewedProviderAuthenticationStart(admission: admission,
+            makeSession: { _ in counts.makeSession(effects: effects) })
+        let intent = fixture.intent.canonicalJSONData()
+        let first = Task { await starter.begin(canonicalIntent: intent, providerTargetID: fixture.ep.id) }
+        for _ in 0..<100 {
+            if await reader.hasEntered() { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let entered = await reader.hasEntered()
+        XCTAssertTrue(entered)
+        let duplicate = await starter.begin(canonicalIntent: intent, providerTargetID: fixture.forge.id)
+        XCTAssertNil(duplicate)
+        XCTAssertEqual(counts.snapshot(), [0, 0])
+        await reader.release()
+        let challenge = await first.value
+        XCTAssertNotNil(challenge)
+        XCTAssertEqual(counts.snapshot(), [1, 0])
+        _ = await starter.cancel(canonicalIntent: intent, providerTargetID: fixture.ep.id)
+    }
+
+    func testCeremonyBatchUsesUnchangedFullReaderAndEveryMaterialCurrencyBoundaryStillBlocks() async throws {
+        let fixture = try CodexFanoutFixture()
+        let originalTargets = fixture.targets
+        let material = ManagedInstallerHelperExecutionMaterial(material: fixture.fixture.material,
+            currentRelease: fixture.fixture.plan.reviewedOperation.currentInstallerRelease)
+        // Both fresh group reads retain material and currency before AND after
+        // physical probes. Reject each of those four boundaries independently.
+        for failure in 0...8 {
+            let gate = CeremonyMaterialGate(value: material, failAt: (1...4).contains(failure) ? failure : nil)
+            let currency = CeremonyCurrencyGate(value: material.currentRelease,
+                failAt: (5...8).contains(failure) ? failure - 4 : nil)
+            let inspector = ProviderReadbackInspector(state: .authenticationRequired)
+            let fullReader = ManagedInstallerHelperFreshProviderReader(material: gate, currency: currency,
+                makeInspectors: { _ in (forge: inspector, engineeringPlatform: inspector) })
+            let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+                loader: ProviderStagePlanLoader(plan: fixture.fixture.plan), reader: fullReader,
+                prepareTarget: { _, requirement in
+                    guard let target = originalTargets[requirement.id] else { return nil }
+                    return .init(provider: target.provider, account: target.account,
+                        executableURL: target.executableURL, providerHomeURL: target.providerHomeURL,
+                        priorEvidenceReference: "receipt:provider-physical-test")
+                })
+            let result = await admission.admitCeremonyTargets(canonicalIntent: fixture.intent.canonicalJSONData(),
+                                                            providerTargetID: fixture.ep.id)
+            if failure == 0 {
+                XCTAssertEqual(result?.count, 2)
+                let materialCalls = await gate.calls()
+                let currencyCalls = await currency.calls()
+                XCTAssertEqual(materialCalls, 4)
+                XCTAssertEqual(currencyCalls, 4)
+            } else {
+                XCTAssertNil(result, "Material/currency boundary \(failure) must fail closed")
+            }
+        }
+    }
+
+    func testExpiryBeforeChallengeReplyRetainsItsOnlyRenewalProof() async throws {
+        let fanout = try CodexFanoutFixture()
+        let reader = ProviderAuthMutableStatusReader(status: fanout.prior)
+        let targets = fanout.targets
+        let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fanout.fixture.plan), reader: reader,
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let root = URL(fileURLWithPath: "/private/tmp/l1-auth-early-expiry-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
+                                               attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let effects = FileManagedInstallerProductWorkerEffectJournal(stateRoot: root, expectedOwner: geteuid())
+        let box = AuthRenewalSessionBox(effects: effects)
+        let starter = ManagedInstallerReviewedProviderAuthenticationStart(
+            admission: admission, makeSession: { _ in
+                let session = box.make()
+                if box.count() == 1 {
+                    _ = session.begin(challengeTimeout: 5, sessionTimeout: 10)
+                    session.expireOrCancel()
+                    for _ in 0..<200 {
+                        if box.quiet() { break }
+                        Thread.sleep(forTimeInterval: 0.01)
+                    }
+                }
+                return session
+            })
+        let bytes = fanout.intent.canonicalJSONData()
+        let absent = await starter.begin(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertNil(absent)
+        let pending = await starter.pendingCeremonyCount()
+        XCTAssertEqual(pending, 1)
+        let cancelled = await starter.cancel(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertFalse(cancelled)
+        let stillPending = await starter.pendingCeremonyCount()
+        XCTAssertEqual(stillPending, 1)
+        let renewed = await starter.begin(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertNotNil(renewed)
+        XCTAssertEqual(box.count(), 2)
+        box.expire()
+        for _ in 0..<200 {
+            if box.quiet() { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(box.quiet())
+    }
+
+    func testExpiredCodexRenewsOnlyOriginalTargetAfterFreshAdmission() async throws {
+        let fanout = try CodexFanoutFixture()
+        let reader = ProviderAuthMutableStatusReader(status: fanout.prior)
+        let targets = fanout.targets
+        let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fanout.fixture.plan), reader: reader,
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let root = URL(fileURLWithPath: "/private/tmp/l1-auth-actor-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
+                                               attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let effects = FileManagedInstallerProductWorkerEffectJournal(stateRoot: root, expectedOwner: geteuid())
+        let box = AuthRenewalSessionBox(effects: effects)
+        let starter = ManagedInstallerReviewedProviderAuthenticationStart(
+            admission: admission, makeSession: { _ in box.make() })
+        let bytes = fanout.intent.canonicalJSONData()
+        let first = await starter.begin(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertNotNil(first)
+        let record = root.appendingPathComponent("product-worker-effects.json")
+        let original = try Data(contentsOf: record)
+        box.expire()
+        for _ in 0..<200 {
+            if box.quiet() { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(box.quiet())
+        let pending = await starter.pendingCeremonyCount()
+        XCTAssertEqual(pending, 1)
+        let crossed = await starter.begin(canonicalIntent: bytes, providerTargetID: fanout.forge.id)
+        XCTAssertNil(crossed)
+        XCTAssertEqual(try Data(contentsOf: record), original)
+        // A target that became VERIFIED must not get another login ceremony.
+        await reader.set(fanout.sourceVerified)
+        let alreadyVerified = await starter.begin(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertNil(alreadyVerified)
+        XCTAssertEqual(try Data(contentsOf: record), original)
+        await reader.set(fanout.prior)
+        let refreshed = await starter.begin(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertNotNil(refreshed)
+        XCTAssertEqual(box.count(), 2)
+        let receipts = try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .filter { $0.hasPrefix("expired-provider-authentication-") }
+        XCTAssertEqual(receipts.count, 1)
+        box.expire()
+        for _ in 0..<200 {
+            if box.quiet() { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(box.quiet())
+    }
+
     func testOneCodexCeremonyBootstrapsAndIndependentlyVerifiesBothTargets() async throws {
         let fanout = try CodexFanoutFixture()
         let reader = ProviderAuthMutableStatusReader(status: fanout.prior)
@@ -2730,4 +2995,103 @@ private final class CodexFanoutCounts: @unchecked Sendable {
         process.arguments = ["-c", "printf 'https://auth.openai.com/codex/device\\nEnter this one-time code ABCD-EF12\\n'; exec /bin/sleep 0.1"]
         return .init(provider: .codex, process: process, exitRegistry: ManagedInstallerHelperChildExitRegistry(), effectJournal: effects)
     }
+}
+
+private final class AuthRenewalSessionBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private let effects: FileManagedInstallerProductWorkerEffectJournal
+    private var sessions: [ManagedInstallerProviderAuthenticationSession] = []
+    private let registry = ManagedInstallerHelperChildExitRegistry()
+    init(effects: FileManagedInstallerProductWorkerEffectJournal) { self.effects = effects }
+    func make() -> ManagedInstallerProviderAuthenticationSession {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-c", "import os,time; os.setpgid(0,0); print('https://auth.openai.com/codex/device\\nEnter this one-time code\\nABCD-EF12',flush=True); time.sleep(20)"]
+        process.environment = ["PATH": "/usr/bin:/bin", "LANG": "C"]
+        let session = ManagedInstallerProviderAuthenticationSession(provider: .codex, process: process,
+            exitRegistry: registry, effectJournal: effects,
+            expirationQuiescence: { group in Darwin.kill(-group, 0) == -1 && errno == ESRCH })
+        lock.lock(); sessions.append(session); lock.unlock()
+        return session
+    }
+    func expire() {
+        lock.lock(); let last = sessions.last; lock.unlock()
+        last?.expireOrCancel()
+    }
+    func quiet() -> Bool { registry.activeCount() == 0 }
+    func count() -> Int { lock.lock(); defer { lock.unlock() }; return sessions.count }
+}
+
+private actor CeremonyCountingReader: ManagedInstallerStablePlanProviderReading {
+    let first: ManagedInstallerReviewedProviderReadback
+    let after: ManagedInstallerReviewedProviderReadback
+    private var count = 0
+    init(first: ManagedInstallerReviewedProviderReadback, after: ManagedInstallerReviewedProviderReadback) {
+        self.first = first; self.after = after
+    }
+    func read(stablePlan: ManagedInstallerStablePlan) async -> ManagedInstallerReviewedProviderReadback? {
+        count += 1
+        return count == 1 ? first : after
+    }
+    func calls() -> Int { count }
+}
+
+private actor CeremonyTargetDrift {
+    let targets: [ProviderTargetID: ManagedInstallerProviderAuthenticationTarget]
+    let kind: Int
+    private var reads: [ProviderTargetID: Int] = [:]
+    init(targets: [ProviderTargetID: ManagedInstallerProviderAuthenticationTarget], kind: Int) {
+        self.targets = targets; self.kind = kind
+    }
+    func target(_ id: ProviderTargetID) -> ManagedInstallerProviderAuthenticationTarget? {
+        guard let value = targets[id] else { return nil }
+        reads[id, default: 0] += 1
+        if reads[id] == 1 { return value }
+        if kind == 3 { return nil }
+        return .init(provider: value.provider,
+            account: kind == 0 ? .init(name: "_fpi_changed", uid: 999, gid: 999) : value.account,
+            executableURL: kind == 1 ? URL(fileURLWithPath: "/different/bin/codex") : value.executableURL,
+            providerHomeURL: kind == 2 ? URL(fileURLWithPath: "/different/home") : value.providerHomeURL,
+            priorEvidenceReference: value.priorEvidenceReference)
+    }
+}
+
+private actor CeremonyPausedReader: ManagedInstallerStablePlanProviderReading {
+    let status: ManagedInstallerReviewedProviderReadback
+    private var entered = false
+    private var released = false
+    init(status: ManagedInstallerReviewedProviderReadback) { self.status = status }
+    func read(stablePlan: ManagedInstallerStablePlan) async -> ManagedInstallerReviewedProviderReadback? {
+        entered = true
+        for _ in 0..<1000 {
+            if released { return status }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return nil
+    }
+    func hasEntered() -> Bool { entered }
+    func release() { released = true }
+}
+
+private actor CeremonyMaterialGate: ManagedInstallerHelperExecutionMaterialAdmitting {
+    let value: ManagedInstallerHelperExecutionMaterial
+    let failAt: Int?
+    private var count = 0
+    init(value: ManagedInstallerHelperExecutionMaterial, failAt: Int?) { self.value = value; self.failAt = failAt }
+    func admit(deployment: ManagedDeploymentTarget, componentIdentities: [String]) async -> ManagedInstallerHelperExecutionMaterial? {
+        count += 1
+        return count == failAt ? nil : value
+    }
+    func calls() -> Int { count }
+}
+private actor CeremonyCurrencyGate: ManagedInstallerMutationCurrencyChecking {
+    let value: VerifiedInstallerRelease
+    let failAt: Int?
+    private var count = 0
+    init(value: VerifiedInstallerRelease, failAt: Int?) { self.value = value; self.failAt = failAt }
+    func recheckInstallerBeforeMutation(currentVersion: InstallerVersion) async -> InstallerCurrencyCheckResult {
+        count += 1
+        return count == failAt ? .failed("source-test-stale-release") : .current(value)
+    }
+    func calls() -> Int { count }
 }

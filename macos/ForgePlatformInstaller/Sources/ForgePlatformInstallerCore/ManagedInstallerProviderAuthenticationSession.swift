@@ -10,6 +10,7 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
         case running
         case exited(Int32)
         case rejected
+        case expired
     }
 
     private let provider: ProviderID
@@ -24,16 +25,27 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
     private var terminal: Terminal = .running
     private var effectToken: UUID?
     private var started = false
+    private var expirationRequested = false
+    private var expirationExitObserved = false
+    private var expiredProcessGroup: pid_t?
+    private var observedPrivateGroup: pid_t?
+    private var observedPrivateProcess: MacOSInstallerPackageHelperProcess?
+    private let accountUID: uid_t
+    private let expirationQuiescence: (@Sendable (pid_t) -> Bool)?
     private var stdout: Pipe?
     private var stderr: Pipe?
 
     init(provider: ProviderID, process: Process,
          exitRegistry: ManagedInstallerHelperChildExitRegistry = .processWide,
-         effectJournal: any ManagedInstallerProductWorkerEffectJournaling) {
+         effectJournal: any ManagedInstallerProductWorkerEffectJournaling,
+         expirationQuiescence: (@Sendable (pid_t) -> Bool)? = nil,
+         accountUID: uid_t = Darwin.geteuid()) {
         self.provider = provider
         self.process = process
         self.exitRegistry = exitRegistry
         self.effectJournal = effectJournal
+        self.expirationQuiescence = expirationQuiescence
+        self.accountUID = accountUID
     }
 
     static func production(
@@ -64,11 +76,21 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
             "LANG": "C", "LC_ALL": "C",
         ]
         process.standardInput = FileHandle.nullDevice
+        let quiescence: (@Sendable (pid_t) -> Bool)?
+        if target.provider == .codex && target.account.name.hasPrefix("_fpi_") {
+            quiescence = { group in
+                Self.expiredAccountIsQuiet(group: group, uid: target.account.uid)
+            }
+        } else { quiescence = nil }
         return Self(
             provider: target.provider, process: process,
             effectJournal: FileManagedInstallerProductWorkerEffectJournal(
                 helperRoot: FileManagedInstallerReleasedRouteXPCService.productionRoot
-            )
+            ),
+            // The renewed entrance is limited to Codex's fixed file-backed
+            // login under a dedicated account. Named operator accounts and
+            // GitHub/Keychain ceremonies retain the existing closed behavior.
+            expirationQuiescence: quiescence, accountUID: target.account.uid
         )
     }
 
@@ -102,6 +124,29 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
         process.terminationHandler = {
             [weak self, lock, exitRegistry, effectJournal, token] process in
             lock.lock()
+            // A planned expiration retains its durable reservation until a
+            // separate fresh physical readback. It is not a successful login.
+            let unsuccessfulCodexExit = self.map {
+                $0.expirationQuiescence != nil && $0.provider == .codex
+                    && $0.challenge != nil
+                    && $0.observedPrivateGroup == process.processIdentifier
+                    && process.terminationReason == .exit && process.terminationStatus != 0
+                    && !exitRegistry.hasUncertainChildEffects()
+            } ?? false
+            if let self, self.expirationRequested || unsuccessfulCodexExit {
+                self.expirationRequested = true
+                self.expiredProcessGroup = process.processIdentifier
+                self.terminal = .expired
+                self.challenge = nil
+                self.output.removeAll(); self.errors.removeAll()
+                self.expirationExitObserved = true
+                _ = exitRegistry.finish(token)
+                lock.unlock()
+                self.stdout?.fileHandleForReading.readabilityHandler = nil
+                self.stderr?.fileHandleForReading.readabilityHandler = nil
+                self.challengeReady.signal()
+                return
+            }
             let normalExit = process.terminationReason == .exit
                 && process.terminationStatus == 0
                 && !exitRegistry.hasUncertainChildEffects()
@@ -159,7 +204,7 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
         }
         DispatchQueue.global(qos: .utility).asyncAfter(
             deadline: .now() + sessionTimeout
-        ) { [weak self] in self?.cancel() }
+        ) { [weak self] in self?.expireOrCancel() }
         guard challengeReady.wait(
             timeout: .now() + challengeTimeout
         ) == .success else { cancel(); return nil }
@@ -167,6 +212,84 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
         let result = terminal == .rejected ? nil : challenge
         lock.unlock()
         return result
+    }
+
+    /// Expiration is a retained pending state, never an instruction to clear
+    /// negative evidence. Only this exact session can later retire its token.
+    func expireOrCancel() {
+        lock.lock()
+        let pid = process.processIdentifier
+        guard expirationQuiescence != nil, provider == .codex,
+              terminal == .running, challenge != nil, pid > 0,
+              Darwin.getpgid(pid) == pid,
+              !exitRegistry.hasUncertainChildEffects() else {
+            lock.unlock()
+            cancel()
+            return
+        }
+        guard let original = observedPrivateProcess,
+              MacOSInstallerPackageHelperInstalledReader.inspectKernelProcess(
+                  pid, expectedOwner: accountUID
+              ) == original else {
+            // Never signal an unproven or recycled PID. Keep durable negative
+            // evidence and await the actual registered child's callback.
+            terminal = .rejected
+            exitRegistry.markChildEffectsUncertain()
+            _ = effectJournal.markUncertain()
+            lock.unlock()
+            challengeReady.signal()
+            return
+        }
+        expirationRequested = true
+        expiredProcessGroup = pid
+        terminal = .expired
+        // Do not retain even the expired code while awaiting human renewal.
+        challenge = nil
+        output.removeAll(); errors.removeAll()
+        // Signal while holding the session lock so completion cannot race a
+        // stale PID/group signal after the termination callback has retired it.
+        _ = Darwin.kill(-pid, SIGKILL)
+        lock.unlock()
+        challengeReady.signal()
+    }
+
+    /// Called only after the actor independently admits the SAME immutable
+    /// target and reads AUTHENTICATION_REQUIRED again. Group/account absence
+    /// is checked both before and immediately before the durable transition.
+    func completeExpiredReadback() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard terminal == .expired, expirationRequested, expirationExitObserved,
+              let group = expiredProcessGroup, let quiet = expirationQuiescence,
+              let token = effectToken, !exitRegistry.hasUncertainChildEffects(),
+              quiet(group), quiet(group) else { return false }
+        guard case .success = effectJournal.finishExpiredAuthentication(token) else {
+            return false
+        }
+        effectToken = nil
+        return true
+    }
+
+    static func expiredAccountIsQuiet(group: pid_t, uid: uid_t) -> Bool {
+        guard group > 1, uid != 0,
+              Darwin.kill(-group, 0) == -1, errno == ESRCH else { return false }
+        // Kernel account-process read; no argv, environment, cache or keychain
+        // content is inspected. Any process, including an escaped descendant,
+        // under this dedicated account prevents renewal.
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(bitPattern: uid)]
+        var size = 0
+        let result = mib.withUnsafeMutableBufferPointer {
+            Darwin.sysctl($0.baseAddress, u_int($0.count), nil, &size, nil, 0)
+        }
+        guard result == 0, size <= 64 * 1024 * 1024 else { return false }
+        var buffer = [UInt8](repeating: 0, count: max(size, MemoryLayout<kinfo_proc>.size))
+        size = buffer.count
+        let read = buffer.withUnsafeMutableBytes { bytes in
+            mib.withUnsafeMutableBufferPointer {
+                Darwin.sysctl($0.baseAddress, u_int($0.count), bytes.baseAddress, &size, nil, 0)
+            }
+        }
+        return read == 0 && size == 0
     }
 
     func status() -> Terminal {
@@ -241,7 +364,15 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
             ) ?? ManagedInstallerProviderDeviceChallenge.parse(
                 provider: provider, output: errors
             )
-            if challenge != nil { challengeReady.signal() }
+            if challenge != nil {
+                let pid = process.processIdentifier
+                if pid > 0, Darwin.getpgid(pid) == pid {
+                    observedPrivateGroup = pid
+                    observedPrivateProcess = MacOSInstallerPackageHelperInstalledReader
+                        .inspectKernelProcess(pid, expectedOwner: accountUID)
+                }
+                challengeReady.signal()
+            }
         }
         lock.unlock()
     }

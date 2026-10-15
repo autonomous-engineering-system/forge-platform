@@ -336,16 +336,14 @@ public extension InstallerWizardState {
         )
         step = .execution
         managedDeploymentExecutionInFlight = true
-        executionStages = operation.components.map {
-            ExecutionStage(id: $0.componentID, title: $0.title, detail: "Nog niet gestart", state: .pending)
-        } + [
-            ExecutionStage(
-                id: "managed-deployment",
-                title: "Managed deployment",
-                detail: "Productoperaties, Forge↔EP-pairing en terminale readiness",
-                state: .running
-            )
-        ]
+        executionStages = [ExecutionStage(id: "preparation", title: "Installatie voorbereiden",
+            detail: "Herkomst, installatiebestanden en toegangsrechten controleren", state: .running)]
+            + operation.components.map {
+                ExecutionStage(id: $0.componentID, title: $0.title, detail: "Wacht op voorbereiding", state: .pending)
+            }
+            + (operation.components.count == 2
+                ? [ExecutionStage(id: "pairing", title: "EP en Forge verbinden", detail: "Wacht op componenten", state: .pending)] : [])
+            + [ExecutionStage(id: "readiness", title: "Werking controleren", detail: "Wacht op installatie", state: .pending)]
         summaryItems = []
         return operation
     }
@@ -437,7 +435,13 @@ public extension InstallerWizardState {
         let expected = Set(operation.components.map(\.componentID)).union(
             operation.components.count == 2 ? ["pairing", "readiness"] : ["readiness"])
         guard Set(progress.stages.map(\.id)) == expected else { return false }
-        executionStages = progress.stages
+        // A validated worker progress record proves preparation handed off to
+        // product execution; it does not itself prove any product succeeded.
+        let order = operation.components.map(\.componentID)
+            + (operation.components.count == 2 ? ["pairing", "readiness"] : ["readiness"])
+        executionStages = [ExecutionStage(id: "preparation", title: "Installatie voorbereiden",
+            detail: "Voorbereiding afgerond; productuitvoering gestart", state: .passed)]
+            + order.compactMap { id in progress.stages.first { $0.id == id } }
         return true
     }
 

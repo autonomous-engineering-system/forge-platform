@@ -39,11 +39,20 @@ protocol ManagedInstallerProductWorkerEffectJournaling: Sendable {
     func begin(_ id: UUID) -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
     func beginAuthentication(_ id: UUID)
         -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
+    func finishExpiredAuthentication(_ id: UUID)
+        -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
     func cancelBeforeLaunch(_ id: UUID)
         -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
     func finish(_ id: UUID, normalExit: Bool)
         -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
     func markUncertain() -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure>
+}
+
+extension ManagedInstallerProductWorkerEffectJournaling {
+    func finishExpiredAuthentication(_ id: UUID)
+        -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {
+        .failure(.unavailable)
+    }
 }
 
 /// A root-owned fixed-location write-ahead record survives helper crashes.
@@ -210,6 +219,36 @@ struct FileManagedInstallerProductWorkerEffectJournal:
                 activeIDs: [id], uncertain: false
             )
             try write(try encode(next), in: root, replace: try recordExists(root))
+        }
+    }
+
+    /// Only a retained, independently re-admitted expired authentication may
+    /// use this transition. Preserve the complete prior record in an immutable
+    /// receipt before retiring its sole ID. Never erase sticky uncertainty.
+    func finishExpiredAuthentication(_ id: UUID)
+        -> Result<Void, ManagedInstallerProductWorkerEffectJournalFailure> {
+        transact { root in
+            let previous = try readRecord(root)
+            guard !previous.uncertain, previous.activeIDs == [id] else { throw Failure.conflict }
+            let original = try encode(previous)
+            let receipt = try JSONSerialization.data(withJSONObject: [
+                "schema": "forge-platform.expired-provider-authentication/v1",
+                "authentication_id": id.uuidString.lowercased(),
+                "original_effect_record_base64": original.base64EncodedString(),
+                "outcome": "expired-child-exited-fresh-authentication-required",
+            ], options: [.sortedKeys])
+            let name = "expired-provider-authentication-" + id.uuidString.lowercased() + ".json"
+            let fd = name.withCString {
+                Darwin.openat(root, $0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW_ANY, 0o600)
+            }
+            guard fd >= 0 else { throw Failure.conflict }
+            defer { Darwin.close(fd) }
+            let written = receipt.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+            guard written == receipt.count, Darwin.fsync(fd) == 0,
+                  Darwin.fsync(root) == 0 else { throw Failure.unavailable }
+            // A crash or failed write leaves the ID unresolved. The receipt
+            // cannot grant replay and is never overwritten on a later call.
+            try write(try encode(.init(activeIDs: [], uncertain: false)), in: root, replace: true)
         }
     }
 

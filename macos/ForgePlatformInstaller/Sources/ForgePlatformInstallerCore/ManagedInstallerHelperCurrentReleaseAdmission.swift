@@ -77,6 +77,8 @@ struct ManagedInstallerHelperCurrentReleaseAdmission: Sendable {
         ManagedInstallerHelperCurrentRelease,
         ManagedInstallerHelperCurrentReleaseFailure
     > {
+        let timing = ManagedInstallerPhaseTiming(.currentRelease)
+        defer { timing.finish() }
         guard case .success(let lease) = operationLock
             .acquireExclusiveSelfUpdateOperationLock() else {
             return .failure(.unavailable)
