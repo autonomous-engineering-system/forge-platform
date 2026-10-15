@@ -418,6 +418,9 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
     def execute(self, request: ComponentOperationRequest) -> ProductOperationReceipt:
         self._validate_request(request)
         if request.kind == "install":
+            observer = getattr(self, "installation_phase_observer", None)
+            if observer is not None:
+                observer("preparing-service")
             if self.service_preparation is not None:
                 if self.create_operation_binding is None:
                     raise EngineeringPlatformAdapterError("EP CREATE lacks admitted parent binding")
@@ -426,6 +429,8 @@ class EngineeringPlatformSystemProvisionerAdapter(ProductOperationAdapter):
                 self.create_operation_binding.assert_current(request)
                 self.create_operation_binding.assert_worker_reservation()
                 self.create_operation_binding.assert_quiescent()
+            if observer is not None:
+                observer("creating-component")
             result = self._run(
                 "create",
                 *self._target_arguments(),

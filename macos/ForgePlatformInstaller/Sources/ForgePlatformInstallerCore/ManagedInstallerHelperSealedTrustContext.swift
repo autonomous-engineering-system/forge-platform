@@ -47,19 +47,24 @@ struct BundleManagedInstallerHelperSealedResourcesReader:
         ManagedInstallerHelperSealedResources,
         ManagedInstallerHelperSealedTrustFailure
     > {
-        guard let bundle = Bundle(url: bundleURL),
-              case .success(let releaseTrust) = await
-                BundleSealedInstallerReleaseTrustConfigurationLoader(
-                    bundle: bundle, bundleValidator: bundleValidator
-                ).loadSealedReleaseTrustConfiguration(),
-              case .success(let provenance) = await
-                BundleSealedInstallerReleaseProvenanceLoader(
-                    bundle: bundle, bundleValidator: bundleValidator
-                ).loadSealedReleaseProvenance(),
-              case .success(let compositionTrust) = await
-                BundleSealedCompositionCatalogTrustConfigurationLoader(
-                    bundle: bundle, bundleValidator: bundleValidator
-                ).loadSealedCompositionCatalogTrustConfiguration() else {
+        let timing = ManagedInstallerPhaseTiming(.sealedResources)
+        defer { timing.finish() }
+        guard let bundle = Bundle(url: bundleURL) else { return .failure(.unavailable) }
+        // Independent, read-only resource checks overlap. Each loader retains
+        // its own full before/after signature validation; no cached verdict.
+        async let trustResult = BundleSealedInstallerReleaseTrustConfigurationLoader(
+            bundle: bundle, bundleValidator: bundleValidator
+        ).loadSealedReleaseTrustConfiguration()
+        async let provenanceResult = BundleSealedInstallerReleaseProvenanceLoader(
+            bundle: bundle, bundleValidator: bundleValidator
+        ).loadSealedReleaseProvenance()
+        async let compositionResult = BundleSealedCompositionCatalogTrustConfigurationLoader(
+            bundle: bundle, bundleValidator: bundleValidator
+        ).loadSealedCompositionCatalogTrustConfiguration()
+        let results = await (trustResult, provenanceResult, compositionResult)
+        guard case .success(let releaseTrust) = results.0,
+              case .success(let provenance) = results.1,
+              case .success(let compositionTrust) = results.2 else {
             return .failure(.unavailable)
         }
         return .success(ManagedInstallerHelperSealedResources(

@@ -34,6 +34,30 @@ class ProductProgressTransitionTests(unittest.TestCase):
         self.assertEqual(recorder.rows["engineering-platform-server"],
                          {"state":"failed","code":"ep-service-start-failed"})
         self.assertEqual(recorder.rows["forge-runtime"],{"state":"pending"})
+    def test_real_adapter_phase_events_are_forwarded_without_raw_output(self):
+        class Product:
+            def execute(self, request):
+                self.installation_phase_observer("registering-service")
+                self.installation_phase_observer("starting-service")
+                return object()
+        recorder=TransitionRecorder()
+        wrapped=ProgressProductAdapter(Product(),recorder,"forge-runtime")
+        wrapped.execute(None)
+        self.assertEqual(recorder.events,[
+            ("forge-runtime","running","installing"),
+            ("forge-runtime","running","registering-service"),
+            ("forge-runtime","running","starting-service")])
+
+    def test_forge_start_failure_is_actionably_classified(self):
+        from forge_platform.forge_server_adapter import ForgeServiceReadinessUnavailableError
+        class Product:
+            def execute(self, request): raise ForgeServiceReadinessUnavailableError("private product stream")
+        recorder=TransitionRecorder()
+        wrapped=ProgressProductAdapter(Product(),recorder,"forge-runtime")
+        with self.assertRaises(ForgeServiceReadinessUnavailableError): wrapped.execute(None)
+        self.assertEqual(recorder.rows["forge-runtime"],{"state":"failed","code":"forge-service-start-failed"})
+        self.assertNotIn("private product stream",str(recorder.events))
+
     def test_awaiting_peer_is_installed_not_ready(self):
         class InstalledProduct:
             def execute(self,request):return object()
@@ -68,6 +92,16 @@ class ProtectedProgressFileTests(unittest.TestCase):
         self.assertEqual(p.stat().st_nlink,1)
         self.assertEqual(value["installer_release_sha256"],installer_release().sha256.removeprefix("sha256:"))
         self.assertNotIn("error",value);self.assertNotIn("credential",value)
+    def test_closed_subphase_codes_survive_real_private_journal_IO(self):
+        for code in ("preparing-service","creating-component","registering-service","starting-service","checking-service"):
+            self.progress.update("forge-runtime","running",code)
+            p=self.root/"state/product-progress"/(self.admitted.request.operation_id+".json")
+            value,_=_json(p,maximum=8192)
+            row=next(row for row in value["rows"] if row["component_id"]=="forge-runtime")
+            self.assertEqual(row["code"],code)
+        with self.assertRaises(ProductProgressError):
+            self.progress.update("engineering-platform-server","failed","forge-service-start-failed")
+
     def test_rejects_arbitrary_message_and_foreign_write_ACL(self):
         with self.assertRaises(ProductProgressError):self.progress.update("forge-runtime","failed","raw private message")
         self.progress.update("engineering-platform-server","running","installing")

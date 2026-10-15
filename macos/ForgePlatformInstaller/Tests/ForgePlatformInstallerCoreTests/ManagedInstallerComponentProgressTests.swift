@@ -54,7 +54,11 @@ final class ManagedInstallerComponentProgressTests: XCTestCase {
         let intent = try intent()
         for (id, state, code) in [("engineering-platform-server", "running", "preflight"),
             ("engineering-platform-server", "running", "installing"), ("forge-runtime", "installed", "awaiting-pairing"),
-            ("forge-runtime", "passed", "ready"), ("forge-runtime", "failed", "component-failed"),
+            ("forge-runtime", "passed", "ready"),
+            ("forge-runtime", "running", "preparing-service"), ("forge-runtime", "running", "registering-service"),
+            ("forge-runtime", "running", "starting-service"), ("forge-runtime", "running", "checking-service"),
+            ("engineering-platform-server", "running", "creating-component"),
+            ("forge-runtime", "failed", "forge-service-start-failed"), ("forge-runtime", "failed", "component-failed"),
             ("pairing", "failed", "pairing-failed"), ("readiness", "failed", "readiness-failed")] {
             var fields = payload(intent)
             let rows: [StrictJSONResourceValue] = [.object(["component_id": .string(id), "state": .string(state), "code": .string(code)]),

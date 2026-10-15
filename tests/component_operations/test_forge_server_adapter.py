@@ -1169,6 +1169,66 @@ class ForgeServerAdapterTests(unittest.TestCase):
                  patch.object(self.adapter.readiness_probe, "readiness", return_value=bad):
                 self.assertEqual(self.adapter.readback(request).state, "UNHEALTHY")
 
+    def test_real_released_pre_pairing_shape_completes_install_but_not_readiness(self):
+        candidate = QualifiedArtifact("2.8.1", "c8833ffa4754800de451cce94b109ef1ad07123f",
+            ARTIFACT.source, "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0",
+            ARTIFACT.qualification)
+        self.adapter.installed_artifact = candidate
+        self.adapter.target = replace(self.target, service_user_identity_sha256="sha256:" + "a" * 64)
+        self.adapter.instance_bootstrap = SimpleNamespace(ensure=lambda _: None, pending_runtime=lambda _: None)
+        request = replace(self.request("install"), artifact=candidate)
+        document = {"contract_version": "forge-server-installation-readiness/v1",
+            "instance_id": self.target.product_runtime_id, "ready": False, "service_ready": False,
+            "component_connected": False, "project_authorized": False, "execution_ready": False,
+            "provider": {"ready": True, "state": "READY", "version": "0.157.1"},
+            "scheduler": {"state": "NOT_READY", "last_error": "PeerConfigurationError"},
+            "installation_peer": {"status": "NOT_READY"}}
+        probe = ForgeHTTPReadinessProbe()
+        self.adapter.readiness_probe = probe
+        phases = []
+        self.adapter.installation_phase_observer = phases.append
+        status = {"initialized": True, "instance_id": self.target.product_runtime_id, "product_version": "2.8.1"}
+        with patch.object(probe, "installation_readiness", return_value=document) as actual_profile, \
+             patch.object(probe, "readiness", side_effect=AssertionError("legacy profile selected")), \
+             patch.object(self.adapter, "read_installation_peer", return_value={"status": "NOT_CONFIGURED", "execution_ready": False}), \
+             patch.object(self.adapter, "_run", side_effect=[status, {"outcome": "MISSING"}]):
+            self.assertEqual(self.adapter.execute(request).state, "COMPLETED")
+            result = self.adapter.readback(request)
+        self.assertEqual(actual_profile.call_count, 2)
+        self.assertEqual(result.state, "INSTALLED_UNPAIRED")
+        self.assertEqual(result.health_state, "AWAITING_PEER")
+        self.assertEqual(phases, ["preparing-service", "registering-service", "starting-service", "checking-service"])
+        from forge_platform.component_operations import ComponentOperationCoordinator
+        ComponentOperationCoordinator._verify_completed(request, result)
+        # Pairing subsequently changes only the real product profile; final
+        # readback, not the earlier install receipt, must report ACTIVE/HEALTHY.
+        connected = {**document, "ready": True, "service_ready": True, "component_connected": True,
+            "scheduler": {"state": "IDLE"}, "installation_peer": {"status": "CONNECTED",
+                "forge_instance_id": self.target.product_runtime_id, "purpose": "INSTALLATION_READBACK",
+                "project_authorized": False, "execution_ready": False}}
+        with patch.object(probe, "installation_readiness", return_value=connected), \
+             patch.object(self.adapter, "_run", side_effect=[status, {"outcome": "MISSING"}]):
+            after_pairing = self.adapter.readback(request)
+        self.assertEqual((after_pairing.state, after_pairing.health_state), ("ACTIVE", "HEALTHY"))
+        for change in (
+            {"provider": {"ready": False}},
+            {"scheduler": {"state": "NOT_READY", "last_error": "PermissionError"}},
+            {"scheduler": {"state": "FAILED", "last_error": "PeerConfigurationError"}},
+            {"installation_peer": {"status": "ERROR"}},
+            {"instance_id": "other-instance"}, {"execution_ready": True},
+            {"project_authorized": True}, {"ready": True},
+            {"service_ready": True}, {"component_connected": True},
+        ):
+            with self.subTest(change=change), patch.object(self.adapter, "read_installation_peer",
+                return_value={"status": "NOT_CONFIGURED", "execution_ready": False}):
+                self.assertFalse(self.adapter._awaiting_peer({**document, **change}))
+        for peer in ({"status": "CONNECTED", "execution_ready": False},
+                     {"status": "NOT_CONFIGURED", "execution_ready": True}, {}):
+            with patch.object(self.adapter, "read_installation_peer", return_value=peer):
+                self.assertFalse(self.adapter._awaiting_peer(document))
+        self.adapter.instance_bootstrap = None
+        self.assertFalse(self.adapter._awaiting_peer(document))
+
     def test_only_exact_preservation_provider_can_maintain_disconnected_historical_peer(self):
         from forge_platform.forge_update_binding_provider import ReleasedForge281MaintenanceBindingProvider
         old = QualifiedArtifact("2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05", ARTIFACT.source,

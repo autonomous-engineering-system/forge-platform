@@ -11,7 +11,8 @@ from .managed_product_operation_admission import AdmittedNativeProductOperation
 SCHEMA="forge-platform.product-component-progress/v1"
 STATES={"pending","running","installed","passed","failed"}
 CODES={"none","preflight","installing","awaiting-pairing","ready",
-       "ep-service-start-failed","component-failed","pairing-failed","readiness-failed"}
+       "ep-service-start-failed","forge-service-start-failed","component-failed","pairing-failed","readiness-failed",
+       "preparing-service","creating-component","registering-service","starting-service","checking-service"}
 class ProductProgressError(RuntimeError):pass
 
 class FileProductProgress:
@@ -38,12 +39,14 @@ class FileProductProgress:
     def update(self,component,state,code):
         if component not in self.rows or state not in STATES or code not in CODES:
             raise ProductProgressError("invalid component progress")
-        allowed={"pending":{"none"},"running":{"preflight","installing"},
+        allowed={"pending":{"none"},"running":{"preflight","installing","preparing-service","creating-component",
+                            "registering-service","starting-service","checking-service"},
                  "installed":{"awaiting-pairing"},"passed":{"ready"},
-                 "failed":{"ep-service-start-failed","component-failed","pairing-failed","readiness-failed"}}
+                 "failed":{"ep-service-start-failed","forge-service-start-failed","component-failed","pairing-failed","readiness-failed"}}
         if (code not in allowed[state]
                 or code=="awaiting-pairing" and component!="forge-runtime"
                 or code=="ep-service-start-failed" and component!="engineering-platform-server"
+                or code=="forge-service-start-failed" and component!="forge-runtime"
                 or code=="pairing-failed" and component!="pairing"
                 or code=="readiness-failed" and component!="readiness"):
             raise ProductProgressError("component progress state/code mismatch")
@@ -109,6 +112,11 @@ class ProgressProductAdapter:
     def __init__(self,adapter,progress,component):
         self.adapter,self.progress,self.component=adapter,progress,component
         self.did_execute=False
+        # Closed phase identifiers only; no command output or credentials cross
+        # this informational channel. Terminal receipts remain authoritative.
+        adapter.installation_phase_observer = self._phase
+    def _phase(self,code):
+        self.progress.update(self.component,"running",code)
     def readback(self,request):
         if not self.did_execute and self.progress.rows[self.component]["state"]!="passed":
             self.progress.update(self.component,"running","preflight")
@@ -125,7 +133,10 @@ class ProgressProductAdapter:
         try:result=self.adapter.execute(request)
         except Exception as error:
             from .engineering_platform_system_adapter import EPIdentityHealthUnavailableError
-            code="ep-service-start-failed" if isinstance(error,EPIdentityHealthUnavailableError) else "component-failed"
+            from .forge_server_adapter import ForgeServiceReadinessUnavailableError
+            code=("ep-service-start-failed" if isinstance(error,EPIdentityHealthUnavailableError)
+                  else "forge-service-start-failed" if isinstance(error,ForgeServiceReadinessUnavailableError)
+                  else "component-failed")
             self.progress.update(self.component,"failed",code);raise
         self.did_execute=True
         return result

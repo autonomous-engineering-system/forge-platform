@@ -30,6 +30,18 @@ final class ManagedInstallerHelperSealedTrustContextTests: XCTestCase {
         )))
     }
 
+    func testIndependentSealedReadsOverlapAndRetainAllSixSignatureChecks() async throws {
+        let resources = try makeResources()
+        let (parent, app) = try makeBundle(resources)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let validator = OverlappingSignatureValidator()
+        let result = await BundleManagedInstallerHelperSealedResourcesReader(
+            bundleValidator: validator).readResources(at: app)
+        XCTAssertEqual(result, .success(resources))
+        XCTAssertEqual(validator.snapshot().calls, 6)
+        XCTAssertGreaterThanOrEqual(validator.snapshot().peak, 3)
+    }
+
     func testMissingOrUnsealedResourceFailsClosed() async throws {
         let resources = try makeResources()
         let (parent, app) = try makeBundle(resources)
@@ -1574,4 +1586,25 @@ extension ManagedInstallerHelperSealedTrustContextTests {
 private struct HistoricalSourceInvocation: ManagedInstallerProductWorkerInvocationResolving {
     let invocation: ManagedInstallerProductWorkerInvocation
     func resolveProductWorkerInvocation() async -> Result<ManagedInstallerProductWorkerInvocation, ManagedInstallerProductWorkerFailure> { .success(invocation) }
+}
+
+private final class OverlappingSignatureValidator: SealedInstallerBundleValidating, @unchecked Sendable {
+    private let condition = NSCondition()
+    private var calls = 0
+    private var active = 0
+    private var peak = 0
+    func validateSealedInstallerBundle(at bundleURL: URL) -> Result<Void, InstallerSelfUpdateFailure> {
+        condition.lock()
+        calls += 1; active += 1; peak = max(peak, active)
+        let deadline = Date().addingTimeInterval(2)
+        condition.broadcast()
+        while calls < 3 && condition.wait(until: deadline) {}
+        active -= 1
+        condition.unlock()
+        return .success(())
+    }
+    func snapshot() -> (calls: Int, peak: Int) {
+        condition.lock(); defer { condition.unlock() }
+        return (calls, peak)
+    }
 }

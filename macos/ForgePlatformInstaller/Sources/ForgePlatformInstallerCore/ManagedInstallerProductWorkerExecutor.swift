@@ -286,6 +286,8 @@ struct MacOSManagedInstallerProductWorkerRunner:
         _ invocation: ManagedInstallerProductWorkerInvocation,
         canonicalRequest: Data, maximumReceiptBytes: Int
     ) async -> Result<Data, ManagedInstallerProductWorkerFailure> {
+        let timing = ManagedInstallerPhaseTiming(.productWorker)
+        defer { timing.finish() }
         guard !canonicalRequest.isEmpty,
               canonicalRequest.count <= ManagedInstallerProductOperationRequest.maximumBytes,
               maximumReceiptBytes > 0,

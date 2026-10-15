@@ -60,6 +60,10 @@ class ForgeServerAdapterError(RuntimeError):
     """The exact Forge Server instance cannot be proven or safely operated."""
 
 
+class ForgeServiceReadinessUnavailableError(ForgeServerAdapterError):
+    """Closed startup/readiness failure classification, without product output."""
+
+
 @dataclass(frozen=True)
 class ForgeCommandResult:
     returncode: int
@@ -1287,13 +1291,7 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             )
         health = self._run("health", "snapshot", allow_nonzero=True)
         try:
-            if (qualified_forge_installation_pairing_artifact(self.installed_artifact)
-                    and isinstance(self.readiness_probe, ForgeHTTPReadinessProbe)):
-                readiness = self.readiness_probe.installation_readiness(self.target, self.installed_artifact)
-            else:
-                readiness = self.readiness_probe.readiness(self.target)
-            if qualified_forge_installation_pairing_artifact(self.installed_artifact):
-                ForgeHTTPReadinessProbe.validate_installation_readiness(readiness, self.target)
+            readiness = self._installation_readiness()
         except ForgeServerAdapterError:
             readiness = {"ready": False}
         if readiness.get("ready") is True and readiness.get("instance_id") != self.target.product_runtime_id:
@@ -1326,6 +1324,26 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             evidence,
         )
 
+    def _installation_readiness(self):
+        """Use the same qualified product profile at startup and readback.
+
+        An unpaired runtime is an intermediate installed state, never terminal
+        readiness. The later pairing executor owns the connected end check.
+        """
+        if (qualified_forge_installation_pairing_artifact(self.installed_artifact)
+                and isinstance(self.readiness_probe, ForgeHTTPReadinessProbe)):
+            result = self.readiness_probe.installation_readiness(self.target, self.installed_artifact)
+        else:
+            result = self.readiness_probe.readiness(self.target)
+        if qualified_forge_installation_pairing_artifact(self.installed_artifact):
+            ForgeHTTPReadinessProbe.validate_installation_readiness(result, self.target)
+        return result
+
+    def _report_installation_phase(self, code):
+        observer = getattr(self, "installation_phase_observer", None)
+        if observer is not None:
+            observer(code)
+
     def _awaiting_peer(self, readiness):
         if self.instance_bootstrap is None or self.target.service_user_identity_sha256 is None:
             return False
@@ -1333,10 +1351,27 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             if (readiness.get("contract_version") != "forge-server-installation-readiness/v1"
                     or readiness.get("instance_id") != self.target.product_runtime_id
                     or readiness.get("ready") is not False
-                    or readiness.get("service_ready") is not True
                     or readiness.get("component_connected") is not False
                     or readiness.get("project_authorized") is not False
                     or readiness.get("execution_ready") is not False):
+                return False
+            try:
+                ForgeHTTPReadinessProbe.validate_installation_readiness(readiness, self.target)
+            except ForgeServerAdapterError:
+                return False
+            provider = readiness["provider"]
+            scheduler = readiness["scheduler"]
+            installation_peer = readiness["installation_peer"]
+            # The released scheduler cannot become ready before its first peer.
+            # Only that exact, independently confirmed missing-peer condition
+            # may pass the installation barrier. Provider/other failures block.
+            scheduler_waits_for_peer = (
+                scheduler.get("state") == "NOT_READY"
+                and scheduler.get("last_error") == "PeerConfigurationError"
+            )
+            if (provider.get("ready") is not True
+                    or installation_peer.get("status") not in {"NOT_READY", "NOT_CONFIGURED"}
+                    or not (readiness.get("service_ready") is True or scheduler_waits_for_peer)):
                 return False
             peer = self.read_installation_peer()
             return peer.get("status") == "NOT_CONFIGURED" and peer.get("execution_ready") is False
@@ -1626,22 +1661,26 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
         })
         if request.kind in {"install", "repair"}:
             if self.instance_bootstrap is not None:
+                self._report_installation_phase("preparing-service")
                 self.instance_bootstrap.ensure(request.operation_id)
+            self._report_installation_phase("registering-service")
             self.supervisor.register(self.target, self.forge_executable)
+            self._report_installation_phase("starting-service")
             self.supervisor.start(self.target)
             if self.instance_bootstrap is not None:
                 import time
                 deadline = time.monotonic() + 30
+                self._report_installation_phase("checking-service")
                 while True:
                     try:
-                        ready = self.readiness_probe.readiness(self.target)
+                        ready = self._installation_readiness()
                     except (OSError, ValueError, ForgeServerAdapterError):
                         ready = {}
                     if ((ready.get("ready") is True and ready.get("instance_id") == self.target.product_runtime_id)
                         or self._awaiting_peer(ready)):
                         break
                     if time.monotonic() >= deadline:
-                        raise ForgeServerAdapterError("Forge exact service did not become ready after bootstrap")
+                        raise ForgeServiceReadinessUnavailableError("Forge exact service did not become ready after bootstrap")
                     time.sleep(0.5)
             state = "COMPLETED"
         elif request.kind == "remove":

@@ -216,6 +216,25 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
             "mismatched result must preserve every component and running execution stage")
     }
 
+    func testExecutionStartsWithPreparationAndRetainsChronologicalComponentOrder() throws {
+        var state = try makeExecutionReadyState()
+        let operation = try XCTUnwrap(state.beginManagedDeploymentExecution())
+        let productIDs = operation.components.map(\.componentID)
+        let expected = ["preparation"] + productIDs
+            + (productIDs.count == 2 ? ["pairing", "readiness"] : ["readiness"])
+        XCTAssertEqual(state.executionStages.map(\.id), expected)
+        XCTAssertEqual(state.executionStages.first?.state, .running)
+        XCTAssertFalse(state.executionStages.contains { $0.id == "managed-deployment" })
+        let rows = expected.dropFirst().reversed().map {
+            ExecutionStage(id: $0, title: $0, detail: "Nog niet gestart", state: .pending)
+        }
+        XCTAssertTrue(state.recordManagedComponentProgress(.init(operationID: "source-progress", stages: rows), for: operation))
+        XCTAssertEqual(state.executionStages.map(\.id), expected)
+        XCTAssertEqual(state.executionStages.first?.state, .passed)
+        XCTAssertTrue(state.managedDeploymentExecutionInFlight)
+        XCTAssertFalse(state.canAdvance)
+    }
+
     func testReadOnlyGreenProgressCannotAuthorizeSummaryOrOverwriteTerminalFailure() throws {
         var state = try makeExecutionReadyState()
         let operation = try XCTUnwrap(state.beginManagedDeploymentExecution())
