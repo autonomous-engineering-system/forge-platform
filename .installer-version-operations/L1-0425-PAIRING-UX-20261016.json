@@ -1,0 +1,25 @@
+{
+  "allowed_projection_paths": [
+    "installer-version.json"
+  ],
+  "baseline_version": "0.4.24",
+  "event_lineage": "lane1-pairing-performance-ux-source-qualified",
+  "expected_source_revision": "593328c521ce0dbfbb6a214a409aae0ee51aef94",
+  "manifest_sha256_after": "5139f462fd7f2e26f1e4b67e4e33516c115b922346f416dae98bec5ef390730b",
+  "manifest_sha256_before": "8336458c5aaf5aa4e998c192e3bf4421370f1fc21a23e6ecd8ac55eccced2104",
+  "operation_id": "L1-0425-PAIRING-UX-20261016",
+  "packager_sha256_after": "3b8b1e6d5233539430243bfd3f4bd310716e8ebfc4bb0f2a46766020c4c43ea7",
+  "packager_sha256_before": "3b8b1e6d5233539430243bfd3f4bd310716e8ebfc4bb0f2a46766020c4c43ea7",
+  "policy_revision": "forge-platform-installer-version-v2",
+  "product": "forge-platform-installer",
+  "release_class": "PATCH",
+  "requested_bump": "patch",
+  "requested_exact_version": null,
+  "runtime_info_plist_path": "Contents/Info.plist",
+  "runtime_projection_schema": "forge-platform-installer-info-plist-version-projection/v1",
+  "runtime_projection_sha256_after": "08ed632c6fbc577ca983385b289fc32b43b0203ebc5a6ca8f93c0647eb045e55",
+  "runtime_projection_sha256_before": "59fa604bed892da6349fdf3714456e58a6b546ee6e46d72b083caf834fd62400",
+  "schema": "forge-platform.installer-version-operation/v2",
+  "state": "APPLIED",
+  "target_version": "0.4.25"
+}
