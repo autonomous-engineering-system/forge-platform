@@ -308,14 +308,29 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         }
         guard case .challenge = model.providerStage else { return XCTFail("Expected source-only challenge") }
         await coordinator.holdProviderRead()
+        await coordinator.holdProviderRenewal()
         model.beginReviewedProviderAuthentication(target, renewing: true)
         model.beginReviewedProviderAuthentication(target, renewing: true)
+        XCTAssertEqual(model.providerRenewalPhase, .checkingInstaller)
+        let installerPNG = try renderCustomerFlow(state: model.state, started: true, suppliedModel: model)
+        try installerPNG.write(to: artifactRoot().appendingPathComponent("customer-refresh-installer.png"))
         guard case .authenticating = model.providerStage else { return XCTFail("Old code must disappear immediately") }
         for _ in 0..<200 {
             if await coordinator.readCalls() == 2 { break }
             await Task.yield()
         }
+        XCTAssertEqual(model.providerRenewalPhase, .checkingConnection)
+        let checkingPNG = try renderCustomerFlow(state: model.state, started: true, suppliedModel: model)
+        try checkingPNG.write(to: artifactRoot().appendingPathComponent("customer-refresh-checking.png"))
         await coordinator.releaseProviderRead()
+        for _ in 0..<200 {
+            if await coordinator.renewalCount() == 1 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(model.providerRenewalPhase, .requestingCode)
+        let renewingPNG = try renderCustomerFlow(state: model.state, started: true, suppliedModel: model)
+        try renewingPNG.write(to: artifactRoot().appendingPathComponent("customer-refresh-requesting.png"))
+        await coordinator.releaseProviderRenewal()
         for _ in 0..<200 {
             if case .challenge = model.providerStage { break }
             try await Task.sleep(for: .milliseconds(5))

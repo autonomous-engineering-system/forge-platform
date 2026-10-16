@@ -57,9 +57,7 @@ struct ManagedInstallerReviewedProviderAuthenticationAdmission: Sendable {
         defer { timing.finish() }
         guard let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(canonicalIntent),
               intent.canonicalJSONData() == canonicalIntent,
-              let trusted = try? await loader.loadStablePlan(for: intent), intent.matches(trusted),
-              let plan = try? await loader.loadStablePlan(for: intent),
-              plan == trusted, intent.matches(plan),
+              let plan = try? await loader.loadStablePlan(for: intent), intent.matches(plan),
               !plan.deployment.exists,
               let source = plan.enabledProviderRequirements.first(where: { $0.id == providerTargetID })
         else { return nil }

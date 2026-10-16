@@ -687,7 +687,7 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
             XCTAssertNil(rejected)
         }
         let driftedPlan = ManagedInstallerReviewedProviderAuthenticationAdmission(
-            loader: ProviderAuthDriftingLoader(plan: fixture.fixture.plan),
+            loader: ProviderAuthDriftingLoader(plan: fixture.fixture.plan, failAt: 2),
             reader: ProviderAuthStatusReader(status: fixture.prior),
             prepareTarget: { _, requirement in targets[requirement.id] })
         let planResult = await driftedPlan.admitCeremonyTargets(canonicalIntent: fixture.intent.canonicalJSONData(),
@@ -960,7 +960,11 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         XCTAssertNil(alreadyVerified)
         XCTAssertEqual(try Data(contentsOf: record), original)
         await reader.set(fanout.prior)
+        let readsBeforeRefresh = await reader.calls()
         let refreshed = await starter.renew(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        let readsAfterRefresh = await reader.calls()
+        XCTAssertEqual(readsAfterRefresh - readsBeforeRefresh, 2,
+            "Renewal uses one fresh physical transaction, with no cache across effects")
         XCTAssertNotNil(refreshed)
         XCTAssertEqual(box.count(), 2)
         let receipts = try FileManager.default.contentsOfDirectory(atPath: root.path)
@@ -2635,12 +2639,15 @@ private struct ProviderAuthStatusReader: ManagedInstallerStablePlanProviderReadi
 }
 
 private actor ProviderAuthMutableStatusReader: ManagedInstallerStablePlanProviderReading {
+    private var readCount = 0
+    func calls() -> Int { readCount }
     private var status: ManagedInstallerReviewedProviderReadback
     init(status: ManagedInstallerReviewedProviderReadback) { self.status = status }
     func set(_ value: ManagedInstallerReviewedProviderReadback) { status = value }
     func read(stablePlan: ManagedInstallerStablePlan) async
         -> ManagedInstallerReviewedProviderReadback? {
         _ = stablePlan
+        readCount += 1
         return status
     }
 }
@@ -2702,13 +2709,16 @@ private actor ProviderAuthDriftingLoader: ManagedInstallerHelperOwnedStablePlanL
     let plan: ManagedInstallerStablePlan
     private var reads = 0
 
-    init(plan: ManagedInstallerStablePlan) { self.plan = plan }
+    private let failAt: Int
+    init(plan: ManagedInstallerStablePlan, failAt: Int = 3) {
+        self.plan = plan; self.failAt = failAt
+    }
 
     func loadStablePlan(for intent: ManagedInstallerReviewedExecutionIntent) async throws
         -> ManagedInstallerStablePlan {
         _ = intent
         reads += 1
-        if reads == 3 { throw ManagedInstallerReleasedRouteXPCFailure.rejected }
+        if reads == failAt { throw ManagedInstallerReleasedRouteXPCFailure.rejected }
         return plan
     }
 }

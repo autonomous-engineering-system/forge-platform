@@ -93,36 +93,38 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
                 .decodeJSON(canonicalIntent),
               intent.canonicalJSONData() == canonicalIntent else { return nil }
         let key = key(for: intent)
-        if let expired = sessions[key], expired.session.status() == .expired {
-            // Preserve the old reservation until its original target has been
-            // physically re-admitted, including account and home identity.
-            guard !finishing.contains(key), !reserved.contains(key) else { return nil }
-            reserved.insert(key)
-            let fresh = await admission.admitLaunchTarget(
-                canonicalIntent: canonicalIntent, providerTargetID: providerTargetID
-            )
-            reserved.remove(key)
-            guard fresh == expired.source,
-                  sessions[key]?.session === expired.session,
-                  expired.session.completeExpiredReadback() else { return nil }
-            sessions.removeValue(forKey: key)
-            publishedTargets.removeValue(forKey: key)
-        }
         sessions = sessions.filter {
             $0.value.session.status() == .running
                 || $0.value.session.status() == .exited(0)
                 || $0.value.session.status() == .expired
         }
         publishedTargets = publishedTargets.filter { sessions[$0.key] != nil }
-        guard !reserved.contains(key), sessions[key] == nil,
-              sessions.count < 8 else { return nil }
+        let expired = sessions[key]
+        if let expired {
+            guard expired.session.status() == .expired,
+                  expired.reviewed.requirement.id == providerTargetID else { return nil }
+        }
+        guard !finishing.contains(key), !reserved.contains(key),
+              sessions.count < 8 || expired != nil else { return nil }
         reserved.insert(key)
         defer { reserved.remove(key) }
-        guard let targets = await admission.admitCeremonyTargets(
-            canonicalIntent: canonicalIntent, providerTargetID: providerTargetID
-        ), let admitted = targets.first,
+        // One fresh transaction admits all destinations after the old child
+        // exits. Its exact source both retires the old reservation and admits
+        // the successor: do not recursively repeat another full admission.
+        guard !Task.isCancelled,
+              let targets = await admission.admitCeremonyTargets(
+                  canonicalIntent: canonicalIntent, providerTargetID: providerTargetID
+              ), let admitted = targets.first,
               admitted.reviewed.stablePlan.activationPlan.operationID == intent.operationID,
-              let session = makeSession(admitted.physicalTarget) else { return nil }
+              !Task.isCancelled else { return nil }
+        if let expired {
+            guard admitted == expired.source,
+                  sessions[key]?.session === expired.session,
+                  expired.session.completeExpiredReadback() else { return nil }
+            sessions.removeValue(forKey: key)
+            publishedTargets.removeValue(forKey: key)
+        }
+        guard let session = makeSession(admitted.physicalTarget) else { return nil }
         sessions[key] = RunningCeremony(session: session, reviewed: admitted.reviewed,
                                        source: admitted, fanoutTargets: targets)
         let challenge = await Task.detached(priority: .userInitiated) {
@@ -162,8 +164,10 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
               old.reviewed.requirement.provider == .codex,
               !reserved.contains(key), !finishing.contains(key) else { return nil }
         reserved.insert(key)
-        let fresh = await admission.admitLaunchTarget(canonicalIntent: canonicalIntent, providerTargetID: providerTargetID)
-        guard !Task.isCancelled, fresh == old.source, sessions[key]?.session === old.session,
+        // Stopping this exact, kernel-identity-bound child does not launch a
+        // ceremony or retire evidence. Fresh plan/account/home admission still
+        // brackets the successor in begin(), after actual child exit.
+        guard intent.matches(old.reviewed.stablePlan), !Task.isCancelled,
               old.session.requestCodeRenewal() else { reserved.remove(key); return nil }
         // Await the registered child's natural termination callback. This wait
         // neither launches a new child nor retires the durable reservation.

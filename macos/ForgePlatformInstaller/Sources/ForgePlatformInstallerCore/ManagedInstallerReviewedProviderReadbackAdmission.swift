@@ -127,10 +127,8 @@ struct ManagedInstallerReviewedProviderReadbackAdmission: Sendable {
     func read(canonicalIntent: Data) async -> Data? {
         guard let intent = try? ManagedInstallerReviewedExecutionIntent
                 .decodeJSON(canonicalIntent),
-              let trusted = try? await loader.loadStablePlan(for: intent),
-              intent.matches(trusted),
               let refreshed = try? await loader.loadStablePlan(for: intent),
-              refreshed == trusted, intent.matches(refreshed),
+              intent.matches(refreshed),
               let receipt = await reader.read(stablePlan: refreshed),
               receipt.matches(refreshed),
               let after = try? await loader.loadStablePlan(for: intent),

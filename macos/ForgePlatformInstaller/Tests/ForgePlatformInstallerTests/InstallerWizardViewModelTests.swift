@@ -865,6 +865,10 @@ actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
     private var staged = 0
     private var executed = 0
     private var authenticationStarts = 0
+    private var holdRenewal = false
+    private var renewalContinuation: CheckedContinuation<Void, Never>?
+    func holdProviderRenewal() { holdRenewal = true }
+    func releaseProviderRenewal() { renewalContinuation?.resume(); renewalContinuation = nil }
     private var authenticationRenewals = 0
     private var renewalRefused = false
     func refuseRenewal(_ value: Bool) { renewalRefused = value }
@@ -957,6 +961,10 @@ actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
     func renewReviewedProviderAuthentication(_ operation: ReviewedManagedDeploymentOperation,
         providerTargetID: ProviderTargetID) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
         authenticationRenewals += 1
+        if holdRenewal {
+            holdRenewal = false
+            await withCheckedContinuation { renewalContinuation = $0 }
+        }
         return renewalRefused ? nil : makeChallenge(operation, providerTargetID: providerTargetID)
     }
 

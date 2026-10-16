@@ -99,6 +99,7 @@ final class InstallerWizardViewModel: ObservableObject {
     private(set) var lastProviderAuthenticationTarget: ProviderTargetID?
     private var providerStageContext: (operation: ReviewedManagedDeploymentOperation,
                                        receipt: ManagedInstallerReviewedProviderStageReceipt)?
+    @Published private(set) var providerRenewalPhase: InstallerMVPProviderRenewalPhase?
     @Published private(set) var providerStage: ProviderStageState = .idle {
         didSet {
             if case .idle = providerStage {
@@ -876,6 +877,7 @@ final class InstallerWizardViewModel: ObservableObject {
         }
         guard allowed else { return }
         lastProviderAuthenticationTarget = targetID
+        providerRenewalPhase = renewing ? .checkingInstaller : nil
         providerStage = .authenticating(targetID)
         let coordinator = coordinator
         let currentVersion = state.currentInstallerVersion
@@ -899,6 +901,7 @@ final class InstallerWizardViewModel: ObservableObject {
                 return
             }
             if renewing {
+                self.providerRenewalPhase = .checkingConnection
                 // A completed login wins over a refresh click. Read/finish it
                 // first; a human click alone never establishes authentication.
                 let observed = await coordinator.readReviewedProviders(operation)
@@ -921,6 +924,7 @@ final class InstallerWizardViewModel: ObservableObject {
                     return
                 }
             }
+            if renewing { self.providerRenewalPhase = .requestingCode }
             let challenge = renewing
                 ? await coordinator.renewReviewedProviderAuthentication(operation, providerTargetID: targetID)
                 : await coordinator.beginReviewedProviderAuthentication(operation, providerTargetID: targetID)
