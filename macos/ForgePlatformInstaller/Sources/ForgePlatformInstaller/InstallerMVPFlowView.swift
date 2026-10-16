@@ -367,12 +367,24 @@ struct InstallerMVPFlowView: View {
                         NSPasteboard.general.setString(challenge.userCode, forType: .string)
                     }
                     .help("Kopieer de eenmalige aanmeldcode")
+                    if let target = ProviderTargetID(rawValue: challenge.providerTargetID) {
+                        Button("Ververs code", systemImage: "arrow.clockwise") {
+                            viewModel.beginReviewedProviderAuthentication(target, renewing: true)
+                        }
+                    }
                 }
                 Link("Open aanmeldpagina", destination: challenge.verificationURL)
                 Button("Ik ben aangemeld; controleer verbinding") {
                     viewModel.recheckReviewedProviderConnections()
                 }
                 .buttonStyle(.borderedProminent)
+            case .renewalRequired(let target):
+                Text("De vorige code is niet meer bruikbaar. De nieuwe code kon nog niet veilig worden opgehaald.")
+                    .foregroundStyle(.orange)
+                Button("Ververs code", systemImage: "arrow.clockwise") {
+                    viewModel.beginReviewedProviderAuthentication(target, renewing: true)
+                }
+                Button("Controleer verbinding") { viewModel.recheckReviewedProviderConnections() }
             case .blocked:
                 retryMessage("De providerverbinding kon niet worden voltooid. De aanmelding kan al zijn gebeurd; controleer de status opnieuw. Er is nog geen productinstallatie begonnen.")
                 Button("Opnieuw controleren") { viewModel.advance() }

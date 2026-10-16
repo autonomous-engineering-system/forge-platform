@@ -817,6 +817,30 @@ public final class FileManagedInstallerReleasedRouteXPCService:
         }
     }
 
+    public func renewReviewedProviderAuthentication(
+        _ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void
+    ) {
+        guard let reply = mutationGate.admittedReply(reply) else { reply(nil); return }
+        let gate = ManagedInstallerReleasedRouteXPCServiceReplyGate(reply: reply)
+        guard let providerAuthentication,
+              let targetID = ProviderTargetID(rawValue: providerTargetID),
+              let intent = try? ManagedInstallerReviewedExecutionIntent
+                .decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent else {
+            gate.complete(nil)
+            return
+        }
+        Task {
+            guard let bytes = await providerAuthentication.renew(
+                canonicalIntent: canonicalIntent, providerTargetID: targetID
+            ), ManagedInstallerProviderAuthenticationChallengeResponse.decodeJSON(
+                bytes, intent: intent, targetID: targetID
+            ) != nil else { gate.complete(nil); return }
+            gate.complete(bytes)
+        }
+    }
+
     public func finishReviewedProviderAuthentication(
         _ canonicalIntent: Data, providerTargetID: String,
         withReply reply: @escaping (Data?) -> Void
@@ -1047,10 +1071,21 @@ public protocol ManagedInstallerReviewedProviderAuthenticationIntentSending: Sen
         _ intent: ManagedInstallerReviewedExecutionIntent,
         providerTargetID: ProviderTargetID
     ) async throws -> ManagedInstallerProviderAuthenticationChallengeResponse
+    func renewReviewedProviderAuthentication(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerProviderAuthenticationChallengeResponse
     func finishReviewedProviderAuthentication(
         _ intent: ManagedInstallerReviewedExecutionIntent,
         providerTargetID: ProviderTargetID
     ) async throws -> ManagedInstallerReviewedProviderReadback
+}
+
+public extension ManagedInstallerReviewedProviderAuthenticationIntentSending {
+    func renewReviewedProviderAuthentication(_ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID) async throws -> ManagedInstallerProviderAuthenticationChallengeResponse {
+        throw ManagedInstallerReleasedRouteXPCFailure.rejected
+    }
 }
 
 public protocol ManagedInstallerReviewedEPProviderRegistrationIntentSending: Sendable {
@@ -1067,6 +1102,8 @@ public protocol ManagedInstallerReviewedSelectionRegistering: Sendable {
 }
 
 @objc public protocol ManagedInstallerReleasedRouteXPCService {
+    @objc optional func renewReviewedProviderAuthentication(_ canonicalIntent: Data, providerTargetID: String,
+        withReply reply: @escaping (Data?) -> Void)
     @objc optional func inspectHistoricalOperation(_ canonicalRequest: Data, withReply reply: @escaping (Data?) -> Void)
     @objc optional func recoverHistoricalOperation(_ canonicalRequest: Data, withReply reply: @escaping (Data?) -> Void)
     @objc optional func readComponentProgress(_ canonicalIntent: Data,
@@ -1296,6 +1333,21 @@ public actor MacOSManagedInstallerReleasedRouteXPCTransport:
                 providerTargetID: providerTargetID.rawValue,
                 withReply: reply
             )
+        }
+        guard let response = ManagedInstallerProviderAuthenticationChallengeResponse
+            .decodeJSON(data, intent: intent, targetID: providerTargetID) else {
+            throw ManagedInstallerReleasedRouteXPCFailure.rejected
+        }
+        return response
+    }
+
+    public func renewReviewedProviderAuthentication(
+        _ intent: ManagedInstallerReviewedExecutionIntent,
+        providerTargetID: ProviderTargetID
+    ) async throws -> ManagedInstallerProviderAuthenticationChallengeResponse {
+        let data = try await call { service, reply in
+            guard let renew = service.renewReviewedProviderAuthentication else { reply(nil); return }
+            renew(intent.canonicalJSONData(), providerTargetID.rawValue, reply)
         }
         guard let response = ManagedInstallerProviderAuthenticationChallengeResponse
             .decodeJSON(data, intent: intent, targetID: providerTargetID) else {

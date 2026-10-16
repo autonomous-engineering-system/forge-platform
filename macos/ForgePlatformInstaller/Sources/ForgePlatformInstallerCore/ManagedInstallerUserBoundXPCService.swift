@@ -98,6 +98,10 @@ final class ManagedInstallerUserBoundXPCService: NSObject, ManagedInstallerRelea
         guard owns(data) else { reply(nil); return }
         service.beginReviewedProviderAuthentication(data, providerTargetID: id, withReply: reply)
     }
+    func renewReviewedProviderAuthentication(_ data: Data, providerTargetID id: String, withReply reply: @escaping (Data?) -> Void) {
+        guard owns(data), let renew = service.renewReviewedProviderAuthentication else { reply(nil); return }
+        renew(data, id, reply)
+    }
     func finishReviewedProviderAuthentication(_ data: Data, providerTargetID id: String, withReply reply: @escaping (Data?) -> Void) {
         guard owns(data) else { reply(nil); return }
         service.finishReviewedProviderAuthentication(data, providerTargetID: id, withReply: reply)

@@ -1469,6 +1469,15 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         )
     }
 
+    public func renewReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        await managedDeploymentRouteCoordinator.renewReviewedProviderAuthentication(
+            operation, providerTargetID: providerTargetID
+        )
+    }
+
     public func registerReviewedEPProvider(
         _ operation: ReviewedManagedDeploymentOperation,
         providerTargetID: ProviderTargetID

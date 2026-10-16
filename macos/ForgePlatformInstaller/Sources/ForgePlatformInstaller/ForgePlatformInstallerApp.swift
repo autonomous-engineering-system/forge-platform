@@ -43,6 +43,7 @@ final class InstallerWizardViewModel: ObservableObject {
         case observed(ManagedInstallerReviewedProviderReadback)
         case authenticating(ProviderTargetID)
         case challenge(ManagedInstallerProviderAuthenticationChallengeResponse)
+        case renewalRequired(ProviderTargetID)
         case blocked(String)
     }
 
@@ -858,16 +859,22 @@ final class InstallerWizardViewModel: ObservableObject {
         }
     }
 
-    func beginReviewedProviderAuthentication(_ targetID: ProviderTargetID) {
-        guard state.step == .review,
-              case .observed(let readback) = providerStage,
-              let context = providerStageContext,
-              readback.operationID == context.receipt.operationID,
-              readback.stablePlanFingerprint == context.receipt.stablePlanFingerprint,
-              readback.targets.contains(where: {
-                  $0.id == targetID && $0.state == .authenticationRequired
-              }),
-              !isProviderStageInFlight else { return }
+    func beginReviewedProviderAuthentication(_ targetID: ProviderTargetID, renewing: Bool = false) {
+        guard state.step == .review, let context = providerStageContext, !isProviderStageInFlight else { return }
+        let allowed: Bool
+        switch providerStage {
+        case .observed(let readback) where !renewing:
+            allowed = readback.operationID == context.receipt.operationID
+                && readback.stablePlanFingerprint == context.receipt.stablePlanFingerprint
+                && readback.targets.contains { $0.id == targetID && $0.state == .authenticationRequired }
+        case .challenge(let challenge) where renewing:
+            allowed = challenge.operationID == context.receipt.operationID
+                && challenge.stablePlanFingerprint == context.receipt.stablePlanFingerprint
+                && challenge.providerTargetID == targetID.rawValue
+        case .renewalRequired(let pending) where renewing: allowed = pending == targetID
+        default: allowed = false
+        }
+        guard allowed else { return }
         lastProviderAuthenticationTarget = targetID
         providerStage = .authenticating(targetID)
         let coordinator = coordinator
@@ -891,21 +898,47 @@ final class InstallerWizardViewModel: ObservableObject {
                 )
                 return
             }
-            let challenge = await coordinator.beginReviewedProviderAuthentication(
-                operation, providerTargetID: targetID
-            )
+            if renewing {
+                // A completed login wins over a refresh click. Read/finish it
+                // first; a human click alone never establishes authentication.
+                let observed = await coordinator.readReviewedProviders(operation)
+                guard self.state.step == .review, self.state.reviewedProviderStageOperation() == operation,
+                      self.providerStageContext?.receipt == context.receipt,
+                      case .observed(let readback) = observed,
+                      readback.operationID == context.receipt.operationID,
+                      readback.stablePlanFingerprint == context.receipt.stablePlanFingerprint,
+                      let target = readback.targets.first(where: { $0.id == targetID }) else {
+                    self.providerStage = .blocked("De verbinding kon niet veilig worden gecontroleerd. Controleer de providerstatus opnieuw.")
+                    return
+                }
+                if target.state == .verified {
+                    self.providerStage = self.state.recordReviewedProviderReadback(readback, after: context.receipt, for: operation)
+                        ? .observed(readback) : .blocked("De providerstatus past niet bij de beoordeelde installatie.")
+                    return
+                }
+                guard target.state == .authenticationRequired else {
+                    self.providerStage = .blocked("De provider heeft eerst een andere herstelactie nodig.")
+                    return
+                }
+            }
+            let challenge = renewing
+                ? await coordinator.renewReviewedProviderAuthentication(operation, providerTargetID: targetID)
+                : await coordinator.beginReviewedProviderAuthentication(operation, providerTargetID: targetID)
             guard self.state.step == .review,
                   self.state.reviewedProviderStageOperation() == operation,
-                  let challenge,
                   self.providerStageContext?.operation == operation,
-                  self.providerStageContext?.receipt == context.receipt,
+                  self.providerStageContext?.receipt == context.receipt else {
+                self.providerStage = .blocked("Het beoordeelde doel is gewijzigd tijdens het aanvragen van de code.")
+                return
+            }
+            guard let challenge,
                   challenge.operationID == context.receipt.operationID,
                   challenge.stablePlanFingerprint == context.receipt.stablePlanFingerprint,
                   challenge.providerTargetID == targetID.rawValue,
                   operation.enabledProviderRequirements.contains(where: {
                       $0.id == targetID && $0.provider == challenge.provider
                   }) else {
-                self.providerStage = .blocked(
+                self.providerStage = renewing ? .renewalRequired(targetID) : .blocked(
                     "De beoordeelde aanmelding kon niet veilig worden gestart. Controleer het doel opnieuw."
                 )
                 return
@@ -2006,6 +2039,9 @@ private struct CompositionReviewScreen: View {
                     Text("Kies daarna opnieuw Verder voor onafhankelijke verificatie.")
                         .font(.caption)
                 }
+            case .renewalRequired(let target):
+                Text("De oude code is niet meer bruikbaar.")
+                Button("Ververs code") { viewModel.beginReviewedProviderAuthentication(target, renewing: true) }
             case .blocked(let reason):
                 FailureCallout(reason: reason)
             }

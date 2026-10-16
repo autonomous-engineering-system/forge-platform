@@ -603,6 +603,92 @@ final class MacOSInstallerPackageHelperInstalledReaderTests: XCTestCase {
             XCTAssertEqual(sourceRefused, .blocked) // Unsigned XCTest cannot prompt or install.
         }
     }
+    func testFirstPreparationRecoversMissingAcknowledgementUsingIndependentReadback() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let (package, release, journal, lock) = try installFixture(f)
+        let bytes = try Data(contentsOf: package.url), probe = InstallProbe()
+        let identity = try preparationIdentity(release)
+        let staging = MacOSInstallerHelperPackageStaging(root: f.base.appendingPathComponent("journal"),
+            download: { _ in bytes }, verifier: .init(check: { _, _ in true }))
+        // Real journal writer and coordinator reproduce the observed history:
+        // installation exits 0, activation happens once, running reply is lost.
+        let coordinator = installCoordinator(f, probe: probe, store: journal, lock: lock, failure: "running")
+        let preparation = MacOSInstallerHelperPackagePreparation(actions: .init(operatorAdmitted: { true }, current: { identity },
+            installed: { record in
+                probe.add("independent")
+                guard probe.items.contains("activate") else { return nil }
+                return await f.reader().read(release: record)
+            }, namespaceClean: { true }, stage: { record in await staging.stage(release: record) },
+            authorize: { _, _ in probe.add("authorize"); return .submitted },
+            install: { _, record in
+                await coordinator.install(package, release: record, admission: .init(isCurrent: { true }), admittedClientUID: getuid())
+            }))
+        let result = await preparation.prepare(release: release, admission: .init(isCurrent: { true }))
+        let readback = await f.reader().read(release: release)
+        XCTAssertEqual(result, .ready(try XCTUnwrap(readback)))
+        XCTAssertEqual(probe.items.filter { $0 == "authorize" }.count, 1)
+        XCTAssertEqual(probe.items.filter { $0 == "install" }.count, 1)
+        XCTAssertEqual(probe.items.filter { $0 == "activate" }.count, 1)
+        XCTAssertEqual(probe.items.filter { $0 == "independent" }.count, 2)
+        XCTAssertEqual(try journal.read().get().map(\.phase), [.installIntent, .installAttempted, .installExited, .activationAttempted])
+        XCTAssertEqual(try journal.read().get().last?.installerExitCode, 0)
+    }
+
+    func testAutomaticReadbackIsBoundedAndRejectsForeignOrRevokedEvidence() async throws {
+        for kind in ["delayed", "absent", "foreign", "operator", "epoch", "current", "cancelled"] {
+            let f = try Fixture(); defer { f.remove() }
+            let (package, release, _, _) = try installFixture(f)
+            let bytes = try Data(contentsOf: package.url), probe = InstallProbe()
+            let identity = try preparationIdentity(release)
+            let staging = MacOSInstallerHelperPackageStaging(root: f.base.appendingPathComponent("journal"),
+                download: { _ in bytes }, verifier: .init(check: { _, _ in true }))
+            let preparation = MacOSInstallerHelperPackagePreparation(actions: .init(
+                operatorAdmitted: { kind != "operator" || !probe.items.contains("install") },
+                current: { kind == "current" && probe.items.contains("install") ? nil : identity },
+                installed: { record in
+                    probe.add("independent")
+                    guard probe.items.contains("install") else { return nil }
+                    if kind == "epoch" { probe.add("revoked") }
+                    if kind == "absent" || (kind == "delayed" && probe.items.filter({ $0 == "independent" }).count < 4) { return nil }
+                    if kind == "foreign" { return .init(releaseSequence: 99, appCodeDirectorySHA256: record.expectedCodeDirectorySHA256, processID: 42) }
+                    return await f.reader().read(release: record)
+                }, namespaceClean: { true }, stage: { record in probe.add("stage"); return await staging.stage(release: record) },
+                authorize: { _, _ in probe.add("authorize"); return .submitted },
+                install: { _, _ in
+                    probe.add("install")
+                    if kind == "cancelled" { withUnsafeCurrentTask { $0?.cancel() } }
+                    return nil
+                }))
+            let progress = PreparationProgressProbe()
+            let task = Task {
+                await preparation.prepare(release: release, admission: .init(isCurrent: { !probe.items.contains("revoked") },
+                    progress: { await progress.record($0) }))
+            }
+            let result = await task.value
+            if kind == "delayed" {
+                let expected = await f.reader().read(release: release)
+                XCTAssertEqual(result, .ready(try XCTUnwrap(expected)))
+                let recorded = await progress.value
+                XCTAssertEqual(recorded.state(for: .verifyingReadiness), .completed)
+            } else { XCTAssertEqual(result, .unresolved, kind) }
+            XCTAssertEqual(probe.items.filter { $0 == "stage" }.count, 1, kind)
+            XCTAssertEqual(probe.items.filter { $0 == "authorize" }.count, 1, kind)
+            XCTAssertEqual(probe.items.filter { $0 == "install" }.count, 1, kind)
+            XCTAssertLessThanOrEqual(probe.items.filter { $0 == "independent" }.count, 4, kind)
+        }
+    }
+
+    private actor PreparationProgressProbe {
+        var value = InstallerHelperPreparationProgress()
+        func record(_ event: InstallerHelperPreparationProgressEvent) { value.record(event) }
+    }
+    private func preparationIdentity(_ release: VerifiedInstallerReleaseRecord) throws -> CurrentInstallerBundleIdentity {
+        try .init(version: release.release.version, acceptedReleaseSequence: release.sequence,
+            channel: release.channel, sourceRevision: release.sourceRevision, bundleIdentifier: release.expectedBundleIdentifier,
+            teamIdentifier: release.expectedTeamIdentifier, codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256, releaseTrustConfigurationSHA256: release.expectedReleaseTrustConfigurationSHA256)
+    }
+
     func testPreparationFreshExistingReadbackAvoidsAuthorizationAndRefusesForeignHelper() async throws {
         let f = try Fixture(); defer { f.remove() }
         let release = try f.record()

@@ -2,7 +2,12 @@ import Foundation
 
 protocol ManagedInstallerReviewedProviderAuthenticationStarting: Sendable {
     func begin(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data?
+    func renew(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data?
     func finish(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data?
+}
+
+extension ManagedInstallerReviewedProviderAuthenticationStarting {
+    func renew(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data? { nil }
 }
 
 protocol ManagedInstallerProviderAuthenticationCeremonyReading: Sendable {
@@ -145,6 +150,31 @@ actor ManagedInstallerReviewedProviderAuthenticationStart:
             return nil
         }
         return bytes
+    }
+
+    /// One explicit refresh of the same reviewed Codex target. Every old effect
+    /// stays reserved until begin() completes its existing fresh expiry readback.
+    func renew(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data? {
+        guard !Task.isCancelled, let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(canonicalIntent),
+              intent.canonicalJSONData() == canonicalIntent else { return nil }
+        let key = key(for: intent)
+        guard let old = sessions[key], old.reviewed.requirement.id == providerTargetID,
+              old.reviewed.requirement.provider == .codex,
+              !reserved.contains(key), !finishing.contains(key) else { return nil }
+        reserved.insert(key)
+        let fresh = await admission.admitLaunchTarget(canonicalIntent: canonicalIntent, providerTargetID: providerTargetID)
+        guard !Task.isCancelled, fresh == old.source, sessions[key]?.session === old.session,
+              old.session.requestCodeRenewal() else { reserved.remove(key); return nil }
+        // Await the registered child's natural termination callback. This wait
+        // neither launches a new child nor retires the durable reservation.
+        for _ in 0..<20 {
+            if old.session.hasObservedRenewalExit() { break }
+            do { try await Task.sleep(for: .milliseconds(50)) }
+            catch { reserved.remove(key); return nil }
+        }
+        reserved.remove(key)
+        guard !Task.isCancelled else { return nil }
+        return await begin(canonicalIntent: canonicalIntent, providerTargetID: providerTargetID)
     }
 
     func cancel(canonicalIntent: Data, providerTargetID: ProviderTargetID) -> Bool {

@@ -292,6 +292,24 @@ final class ManagedInstallerProviderAuthenticationSession: @unchecked Sendable {
         return read == 0 && size == 0
     }
 
+    /// Explicit user renewal is limited to the already supported file-backed
+    /// Codex session. GitHub/Keychain and named-operator sessions stay closed.
+    func hasObservedRenewalExit() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return terminal == .expired && expirationExitObserved
+    }
+
+    func requestCodeRenewal() -> Bool {
+        lock.lock()
+        let allowed = provider == .codex && expirationQuiescence != nil
+            && (terminal == .expired || (terminal == .running && challenge != nil))
+        let running = terminal == .running
+        lock.unlock()
+        guard allowed else { return false }
+        if running { expireOrCancel() }
+        return status() == .expired
+    }
+
     func status() -> Terminal {
         lock.lock()
         defer { lock.unlock() }
