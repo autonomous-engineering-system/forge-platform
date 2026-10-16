@@ -195,26 +195,65 @@ enum ManagedInstallerProviderAccountProbeChild {
             guard parentIsCurrent(), privateProcessGroup(),
                   capturedStreams() else { return 78 }
         }
+        if request.isAuthentication {
+            return launchAuthenticationInOwnedGroup(request, monitorParent: monitorParent)
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: request.executable)
         process.arguments = request.arguments
         process.environment = request.environment
         process.standardInput = FileHandle.nullDevice
-        if request.isAuthentication {
-            // The parent helper captures this pipe only until one bounded
-            // device challenge is parsed, then drains without journaling it.
-            process.standardError = FileHandle.standardError
-        } else {
-            process.standardError = FileHandle.nullDevice
-        }
+        process.standardError = FileHandle.nullDevice
         do { try process.run() }
         catch { return 78 }
-        if request.isAuthentication {
-            monitorParent(process.processIdentifier)
-        }
         process.waitUntilExit()
         guard process.terminationReason == .exit else { return 70 }
         return process.terminationStatus
+    }
+
+    /// Foundation Process creates a new process group on macOS. Authentication
+    /// must instead join the wrapper's already private group: expiry and parent
+    /// loss must stop both processes, including descendants inheriting it.
+    private static func launchAuthenticationInOwnedGroup(
+        _ request: Request, monitorParent: (pid_t) -> Void
+    ) -> Int32 {
+        let group = Darwin.getpgrp()
+        guard group > 1 else { return 78 }
+        var attributes: posix_spawnattr_t?
+        guard posix_spawnattr_init(&attributes) == 0 else { return 78 }
+        defer { posix_spawnattr_destroy(&attributes) }
+        guard posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0,
+              posix_spawnattr_setpgroup(&attributes, group) == 0 else { return 78 }
+        var actions: posix_spawn_file_actions_t?
+        guard posix_spawn_file_actions_init(&actions) == 0 else { return 78 }
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        guard posix_spawn_file_actions_addopen(&actions, STDIN_FILENO,
+                    "/dev/null", O_RDONLY, 0) == 0,
+              posix_spawn_file_actions_addinherit_np(&actions, STDOUT_FILENO) == 0,
+              posix_spawn_file_actions_addinherit_np(&actions, STDERR_FILENO) == 0 else { return 78 }
+        let arguments = [request.executable] + request.arguments
+        let environment = request.environment.sorted { $0.key < $1.key }
+            .map { $0.key + "=" + $0.value }
+        // These are fixed launch inputs, never a caller environment or provider
+        // output. Storage stays alive until posix_spawn has copied every byte.
+        var argv = arguments.map { strdup($0) }
+        var envp = environment.map { strdup($0) }
+        defer { argv.forEach { free($0) }; envp.forEach { free($0) } }
+        guard argv.allSatisfy({ $0 != nil }), envp.allSatisfy({ $0 != nil }) else { return 78 }
+        argv.append(nil); envp.append(nil)
+        var pid: pid_t = 0
+        let result = posix_spawn(&pid, request.executable, &actions, &attributes, &argv, &envp)
+        guard result == 0, pid > 1 else { return 78 }
+        // Successful spawn with SETPGROUP establishes the child's group before
+        // its executable runs. Keep the wrapper alive until this exact child is
+        // reaped; a fast exit must not be mistaken for an identity-check failure.
+        monitorParent(pid)
+        var status: Int32 = 0
+        var waited: pid_t
+        repeat { waited = Darwin.waitpid(pid, &status, 0) } while waited == -1 && errno == EINTR
+        guard waited == pid else { return 70 }
+        guard status & 0x7f == 0 else { return 70 }
+        return (status >> 8) & 0xff
     }
 
     private static func monitorParent(

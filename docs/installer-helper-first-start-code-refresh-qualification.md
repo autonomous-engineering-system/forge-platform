@@ -34,3 +34,20 @@ An actual AppKit render of the customer code screen was visually inspected. Synt
 ## Delivery boundary
 
 No public source delivery, release cycle, helper transition or new VM operation is included in this source qualification. The existing manual GUI test still uses published 0.4.25. The separate Forge projectless scheduler readiness defect remains open with its existing source owner.
+
+
+## Follow-up: real process-tree refresh regression (2026-10-16)
+
+The public 0.4.26 GUI advanced automatically past helper preparation, but its
+first real Codex refresh did not complete. The authentication wrapper exited
+while its provider survived, reparented to PID 1 in a separate process group.
+The original effect reservation correctly remained active. Earlier synthetic
+session tests did not exercise the production wrapper's Foundation `Process`
+launch and therefore did not establish real process-tree renewal acceptance.
+
+The source follow-up is documented in
+[Codex refresh process ownership qualification](installer-codex-refresh-process-ownership-qualification.md).
+It is an unsigned source qualification, not a published installer or live-VM
+refresh PASS. The running VM, its pending authentication record and historical
+journals are retained. No manual process signal or new installer attempt is
+included in this source increment.

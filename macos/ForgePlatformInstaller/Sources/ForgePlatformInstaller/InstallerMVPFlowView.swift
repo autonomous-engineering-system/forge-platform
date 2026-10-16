@@ -328,9 +328,14 @@ struct InstallerMVPFlowView: View {
             case .staging:
                 providerWait("Provideromgevingen voorbereiden en verbindingen controleren…")
             case .authenticating:
-                providerWait("\(connectingProviderTitle)-aanmelding voorbereiden en controleren…")
-                Text("De installer controleert de ondertekende bestanden en de geselecteerde accounts. Daarna verschijnt de officiële aanmeldcode.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if let phase = viewModel.providerRenewalPhase {
+                    InstallerMVPProviderRenewalProgress(phase: phase)
+                    providerElapsedTime(isRenewal: true)
+                } else {
+                    providerWait("\(connectingProviderTitle)-aanmelding voorbereiden en controleren…")
+                    Text("De installer controleert de ondertekende bestanden en de geselecteerde accounts. Daarna verschijnt de officiële aanmeldcode.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             case .prepared:
                 providerWait("\(connectingProviderTitle) controleren…")
             case .observed(let readback):
@@ -402,15 +407,22 @@ struct InstallerMVPFlowView: View {
     private func providerWait(_ label: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ProgressView(label)
-            if let start = providerWaitStartedAt {
-                TimelineView(.periodic(from: start, by: 1)) { timeline in
-                    let seconds = max(0, Int(timeline.date.timeIntervalSince(start)))
-                    Text(String(format: "Verstreken tijd: %d:%02d", seconds / 60, seconds % 60))
-                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                    if seconds >= 30 {
-                        Text("De verbindingscontrole loopt nog. Je hoeft niet opnieuw aan te melden. Je kunt eerdere stappen blijven bekijken.")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
+            providerElapsedTime(isRenewal: false)
+        }
+    }
+
+    @ViewBuilder
+    private func providerElapsedTime(isRenewal: Bool) -> some View {
+        if let start = providerWaitStartedAt {
+            TimelineView(.periodic(from: start, by: 1)) { timeline in
+                let seconds = max(0, Int(timeline.date.timeIntervalSince(start)))
+                Text(String(format: "Verstreken tijd: %d:%02d", seconds / 60, seconds % 60))
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                if seconds >= 30 {
+                    Text(isRenewal
+                        ? "Het verversen duurt langer dan verwacht. De oude code is niet meer zichtbaar; sluit de installer niet en start geen tweede poging."
+                        : "De verbindingscontrole loopt nog. Je hoeft niet opnieuw aan te melden. Je kunt eerdere stappen blijven bekijken.")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
             }
         }
