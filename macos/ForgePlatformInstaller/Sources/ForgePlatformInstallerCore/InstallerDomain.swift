@@ -1826,6 +1826,10 @@ public protocol InstallerWizardCoordinator: Sendable {
         _ operation: ReviewedManagedDeploymentOperation,
         providerTargetID: ProviderTargetID
     ) async -> ManagedInstallerProviderAuthenticationChallengeResponse?
+    func renewReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse?
     func registerReviewedEPProvider(
         _ operation: ReviewedManagedDeploymentOperation,
         providerTargetID: ProviderTargetID
@@ -1890,6 +1894,15 @@ public extension InstallerWizardCoordinator {
     }
 
     func beginReviewedProviderAuthentication(
+        _ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID
+    ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        _ = operation
+        _ = providerTargetID
+        return nil
+    }
+
+    func renewReviewedProviderAuthentication(
         _ operation: ReviewedManagedDeploymentOperation,
         providerTargetID: ProviderTargetID
     ) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {

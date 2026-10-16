@@ -77,10 +77,31 @@ actor MacOSInstallerHelperPackagePreparation {
         case .rejected, .unavailable: return .unresolved
         case .submitted: await admission.progress(.completed(.authorizing))
         }
-        guard await admission.isCurrent(), actions.operatorAdmitted(), await matchesCurrent(release), await admission.isCurrent(),
-              let installed = await install(staged, release, admission: admission), matches(installed, release),
-              await matchesCurrent(release), await admission.isCurrent() else { return .unresolved }
-        return .ready(installed)
+        guard await admission.isCurrent(), actions.operatorAdmitted(), await matchesCurrent(release), await admission.isCurrent() else { return .unresolved }
+        if let installed = await install(staged, release, admission: admission) {
+            guard matches(installed, release), await matchesCurrent(release), await admission.isCurrent() else { return .unresolved }
+            return .ready(installed)
+        }
+        // A lost bootstrap acknowledgement is not proof of installation failure.
+        // Perform the same independent readback as the manual check, within this
+        // submission. Never repeat staging, authorization, installation or activation.
+        for attempt in 0..<3 {
+            guard !Task.isCancelled, await admission.isCurrent(), actions.operatorAdmitted(),
+                  await matchesCurrent(release), await admission.isCurrent() else { return .unresolved }
+            if let existing = await actions.installed(release) {
+                guard matches(existing, release), actions.operatorAdmitted(), await matchesCurrent(release),
+                      await admission.isCurrent(), !Task.isCancelled else { return .unresolved }
+                await admission.progress(.completed(.installingMainHelper))
+                await admission.progress(.began(.verifyingReadiness))
+                await admission.progress(.completed(.verifyingReadiness))
+                return .ready(existing)
+            }
+            if attempt < 2 {
+                do { try await Task.sleep(for: .milliseconds(250)) }
+                catch { return .unresolved }
+            }
+        }
+        return .unresolved
     }
     private func stage(_ release: VerifiedInstallerReleaseRecord, admission: InstallerHelperPreparationAdmission) async -> MacOSInstallerStagedHelperPackage? {
         if let action = actions.stageWithProgress { return await action(release, admission) }

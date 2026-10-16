@@ -629,7 +629,7 @@ final class InstallerWizardViewModelTests: XCTestCase {
         model.advance()
         for _ in 0..<400 {
             switch model.providerStage {
-            case .observed, .blocked, .authenticating, .challenge: break
+            case .observed, .blocked, .authenticating, .challenge, .renewalRequired: break
             case .idle, .staging, .prepared:
                 try? await Task.sleep(for: .milliseconds(5))
                 continue
@@ -865,6 +865,10 @@ actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
     private var staged = 0
     private var executed = 0
     private var authenticationStarts = 0
+    private var authenticationRenewals = 0
+    private var renewalRefused = false
+    func refuseRenewal(_ value: Bool) { renewalRefused = value }
+    func renewalCount() -> Int { authenticationRenewals }
 
     private let renderChallenge: Bool
     private var reads = 0
@@ -947,6 +951,17 @@ actor ProviderStageGUICoordinator: InstallerWizardCoordinator {
         if operation.enabledProviderRequirements.contains(where: { $0.id == providerTargetID }) {
             authenticationStarts += 1
         }
+        return makeChallenge(operation, providerTargetID: providerTargetID)
+    }
+
+    func renewReviewedProviderAuthentication(_ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID) async -> ManagedInstallerProviderAuthenticationChallengeResponse? {
+        authenticationRenewals += 1
+        return renewalRefused ? nil : makeChallenge(operation, providerTargetID: providerTargetID)
+    }
+
+    private func makeChallenge(_ operation: ReviewedManagedDeploymentOperation,
+        providerTargetID: ProviderTargetID) -> ManagedInstallerProviderAuthenticationChallengeResponse? {
         // Read-only render data; this actor cannot execute a product action.
         guard renderChallenge,
               let intent = try? ManagedInstallerReviewedExecutionIntent.decodeJSON(

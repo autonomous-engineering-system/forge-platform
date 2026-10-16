@@ -929,6 +929,51 @@ final class ManagedInstallerFreshInstallRuntimeAdmissionTests: XCTestCase {
         XCTAssertTrue(box.quiet())
     }
 
+    func testExplicitCodexRefreshExpiresOnlyOriginalSessionAndPreservesHistory() async throws {
+        let fanout = try CodexFanoutFixture()
+        let reader = ProviderAuthMutableStatusReader(status: fanout.prior)
+        let targets = fanout.targets
+        let admission = ManagedInstallerReviewedProviderAuthenticationAdmission(
+            loader: ProviderStagePlanLoader(plan: fanout.fixture.plan), reader: reader,
+            prepareTarget: { _, requirement in targets[requirement.id] })
+        let root = URL(fileURLWithPath: "/private/tmp/l1-auth-actor-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
+                                               attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let effects = FileManagedInstallerProductWorkerEffectJournal(stateRoot: root, expectedOwner: geteuid())
+        let box = AuthRenewalSessionBox(effects: effects)
+        let starter = ManagedInstallerReviewedProviderAuthenticationStart(
+            admission: admission, makeSession: { _ in box.make() })
+        let bytes = fanout.intent.canonicalJSONData()
+        let first = await starter.begin(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertNotNil(first)
+        let record = root.appendingPathComponent("product-worker-effects.json")
+        let original = try Data(contentsOf: record)
+        let pending = await starter.pendingCeremonyCount()
+        XCTAssertEqual(pending, 1)
+        let crossed = await starter.renew(canonicalIntent: bytes, providerTargetID: fanout.forge.id)
+        XCTAssertNil(crossed)
+        XCTAssertEqual(try Data(contentsOf: record), original)
+        // A target that became VERIFIED must not get another login ceremony.
+        await reader.set(fanout.sourceVerified)
+        let alreadyVerified = await starter.renew(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertNil(alreadyVerified)
+        XCTAssertEqual(try Data(contentsOf: record), original)
+        await reader.set(fanout.prior)
+        let refreshed = await starter.renew(canonicalIntent: bytes, providerTargetID: fanout.ep.id)
+        XCTAssertNotNil(refreshed)
+        XCTAssertEqual(box.count(), 2)
+        let receipts = try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .filter { $0.hasPrefix("expired-provider-authentication-") }
+        XCTAssertEqual(receipts.count, 1)
+        box.expire()
+        for _ in 0..<200 {
+            if box.quiet() { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(box.quiet())
+    }
+
     func testOneCodexCeremonyBootstrapsAndIndependentlyVerifiesBothTargets() async throws {
         let fanout = try CodexFanoutFixture()
         let reader = ProviderAuthMutableStatusReader(status: fanout.prior)

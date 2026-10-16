@@ -299,6 +299,94 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         XCTAssertEqual(model.state.step, .review)
     }
 
+    func testCodeRefreshUsesSameOperationAndDiscardsOldCodeWhileWaiting() async throws {
+        let (model, coordinator, target) = try await stagedProviderModel()
+        model.beginReviewedProviderAuthentication(target)
+        for _ in 0..<200 {
+            if case .challenge = model.providerStage { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard case .challenge = model.providerStage else { return XCTFail("Expected source-only challenge") }
+        await coordinator.holdProviderRead()
+        model.beginReviewedProviderAuthentication(target, renewing: true)
+        model.beginReviewedProviderAuthentication(target, renewing: true)
+        guard case .authenticating = model.providerStage else { return XCTFail("Old code must disappear immediately") }
+        for _ in 0..<200 {
+            if await coordinator.readCalls() == 2 { break }
+            await Task.yield()
+        }
+        await coordinator.releaseProviderRead()
+        for _ in 0..<200 {
+            if case .challenge = model.providerStage { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard case .challenge = model.providerStage else { return XCTFail("Expected refreshed source-only challenge") }
+        let starts = await coordinator.authenticationStartCount(), renewals = await coordinator.renewalCount()
+        let stages = await coordinator.stageCalls(), executions = await coordinator.executionCalls()
+        XCTAssertEqual(starts, 1); XCTAssertEqual(renewals, 1)
+        XCTAssertEqual(stages, 1); XCTAssertEqual(executions, 0)
+        XCTAssertFalse(model.state.enabledProvidersVerified)
+        let png = try renderCustomerFlow(state: model.state, started: true, suppliedModel: model)
+        try png.write(to: artifactRoot().appendingPathComponent("customer-refresh-code.png"))
+    }
+
+    func testRefreshFailureKeepsRenewalActionAndCompletedLoginWins() async throws {
+        for verified in [false, true] {
+            let (model, coordinator, target) = try await stagedProviderModel()
+            model.beginReviewedProviderAuthentication(target)
+            for _ in 0..<200 {
+                if case .challenge = model.providerStage { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            if verified { await coordinator.verifyTargets() }
+            else { await coordinator.refuseRenewal(true) }
+            model.beginReviewedProviderAuthentication(target, renewing: true)
+            for _ in 0..<200 {
+                if !model.isProviderStageInFlight { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            if verified {
+                guard case .observed = model.providerStage else { return XCTFail("Verified login wins") }
+                XCTAssertTrue(model.state.enabledProvidersVerified)
+                let count = await coordinator.renewalCount(); XCTAssertEqual(count, 0)
+            } else {
+                guard case .renewalRequired(let pending) = model.providerStage else { return XCTFail("Do not restore an invalid code") }
+                XCTAssertEqual(pending, target)
+                await coordinator.refuseRenewal(false)
+                model.beginReviewedProviderAuthentication(target, renewing: true)
+                for _ in 0..<200 {
+                    if case .challenge = model.providerStage { break }
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+                guard case .challenge = model.providerStage else { return XCTFail("Refresh must remain available") }
+                let count = await coordinator.renewalCount(); XCTAssertEqual(count, 2)
+            }
+            let stages = await coordinator.stageCalls(), executions = await coordinator.executionCalls()
+            XCTAssertEqual(stages, 1); XCTAssertEqual(executions, 0)
+        }
+    }
+
+    func testCodeRefreshRejectsChangedInstallerAndForeignReadbackBeforeRenewal() async throws {
+        for changedInstaller in [false, true] {
+            let (model, coordinator, target) = try await stagedProviderModel()
+            model.beginReviewedProviderAuthentication(target)
+            for _ in 0..<200 {
+                if case .challenge = model.providerStage { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            if changedInstaller { await coordinator.requireInstallerUpdate(try makeRelease("1.2.4")) }
+            else { await coordinator.rejectReadbackBinding() }
+            model.beginReviewedProviderAuthentication(target, renewing: true)
+            for _ in 0..<200 {
+                if case .blocked = model.providerStage { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            guard case .blocked = model.providerStage else { return XCTFail("Drift must block renewal") }
+            let renewals = await coordinator.renewalCount(), stages = await coordinator.stageCalls()
+            XCTAssertEqual(renewals, 0); XCTAssertEqual(stages, 1)
+        }
+    }
+
     func testCustomerGUIConfirmationFailsClosedOnInstallerOrReadbackDrift() async throws {
         for changeInstaller in [false, true] {
             let (model, coordinator, _) = try await stagedProviderModel()

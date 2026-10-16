@@ -346,6 +346,10 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             service, intent.canonicalJSONData(), target.rawValue
         )
         XCTAssertEqual(exact, response.canonicalJSONData())
+        let malformedRenewal = await callProviderAuthenticationRenewal(service, Data("{}".utf8), target.rawValue)
+        XCTAssertNil(malformedRenewal)
+        let exactRenewal = await callProviderAuthenticationRenewal(service, intent.canonicalJSONData(), target.rawValue)
+        XCTAssertEqual(exactRenewal, response.canonicalJSONData())
         let malformedCompletion = await callProviderAuthenticationCompletion(
             service, Data("{}".utf8), target.rawValue
         )
@@ -373,6 +377,8 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
             drainingService, intent.canonicalJSONData(), target.rawValue
         )
         XCTAssertNil(deniedNewCeremony)
+        let deniedRenewal = await callProviderAuthenticationRenewal(drainingService, intent.canonicalJSONData(), target.rawValue)
+        XCTAssertNil(deniedRenewal, "Renewal starts a new ceremony and must remain blocked during upgrade drain")
         let deniedMalformedCompletion = await callProviderAuthenticationCompletion(
             drainingService, Data("{}".utf8), target.rawValue
         )
@@ -403,11 +409,14 @@ final class ManagedInstallerReleasedRouteXPCTests: XCTestCase {
         )
         if !(try ManagedInstallerNamedOperator.resolve(uid: getuid())).isAdministrator {
             await assertNonAdminTransportRejected { try await transport.beginReviewedProviderAuthentication(intent, providerTargetID: target) }
+            await assertNonAdminTransportRejected { try await transport.renewReviewedProviderAuthentication(intent, providerTargetID: target) }
         } else {
             let forwarded = try await transport.beginReviewedProviderAuthentication(
                 intent, providerTargetID: target
             )
             XCTAssertEqual(forwarded, response)
+            let renewed = try await transport.renewReviewedProviderAuthentication(intent, providerTargetID: target)
+            XCTAssertEqual(renewed, response)
             let finished = try await transport.finishReviewedProviderAuthentication(
                 intent, providerTargetID: target
             )
@@ -1120,6 +1129,10 @@ private struct XPCProviderAuthenticationStarter:
         return response.canonicalJSONData()
     }
 
+    func renew(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data? {
+        await begin(canonicalIntent: canonicalIntent, providerTargetID: providerTargetID)
+    }
+
     func finish(canonicalIntent: Data, providerTargetID: ProviderTargetID) async -> Data? {
         guard canonicalIntent == intent.canonicalJSONData(),
               providerTargetID == target else { return nil }
@@ -1164,5 +1177,13 @@ private func callIntent(
 ) async -> Data? {
     await withCheckedContinuation { continuation in
         service.executeReviewedIntent(intent) { continuation.resume(returning: $0) }
+    }
+}
+
+private func callProviderAuthenticationRenewal(_ service: ManagedInstallerReleasedRouteXPCService,
+    _ intent: Data, _ target: String) async -> Data? {
+    await withCheckedContinuation { continuation in
+        guard let renew = service.renewReviewedProviderAuthentication else { continuation.resume(returning: nil); return }
+        renew(intent, target) { continuation.resume(returning: $0) }
     }
 }
