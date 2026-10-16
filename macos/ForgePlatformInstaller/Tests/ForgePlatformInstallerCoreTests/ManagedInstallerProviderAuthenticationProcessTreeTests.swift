@@ -32,7 +32,10 @@ final class ManagedInstallerProviderAuthenticationProcessTreeTests: XCTestCase {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest")
             process.arguments = ["-XCTest", "ForgePlatformInstallerCoreTests.ManagedInstallerProviderAuthenticationProcessTreeTests/testProductionWrapperChildEntry", Bundle(for: Self.self).bundleURL.path]
-            process.environment = ["FPI_PROCESS_TREE_TEST_FIXTURE": root.path, "PATH": "/usr/bin:/bin"]
+            // An instrumented XCTest child must keep its own profiling bytes
+            // inside the private fixture, never default.profraw in the checkout.
+            process.environment = ["FPI_PROCESS_TREE_TEST_FIXTURE": root.path,
+                "PATH": "/usr/bin:/bin", "LLVM_PROFILE_FILE": root.path + "/child-%p.profraw"]
             process.standardInput = FileHandle.nullDevice
             return ManagedInstallerProviderAuthenticationSession(provider: .codex, process: process,
                 exitRegistry: registry, effectJournal: effects,
