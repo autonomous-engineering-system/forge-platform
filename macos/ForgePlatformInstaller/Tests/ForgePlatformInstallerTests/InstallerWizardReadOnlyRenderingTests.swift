@@ -604,6 +604,82 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         }
     }
 
+    func testMountedCustomerWizardAutomaticallyRequestsCompositionReview() async throws {
+        var state = try providerState(allVerified: false, customRequirements: [
+            ProviderRequirement(provider: .codex, isRequired: true, credentialScope: .component,
+                ownerComponent: .engineeringPlatformServer, targetIdentity: "deployment-new")
+        ], deploymentID: "deployment-new")
+        XCTAssertTrue(state.goBack())
+        XCTAssertEqual(state.step, .preflight)
+        let passed = state.preflight
+        state.preflight = HostPreflight()
+        let spy = MountedCustomerReviewSpy(preflight: passed)
+        let model = InstallerWizardViewModel(state: state, coordinator: spy)
+        let view = InstallerMVPFlowView(viewModel: model, initiallyStarted: true,
+            eventLog: InstallerMVPEventLog(directory: try artifactRoot().appendingPathComponent("mounted-review-logs")))
+        let hosting = NSHostingView(rootView: view.frame(width: 960, height: 680))
+        let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 960, height: 680),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        window.orderFront(nil)
+        defer { window.close() }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        // Complete preflight asynchronously, exactly as the real coordinator
+        // does. The mounted view must drive the subsequent transitions itself.
+        model.prepareHostPreflight()
+        for _ in 0..<100 {
+            if case .compatible = model.state.composition.status { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let calls = await spy.reviewCalls()
+        XCTAssertEqual(model.state.step, .review)
+        XCTAssertEqual(calls, 1, "The mounted wizard must request one real review")
+        if case .compatible = model.state.composition.status {} else {
+            XCTFail("Producten controleren must resolve without a manual action")
+        }
+        XCTAssertFalse(model.isReviewRequestInFlight)
+        XCTAssertFalse(model.state.enabledProvidersVerified)
+        if case .idle = model.providerStage {} else { XCTFail("Review must not authenticate or stage providers") }
+    }
+
+    func testMountedCustomerWizardDoesNotNeedSecondObservationToStartReview() async throws {
+        let state = try providerState(allVerified: false, customRequirements: [
+            ProviderRequirement(provider: .codex, isRequired: true, credentialScope: .component,
+                ownerComponent: .engineeringPlatformServer, targetIdentity: "deployment-new")
+        ], deploymentID: "deployment-new")
+        let spy = MountedCustomerReviewSpy(preflight: state.preflight)
+        let model = InstallerWizardViewModel(state: state, coordinator: spy)
+        let hosting = NSHostingView(rootView: InstallerMVPFlowView(viewModel: model, initiallyStarted: true,
+            eventLog: InstallerMVPEventLog(directory: try artifactRoot().appendingPathComponent("coalesced-review-logs")))
+            .frame(width: 960, height: 680))
+        let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 960, height: 680),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        // Deliver one production preparation observation before SwiftUI draws
+        // the next frame. There is no guarantee of a second observation for an
+        // intermediate state that was never rendered.
+        var progress = InstallerMVPPreparationProgress()
+        progress.continuePreparation(viewModel: model, started: true)
+        window.orderFront(nil)
+        defer { window.close() }
+        for _ in 0..<100 {
+            if case .compatible = model.state.composition.status { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let calls = await spy.reviewCalls()
+        XCTAssertEqual(model.state.step, .review)
+        XCTAssertEqual(calls, 1, "One preparation observation must start the read-only review")
+        if case .compatible = model.state.composition.status {} else {
+            XCTFail("The mounted wizard is stranded on Producten controleren without a running request")
+        }
+        XCTAssertFalse(model.isReviewRequestInFlight)
+        XCTAssertFalse(model.state.enabledProvidersVerified)
+        XCTAssertFalse(model.isProviderStageInFlight)
+        XCTAssertFalse(model.isExecutionRequestInFlight)
+    }
+
     func testCustomerPreparationUsesExistingEvidenceGates() throws {
         func model(_ state: InstallerWizardState) -> InstallerWizardViewModel {
             InstallerWizardViewModel(
@@ -665,7 +741,8 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
         passed.preflight = passedPreflight()
         let passedModel = model(passed)
         prepare(passedModel)
-        XCTAssertEqual(passedModel.state.step, .providers)
+        XCTAssertEqual(passedModel.state.step, .review)
+        XCTAssertTrue(passedModel.isReviewRequestInFlight)
 
         let componentProviders = model(try providerState(allVerified: false, customRequirements: [
             ProviderRequirement(provider: .codex, isRequired: true, credentialScope: .component,
@@ -694,7 +771,13 @@ final class InstallerWizardReadOnlyRenderingTests: XCTestCase {
 
         let reviewing = model(try reviewState(acknowledged: false))
         prepare(reviewing)
-        XCTAssertTrue(reviewing.isReviewRequestInFlight)
+        XCTAssertFalse(reviewing.isReviewRequestInFlight, "An existing review must not be requested again")
+
+        var rejected = try reviewState(acknowledged: false)
+        rejected.composition.status = .incompatible("Read-only review unavailable")
+        let rejectedModel = model(rejected)
+        prepare(rejectedModel)
+        XCTAssertFalse(rejectedModel.isReviewRequestInFlight, "Failure needs the explicit retry control")
 
         let completed = model(try executionState(failed: false))
         prepare(completed)
@@ -1263,5 +1346,39 @@ private actor CustomerCompositionSelectionSpy: InstallerWizardCoordinator {
     func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult {
         XCTFail("No provider work before selected session")
         return .failed(.coordinatorUnavailable)
+    }
+}
+
+private actor MountedCustomerReviewSpy: InstallerWizardCoordinator {
+    private var calls = 0
+    private let preflight: HostPreflight
+    init(preflight: HostPreflight) { self.preflight = preflight }
+    func prepareHostPreflight(session: VerifiedCompositionSessionPlan,
+                              deployment: ManagedDeploymentTarget) async -> HostPreflightPreparationResult {
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        return .prepared(PreparedHostPreflight(sessionID: session.sessionID,
+            deploymentID: deployment.id, preflight: preflight))
+    }
+    func reviewCalls() -> Int { calls }
+    func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult { .rejected("unused") }
+    func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult { .failed("unused") }
+    func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult {
+        XCTFail("Read-only review must not perform provider work")
+        return .failed(.coordinatorUnavailable)
+    }
+    func stageReviewedProviders(_ operation: ReviewedManagedDeploymentOperation) async -> ManagedInstallerProviderStagePreparationResult {
+        XCTFail("Automatic read-only transitions must not stage providers")
+        return .unavailable(.coordinatorUnavailable)
+    }
+    func executeReviewedManagedDeployment(_ operation: ReviewedManagedDeploymentOperation) async -> ManagedDeploymentExecutionResult {
+        XCTFail("Automatic read-only transitions must not execute products")
+        return .failed(.coordinatorUnavailable, stages: [])
+    }
+    func prepareCompositionReview(session: VerifiedCompositionSessionPlan,
+                                  deployment: ManagedDeploymentTarget) async -> CompositionReviewPreparationResult {
+        calls += 1
+        return .prepared(PreparedCompositionReview(sessionID: session.sessionID,
+            deploymentID: deployment.id, review: CompositionReview(manifestIdentity: session.compositionIdentity,
+                status: .compatible, components: [], isAcknowledged: false)))
     }
 }

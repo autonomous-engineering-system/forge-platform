@@ -752,6 +752,19 @@ struct InstallerMVPPreparationProgress {
         choice: ManagedInstallerCompositionChoice = .forgeAndEngineeringPlatform
     ) {
         guard started else { return }
+        // SwiftUI may coalesce intermediate state observations before drawing
+        // the next frame. Settle the two read-only gates in this observation,
+        // so entering review also starts its request without another redraw.
+        // These gates cannot stage providers or execute a product operation.
+        readOnlyTransitions: for _ in 0..<2 {
+            switch viewModel.state.step {
+            case .preflight, .providers:
+                guard viewModel.state.canAdvance else { break readOnlyTransitions }
+                viewModel.advance()
+            default:
+                break readOnlyTransitions
+            }
+        }
         switch viewModel.state.step {
         case .selfUpdate:
             if viewModel.state.selfUpdate.isCurrent { viewModel.advance() }
@@ -779,21 +792,19 @@ struct InstallerMVPPreparationProgress {
                 break
             }
         case .preflight:
-            if viewModel.state.preflight.isPassed {
-                viewModel.advance()
-            } else if !preflightRequested {
+            if !preflightRequested {
                 preflightRequested = true
                 viewModel.prepareHostPreflight()
             }
         case .review:
-            if !reviewRequested {
+            if !reviewRequested, case .pending = viewModel.state.composition.status {
                 reviewRequested = true
                 viewModel.prepareCompositionReview()
             }
         case .execution:
             if viewModel.state.canAdvance { viewModel.advance() }
         case .providers:
-            if viewModel.state.canAdvance { viewModel.advance() }
+            break
         case .summary:
             break
         }
