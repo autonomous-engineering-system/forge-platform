@@ -628,5 +628,3 @@ class ReleasedForge2221CatalogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
