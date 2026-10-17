@@ -6,6 +6,14 @@ import XCTest
 /// Declared metadata fixtures qualify the admission boundary only. No wheel,
 /// provider, credential, installed instance or runtime publication is faked.
 final class ManagedInstallerInstallationProductWorkerAuthorityAdmissionTests: XCTestCase {
+    func test2221ExactReviewReceiptsAdmitProjectFreeMetadata() throws {
+        let f = try Fixture(forgeVersion: "2.22.1")
+        XCTAssertTrue(f.accepts())
+        var fields = f.fields
+        fields["forge_artifact_sha256"] = .string("sha256:" + String(repeating: "0", count: 64))
+        XCTAssertThrowsError(try f.accepts(fields: fields))
+    }
+
     func testExactReviewReceiptsAndOperatorAdmitOnlyProjectFreeMetadata() throws {
         let f = try Fixture()
         XCTAssertTrue(f.accepts())
@@ -158,19 +166,22 @@ final class ManagedInstallerInstallationProductWorkerAuthorityAdmissionTests: XC
         let evidence: [ManagedInstallerProductWorkerVenvPublicationEvidence]
         let fields: [String: StrictJSONResourceValue]
 
-        init() throws {
+        init(forgeVersion: String = "2.8.1") throws {
             user = try qualificationNamedAdministrator()
             let original = try PrepublicationWheelFixture(includeProductVenvs: true)
             var parser = try StrictJSONResourceReader(data: original.material.manifestBytes)
             var root = try XCTUnwrap(parser.parseDocument().objectValue)
-            let forgeDigest = ManagedInstallerProductServiceAccountPlanner.installationForgeArtifactSHA256
+            let forgeDigest = forgeVersion == "2.22.1"
+                ? ManagedInstallerProductServiceAccountPlanner.installationForge2221ArtifactSHA256
+                : ManagedInstallerProductServiceAccountPlanner.installationForgeArtifactSHA256
             let epDigest = ManagedInstallerInstallationProductWorkerAuthorityAdmission.epArtifact
             root["components"] = .array([
                 .object(["identity": .string("forge-runtime"), "artifact": .object([
-                    "version": .string("2.8.1"), "digest": .string(forgeDigest),
-                    "source_revision": .string("c8833ffa4754800de451cce94b109ef1ad07123f"),
-                    "source": .string("https://github.com/pcvantol/forge/releases/download/forge-v2.8.1/forge.whl"),
-                    "qualification": .string("https://github.com/pcvantol/forge/releases/tag/forge-v2.8.1")])]),
+                    "version": .string(forgeVersion), "digest": .string(forgeDigest),
+                    "source_revision": .string(forgeVersion == "2.22.1"
+                        ? "8ee60c8409b2c3801e70cf129f20f1ff1480d03b" : "c8833ffa4754800de451cce94b109ef1ad07123f"),
+                    "source": .string("https://github.com/pcvantol/forge/releases/download/forge-v\(forgeVersion)/forge.whl"),
+                    "qualification": .string("https://github.com/pcvantol/forge/releases/tag/forge-v\(forgeVersion)")])]),
                 .object(["identity": .string("engineering-platform-server"), "artifact": .object([
                     "version": .string("2.3.113"), "digest": .string(epDigest),
                     "source_revision": .string("9318636060706534635954e9131e42e2f63928ef"),
@@ -197,7 +208,7 @@ final class ManagedInstallerInstallationProductWorkerAuthorityAdmissionTests: XC
             plan = try managedInstallerTestStablePlan(session: session, deployment: original.deployment,
                 activationPlan: p, actions: [], components: [
                     .init(componentID: "forge-runtime", title: "Forge", change: .install,
-                        candidateVersion: "2.8.1", artifactDigest: forgeDigest, detail: "Declared metadata"),
+                        candidateVersion: forgeVersion, artifactDigest: forgeDigest, detail: "Declared metadata"),
                     .init(componentID: "engineering-platform-server", title: "EP", change: .install,
                         candidateVersion: "2.3.113", artifactDigest: epDigest, detail: "Declared metadata")])
             let localPlan = plan; let localUser = user

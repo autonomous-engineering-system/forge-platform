@@ -71,6 +71,17 @@ class ProtectedRootReadbackTests(unittest.TestCase):
         with patch.object(subject,'git',side_effect=git):
             return subject.read_counts(Path('/source-model'),env or ENV,lambda path:copy.deepcopy(api[path]),download)
 
+    def testCatalogConsumesOnlySameProtectedSourceAndOwnWorkflow(self):
+        receipt,raw,api=fixture()
+        env=dict(ENV,GITHUB_WORKFLOW='Forge Platform composition catalog release framework')
+        own='actions/runs/200/attempts/1'
+        api[own]['path']='.github/workflows/forge-platform-composition-catalog-release.yml'
+        self.assertEqual(self.invoke(api,raw,env),receipt['counts'])
+        api[own]['path']='.github/workflows/forge-platform-installer-release.yml'
+        with self.assertRaises(ValueError):self.invoke(api,raw,env)
+        api[own]['path']='.github/workflows/forge-platform-composition-catalog-release.yml'
+        with self.assertRaises(ValueError):self.invoke(api,raw,dict(env,GITHUB_EVENT_NAME='pull_request'))
+
     def testExactQualifiedRunAndArtifactProvideCountsOnly(self):
         receipt,raw,api=fixture();self.assertEqual(self.invoke(api,raw),receipt['counts'])
 

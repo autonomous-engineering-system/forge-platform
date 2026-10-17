@@ -20,6 +20,22 @@ final class ManagedInstallerProductServiceAccountPlanTests: XCTestCase {
             ManagedInstallerProductServiceAccountPlanner.name(deploymentID: claim.deploymentID,
                 componentIdentity: claim.componentIdentity, instanceID: claim.instanceID))
     }
+    func test2221InstallationForgeCannotFallBackToUnreviewedServiceIdentity() throws {
+        let id = UUID().uuidString
+        let claim = ManagedInstallerProductServiceAccountClaim(stablePlanFingerprint: String(repeating: "a", count: 64),
+            operationID: "missing-review-" + id, deploymentID: "deployment-" + id,
+            componentIdentity: "forge-runtime", instanceID: "forge-" + id,
+            productArtifactSHA256: "sha256:6f0fca3139aa40b8bd886d32c99d17c4802caa39a40e6f948d5e97218a587c82",
+            accountName: "_fpi_" + String(repeating: "a", count: 20))
+        XCTAssertNil(ManagedInstallerProductServiceAccountPlanner.reviewedAccountName(for: claim))
+        let historical = ManagedInstallerProductServiceAccountClaim(stablePlanFingerprint: claim.stablePlanFingerprint,
+            operationID: claim.operationID, deploymentID: claim.deploymentID,
+            componentIdentity: claim.componentIdentity, instanceID: claim.instanceID,
+            productArtifactSHA256: "sha256:" + String(repeating: "b", count: 64), accountName: claim.accountName)
+        XCTAssertEqual(ManagedInstallerProductServiceAccountPlanner.reviewedAccountName(for: historical),
+            ManagedInstallerProductServiceAccountPlanner.name(deploymentID: claim.deploymentID,
+                componentIdentity: claim.componentIdentity, instanceID: claim.instanceID))
+    }
 
     func testFreshWorkerAuthorityRequiresExactReviewedInstancesAndActivation()
         async throws {

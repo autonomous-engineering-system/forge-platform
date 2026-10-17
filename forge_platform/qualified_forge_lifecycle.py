@@ -97,7 +97,7 @@ def qualified_forge_239_update_selection(
 
 
 def qualified_forge_installation_pairing_artifact(artifact: QualifiedArtifact | None) -> bool:
-    """Admit installation connectivity only for the exact released 2.8.1 wheel.
+    """Admit only the exact released 2.8.1 and projectless-ready 2.22.1 wheels.
 
     Product source and wheel digest are retained by forge-v2.8.1's actual
     RELEASE_COMPLETE receipt. This grants no update, detach or removal route;
@@ -105,10 +105,12 @@ def qualified_forge_installation_pairing_artifact(artifact: QualifiedArtifact | 
     """
     return isinstance(artifact, QualifiedArtifact) and (
         artifact.version, artifact.source_revision, artifact.digest
-    ) == (
-        "2.8.1", "c8833ffa4754800de451cce94b109ef1ad07123f",
-        "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0",
-    )
+    ) in {
+        ("2.8.1", "c8833ffa4754800de451cce94b109ef1ad07123f",
+         "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0"),
+        ("2.22.1", "8ee60c8409b2c3801e70cf129f20f1ff1480d03b",
+         "sha256:6f0fca3139aa40b8bd886d32c99d17c4802caa39a40e6f948d5e97218a587c82"),
+    }
 
 
 def qualified_forge_281_update_selection(
@@ -120,7 +122,7 @@ def qualified_forge_281_update_selection(
     separately delivered controller, product assessment and preservation
     evidence must be admitted before the installer may execute an upgrade.
     """
-    return qualified_forge_installation_pairing_artifact(candidate) and isinstance(
+    return qualified_forge_installation_pairing_artifact(candidate) and candidate.version == "2.8.1" and isinstance(
         installed, QualifiedArtifact,
     ) and (installed.version, installed.source_revision, installed.digest) == (
         "2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",

@@ -64,6 +64,36 @@ _FORGE_281_ENTRYPOINTS = {
 }
 
 
+_FORGE_2221_ENTRYPOINTS = {'forge': 'forge.__main__:main',
+ 'forge-advisory': 'forge.advisory_cli:main',
+ 'forge-advisory-candidate': 'forge.advisory_candidate_cli:main',
+ 'forge-advisory-candidate-grant': 'forge.advisory_candidate_grant:main',
+ 'forge-advisory-context': 'forge.advisory_context:main',
+ 'forge-advisory-grant': 'forge.advisory_grant:main',
+ 'forge-candidate-decision': 'forge.candidate_decision_cli:main',
+ 'forge-candidate-decision-grant': 'forge.candidate_decision_grant:main',
+ 'forge-concept-advisory': 'forge.concept_advisory_cli:main',
+ 'forge-genesis-bootstrap': 'forge.genesis_bootstrap_cli:main',
+ 'forge-inspection-adoption': 'forge.ep_inspection_cli:main',
+ 'forge-mission-concept-setup': 'forge.mission_concept_setup:main',
+ 'forge-mission-derive-actions': 'forge.mission_no_dispatch:main',
+ 'forge-mission-final-acceptance': 'forge.mission_final_acceptance_cli:main',
+ 'forge-mission-final-acceptance-grant': 'forge.mission_final_acceptance_grant:main',
+ 'forge-mission-lifecycle': 'forge.mission_lifecycle_cli:main',
+ 'forge-project-adoption': 'forge.project_adoption.cli:main',
+ 'forge-project-bootstrap': 'forge.project_bootstrap.cli:main',
+ 'forge-project-proposal-decisions': 'forge.proposal_content_cli:main',
+ 'forge-project-proposal-grant': 'forge.project_proposal_grant:main',
+ 'forge-workset-activity': 'forge.workset_activity_cli:main',
+ 'forge-workset-activity-grant': 'forge.workset_activity_grant:main',
+ 'forge-workset-order': 'forge.workset_order_cli:main',
+ 'forge-workset-order-grant': 'forge.workset_order_grant:main',
+ 'forge-workset-release': 'forge.workset_release_cli:main',
+ 'forge-workset-release-grant': 'forge.workset_release_grant:main',
+ 'forge-workspace-read-grant': 'forge.workspace_read_grant:main',
+ 'forge-workspace-review-grant': 'forge.workspace_review_grant:main',
+ 'forge-workspace-worklist-control-grant': 'forge.workspace_worklist_control_grant:main'}
+
 class ManagedProductWheelInspectionError(ValueError):
     """The exact wheel is missing, malformed, or violates its frozen contract."""
 
@@ -107,6 +137,8 @@ def inspect_product_wheel(
     ]
     if component_identity == "forge-runtime" and version == "2.8.1":
         expected_entrypoints = _FORGE_281_ENTRYPOINTS
+    elif component_identity == "forge-runtime" and version == "2.22.1":
+        expected_entrypoints = _FORGE_2221_ENTRYPOINTS
     dist_info = f"{distribution}-{version}.dist-info"
     try:
         with zipfile.ZipFile(BytesIO(wheel)) as archive:
@@ -234,7 +266,7 @@ def _package_metadata(raw: bytes, name: str, version: str) -> None:
     # extra. Installing the default product does not activate that extra.
     # Unknown extras, active dependencies and other release shapes stay closed.
     qualified_validation_extra = (
-        name == "forge-autonomy" and version == "2.8.1"
+        name == "forge-autonomy" and version in {"2.8.1", "2.22.1"}
         and metadata.get_all("Provides-Extra") == ["validation"]
         and dependencies == [
             'coverage<8,>=7; extra == "validation"',

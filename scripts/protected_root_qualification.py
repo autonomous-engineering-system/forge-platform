@@ -18,6 +18,7 @@ import zipfile
 REPOSITORY = 'autonomous-engineering-system/forge-platform'
 FOUNDATION = '.github/workflows/foundation-validation.yml'
 BUILD_WORKFLOWS = {
+    'Forge Platform composition catalog release framework': '.github/workflows/forge-platform-composition-catalog-release.yml',
     'Forge Platform installer release framework': '.github/workflows/forge-platform-installer-release.yml',
     'Native Mac installer integration': '.github/workflows/macos-installer-native-integration.yml',
 }

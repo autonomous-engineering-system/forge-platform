@@ -1,0 +1,24 @@
+{
+  "schema": "forge-platform.product-managed-python-qualification-inputs/v1",
+  "runtime_identity_digest": "sha256:519d7975f16e78f808403188b3a8417bab10af000208ef1ec82c42bccfa94ceb",
+  "products": [
+    {
+      "identity": "engineering-platform-server",
+      "version": "2.3.113",
+      "source_revision": "9318636060706534635954e9131e42e2f63928ef",
+      "wheel": {
+        "url": "https://files.pythonhosted.org/packages/64/ad/68ff62b7d0e6e64249f2f45e59941b2d4e67cf4448017aab0fa39c458204/engineering_platform-2.3.113-py3-none-any.whl",
+        "digest": "sha256:878e36323e37b29d97a188c02257283c3dc322c60755d57dc9017259f8ac386e"
+      }
+    },
+    {
+      "identity": "forge-runtime",
+      "version": "2.22.1",
+      "source_revision": "8ee60c8409b2c3801e70cf129f20f1ff1480d03b",
+      "wheel": {
+        "url": "https://files.pythonhosted.org/packages/31/bc/9e71a9f91877f6f54e1bdbf7b6b110f471ade435d571e818d8ca88442fc0/forge_autonomy-2.22.1-py3-none-any.whl",
+        "digest": "sha256:6f0fca3139aa40b8bd886d32c99d17c4802caa39a40e6f948d5e97218a587c82"
+      }
+    }
+  ]
+}

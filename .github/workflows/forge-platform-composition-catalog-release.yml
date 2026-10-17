@@ -136,6 +136,9 @@ jobs:
 
   build-catalog-candidate:
     name: Build unsigned composition catalog candidate
+    permissions:
+      contents: read
+      actions: read
     needs: release-context
     timeout-minutes: 30
     runs-on:
@@ -150,8 +153,18 @@ jobs:
           ref: ${{ needs.release-context.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Select supported build Python
+        run: |
+          set -euo pipefail
+          python_bin=/opt/homebrew/opt/python@3.14/libexec/bin
+          test -x "$python_bin/python3"
+          "$python_bin/python3" -I -c 'import sys, platform; assert sys.version_info[:2] == (3, 14); assert platform.machine() == "arm64"'
+          python_executable="$("$python_bin/python3" -I -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          /usr/bin/codesign --verify --strict "$python_executable"
+          printf '%s\n' "$python_bin" >> "$GITHUB_PATH"
       - id: candidate
         env:
+          GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
           SEQUENCE: ${{ needs.release-context.outputs.sequence }}
           MANIFEST: ${{ needs.release-context.outputs.manifest }}

@@ -1174,8 +1174,10 @@ public struct InstallerWizardState: Equatable, Sendable {
               let forge = composition.components.first(where: { $0.componentID == "forge-runtime" }),
               let ep = composition.components.first(where: { $0.componentID == "engineering-platform-server" })
         else { return false }
-        return forge.candidateVersion == "2.8.1"
-            && forge.artifactDigest == ManagedInstallerProductServiceAccountPlanner.installationForgeArtifactSHA256
+        return ((forge.candidateVersion == "2.8.1"
+            && forge.artifactDigest == ManagedInstallerProductServiceAccountPlanner.installationForgeArtifactSHA256)
+            || (forge.candidateVersion == "2.22.1"
+                && forge.artifactDigest == ManagedInstallerProductServiceAccountPlanner.installationForge2221ArtifactSHA256))
             && ep.candidateVersion == "2.3.113"
             && ep.artifactDigest == "sha256:878e36323e37b29d97a188c02257283c3dc322c60755d57dc9017259f8ac386e"
     }
