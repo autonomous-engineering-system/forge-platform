@@ -600,5 +600,31 @@ class CompositionCatalogReleaseTests(unittest.TestCase):
                 )
 
 
+class ReleasedForge2221CatalogTests(unittest.TestCase):
+    def test_real_sequence4_manifests_bind_new_wheel_and_require_successor_installer(self):
+        index_path = ROOT / "compositions/component-combination-catalog-v4.json"
+        index = json.loads(index_path.read_text())
+        paths = ["ep-only-2.3.113-v4.json", "forge-ep-2.22.1-2.3.113.json", "forge-only-2.22.1.json"]
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = PREPARE.prepare_many(
+                manifests=tuple((ROOT / "compositions" / name, f"ForgePlatformComposition-4-{n}.json")
+                                for n,name in enumerate(paths,1)),
+                index_path=index_path, output_directory=Path(temporary)/"candidate",
+                source_sha="a"*40, sequence=4, published_at=index["published_at"],
+                expires_at=index["expires_at"], index_asset_name="ForgePlatformComponentCombinationCatalog-4.json",
+                key_ids=("forge-platform-composition-catalog-2026-01",))
+            self.assertEqual(len(candidate["manifests"]),3)
+        for name in paths:
+            manifest=json.loads((ROOT/"compositions"/name).read_text())
+            self.assertEqual(manifest["requires_installer"]["minimum_version"],"0.4.30")
+            self.assertEqual(manifest["upgrade_from"],[])
+            for component in manifest["components"]:
+                self.assertEqual(component["python_runtime_qualification"]["test_evidence"]["digest"],
+                    "sha256:47f917cc24cb2bda393b2e0c997fe5a5c02a8f3eb0fe316b5dd035b43ab86a70")
+                if component["identity"]=="forge-runtime":
+                    self.assertEqual((component["artifact"]["version"],component["artifact"]["source_revision"],component["artifact"]["digest"]),
+                        ("2.22.1","8ee60c8409b2c3801e70cf129f20f1ff1480d03b","sha256:6f0fca3139aa40b8bd886d32c99d17c4802caa39a40e6f948d5e97218a587c82"))
+
+
 if __name__ == "__main__":
     unittest.main()
