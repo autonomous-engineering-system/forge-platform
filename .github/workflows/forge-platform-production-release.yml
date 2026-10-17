@@ -107,7 +107,7 @@ jobs:
               json.dumps(asdict(qualified), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
           )
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: forge-platform-qualified-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
           path: release-input/
@@ -203,7 +203,7 @@ jobs:
           fi
           rm -rf -- qualified-readback
           test ! -e qualified-readback
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: forge-platform-retained-qualified-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
           path: release-input/
@@ -321,7 +321,7 @@ jobs:
           rm -rf -- operation-readback public-readback
           test ! -e operation-readback
           test ! -e public-readback
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: forge-platform-published-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
           path: release-input/
@@ -600,7 +600,7 @@ jobs:
           if test "$complete_present" = false; then
             gh release upload "$TAG" "release-outcomes/$COMPLETE"
           fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: forge-platform-release-complete-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
           path: release-outcomes/forge-platform-release-complete-*.json
