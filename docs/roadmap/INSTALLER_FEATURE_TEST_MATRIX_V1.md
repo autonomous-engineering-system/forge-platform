@@ -7,6 +7,10 @@
 
 [Canonical case inventory](installer-feature-test-matrix-v1.json). This is a documentary acceptance increment, not an execution permission, test runner, new release, product upgrade or completion receipt.
 
+## Later source qualification
+
+The [automatic composition-review transition correction](../installer-automatic-review-transition-qualification.md) records the 0.4.28 GUI stall and focused unsigned qualification on 17 October 2026. It does not change the historical cutoff, case results or live-acceptance status of this matrix snapshot.
+
 ## Current baseline and evidence
 
 Installer **0.4.10** is published as [five assets](https://github.com/autonomous-engineering-system/forge-platform/releases/tag/forge-platform-installer-v0.4.10). Frozen binary source `5fc612c3926b26b600fae9358bb53e8c597d4ed7` and reviewed producer source `d4b71492c24e000023d1602208e193a5c8bc6e78` are distinct. The producer-only XAR correction did not rebuild/resign the app or package. Exact hashes are in the canonical inventory. Selected installation/pairing product baseline: **Forge 2.8.1 + EP 2.3.113**; this is not a claim these are the latest product releases.
