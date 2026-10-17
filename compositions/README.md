@@ -74,3 +74,22 @@ That report proves exact released-wheel installation, metadata and CLI help;
 catalog signing/publication and actual published installer acceptance have
 their own gates. The minimum installer is 0.4.2. Historical sequence-1/2
 inputs remain immutable, and no unqualified upgrade edge is advertised.
+
+## Sequence 4: qualified projectless Forge 2.22.1
+
+New immutable sequence4 inputs select Forge2.22.1 source
+`8ee60c8409b2c3801e70cf129f20f1ff1480d03b`, wheel
+`sha256:6f0fca3139aa40b8bd886d32c99d17c4802caa39a40e6f948d5e97218a587c82`,
+with unchanged EP2.3.113. The Forge producer release includes the projectless
+IDLE correction (R58/PR299 and300); no project is registered during pairing.
+Minimum installer0.4.30 binds the native/Python exact artifact contract.
+Historical sequence1/2/3 bytes remain unchanged; no upgrade edge is advertised.
+
+The three new manifests bind the independently published
+[managed-Python generation3 report](https://github.com/autonomous-engineering-system/forge-platform/releases/download/forge-platform-product-managed-python-evidence-v3/product-managed-python-evidence.json),
+`sha256:47f917cc24cb2bda393b2e0c997fe5a5c02a8f3eb0fe316b5dd035b43ab86a70`.
+Protected report source is `af5babe437a40048f67b30407ad6d8a89556da11`; native
+Apple-silicon ordinary venv installation, metadata and CLI smoke passed for
+both exact wheels. This is not a system-service, authentication or VM-E2E PASS.
+The catalog must still receive its own protected signing/public byte readback.
+See [source qualification](../docs/installer-forge-2221-integration-qualification.md).
