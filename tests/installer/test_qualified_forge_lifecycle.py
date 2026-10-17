@@ -12,6 +12,18 @@ from forge_platform.qualified_forge_lifecycle import (
 
 
 class QualifiedForgeLifecycleTests(unittest.TestCase):
+    def test_2221_exact_installation_binding_never_grants_281_update(self):
+        candidate = QualifiedArtifact("2.22.1", "8ee60c8409b2c3801e70cf129f20f1ff1480d03b", "released-wheel",
+            "sha256:6f0fca3139aa40b8bd886d32c99d17c4802caa39a40e6f948d5e97218a587c82", "release-complete")
+        old = QualifiedArtifact("2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05", "released-wheel",
+            "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1", "release-complete")
+        self.assertTrue(qualified_forge_installation_pairing_artifact(candidate))
+        self.assertFalse(qualified_forge_281_update_selection(old, candidate))
+        self.assertFalse(qualified_forge_lifecycle_artifact(candidate))
+        for changed in (replace(candidate, version="2.22.2"), replace(candidate, source_revision=old.source_revision),
+                        replace(candidate, digest=old.digest)):
+            self.assertFalse(qualified_forge_installation_pairing_artifact(changed))
+
     def test_281_maintenance_selection_is_exact_and_does_not_grant_legacy_lifecycle(self) -> None:
         installed = QualifiedArtifact("2.7.39", "ebc43dc12da27353f85c991a26da9852aa790f05",
             "released-wheel", "sha256:b62bf5f7a1d937f5224ef941a3dea3e961d28b67d9206fd89b644153aea502f1", "release-complete")

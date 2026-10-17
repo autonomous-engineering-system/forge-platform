@@ -248,7 +248,7 @@ class ManagedForgeInstanceBootstrap:
         self.codex_executable=codex_executable;self.codex_home=codex_home;self.codex_digest=codex_digest
         self.runtime_service_access = None
         if ((artifact.version!="2.7.39" and not qualified_forge_installation_pairing_artifact(artifact))
-            or artifact.version=="2.8.1" and target.service_user_identity_sha256 is None
+            or qualified_forge_installation_pairing_artifact(artifact) and target.service_user_identity_sha256 is None
             or target.instances_root!=root/"instances/forge"
             or target.data_root!=target.instances_root/target.instance_id
             or target.api_credential_file!=root/"credentials/forge"/(target.instance_id+".token")

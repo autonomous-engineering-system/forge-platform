@@ -191,3 +191,29 @@ class ManagedProductWheelInspectionTests(TestCase):
                 inspect(wheel_bytes())
         with self.assertRaises(ManagedProductWheelInspectionError):
             inspect(b"not-a-zip")
+
+
+class Forge2221WheelContractTests(TestCase):
+    def make_wheel(self, *, entrypoints=None, dependency=None):
+        from pathlib import Path
+        entry = (Path(__file__).parent / "fixtures/forge-2.22.1-entry-points.txt").read_bytes()
+        metadata = ("Metadata-Version: 2.4\nName: forge-autonomy\nVersion: 2.22.1\n"
+                    "Provides-Extra: validation\nRequires-Dist: coverage<8,>=7; extra == \"validation\"\n"
+                    "Requires-Dist: jsonschema<5,>=4; extra == \"validation\"\n")
+        if dependency: metadata += "Requires-Dist: " + dependency + "\n"
+        return wheel_bytes(version="2.22.1", metadata_override=metadata.encode(),
+                           entrypoint_override=entry if entrypoints is None else entrypoints)
+
+    def inspect(self, raw):
+        return inspect_product_wheel(raw, component_identity="forge-runtime", version="2.22.1",
+                                     artifact_sha256="sha256:" + sha256(raw).hexdigest())
+
+    def test_released_console_contract_and_optional_validation_extra(self):
+        inventory = self.inspect(self.make_wheel())
+        self.assertEqual(len(inventory.entrypoints), 29)
+        self.assertIn(("forge-genesis-bootstrap", "forge.genesis_bootstrap_cli:main"), inventory.entrypoints)
+
+    def test_extra_active_dependency_or_changed_entrypoint_blocks(self):
+        for raw in (self.make_wheel(dependency="requests>=2"),
+                    self.make_wheel(entrypoints=b"[console_scripts]\nforge = attacker:main\n")):
+            with self.assertRaises(ManagedProductWheelInspectionError): self.inspect(raw)

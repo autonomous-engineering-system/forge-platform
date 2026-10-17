@@ -9,13 +9,14 @@ on:
         type: string
 
       evidence_version:
-        description: Immutable qualification generation (v1 historical, v2 EP 2.3.113 and Forge 2.8.1)
+        description: Immutable qualification generation (v1 historical, v2 historical, v3 EP 2.3.113 and Forge 2.22.1)
         required: true
         type: choice
         options:
           - '1'
           - '2'
-        default: '2'
+          - '3'
+        default: '3'
 
 permissions:
   contents: read
@@ -46,6 +47,7 @@ jobs:
           case "$EVIDENCE_VERSION" in
             1) CONFIG=product-runtime-qualification-inputs.json ;;
             2) CONFIG=product-runtime-qualification-inputs-v2.json ;;
+            3) CONFIG=product-runtime-qualification-inputs-v3.json ;;
             *) echo 'unsupported immutable evidence version' >&2; exit 1 ;;
           esac
           TAG="forge-platform-product-managed-python-evidence-v$EVIDENCE_VERSION"
@@ -80,6 +82,7 @@ jobs:
           case "$EVIDENCE_VERSION" in
             1) CONFIG=product-runtime-qualification-inputs.json ;;
             2) CONFIG=product-runtime-qualification-inputs-v2.json ;;
+            3) CONFIG=product-runtime-qualification-inputs-v3.json ;;
             *) echo 'unsupported immutable evidence version' >&2; exit 1 ;;
           esac
           TAG="forge-platform-product-managed-python-evidence-v$EVIDENCE_VERSION"
@@ -125,6 +128,7 @@ jobs:
           case "$EVIDENCE_VERSION" in
             1) CONFIG=product-runtime-qualification-inputs.json ;;
             2) CONFIG=product-runtime-qualification-inputs-v2.json ;;
+            3) CONFIG=product-runtime-qualification-inputs-v3.json ;;
             *) echo 'unsupported immutable evidence version' >&2; exit 1 ;;
           esac
           TAG="forge-platform-product-managed-python-evidence-v$EVIDENCE_VERSION"

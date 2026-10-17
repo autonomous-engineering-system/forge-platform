@@ -66,7 +66,8 @@ struct ManagedInstallerProductServiceAccountPlanner {
                 try? FileManagedInstallerHelperReviewedSelectionStore.production().loadOperator(for: $0)
             }
             let installationForge = Self.isInstallationForge(binding)
-            if component.componentID == "forge-runtime", binding.version == "2.8.1" {
+            if component.componentID == "forge-runtime",
+               binding.version == "2.8.1" || binding.version == "2.22.1" {
                 guard installationForge, let reviewedUser, reviewedUser.isAdministrator else {
                     return .failure(.rejected)
                 }
@@ -97,10 +98,16 @@ struct ManagedInstallerProductServiceAccountPlanner {
 
     static let installationForgeArtifactSHA256 = "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0"
 
+    static let installationForge2221ArtifactSHA256 = "sha256:6f0fca3139aa40b8bd886d32c99d17c4802caa39a40e6f948d5e97218a587c82"
+
     static func isInstallationForge(_ binding: ManagedInstallerPrepublicationProductWheelBinding) -> Bool {
-        binding.componentIdentity == "forge-runtime" && binding.version == "2.8.1"
+        guard binding.componentIdentity == "forge-runtime" else { return false }
+        return (binding.version == "2.8.1"
             && binding.sourceRevision == "c8833ffa4754800de451cce94b109ef1ad07123f"
-            && binding.artifactSHA256 == installationForgeArtifactSHA256
+            && binding.artifactSHA256 == installationForgeArtifactSHA256)
+            || (binding.version == "2.22.1"
+                && binding.sourceRevision == "8ee60c8409b2c3801e70cf129f20f1ff1480d03b"
+                && binding.artifactSHA256 == installationForge2221ArtifactSHA256)
     }
 
     /// Product instances are distinct from the deployment correlation ID and
@@ -144,7 +151,8 @@ struct ManagedInstallerProductServiceAccountPlanner {
             let user = try FileManagedInstallerHelperReviewedSelectionStore.production().loadOperator(for: claim)
             return user.isAdministrator ? user.accountName : nil
         } catch ManagedInstallerHelperReviewedSelectionStoreFailure.unavailable {
-            return claim.productArtifactSHA256 == installationForgeArtifactSHA256 ? nil : legacy
+            return [installationForgeArtifactSHA256, installationForge2221ArtifactSHA256]
+                .contains(claim.productArtifactSHA256) ? nil : legacy
         } catch { return nil }
     }
 }

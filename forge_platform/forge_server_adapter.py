@@ -1366,7 +1366,8 @@ class ForgeServerProductAdapter(ProductOperationAdapter):
             # Only that exact, independently confirmed missing-peer condition
             # may pass the installation barrier. Provider/other failures block.
             scheduler_waits_for_peer = (
-                scheduler.get("state") == "NOT_READY"
+                self.installed_artifact.version == "2.8.1"
+                and scheduler.get("state") == "NOT_READY"
                 and scheduler.get("last_error") == "PeerConfigurationError"
             )
             if (provider.get("ready") is not True

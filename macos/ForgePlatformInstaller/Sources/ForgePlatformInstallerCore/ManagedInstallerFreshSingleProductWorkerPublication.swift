@@ -354,9 +354,12 @@ struct ManagedInstallerFreshSingleProductWorkerPublishingOperations:
         }
         let installationPairing = evidence.count == 2
             && plan.reviewedOperation.pairingTarget == nil
-            && Set(plan.reviewedOperation.components.map(\.artifactDigest)) == [
+            && (Set(plan.reviewedOperation.components.map(\.artifactDigest)) == [
                 ManagedInstallerInstallationProductWorkerAuthorityAdmission.epArtifact,
-                "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0"]
+                ManagedInstallerProductServiceAccountPlanner.installationForgeArtifactSHA256]
+                || Set(plan.reviewedOperation.components.map(\.artifactDigest)) == [
+                    ManagedInstallerInstallationProductWorkerAuthorityAdmission.epArtifact,
+                    ManagedInstallerProductServiceAccountPlanner.installationForge2221ArtifactSHA256])
         let snapshot: ManagedInstallerProductWorkerAuthoritySnapshot?
         if installationPairing {
             snapshot = ManagedInstallerFreshInstallationProductWorkerRouteBuilder(ports: ports)

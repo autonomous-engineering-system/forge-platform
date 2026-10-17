@@ -1169,6 +1169,47 @@ class ForgeServerAdapterTests(unittest.TestCase):
                  patch.object(self.adapter.readiness_probe, "readiness", return_value=bad):
                 self.assertEqual(self.adapter.readback(request).state, "UNHEALTHY")
 
+    def test_2221_installation_readiness_keeps_strict_service_and_identity_checks(self):
+        candidate = QualifiedArtifact("2.22.1", "8ee60c8409b2c3801e70cf129f20f1ff1480d03b",
+            ARTIFACT.source, "sha256:6f0fca3139aa40b8bd886d32c99d17c4802caa39a40e6f948d5e97218a587c82",
+            ARTIFACT.qualification)
+        request = replace(self.request("install"), artifact=candidate)
+        self.adapter.installed_artifact = candidate
+        self.supervisor.running = True
+        status = {"initialized": True, "instance_id": self.target.instance_id, "product_version": "2.22.1"}
+        readiness = {"contract_version": "forge-server-installation-readiness/v1",
+            "instance_id": self.target.instance_id, "ready": True, "service_ready": True,
+            "component_connected": True, "project_authorized": False, "execution_ready": False,
+            "provider": {"ready": True}, "scheduler": {"state": "IDLE"},
+            "installation_peer": {"status": "CONNECTED", "forge_instance_id": self.target.instance_id,
+                "purpose": "INSTALLATION_READBACK", "project_authorized": False, "execution_ready": False}}
+        with patch.object(self.adapter, "_run", side_effect=[status, {"outcome": "MISSING"}]), \
+             patch.object(self.adapter.readiness_probe, "readiness", return_value=readiness):
+            self.assertEqual(self.adapter.readback(request).state, "ACTIVE")
+        for bad in ({**readiness, "service_ready": False}, {**readiness, "execution_ready": True},
+                    {**readiness, "instance_id": "foreign-runtime"}):
+            with patch.object(self.adapter, "_run", side_effect=[status, {"outcome": "MISSING"}]), \
+                 patch.object(self.adapter.readiness_probe, "readiness", return_value=bad):
+                self.assertEqual(self.adapter.readback(request).state, "UNHEALTHY")
+
+    def test_2221_unpaired_barrier_requires_real_idle_service_not_legacy_missing_peer(self):
+        self.adapter.installed_artifact = QualifiedArtifact("2.22.1", "8ee60c8409b2c3801e70cf129f20f1ff1480d03b",
+            ARTIFACT.source, "sha256:6f0fca3139aa40b8bd886d32c99d17c4802caa39a40e6f948d5e97218a587c82", ARTIFACT.qualification)
+        self.adapter.target = replace(self.target, service_user_identity_sha256="sha256:" + "a" * 64)
+        self.adapter.instance_bootstrap = SimpleNamespace()
+        document = {"contract_version": "forge-server-installation-readiness/v1",
+            "instance_id": self.target.product_runtime_id, "ready": False, "service_ready": True,
+            "component_connected": False, "project_authorized": False, "execution_ready": False,
+            "provider": {"ready": True, "state": "READY", "version": "0.157.1"},
+            "scheduler": {"state": "IDLE", "last_error": None},
+            "installation_peer": {"status": "NOT_READY"}}
+        with patch.object(self.adapter, "read_installation_peer", return_value={"status": "NOT_CONFIGURED", "execution_ready": False}):
+            self.assertTrue(self.adapter._awaiting_peer(document))
+            self.assertFalse(self.adapter._awaiting_peer({**document, "service_ready": False,
+                "scheduler": {"state": "NOT_READY", "last_error": "PeerConfigurationError"}}))
+            self.assertFalse(self.adapter._awaiting_peer({**document, "execution_ready": True}))
+
+
     def test_real_released_pre_pairing_shape_completes_install_but_not_readiness(self):
         candidate = QualifiedArtifact("2.8.1", "c8833ffa4754800de451cce94b109ef1ad07123f",
             ARTIFACT.source, "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0",

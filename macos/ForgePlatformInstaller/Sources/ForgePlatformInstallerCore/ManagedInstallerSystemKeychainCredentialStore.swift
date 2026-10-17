@@ -326,7 +326,9 @@ extension ManagedInstallerSystemKeychainCredentialStore {
                   !authority.installationRoutes.isEmpty else { return .failure(.rejected) }
             let routes = authority.installationRoutes.filter { $0.credentialReference == reference && $0.operationID == operationID }
             guard routes.count == 1, let route = routes.first,
-                  route.forgeArtifactSHA256 == "sha256:7e4b6cf2bd4544865ca980ff9c5c0f7e4b104cd9a47f11dc6d1e3e944e1942c0",
+                  [ManagedInstallerProductServiceAccountPlanner.installationForgeArtifactSHA256,
+                   ManagedInstallerProductServiceAccountPlanner.installationForge2221ArtifactSHA256]
+                    .contains(route.forgeArtifactSHA256),
                   route.engineeringPlatformArtifactSHA256 == "sha256:878e36323e37b29d97a188c02257283c3dc322c60755d57dc9017259f8ac386e"
             else { return .failure(.rejected) }
             let root = reader.root
