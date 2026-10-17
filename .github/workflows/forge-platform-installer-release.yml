@@ -332,7 +332,7 @@ jobs:
           printf 'architecture=%s\n' "$ARCHITECTURE" >> "$GITHUB_OUTPUT"
           printf 'archive=%s\n' "$ARCHIVE" >> "$GITHUB_OUTPUT"
           printf 'archive_digest=%s\n' "$ARCHIVE_DIGEST" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: forge-platform-installer-candidate-${{ needs.release-context.outputs.installer_version }}-${{ needs.release-context.outputs.source_sha }}
           path: release-input/
@@ -391,7 +391,7 @@ jobs:
               encoding="utf-8",
           )
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: forge-platform-installer-signing-authorization-${{ github.run_id }}-${{ github.run_attempt }}
           path: signing-authorization/authorization.json
