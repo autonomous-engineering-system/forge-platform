@@ -65,3 +65,16 @@ sealed-resource admission was observed. Its terminal EP/pairing success and
 Forge projectless readiness failure remain historical facts. This exact
 version integration makes no unmeasured performance improvement claim and
 adds no generic retry, recovery-history reset or readiness bypass.
+
+## Catalog build qualification handoff
+
+Before dispatch, source inspection proved the catalog build still invoked the
+root-dependent coverage gate under the credentialless build account, without
+the existing protected qualification consumer context. The catalog build now
+selects the same verified Python3.14 and uses its exact closed workflow
+name/path with a build-job-only actions-read token. Existing current-main,
+source/tree, owning run/attempt, required Foundation jobs and artifact/count
+binding remain unchanged. Positive catalog context, wrong owning workflow and
+pull-request context are exercised. No root privilege, threshold reduction,
+caller-selected evidence, or installer/runtime authority is introduced. This
+is a necessary preparation of the approved catalog cycle, before any dispatch.
