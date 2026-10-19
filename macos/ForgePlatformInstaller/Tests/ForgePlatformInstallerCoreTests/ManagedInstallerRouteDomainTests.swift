@@ -250,6 +250,10 @@ final class ManagedInstallerRouteDomainTests: XCTestCase {
         XCTAssertFalse(state.recordManagedDeploymentExecution(.failed(.executionFailed, stages: []), for: operation))
         XCTAssertFalse(state.managedDeploymentExecutionInFlight)
         let terminal = state.executionStages
+        XCTAssertTrue(terminal.filter { $0.id != "managed-deployment" }.allSatisfy { $0.state == .passed })
+        let acceptance = try XCTUnwrap(terminal.first { $0.id == "managed-deployment" })
+        XCTAssertEqual(acceptance.title, "Installatie afronden")
+        XCTAssertTrue(acceptance.detail.contains("eindbewijs niet accepteren"))
         XCTAssertFalse(state.recordManagedComponentProgress(progress, for: operation))
         XCTAssertEqual(state.executionStages, terminal)
         XCTAssertFalse(state.canAdvance)

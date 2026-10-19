@@ -413,9 +413,15 @@ public extension InstallerWizardState {
                 }
                 return value
             }
+            let productsPassed = !observed.isEmpty && observed.allSatisfy { $0.state == .passed }
+            let terminalFailure = productsPassed
+                ? ExecutionStage(id: "managed-deployment", title: "Installatie afronden",
+                    detail: "De productstappen zijn geslaagd, maar de installer kon het eindbewijs niet accepteren. Bewaar het installatierapport voor ondersteuning; start geen nieuwe installatie.",
+                    state: .failed("De installer kon de installatie niet als geslaagd bevestigen."))
+                : ExecutionStage(id: "managed-deployment", title: "Installatie",
+                    detail: failure.userFacingMessage, state: .failed(failure.userFacingMessage))
             executionStages = stages.isEmpty && !observed.isEmpty
-                ? observed + [ExecutionStage(id: "managed-deployment", title: "Installatie",
-                    detail: failure.userFacingMessage, state: .failed(failure.userFacingMessage))]
+                ? observed + [terminalFailure]
                 : stages.isEmpty
                 ? [
                     ExecutionStage(

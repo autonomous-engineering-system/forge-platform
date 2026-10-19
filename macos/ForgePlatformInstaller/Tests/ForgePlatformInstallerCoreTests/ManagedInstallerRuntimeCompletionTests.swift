@@ -822,6 +822,94 @@ final class ManagedInstallerRuntimeCompletionTests: XCTestCase {
         ))
     }
 
+    func testActualPythonProductReceiptDecodesForBothAndSingleComponentSelections() throws {
+        for component in [String?.none, "engineering-platform-server", "forge-runtime"] {
+            let fixture = try RuntimeCompletionFixture(singleComponent: component)
+            let request = try ManagedInstallerProductOperationRequest(stablePlan: fixture.stablePlan,
+                runtimeTransactionReceipt: fixture.transactionReceipt())
+            let products = request.components.map { productReference($0.componentID) }
+            let bytes = try pythonProductReceipt(request, products: products)
+            let receipt = try ManagedInstallerProductOperationReceipt.decodeJSON(bytes, request: request)
+            XCTAssertEqual(receipt.productReceiptReferences, products.sorted())
+            XCTAssertEqual(receipt.completions.map(\.componentID), request.components.map(\.componentID).sorted())
+            XCTAssertEqual(receipt.canonicalJSONData(), bytes,
+                "Use the real Python producer bytes, not a separately mirrored native fixture")
+        }
+    }
+
+    func testActualPythonProductReceiptRejectsMalformedAndUnselectedEvidence() throws {
+        let fixture = try RuntimeCompletionFixture()
+        let request = try ManagedInstallerProductOperationRequest(stablePlan: fixture.stablePlan,
+            runtimeTransactionReceipt: fixture.transactionReceipt())
+        let ep = productReference("engineering-platform-server")
+        let forge = productReference("forge-runtime")
+        let malformed = ["ep-receipt:sha256:", "ep-receipt:sha256:" + String(repeating: "a", count: 63),
+            "ep-receipt:sha256:" + String(repeating: "a", count: 65),
+            "ep-receipt:sha256:" + String(repeating: "A", count: 64),
+            "ep-receipt:sha256:" + String(repeating: "g", count: 64),
+            "unknown:sha256:" + String(repeating: "a", count: 64), ep + "\n", ep + " "]
+        for products in malformed.map({ [$0, forge] }) + [[], [ep], [ep, ep],
+            [ep, "ep-receipt:sha256:" + String(repeating: "b", count: 64)], [ep, forge, "receipt:extra"],
+            [ep, "receipt:legacy"], ["receipt:legacy", ep], [forge, "receipt:legacy"]] {
+            XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt.decodeJSON(
+                pythonProductReceipt(request, products: products), request: request), "\(products)")
+        }
+        for component in ["engineering-platform-server", "forge-runtime"] {
+            let single = try RuntimeCompletionFixture(singleComponent: component)
+            let selected = try ManagedInstallerProductOperationRequest(stablePlan: single.stablePlan,
+                runtimeTransactionReceipt: single.transactionReceipt())
+            let other = productReference(component == "forge-runtime" ? "engineering-platform-server" : "forge-runtime")
+            XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt.decodeJSON(
+                pythonProductReceipt(selected, products: [other]), request: selected))
+        }
+        XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt.decodeJSON(
+            pythonProductReceipt(request, products: [ep, forge], pairing: ep), request: request))
+        XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt.decodeJSON(
+            pythonProductReceipt(request, products: [ep, forge], readiness: [ep, forge]), request: request))
+        XCTAssertThrowsError(try ManagedInstallerProductOperationReceipt.decodeJSON(
+            pythonProductReceipt(request, products: [ep, forge], completions: ["forge-runtime"]), request: request))
+        // Generic managed-runtime evidence is intentionally unchanged.
+        XCTAssertFalse(ManagedPythonRuntimeInstalledReadback.isEvidenceReference(ep))
+        XCTAssertFalse(ManagedPythonRuntimeInstalledReadback.isEvidenceReference(forge))
+    }
+
+    private func productReference(_ component: String) -> String {
+        component == "engineering-platform-server"
+            ? "ep-receipt:sha256:feaff160aaf46a9bd4e9d01ac8d51e36873c0794d79ddfeb90e92604796cad3f"
+            : "forge-operation:sha256:33ed8c9042f14cd76d72c1104f31840c072b2c1798e0d7a9dc7f542b34b046a6"
+    }
+
+    private func pythonProductReceipt(_ request: ManagedInstallerProductOperationRequest,
+        products: [String], pairing: String? = nil, readiness: [String]? = nil,
+        completions: [String]? = nil) throws -> Data {
+        let root = (0..<5).reduce(URL(fileURLWithPath: #filePath)) { url, _ in url.deletingLastPathComponent() }
+        let components = request.components.map(\.componentID).sorted()
+        let wire: [String: Any] = ["request": request.requestFingerprint, "plan": request.stablePlanFingerprint,
+            "operation": request.operationID, "products": products,
+            "pairing": pairing.map { $0 as Any } ?? (components.count == 2 ? "receipt:pairing-real-shape" as Any : NSNull()),
+            "readiness": readiness ?? components.map { "receipt:readiness-" + $0 },
+            "components": completions ?? components]
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["python3", "-I", "-B", "-c", #"""
+import json,sys
+sys.path.insert(0,sys.argv[1])
+from forge_platform.managed_product_operation_dispatch import NativeProductOperationDispatchReceipt
+w=json.load(sys.stdin)
+r=NativeProductOperationDispatchReceipt(w['request'],w['plan'],w['operation'],
+    tuple(sorted(w['products'])),w['pairing'],tuple(sorted(w['readiness'])),tuple(w['components']))
+sys.stdout.buffer.write(r.canonical_json_bytes())
+"""#, root.path]
+        process.environment = ["PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin", "LANG": "C"]
+        let input = Pipe(), output = Pipe()
+        process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
+        try process.run()
+        try input.fileHandleForWriting.write(contentsOf: JSONSerialization.data(withJSONObject: wire))
+        try input.fileHandleForWriting.close()
+        let bytes = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, "Actual Python producer must run")
+        return bytes
+    }
+
     func testProductBridgeReceiptRoundTripsExactCompletion() throws {
         let fixture = try RuntimeCompletionFixture()
         let request = try ManagedInstallerProductOperationRequest(
