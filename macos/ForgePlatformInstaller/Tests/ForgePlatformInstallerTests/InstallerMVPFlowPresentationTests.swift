@@ -66,6 +66,20 @@ final class InstallerMVPFlowPresentationTests: XCTestCase {
         XCTAssertTrue(ManagedInstallerCompositionChoice.engineeringPlatform.customerProviderExplanation.contains("GitHub"))
     }
 
+    func testReportDistinguishesPassedProductsFromFailedTerminalAcceptance() throws {
+        var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("0.4.30"))
+        state.executionStages = [
+            ExecutionStage(id: "engineering-platform-server", title: "secret", detail: "secret", state: .passed),
+            ExecutionStage(id: "forge-runtime", title: "secret", detail: "secret", state: .passed),
+            ExecutionStage(id: "managed-deployment", title: "secret", detail: "secret", state: .failed("secret"))]
+        let text = InstallerMVPSafeReport.text(state: state, choice: .forgeAndEngineeringPlatform)
+        XCTAssertTrue(text.contains("Engineering Platform: Geslaagd"))
+        XCTAssertTrue(text.contains("Forge: Geslaagd"))
+        XCTAssertTrue(text.contains("Afronding: Mislukt"))
+        XCTAssertTrue(text.contains("start geen nieuwe installatie"))
+        XCTAssertFalse(text.contains("secret"))
+    }
+
     func testInitialOverviewGroupsBothCodexTargetsAndKeepsGitHubSeparate() {
         let owners: [ProviderOwnerComponent] = [.engineeringPlatformServer, .forgeRuntime]
         var targets = owners.map {

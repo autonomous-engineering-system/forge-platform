@@ -473,6 +473,7 @@ struct InstallerMVPFlowView: View {
                case .failed(let reason) = overall.state {
                 Label(reason, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
+                Text(overall.detail).font(.callout)
             }
             if let installationStartedAt {
                 TimelineView(.periodic(from: installationStartedAt, by: 1)) { timeline in

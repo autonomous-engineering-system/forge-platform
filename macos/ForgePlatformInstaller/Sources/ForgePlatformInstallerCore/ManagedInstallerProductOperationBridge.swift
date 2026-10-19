@@ -669,7 +669,7 @@ public struct ManagedInstallerProductOperationReceipt: Equatable, Sendable {
         guard !products.isEmpty,
               products.count <= expected.count,
               Set(products).count == products.count,
-              products.allSatisfy(ManagedPythonRuntimeInstalledReadback.isEvidenceReference),
+              Self.validProductReferences(products, components: expected.map(\.componentID)),
               readiness.count == expected.count,
               Set(readiness).count == readiness.count,
               readiness.allSatisfy(ManagedPythonRuntimeInstalledReadback.isEvidenceReference),
@@ -747,6 +747,35 @@ public struct ManagedInstallerProductOperationReceipt: Equatable, Sendable {
             readinessReceiptReferences: readinessValues.map(ManagedInstallerProductOperationRequest.string),
             completions: completionValues.map(decodeCompletion)
         )
+    }
+
+    /// Product-owned evidence has its own namespaces; it is not a managed
+    /// Python runtime receipt. Runtime, pairing and readiness validators remain
+    /// unchanged. Legacy opaque receipts retain their existing bounded contract.
+    private static func validProductReferences(_ references: [String], components: [String]) -> Bool {
+        let namespaces = [
+            "engineering-platform-server": "ep-receipt:sha256:",
+            "forge-runtime": "forge-operation:sha256:",
+        ]
+        var observed = Set<String>()
+        var legacyCount = 0
+        for reference in references {
+            if ManagedPythonRuntimeInstalledReadback.isEvidenceReference(reference) {
+                legacyCount += 1
+                continue
+            }
+            guard let component = namespaces.first(where: { reference.hasPrefix($0.value) })?.key,
+                  components.contains(component), observed.insert(component).inserted,
+                  let prefix = namespaces[component],
+                  CompositionCatalogValidation.isTaggedSHA256(
+                    String(reference.dropFirst(prefix.count - "sha256:".count))
+                  ) else { return false }
+        }
+        // Every selected component must be covered when the producer uses its
+        // typed product references. Historical opaque receipts cannot invent
+        // additional typed component authority.
+        return legacyCount == references.count
+            || (legacyCount == 0 && observed == Set(components))
     }
 
     private static func completionValue(

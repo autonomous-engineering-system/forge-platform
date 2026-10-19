@@ -212,6 +212,13 @@ enum InstallerMVPSafeReport {
             "\(InstallerMVPStagePresentation.title(for: $0)): \($0.state.displayName)"
         }
         if state.executionStages.isEmpty { lines.append("Nog geen productresultaten.") }
+        if state.executionStages.contains(where: {
+            if $0.id == "managed-deployment", case .failed = $0.state { return true }
+            return false
+        }) {
+            lines += ["", "Afronding: Mislukt",
+                "De installer kon de installatie niet als geslaagd bevestigen. Bewaar dit rapport voor ondersteuning; start geen nieuwe installatie."]
+        }
         return lines.joined(separator: "\n")
     }
 }
